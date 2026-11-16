@@ -25,8 +25,16 @@ db.query(`INSERT INTO session_communication_requests VALUES('one',1,1,'capture:h
 input.run('request:one',2,'s','a2','input','agent',2,'capture:his','run-inbox','one');
 // The worker's own watch wakes it later: a service input whose source is the worker's request turn.
 input.run('watch:w:fired',2,'s','a3','input','service',null,'request:one','run-worker','watch:w:fired');
+// The Inbox's upkeep (a service, no human behind it) re-sends work with its thread; the worker's
+// later wake and its own request to a helper serve that same thread.
+db.query('INSERT INTO inbox_topic_roots VALUES(?,?)').run('capture:repair','topic:repair');
+db.exec("INSERT INTO turns VALUES(3,1,'run-upkeep'),(4,2,'run-worker-2')");
+input.run('thread-upkeep:u',1,'s','a5','input','service',3,null,null,null);
+db.query(`INSERT INTO session_communication_requests VALUES('two',1,3,'thread-upkeep:u',2,'request:two',NULL,'capture:repair','{}',2)`).run();
+input.run('request:two',2,'s','a6','input','agent',4,'thread-upkeep:u','run-upkeep','two');
+input.run('watch:v:fired',2,'s','a7','input','service',null,'request:two','run-worker-2','watch:v:fired');
 // Work started by hand in Sessions, outside any thread, stays unthreaded.
 input.run('typed',3,'s','a4','input','human',null,null,null,null);
-const results={request:turnTopicRootIn(db,'request:one'),watch:turnTopicRootIn(db,'watch:w:fired'),typed:turnTopicRootIn(db,'typed')};
-if(results.request!=='capture:his'||results.watch!=='capture:his'||results.typed!==null)throw new Error(`thread roots: ${JSON.stringify(results)}`);
+const results={request:turnTopicRootIn(db,'request:one'),watch:turnTopicRootIn(db,'watch:w:fired'),typed:turnTopicRootIn(db,'typed'),upkeepWake:turnTopicRootIn(db,'watch:v:fired')};
+if(results.request!=='capture:his'||results.watch!=='capture:his'||results.typed!==null||results.upkeepWake!=='capture:repair')throw new Error(`thread roots: ${JSON.stringify(results)}`);
 console.log(`thread roots resolve through retained links: ${JSON.stringify(results)}`);

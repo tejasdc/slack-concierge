@@ -38,6 +38,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [launch-through-native-cleanup handover](docs/runbooks/DEPLOYMENT.md#ledger-command-selection-and-native-lifetime).
   Release checks retain their complete inventory and owned cleanup within the
   [bounded check contract](docs/runbooks/RELEASE-CHECKS.md).
+- Mac disk upkeep shares the existing automatic update job; log retention, identity staging,
+  finished-worktree proof, pressure notices and receipts live in
+  [Mac disk maintenance](docs/runbooks/MAC-DISK-MAINTENANCE.md).
 - Provider-change handoffs move accepted inputs only under the exact safety rules in
   [session ownership](docs/architecture/SESSION-OWNER.md#provider-change-handoff).
 - Merge a checked pull request with `scripts/merge-pr.sh <number>`, which serialises
@@ -58,6 +61,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [agent security](docs/security/2026-10-07-agent-security-review.md).
 - Agent session commands use each machine's installed wrapper, which selects
   the current release; see [runner command paths](docs/architecture/RUNNERS.md#agent-session-commands).
+- Hosted-run shutdown custody follows the [execution host](docs/architecture/EXECUTION-HOST.md)
+  contract; preserve exact accepted input and provider-result ownership across releases.
 - Claude history payload retirement preserves full SDK rows and the runner
   mirror until the [exact-generation maintenance gate](docs/runbooks/DEPLOYMENT.md#history-cache-maintenance)
   proves production custody, recovery, and page/detail behavior. The

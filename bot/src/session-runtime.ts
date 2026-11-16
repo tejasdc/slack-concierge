@@ -1,6 +1,6 @@
 import {ledgerCallback} from './ledger-admission';
 import {startDeploymentLedgerHandover,scheduleDeploymentLedgerHandover} from './deployment-ledger-handover';
-import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
+import {runLedgerSteps,runLedgerSegment,runSynchronousLedgerSegment} from './ledger-admission';
 import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
@@ -33,7 +33,7 @@ import {providerAccountUsage} from './provider-account-usage';
 import {startBackgroundJobWatch} from './background-waits';
 import {startUpdateWaitWatch} from './update-wait-notices';
 import {startMachineWatchWorker,wakeWatchWorker} from './watches';
-import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} from './executions';
+import {claimAdoptableExecutions,forgetTrackedHostedExecutionsOfTurn,hostedTurns,watchHeldExecution,type Adoption} from './executions';
 import {interruptOrphanedTurn,failUnacknowledgedClaudeParkedTurns} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {moveStandingRolesOffSpentProviders} from './standing-role-provider-failover';
@@ -51,7 +51,7 @@ export async function startSessionRuntime() {return runLedgerSteps((function* (t
   const active=new Set<number>();
   const banked=createBankedUpkeep({registry:()=>registry});
   const inspectActiveBanked=banked.inspectActive;
-  const registry=new ActiveTurnDispatchRegistry({onStarted:()=>queueMicrotask(ledgerCallback(inspectActiveBanked)),onSettled:()=>queue.wake()});
+  const registry=new ActiveTurnDispatchRegistry({onStarted:()=>queueMicrotask(ledgerCallback(inspectActiveBanked)),onSettled:turnId=>{forgetTrackedHostedExecutionsOfTurn(turnId);queue.wake();}});
   let codexSessionObserver:CodexSessionObserver|null=null;
   const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>bindCodexProviderSession(codexSessionObserver,uuid)});
   codexSessionObserver=new CodexSessionObserver();
@@ -98,6 +98,7 @@ export async function startSessionRuntime() {return runLedgerSteps((function* (t
   // Agents still running in their execution hosts are taken back before anything below reads
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
   const runAdopted=(adoption:Adoption)=>{
+    if(draining)return;
     active.add(adoption.claim.turn_id);banked.started(adoption.claim.turn_id);
     void host.run(adoption.claim,adoption).catch(ledgerCallback(error=>{
       log('error','execution_adoption_failed',{turn_id:adoption.claim.turn_id,execution_id:adoption.execution.execution_id,...errorFields(error)});
@@ -184,7 +185,8 @@ export async function startSessionRuntime() {return runLedgerSteps((function* (t
       const cancellation=await runLedgerSegment(()=>{
         if(hostedTurns([turnId]).has(turnId))return null;
         const row=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
-        return row?registry.requestSessionCancellation(row.session_id,turnId):null;
+        return row?registry.requestSessionDrainCancellation(row.session_id,turnId,
+          ()=>runSynchronousLedgerSegment(()=>!hostedTurns([turnId]).has(turnId))):null;
       });
       if(cancellation?.matched)await cancellation.completion;
     }

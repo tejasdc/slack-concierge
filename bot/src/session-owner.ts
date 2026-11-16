@@ -16,6 +16,7 @@ import {restoreRunnerProviderTranscript} from './runner-provider-history-client'
 import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
 import {peerLabRequest} from './commons-board-service';
+import {receiveMacDiskWarning} from './mac-disk-warning';
 import {existsSync,lstatSync,mkdirSync,opendirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
 import {basename,dirname,isAbsolute,join,relative,sep} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
@@ -103,7 +104,7 @@ import {openInboxObligationCount,openInboxObligations} from './session-topics';
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
-import {appendAgentReportObservation,closeQuestionsAnsweredByTodosSoon,createTopicByHuman,inboxAttention,inboxMarkThrough,openAgentReport,refreshRootMemo,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {appendAgentReportObservation,closeQuestionsAnsweredByTodosSoon,createTopicByHuman,fileServiceNotices,inboxAttention,inboxMarkThrough,openAgentReport,refreshRootMemo,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,projectCoordinates,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -5224,6 +5225,12 @@ export class SessionOwner {
       else if(parts[0]==='peers'&&this.communication?.peersOrNull()) {
         const peers=this.communication.peersOrNull()!;
         if(request.method==='GET'&&parts.length===1)result=peers.inventory();
+        else if(request.method==='POST'&&parts[1]==='mac-disk-warning'&&parts.length===2&&this.selfMachine==='cloud'){
+          const verified=request.headers.get('x-concierge-verified-peer')==='1';
+          if(!verified)throw new SessionOwnerError('Mac disk warnings require an authenticated peer.',403,'PEER_UNAUTHORIZED');
+          try{result=receiveMacDiskWarning(db,body,verified);fileServiceNotices();}
+          catch(error){throw new SessionOwnerError(error instanceof Error?error.message:String(error));}
+        }
         else if(request.method==='POST'&&parts[1]==='project-notices'&&parts.length===2&&this.projectSetup)result=this.projectSetup.acceptNotice(body);
         else if(request.method==='POST'&&parts[1]==='links'&&parts.length===2&&this.peerLinks)result=(yield this.peerLinks.receive(body));
         else if(request.method==='POST'&&parts[1]==='lab'&&parts.length===2&&this.selfMachine==='cloud')result=(yield peerLabRequest(body));

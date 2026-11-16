@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { privateDatabaseCommand } from './private-database-command';
+import { privateCodeCommand } from './private-database-command';
 import {runPrivatePresentationCheck} from './private-presentation-check';
 import {
   chmodSync,
@@ -136,7 +136,7 @@ interface SpawnResult {
 }
 
 export interface ReleaseServices {
-  spawn(command: string[], options?: { cwd?: string; stdin?: Uint8Array }): SpawnResult;
+  spawn(command: string[], options?: { cwd?: string; stdin?: Uint8Array; env?: NodeJS.ProcessEnv }): SpawnResult;
   presentation?(command:string[],cwd:string,environment:NodeJS.ProcessEnv):Promise<SpawnResult>;
   build(entrypoint: string, outputFile: string, target?: "bun" | "node"): Promise<void>;
 }
@@ -281,6 +281,7 @@ function defaultServices(): ReleaseServices {
       return Bun.spawnSync({
         cmd: command,
         cwd: options.cwd,
+        env: options.env,
         stdin: options.stdin,
         stdout: "pipe",
         stderr: "pipe",
@@ -529,12 +530,17 @@ export class TrustedRootReleaseManager {
       const presentationCheck=hasPresentationGate?(this.services.presentation
         ?await this.services.presentation([this.environment.bunExecutable,join(sourceRoot,'bot/scripts/presentation-release-check.ts'),'--bounded-child'],
           join(sourceRoot,'bot'),presentationEnvironment)
-        :this.services.spawn(privateDatabaseCommand([
-        '/usr/bin/timeout',`--kill-after=${CANDIDATE_PRESENTATION_CLEANUP_SECONDS}`,String(CANDIDATE_PRESENTATION_TIMEOUT_SECONDS),'/usr/bin/env','--unset=CONCIERGE_FIXTURE_SHARED_GROUP','CONCIERGE_TEST_MODE=1','CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622',
-        `CONCIERGE_STATE_DIR=${join(stagingRoot,'isolated-owner')}`,`CONCIERGE_CAPTURE_STATE_DIR=${join(stagingRoot,'isolated-capture')}`,
-        this.environment.bunExecutable,
-        join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
-      ]),{cwd:join(sourceRoot,'bot')})):null;
+        :(()=>{
+          // Nested private sandboxes need the code boundary, not the capability-less database one.
+          const isolated=privateCodeCommand([
+            '/usr/bin/timeout',`--kill-after=${CANDIDATE_PRESENTATION_CLEANUP_SECONDS}`,String(CANDIDATE_PRESENTATION_TIMEOUT_SECONDS),'/usr/bin/env','--unset=CONCIERGE_FIXTURE_SHARED_GROUP','CONCIERGE_TEST_MODE=1','CONCIERGE_TEST_AUTHORIZATION=responsive-system-b1eed622',
+            `CONCIERGE_STATE_DIR=${join(stagingRoot,'isolated-owner')}`,`CONCIERGE_CAPTURE_STATE_DIR=${join(stagingRoot,'isolated-capture')}`,
+            this.environment.bunExecutable,
+            join(sourceRoot,'bot/scripts/presentation-release-check.ts'),
+          ],process.env);
+          try{return this.services.spawn(isolated.command,{cwd:join(sourceRoot,'bot'),env:isolated.environment});}
+          finally{isolated.cleanup();}
+        })()):null;
       if(presentationCheck&&presentationCheck.exitCode!==0)throw new Error(
         `Candidate presentation cost check failed: ${failedCandidateCheck({...presentationCheck,
           timeoutSeconds:CANDIDATE_PRESENTATION_TIMEOUT_SECONDS,

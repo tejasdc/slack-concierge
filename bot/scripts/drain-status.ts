@@ -262,8 +262,9 @@ try {
     // The gate write is the admission boundary. The later inspection may be
     // slow, so commit this writer transaction before starting it.
     database.query(`INSERT INTO deployment_drain
-      (singleton, token, owner_pid, owner_boot_id, owner_start_ticks) VALUES (1, ?, ?, ?, ?)
-      ON CONFLICT(singleton) DO NOTHING`).run(token, identity.pid, identity.bootId, identity.startTicks);
+      (singleton, token, owner_pid, owner_boot_id, owner_start_ticks, purpose) VALUES (1, ?, ?, ?, ?, ?)
+      ON CONFLICT(singleton) DO NOTHING`).run(token, identity.pid, identity.bootId, identity.startTicks,
+        process.argv.includes('--worktree-retirement')?'worktree-retirement':'restart');
     const gate = database.query("SELECT token FROM deployment_drain WHERE singleton=1").get() as any;
     return gate?.token === token;
   })();
