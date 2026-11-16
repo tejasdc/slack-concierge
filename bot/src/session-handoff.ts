@@ -345,7 +345,11 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     const successorTurnId=getAcceptedSessionInput(successorInputId)?.turn_id;
     if(!successorTurnId)throw new Error('Successor handoff brief was not queued.');
     const movable=new Set(verified.items.filter(item=>item.kind==='queued'&&item.movable).map(item=>item.ref));
-    for(const item of verified.items){
+    // A ChatGPT answer duty moves its own active request with it, so its sent request must move
+    // first; inventory order (answer:… sorts before sent:…) refused every handoff holding both
+    // (concierge:9767 → 9847, 2026-11-16).
+    const transferOrder=[...verified.items].sort((a,b)=>Number(a.kind==='answer')-Number(b.kind==='answer'));
+    for(const item of transferOrder){
       if(item.kind==='sent'){
         const table=db.query('SELECT 1 FROM session_communication_requests WHERE request_id=?').get(item.ref)?'session_communication_requests':'session_peer_requests';
         const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND ${item.pendingReturn?'outcome IS NOT NULL':'outcome IS NULL'}`).run(to,item.ref,from);
