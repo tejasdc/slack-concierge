@@ -13,11 +13,15 @@ const wait=async(check:()=>Promise<boolean>|boolean,ms=20_000)=>{
   while(Date.now()<deadline){if(await check())return;await Bun.sleep(100);}
   throw new Error('Composed fixture did not reach its expected state.');
 };
-const hold=(entered:string,release:string)=>{
+// Holds the owner's event loop synchronously until the fixture releases it, with the 35 s cap as
+// a failsafe. Reports how it ended: 'released' proves the hold spanned everything the fixture
+// observed before writing the release file; 'expired' means the cap ended it first.
+const hold=(entered:string,release:string):'released'|'expired'=>{
   writeFileSync(entered,String(process.pid),{mode:0o600});
   const deadline=Date.now()+35_000;
   while(!existsSync(release)&&Date.now()<deadline)
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);
+  return existsSync(release)?'released':'expired';
 };
 const socketFetch=(socket:string,path:string,init?:RequestInit)=>fetch('http://fixture'+path,{...init,unix:socket} as RequestInit);
 const json=async(response:Response)=>({status:response.status,body:await response.json().catch(()=>null) as any});
@@ -59,8 +63,7 @@ async function ownerMode(root:string){
   const server=Bun.serve({unix:ownerSocket,idleTimeout:0,fetch:request=>{
     const path=new URL(request.url).pathname;
     if(path==='/fixture/hold'){
-      hold(join(root,'owner.entered'),join(root,'owner.release'));
-      return Response.json({released:true});
+      return Response.json({ended:hold(join(root,'owner.entered'),join(root,'owner.release'))});
     }
     if(path==='/supervisor/ping')return Response.json({ok:true,pid:process.pid,logging:{dropped:0}});
     if(path==='/internal/auth-ephemera')return Response.json(owner.authEphemera());
@@ -265,9 +268,12 @@ async function main(){
       // frozen across all of them rather than for a fixed wall-clock span.
       const frozenChecksMs=Math.round(performance.now()-ownerHoldStarted);
       writeFileSync(join(root,'owner.release'),'');
-      await ownerHold;
+      // The owner reports how its synchronous hold ended. Only 'released' proves it was still held
+      // when the fixture finished observing; expiry at the 35 s cap during the checks refuses.
+      const holdEnded=(await (await ownerHold).json() as {ended?:string}).ended;
       const ownerStallMs=Math.round(performance.now()-ownerHoldStarted);
-      assert.ok(ownerStallMs>=frozenChecksMs&&frozenChecksMs>=20_000,`Canonical synchronous stall lasted only ${ownerStallMs}ms of ${frozenChecksMs}ms of frozen-owner checks`);
+      assert.equal(holdEnded,'released',`Canonical owner hold ${holdEnded} before the frozen-owner checks finished (${frozenChecksMs}ms of observations)`);
+      assert.ok(frozenChecksMs>=20_000,`Frozen-owner checks spanned only ${frozenChecksMs}ms, less than the 20 s reader executor deadline`);
       let custody:any;
       await wait(async()=>{const answer=await capture(`/commands/${actionId}`);custody=await answer.json();
         return custody.status==='delivered';},20_000);
