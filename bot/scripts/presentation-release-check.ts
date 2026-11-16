@@ -30,22 +30,33 @@ phase('started');
 // seals a release, so the host-only inventory runs here against the exact candidate source.
 // On a host with a live ledger it is mandatory: a failure, timeout or missing result refuses
 // the release. Inside the release-check suite the same group runs as its own declared group.
-let nativeChecks:unknown='not-host';
-if(hostGate&&process.env.CONCIERGE_RELEASE_CHECK_GROUP===undefined){
- phase('native-release-checks');
- // First, while this private boundary is still unused (its hidden Codex home empty), and
- // inside this check's process group so the controller's deadline and cleanup cover it.
- const deadlineAt=Math.floor(performance.timeOrigin)+CHECK_POLICY.deadlineMs-2*CHECK_POLICY.cleanupMs;
+const nativeChecks:Record<string,unknown>={};
+let nativePending:Promise<void>|null=null;
+// Only the candidate's own suite inventory passes --suite-portable on the command line; the
+// controller's prepare never does, and no environment value can stand in for it.
+const suitePortable=process.argv.includes('--suite-portable');
+// Each host-only group runs in this check's process group (the controller's deadline and cleanup
+// cover it) and must return its own pass receipt; anything else refuses the release.
+const deadlineAt=Math.floor(performance.timeOrigin)+CHECK_POLICY.deadlineMs-2*CHECK_POLICY.cleanupMs;
+const runHostGroup=async(group:string)=>{
  const output:string[]=[];
- const native={command:[process.execPath,join(import.meta.dir,'run-release-checks.ts'),'--suite-child','--group','native'],
-  environment:{...process.env,CONCIERGE_CHECK_DEADLINE_AT:String(deadlineAt)},cleanup:()=>{}};
- try{await runFixtureChild({command:native.command[0]!,args:native.command.slice(1),env:native.environment,
-  deadlineMs:Math.max(1,deadlineAt-Date.now()),fixture:'native-release-checks',requireCheckpoint:false,requireOwnedGroup:false,
+ await runFixtureChild({command:process.execPath,args:[join(import.meta.dir,'run-release-checks.ts'),'--suite-child','--group',group],
+  env:{...process.env,CONCIERGE_CHECK_DEADLINE_AT:String(deadlineAt)},deadlineMs:Math.max(1,deadlineAt-Date.now()),
+  fixture:`host-release-checks ${group}`,requireCheckpoint:false,requireOwnedGroup:false,
   onOutput:(stream,chunk)=>{if(stream==='stdout')output.push(String(chunk));else process.stderr.write(chunk);}});
- }finally{native.cleanup();}
- nativeChecks=JSON.parse(output.join('').trim().split('\n').at(-1)!);
- if((nativeChecks as {status?:string;group?:string}).status!=='passed'||(nativeChecks as {group?:string}).group!=='native')
-  throw Error(`Native release checks did not report a pass: ${JSON.stringify(nativeChecks)}`);
+ const receipt=JSON.parse(output.join('').trim().split('\n').at(-1)!) as {status?:string;group?:string};
+ if(receipt.status!=='passed'||receipt.group!==group)throw Error(`Host release checks ${group} did not report a pass: ${JSON.stringify(receipt)}`);
+ nativeChecks[group]=receipt;
+};
+if(hostGate&&!suitePortable){
+ // The isolation check needs this boundary untouched (its hidden Codex home empty), so it runs
+ // alone first; the remaining host-only checks then run beside this check's own stages, which
+ // removes their serial cost without dropping or shortening any of them.
+ phase('host-isolation-checks');
+ await runHostGroup('nativeIsolation');
+ phase('host-release-checks-started');
+ nativePending=runHostGroup('native');
+ nativePending.catch(()=>{});
 }
 if(process.platform==='linux'){
  if(await processNativeLifetimeEnded(currentProcessIdentity()))throw Error('The current native process was incorrectly reported exited.');
@@ -148,14 +159,15 @@ const failures=lifecycleResults.filter(result=>result.status==='rejected');
 // guaranteed to include its inner messages, and the controller keeps only a bounded tail.
 for(const failure of failures)process.stderr.write(`presentation-check: lifecycle failure: ${String((failure.reason as Error)?.message??failure.reason).slice(0,4000)}\n`);
 if(failures.length)throw new AggregateError(failures.map(result=>result.reason),'Candidate lifecycle checks failed.');
+if(nativePending){phase('host-release-checks-wait');await nativePending;}
 phase('passed');
 const [topicProjection,nativeOwnerProjection,foreground,inboxLineage,askedAnswer]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
-console.log(JSON.stringify({check:'presentation-release',status:'passed',nativeChecks,workerModules:visited.size,ledgerConstructors,sessionLocation,providerContract,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,inboxLineage,askedAnswer,readers:results}));
+console.log(JSON.stringify({check:'presentation-release',status:'passed',nativeChecks:hostGate&&!suitePortable?nativeChecks:'not-host',workerModules:visited.size,ledgerConstructors,sessionLocation,providerContract,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,inboxLineage,askedAnswer,readers:results}));
 
 }
 if(process.argv.includes('--bounded-child'))await checkPresentation();
 else {
- const isolated=privateCodeCommand([process.execPath,import.meta.path,'--bounded-child'],process.env);
+ const isolated=privateCodeCommand([process.execPath,import.meta.path,'--bounded-child',...(process.argv.includes('--suite-portable')?['--suite-portable']:[])],process.env);
  try{await runFixtureChild({command:isolated.command[0]!,args:isolated.command.slice(1),env:isolated.environment,
   deadlineMs:CHECK_POLICY.deadlineMs-CHECK_POLICY.cleanupMs,fixture:'presentation-release',requireCheckpoint:false,requireOwnedGroup:true,
   onOutput:(stream,chunk)=>process[stream].write(chunk)});

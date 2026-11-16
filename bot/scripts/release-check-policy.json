@@ -3,6 +3,7 @@
   "cleanupMs": 5000,
   "parallelChecks": 3,
   "hostOnlyGroups": [
+    "nativeIsolation",
     "native"
   ]
 }

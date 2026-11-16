@@ -1,6 +1,6 @@
 import {ledgerCallback} from './ledger-admission';
 import {startDeploymentLedgerHandover,scheduleDeploymentLedgerHandover} from './deployment-ledger-handover';
-import {runLedgerSteps,runLedgerSegment,runSynchronousLedgerSegment} from './ledger-admission';
+import {runLedgerSteps,runLedgerSegment} from './ledger-admission';
 import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
@@ -186,7 +186,9 @@ export async function startSessionRuntime() {return runLedgerSteps((function* (t
         if(hostedTurns([turnId]).has(turnId))return null;
         const row=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
         return row?registry.requestSessionDrainCancellation(row.session_id,turnId,
-          ()=>runSynchronousLedgerSegment(()=>!hostedTurns([turnId]).has(turnId))):null;
+          // Memory-only (hostedTurns reads the open-execution map), so it needs no ledger
+          // admission; a synchronous segment would refuse it during a held recycle epoch.
+          ()=>!hostedTurns([turnId]).has(turnId)):null;
       });
       if(cancellation?.matched)await cancellation.completion;
     }

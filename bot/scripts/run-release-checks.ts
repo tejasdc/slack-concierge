@@ -91,7 +91,6 @@ if(import.meta.main) {
   // may run without it only where no live ledger exists to protect (the hosted runner).
   if(process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED!=='1'&&(HOST_ONLY_GROUPS.has(group)||liveLedgerPresent()))
    throw Error('Release checks require the verified private-code entrance.');
-  process.env.CONCIERGE_RELEASE_CHECK_GROUP=group;
   const root=mkdtempSync(join(tmpdir(),'concierge-release-checks-'));
   process.stderr.write(JSON.stringify({fixture:'release-checks',phase:'started',logs:root})+'\n');
   const deadlineAt=Number(process.env.CONCIERGE_CHECK_DEADLINE_AT);

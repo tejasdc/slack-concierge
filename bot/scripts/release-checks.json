@@ -1,6 +1,6 @@
 {
   "build": [
-    ["bun", "run", "scripts/presentation-release-check.ts", "--bounded-child"],
+    ["bun", "run", "scripts/presentation-release-check.ts", "--bounded-child", "--suite-portable"],
     ["bun", "run", "scripts/ledger-recycling-concurrent-fixture.ts"],
     ["bun", "run", "scripts/deployment-drain-command-fixture.ts"],
     ["bun", "run", "scripts/ledger-control-liveness-fixture.ts"],
@@ -118,8 +118,10 @@
     ["bun", "run", "scripts/history-cache-crash-fixture.ts"],
     ["bun", "run", "scripts/history-cache-admission-fixture.ts"]
   ],
+  "nativeIsolation": [
+    ["bun", "run", "scripts/private-code-isolation-fixture.ts"]
+  ],
   "native": [
-    ["bun", "run", "scripts/private-code-isolation-fixture.ts"],
     ["bun", "run", "scripts/deployment-launch-schedules-fixture.ts"],
     ["bun", "run", "scripts/repair-process-group-native-fixture.ts"],
     ["bun", "run", "scripts/repair-identity-delivery-native-fixture.ts"],
