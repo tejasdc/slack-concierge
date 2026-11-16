@@ -14,6 +14,7 @@ import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {awaitingOutside} from './storage-observation';
 import {db,getSessionById,SETTLED_EXECUTION_SQL,SETTLED_TURN_STATUSES} from './state';
+import {holdsRequesterPlace} from './requester-place';
 import {TURN_STATE} from './session-receipt-state';
 import {meaningIndex} from './meaning-index';
 import {acceptedInputForTurn,carryingTurn,enqueueSessionInput,getAcceptedSessionInput,handedToARun, withdrawUnstartedServiceInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -986,7 +987,7 @@ export class SessionPeers {
   }
   cancel(actor:PeerActor,requestId:string,actionId:string,reason?:string) {
     const row=this.row(requestId);
-    if(row.source_session_id!==actor.session)throw new Error('Only the requesting session can cancel this request.');
+    if(!holdsRequesterPlace(actor.session,row.source_session_id))throw new Error('Only the requesting session, its accepted handoff successor or (for an earlier Inbox router’s request) the current Inbox router can cancel this request.');
     db.transaction(()=>{
       const retained=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId,kind:'cancel',origin:'agent',
         payload:{requestId,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),...(reason?{reason}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId});
