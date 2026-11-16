@@ -179,3 +179,18 @@ principal/source mismatch and original-output isolation refusals. Roster checks 
 compare-and-set, duplicate updates, removal during execution, passive provisioning and
 newcomer context with unchanged source material and instructions.
 That fixture is source acceptance, not a live browser or real-provider claim.
+
+## Disposable owner for end-to-end group tests
+
+`bun bot/scripts/lab-disposable-owner.ts --run --capability-socket /tmp/thnkr-agent-capabilities-<port>/session.sock --deadline-seconds <60-7200> [--max-turns <1-60>] [--keep]`
+starts a throwaway owner for thnkr.ing's isolated agent workspace (its
+`THINKERING_AGENT_WORKSPACE_LAB_OWNER_SOCKET`). It creates a new root-only
+`/tmp/concierge-lab-owner-*` directory with a fresh, empty ledger (nothing of Tejas's is copied),
+prints `{ready, ownerSocket, stateDir, providers}`, and runs real participants through the ordinary
+execution host and its own Codex App Server. Lab bootstrap, context and publication go to the given
+isolated workspace socket only. It serves Lab commands, its own participants' hooks and reads of its
+own ledger; everything else is refused. The turn budget (default 24) bounds provider spend. At the
+deadline or SIGTERM it stops only its own turns and App Server and removes the directory unless
+`--keep`. ChatGPT voices are refused because the isolated workspace has no ChatGPT run capability;
+Codex voices need Codex allowance. Coding participants still run with their native tools in the
+chosen project folder, so the isolation covers Concierge's ledger, not the participant's shell.
