@@ -59,7 +59,10 @@ on PATH but absent at the server-specific /usr/bin/node location. Fixture client
 and spawned runner environments now use the existing selection order: explicit
 CONCIERGE_NODE_BIN, PATH discovery, then the legacy fallback. The independence
 fixture resolves Node before replacing the runner PATH to test unavailable Python.
-Production defaults are unchanged. The same regression fixtures and GitHub Release
+The owner-composition fixture also selects Node before its real host factory creates
+a client through the production default; the first CI retry exposed that indirect
+call site after the direct fixture sites passed. Production defaults are unchanged.
+The same regression fixtures and GitHub Release
 check exercise this correction; a local server pass alone does not establish CI.
 
 ## Acceptance scenario

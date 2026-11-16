@@ -13,6 +13,7 @@ import controlFormat from '../src/codex-custody-control-format.json';
 
 const scratch=mkdtempSync(join(tmpdir(),'codex-custody-successor-'));
 const relayMode=process.argv.includes('--relay');
+process.env.CONCIERGE_NODE_BIN=process.env.CONCIERGE_NODE_BIN||Bun.which('node')||'/usr/bin/node';
 process.env.CONCIERGE_STATE_DIR=scratch;process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';process.env.CONCIERGE_TEST_AUTHORIZATION=IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION;
 process.env.CODEX_HOME=join(scratch,'codex');
