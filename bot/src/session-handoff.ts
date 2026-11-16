@@ -448,6 +448,13 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     // after acceptance, so a proposed successor cannot receive captures prematurely.
     const predecessorMeta=sessionMetadata(getSessionById(from)!);
     if(predecessorMeta.inboxRole==='project-router')takeInboxRouterRole(to,predecessorMeta);
+    // Any other standing role (journal keeper, repair agent, …) follows the work the same way. Left
+    // on the superseded predecessor, the role kept receiving saved journal entries and check-ins
+    // after concierge:4571 → 9752 (2026-11-15), and no turn ever ran them.
+    else if(typeof predecessorMeta.standingRole==='string'&&predecessorMeta.standingRole){
+      db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole') WHERE id=?`).run(from);
+      updateSessionMetadata(to,{standingRole:predecessorMeta.standingRole});
+    }
     // Suspension prevents the next turn. It does not interrupt an already admitted run;
     // that run receives a direct notice after this transaction commits.
     updateSessionMetadata(from,{suspended:true});
