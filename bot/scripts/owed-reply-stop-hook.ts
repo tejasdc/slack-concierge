@@ -111,7 +111,8 @@ try {
   const unfiled=pending.filter(input=>!input.request_id);
   const reports=pending.filter(input=>!!input.request_id);
   const source: { input_id: string; run_id: string } | null = response.ok ? response.result?.source ?? null : null;
-  if ((owed.length || pending.length) && source) {
+  const journalProcessing:string|null=response.ok?response.result?.journalProcessing??null:null;
+  if ((owed.length || pending.length || journalProcessing) && source) {
     const tool = join(homedir(), '.local', 'bin', 'router-actions.sh');
     const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
     const identity = `--source-input ${quote(source.input_id)} --source-run ${quote(source.run_id)}`;
@@ -134,6 +135,7 @@ try {
         'You cannot end this Inbox turn while an agent issue report has no owner or explicit resolution. Route or resolve each report below; an open thread alone does not track its work.',
         ...routing,
       ] : []),
+      ...(journalProcessing ? [journalProcessing] : []),
       ...(owed.length ? [
       `You are ending your turn while you still owe a final reply to ${owed.length === 1 ? 'this request' : 'these requests'}. Your turn's text is never read as a reply. Send it now:`,
       ...lines,

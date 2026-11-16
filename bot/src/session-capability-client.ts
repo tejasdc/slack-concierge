@@ -337,6 +337,9 @@ export class SessionCapabilityClient {
     verify(options.socketPath === undefined || (isAbsolute(options.socketPath) && !options.socketPath.includes("\0")), "Configure an absolute private capability socket path.");
     this.socketPath = options.socketPath;
   }
+  readJournalEntry(rootId:string):Promise<unknown> {
+    return awaitingOutside(()=>this.send(`/journal/entry?objectId=${encodeURIComponent(rootId)}`,undefined,undefined,"GET"));
+  }
   saveCaptureNote(input:{captureId:string;text:string;title:string;capturedAt:string;inboxMessage?:string;summary?:string;addTo?:string;person?:string;journal?:'entry'|'checkin'}) {
     return this.post('/captures/note',input);
   }
@@ -348,11 +351,11 @@ export class SessionCapabilityClient {
     return awaitingOutside(() => this.send<T>(path, body, signal));
   }
 
-  private send<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  private send<T>(path: string, body: unknown, signal?: AbortSignal, method="POST"): Promise<T> {
     return new Promise((resolve, reject) => {
-      const bytes = JSON.stringify(body);
+      const bytes = body===undefined?"":JSON.stringify(body);
       let req: ReturnType<typeof thinkeringRequest>;
-      try { req = thinkeringRequest(path, { method: "POST",
+      try { req = thinkeringRequest(path, { method,
         headers: { "content-type": "application/json", "content-length": Buffer.byteLength(bytes), connection: "close" } }, res => {
         const chunks: Buffer[] = [];
         res.on("data", chunk => chunks.push(Buffer.from(chunk)));
