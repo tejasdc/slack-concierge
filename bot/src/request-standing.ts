@@ -14,6 +14,9 @@ import {latestWorkerProgress} from './worker-progress';
 export const QUIET_WAKE_MS=60*60_000;
 /** Quiet wakes with no word after the first before the request is stalled for the Inbox router to reassign. */
 export const QUIET_WAKES_BEFORE_STALL=3;
+/** At most this many quiet wakes start agent turns in any window, so a backlog after an install or outage is worked through gradually. */
+export const QUIET_WAKES_PER_WINDOW=3;
+export const QUIET_WAKE_WINDOW_MS=10*60_000;
 
 export type StandingState='working'|'waiting'|'held'|'quiet'|'stalled';
 export type StandingPerson={sessionId:string;title:string};

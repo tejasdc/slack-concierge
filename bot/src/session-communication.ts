@@ -30,7 +30,7 @@ import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {codexAccountSwitchReply} from './codex-account-switch-receipt';
 import { log } from './log';
 import { deliverRequestReminder } from './request-reminder-carrier';
-import { QUIET_WAKE_MS, QUIET_WAKES_BEFORE_STALL, dependencySettledSince, dependencyStuck, quietWakeText, requestLastWordMs, requestStanding } from './request-standing';
+import { QUIET_WAKE_MS, QUIET_WAKES_BEFORE_STALL, QUIET_WAKES_PER_WINDOW, QUIET_WAKE_WINDOW_MS, dependencySettledSince, dependencyStuck, quietWakeText, requestLastWordMs, requestStanding } from './request-standing';
 import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
@@ -238,6 +238,8 @@ export class SessionCommunicationCoordinator {
     private readonly healthyRechecks = new Map<string, { storedDue: number; nextCheck: number }>();
     /** When the quiet clock next looks at a request; a restart simply looks at every open thread request again. */
     private readonly quietChecks = new Map<string, number>();
+    /** When recent quiet wakes went out, oldest first; null until first read from the ledger. */
+    private quietWakeTimes: number[] | null = null;
     private pendingLabConversations=false;
     private nextRequestInspectionAt = 0;
     private readonly now: () => number;
@@ -3754,6 +3756,8 @@ export class SessionCommunicationCoordinator {
         }
         const accepted = getAcceptedSessionInput(request.target_input_id!);
         if (!accepted?.turn_id) return recheck(now + STILL_WAITING_AFTER_MS);
+        const slot = this.quietWakeSlot(now);
+        if (slot !== null) return recheck(slot);
         const turn = db.query('SELECT native_run_id FROM turns WHERE id=?').get(accepted.turn_id) as { native_run_id: string | null } | null;
         // The wake's identity is its number; a copy a handoff scoped to one session does not count again.
         const sent = (db.query("SELECT count(*) AS n FROM session_inputs WHERE id LIKE ? AND id NOT LIKE '%:session:%'").get(`request-quiet:${request.request_id}:%`) as { n: number }).n;
@@ -3763,12 +3767,27 @@ export class SessionCommunicationCoordinator {
                 text: quietWakeText(standing, requestLabel(request.payload_json), Math.round((now - requestLastWordMs(db, request) + QUIET_WAKE_MS) / 60_000)), owner: this.dependencies.owner! });
             db.query('UPDATE session_communication_requests SET quiet_reminded_at_ms=?,quiet_streak_since_ms=?,quiet_streak_count=? WHERE request_id=? AND outcome IS NULL')
                 .run(now, streak === 0 ? now : request.quiet_streak_since_ms, streak + 1, request.request_id);
+            this.quietWakeTimes!.push(now);
             log('info', 'session_request_quiet_wake', { request_id: request.request_id, holder_session_id: `concierge:${request.target_session_id}`, number: sent + 1, standing: standing.state });
             recheck(now + (stuck ? STILL_WAITING_AFTER_MS : QUIET_WAKE_MS));
         } catch (error) {
             log('warn', 'session_request_quiet_wake_failed', { request_id: request.request_id, error: String(error) });
             recheck(now + STILL_WAITING_AFTER_MS);
         }
+    }
+    /**
+     * Quiet wakes go out a few at a time. Each starts an agent turn, and the first install woke 23
+     * sessions in two seconds (19 of the 49 turns running at a load average of 101, 2026-11-16 03:50 ET).
+     * Seeded from the ledger, so a restart does not reopen the window. Returns null when a wake may go
+     * now, else when the next one may.
+     */
+    private quietWakeSlot(now: number): number | null {
+        if (this.quietWakeTimes === null)
+            this.quietWakeTimes = (db.query('SELECT quiet_reminded_at_ms AS at FROM session_communication_requests WHERE quiet_reminded_at_ms>? ORDER BY quiet_reminded_at_ms')
+                .all(now - QUIET_WAKE_WINDOW_MS) as { at: number }[]).map(row => row.at);
+        this.quietWakeTimes = this.quietWakeTimes.filter(at => at > now - QUIET_WAKE_WINDOW_MS);
+        if (this.quietWakeTimes.length < QUIET_WAKES_PER_WINDOW) return null;
+        return this.quietWakeTimes[this.quietWakeTimes.length - QUIET_WAKES_PER_WINDOW]! + QUIET_WAKE_WINDOW_MS;
     }
     /** True when everything the holder has running or queued is a quiet wake: the wake's own turn is not a continuation. */
     private onlyQuietWakeLive(request: RequestRow): boolean {
@@ -4091,5 +4110,5 @@ export class SessionCommunicationCoordinator {
         await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
-    async stop() { this.stopped = true; this.dependencies.owner.labConversations.stop(); this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.quietChecks.clear(); this.nextRequestInspectionAt = 0; }
+    async stop() { this.stopped = true; this.dependencies.owner.labConversations.stop(); this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.quietChecks.clear(); this.quietWakeTimes = null; this.nextRequestInspectionAt = 0; }
 }
