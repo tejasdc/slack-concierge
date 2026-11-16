@@ -218,7 +218,9 @@ the conversation with its own brief and open obligations.
 The predecessor is then superseded: owner writes from its run and new requests to it
 are refused with the successor's address. Its live run receives a notice and can finish,
 but cannot write through the owner; its own outcome and reads remain allowed. Suspension
-prevents another turn. The session detail read exposes the canonical continuation chain,
+prevents another turn. In the same transaction the predecessor's standing role (the Inbox
+router role, or any `sessions agents` role such as the journal keeper) moves to the successor,
+so service wakes for that role reach the session that runs. The session detail read exposes the canonical continuation chain,
 successor ID and handoff ID to Thinkering. `sessions obligations` reports the
 outstanding inventory, lineage and current holder on either side of the transfer.
 A request that has not reached a run of its recipient carries `delivered:false` and

@@ -104,7 +104,9 @@ try{
   // concierge:9767 → 9847, 2026-11-16: a predecessor holding an unanswered ChatGPT question has both its
   // answer duty and its sent request in the inventory. Moving the answer moved the request first, and the
   // sent step then refused "changed during handoff", so no such handoff could be accepted.
-  const asker=createNativeSession('codex',{title:'asker with open ChatGPT question',summary:undefined,purpose:'develop',origin:'native'});
+  // It also holds a standing role: the journal keeper's role stayed on concierge:4571 after its
+  // 2026-11-15 handoff, so saved check-ins kept going to a session that never ran again.
+  const asker=createNativeSession('codex',{title:'asker with open ChatGPT question',summary:undefined,purpose:'develop',origin:'native',standingRole:'journal-keeper'});
   const chatgpt=createNativeSession('chatgpt',{title:'ChatGPT review',summary:undefined,purpose:'chat',origin:'native'});
   const askerInput=retainSessionInput({id:'fixture-asker-input',sessionId:asker.id,scope:'fixture',actionId:'asker',kind:'input',origin:'agent',
     payload:{text:'Ask ChatGPT and hand off'}}).input;
@@ -125,7 +127,10 @@ try{
   assert.equal(accepted.accepted,true,'a handoff holding a ChatGPT answer duty and its sent request is accepted');
   assert.equal((db.query('SELECT source_session_id FROM session_communication_requests WHERE request_id=?').get('fixture-chatgpt-question') as any).source_session_id,successorId);
   assert.equal((db.query('SELECT asker_session_id FROM session_chatgpt_obligations WHERE obligation_id=?').get('fixture-chatgpt-question') as any).asker_session_id,successorId);
-  console.log('held-work-movability-fixture: terminal usage refusals move with acknowledgement and start history intact; unclassified starts, uncertain acknowledgements, foreign receipts, dependencies, continuations, and competing proposals stay blocked; unproposed automatic transfer still works; a handoff holding an open ChatGPT question moves both its sent request and answer duty.');
+  const role=(id:number)=>(db.query("SELECT json_extract(native_metadata_json,'$.standingRole') AS role FROM sessions WHERE id=?").get(id) as any).role;
+  assert.equal(role(successorId),'journal-keeper','the standing role follows the accepted handoff');
+  assert.equal(role(asker.id),null,'the superseded predecessor no longer holds the role');
+  console.log('held-work-movability-fixture: terminal usage refusals move with acknowledgement and start history intact; unclassified starts, uncertain acknowledgements, foreign receipts, dependencies, continuations, and competing proposals stay blocked; unproposed automatic transfer still works; a handoff holding an open ChatGPT question moves both its sent request and answer duty; a standing role moves to the successor.');
 }finally{
   rmSync(scratch,{recursive:true,force:true});
 }
