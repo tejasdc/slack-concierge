@@ -54,8 +54,11 @@ export async function runCheckSuite(commands:string[][],options:{deadlineAt:numb
    const nestedPrivate=process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED==='1'
      &&command[0]==='bun'&&command[1]==='run'&&command[2]==='scripts/private-code-command.ts'&&command[3]==='--';
    const [executable,...args]=nestedPrivate?command.slice(4):command;
+   // The private-code state marker means "inside the verified entrance"; an unisolated portable run
+   // (no live ledger on this machine) is not, as main's checks have always assumed.
    const childEnv:NodeJS.ProcessEnv={...process.env,CONCIERGE_STATE_DIR:join(directory,'state'),
-     CONCIERGE_CAPTURE_STATE_DIR:join(directory,'capture'),CONCIERGE_PRIVATE_CODE_STATE:join(directory,'state')};
+     CONCIERGE_CAPTURE_STATE_DIR:join(directory,'capture'),
+     ...(process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED==='1'?{CONCIERGE_PRIVATE_CODE_STATE:join(directory,'state')}:{})};
    if(nestedPrivate){childEnv.CONCIERGE_STATE_DB=join(directory,'state/state.db');childEnv.CONCIERGE_TEST_MODE='1';}
    await runFixtureChild({command:executable==='bun'?process.execPath:executable!,args,
     cwd:resolve(import.meta.dir,'..'),env:childEnv,
