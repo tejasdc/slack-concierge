@@ -8,7 +8,7 @@ import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {carryingTurn,getAcceptedSessionInput,humanAuthored,nativeRunId,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
-import {askedAnswerPostIds,askedAnswerStatus,requireAskedAnswer} from './asked-answer';
+import {settleAskedAnswerClock,askedAnswerEvidence,askedAnswerPostIds,askedAnswerStatus,requireAskedAnswer} from './asked-answer';
 import {BUG_REPORT_OWN_THREAD,isBugReportInput,capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {answerClosingLine} from './answer-closing-line';
 import {notSeenWorking} from './answers-to-tejas';
@@ -175,7 +175,7 @@ function routerSessionOwnsTopic(sourceSessionId:number,topicSessionId:number):bo
   return !!db.query(`SELECT 1 WHERE ? IN (${INBOX_LINEAGE_SQL})`).get(topicSessionId,sourceSessionId);
 }
 
-export function readsFor(question:{topicId:string;kind?:QuestionKind;legacyNeedEventId:string|null;owner:any;brief:any;sources?:string[]}):ReadingText[] {
+export function readsFor(question:{questionId?:string;id?:string;topicId:string;kind?:QuestionKind;legacyNeedEventId:string|null;owner:any;brief:any;sources?:string[]}):ReadingText[] {
   if(question.kind==='asked'){
     const topic=db.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(question.topicId) as {session_id:number}|null;
     if(!topic)return [];
@@ -238,8 +238,8 @@ const NOTHING_TO_READ='Nothing to read: the turn that raised this posted nothing
 /** A reading item still unread and with something to read: it is listed for him, counted separately,
  * and ends only with his own Read. One with nothing to read is nobody's: it is never listed, and
  * `expireUnreadableReadingItems` ends it with its reason at startup. */
-const toReadByHim=(question:{state:string;kind?:QuestionKind;reads?:ReadingText[];topicId:string;legacyNeedEventId?:string|null;owner?:any;brief?:any;sources?:string[]})=>
-  toReadByHimWithReads({...question,reads:question.reads??readsFor({topicId:question.topicId,kind:question.kind,
+const toReadByHim=(question:{questionId?:string;id?:string;state:string;kind?:QuestionKind;reads?:ReadingText[];topicId:string;legacyNeedEventId?:string|null;owner?:any;brief?:any;sources?:string[]})=>
+  toReadByHimWithReads({...question,reads:question.reads??readsFor({questionId:question.questionId??question.id,topicId:question.topicId,kind:question.kind,
     legacyNeedEventId:question.legacyNeedEventId??null,owner:question.owner,brief:question.brief,sources:question.sources})});
 const DISPOSITIONS=['completed','declined','withdrawn','superseded','failed'];
 
@@ -2640,13 +2640,19 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
         const question=questionRow(text(body?.question_id,'question id',200));
         const topic=topicFor(question.topicId);
         const at=nowIso();
-        const answerInput=body?.answer?getAcceptedSessionInput(String(body.answer)):null;
-        if(body?.answer&&!answerInput)throw new TopicError('--answer must name one accepted input.',404,'ANSWER_UNKNOWN');
+        let askedEvidence:ReturnType<typeof askedAnswerEvidence>|null=null;
+        if(question.kind==='asked'&&state==='answered'){
+          try{askedEvidence=askedAnswerEvidence(db,question,String(body?.answer??''));}
+          catch(error){throw new TopicError(error instanceof Error?error.message:String(error),409,'ANSWER_EVIDENCE_REQUIRED');}
+        }
+        const answerInput=!askedEvidence&&body?.answer?getAcceptedSessionInput(String(body.answer)):null;
+        if(body?.answer&&!answerInput&&!askedEvidence)throw new TopicError('--answer must name one accepted input.',404,'ANSWER_UNKNOWN');
         const written:StoredQuestion[]=[];
         const next:StoredQuestion={...question,state:state as QuestionState,updatedAt:at,
           replacedBy:typeof body?.replacement==='string'?body.replacement:question.replacedBy,
-          answer:answerInput?{inputId:answerInput.id,at,passage:null,interpretation:why,answeredRevision:question.revision}:question.answer};
+          answer:askedEvidence?{...askedEvidence,at,interpretation:why,answeredRevision:question.revision}:answerInput?{inputId:answerInput.id,at,passage:null,interpretation:why,answeredRevision:question.revision}:question.answer};
         written.push(next);
+        if(askedEvidence)settleAskedAnswerClock(db,question);
         if(state==='superseded'&&typeof body?.replacement==='string') {
           const replacement=questionRow(body.replacement);
           if(replacement.topicId!==topic.topicId)throw new TopicError('A replacement must live in the same topic.',409,'QUESTION_TOPIC_MISMATCH');

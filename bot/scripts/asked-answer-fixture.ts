@@ -60,11 +60,24 @@ try{
  communication.reply({source:worker.source,action_id:'asked-progress',request_id:dispatched.request_id,text:'I am still checking.',final:false});
  await communication.idle();assert.equal(row().prompt_answered_at_ms,null);
  communication.reply({source:worker.source,action_id:'asked-answer',request_id:dispatched.request_id,text:'The answer was retained in its original thread; the repair continues.',final:false,answers_question:true});
- await communication.idle();assert.equal(row().prompt_answered_at_ms,now);assert.equal(row().outcome,null);
+ await communication.idle();assert.equal(row().prompt_answered_at_ms,null);assert.equal(row().outcome,null);
+ assert.equal(askedAnswerPostIds(db,questionRecord,[inboxId]).length,0,'The old flag cannot settle an exact question');
+ const second=communication.topics({source:asker.source,verb:'questions',topic_id:topicId,action_id:'second-question',questions:[{kind:'asked',context:'agent_checking',decision:'Why did the answer wait?',sources:[root],owner:{sessionId:target.session.id,dispatchRequestId:dispatched.request_id}}]});
+ const secondQuestion=readTopic(topicId).questions.find((q:any)=>q.id!==question.id&&q.kind==='asked')!;
+ assert.ok(secondQuestion);
+ const post=(db.query("SELECT event_id FROM session_owner_events WHERE kind='post' AND json_extract(payload_json,'$.requestId')=? ORDER BY sequence DESC LIMIT 1").get(dispatched.request_id) as any).event_id;
+ assert.throws(()=>communication.topics({source:asker.source,verb:'question.settle',question_id:question.id,state:'answered',reason:'Answer evidence',action_id:'no-evidence'}),/retained agent post/);
+ communication.topics({source:asker.source,verb:'question.settle',question_id:question.id,state:'answered',answer:post,reason:'This post answers this exact question',action_id:'exact-answer'});
+ assert.equal(row().prompt_answered_at_ms,null,'A second question keeps its independent obligation');
+ assert.deepEqual(askedAnswerPostIds(db,secondQuestion,[inboxId]),[]);
+ communication.topics({source:asker.source,verb:'question.settle',question_id:secondQuestion.id,state:'answered',answer:post,reason:'Explicitly judge the same retained answer against the second question',action_id:'second-answer'});
+ assert.ok(row().prompt_answered_at_ms);
+ assert.equal(row().outcome,null,'Answer settlement leaves build work open');
+ assert.equal(readTopic(topicId).questions.find((q:any)=>q.id===question.id)!.answerStatus?.text,'Answered','The thread question view reads exact retained evidence');
  assert.equal(askedAnswerPostIds(db,questionRecord,[inboxId]).length,1);
  const legacy={kind:'asked',topicId,sources:[root],owner:null};
  assert.equal(askedDispatch(db,legacy),dispatched.request_id,'A legacy question may use one exact source-to-obligation-to-dispatch link');
- assert.equal(askedAnswerPostIds(db,legacy,[inboxId]).length,1);
+ assert.equal(askedAnswerPostIds(db,legacy,[inboxId]).length,0,'Legacy flags need exact question evidence');
  assert.equal(askedAnswerStatus(db,questionRecord,true)?.text,'Answered');
  // Retained route identities keep an original follow-up answer discoverable.
  const addEvent=(id:string,kind:string,payload:unknown)=>db.query('INSERT INTO session_owner_events(event_id,session_id,kind,payload_json) VALUES(?,?,?,?)')
@@ -73,14 +86,14 @@ try{
  const followUp=(sources:string[])=>({kind:'asked',topicId,sources,owner:{dispatchRequestId:'dispatch-main'}});
  addEvent('session-route:route-a','session_route',{sourceMessageId:'request:route-a',destinationMessageId:'human-a'});
  answerReplyingTo('post-a','human-a','route-a');
- assert.deepEqual(askedAnswerPostIds(db,followUp([root,'request:route-a']),[inboxId]),['post-a'],'A request:<id> follow-up resolves through its exact session route');
+ assert.deepEqual(askedAnswerPostIds(db,followUp([root,'request:route-a']),[inboxId]),[],'A routed follow-up still needs explicit question evidence');
  addEvent('topic-change:route-b','topic_route',{sourceMessageId:'human-b',destinationMessageId:'dest-b'});
  answerReplyingTo('post-b','human-b','route-b');
- assert.deepEqual(askedAnswerPostIds(db,followUp([root,'dest-b']),[inboxId]),['post-b'],'A routed destination resolves to the human message it answers');
+ assert.deepEqual(askedAnswerPostIds(db,followUp([root,'dest-b']),[inboxId]),[],'A routed destination cannot replace exact question evidence');
  addEvent('topic-change:route-c','topic_route',{sourceMessageId:'human-c',destinationMessageId:'dest-c'});
  addEvent('topic-change:route-c-other','topic_route',{sourceMessageId:'topic-change:route-c',destinationMessageId:'dest-c-other'});
  answerReplyingTo('post-c','human-c','route-c');
- assert.deepEqual(askedAnswerPostIds(db,followUp([root,'topic-change:route-c']),[inboxId]),['post-c'],'An exact route event wins over another source match');
+ assert.deepEqual(askedAnswerPostIds(db,followUp([root,'topic-change:route-c']),[inboxId]),[],'An exact route alone cannot establish an answer');
  // Several dispatches for one shared source never let a reply to that source pick one.
  for(const [id,dispatch] of [['obligation-1','dispatch-1'],['obligation-2','dispatch-2']] as const)
   db.query('INSERT INTO inbox_requests(request_id,topic_id,title,sources_json,dispatches_json) VALUES(?,?,?,?,?)')
@@ -93,13 +106,18 @@ try{
  // Replay that retained state: its original answer time must win over recognition time.
  db.query("UPDATE session_communication_requests SET payload_json=json_remove(payload_json,'$.promptAnswer'),prompt_answered_at_ms=NULL WHERE request_id=?")
   .run(dispatched.request_id);
+ db.query('UPDATE inbox_questions SET answer_json=NULL WHERE question_id=?').run(question.id);
  now+=60_000;
  assert.equal(requireAskedAnswer(db,questionRecord),true);
- assert.equal(row().prompt_answered_at_ms,now-60_000,'Late recognition preserves the existing answering partial timestamp');
+ assert.equal(row().prompt_answered_at_ms,null,'Late recognition never trusts a historical answer flag');
  assert.equal(row().outcome,null,'Recognizing an existing answer does not finish the remaining work');
  const restarted=new SessionCommunicationCoordinator({owner,now:()=>now,arm:()=>()=>{},isOwnerAlive:()=>true,onError:error=>errors.push(error)});
  communication.stop();owner.communication=restarted;restarted.start();await restarted.idle();
  assert.equal((db.query('SELECT count(*) AS n FROM session_inputs WHERE id=?').get(`question-reminder:${dispatched.request_id}`) as any).n,1);
+ restarted.reply({source:worker.source,action_id:'waiting-final',request_id:dispatched.request_id,text:'Waiting for the remaining context.',final:true,workDisposition:'failed'});
+ await restarted.idle();
+ assert.equal(row().prompt_answered_at_ms,null,'A final work disposition cannot clear the question clock');
+ assert.deepEqual(askedAnswerPostIds(db,questionRecord,[inboxId]),[],'A waiting final remains visible without answering the question');
  restarted.stop();
  // A real peer recipient adds only the clock to an already accepted exact delivery.
  const peers=new SessionPeers({self:'mac',clients:new Map(),owner,now:()=>now,onError:error=>errors.push(error),isOwnerAlive:()=>true});
@@ -122,5 +140,5 @@ try{
  peerCommunication.stop();
  peers.stop();
  assert.deepEqual(errors,[]);
- console.log(JSON.stringify({fixture:'asked-answer',exactClock:true,semanticPartial:true,quietTimers:true,legacyExactLink:true,restartIdempotence:true,peerExactClock:true}));
+ console.log(JSON.stringify({fixture:'asked-answer',exactClock:true,exactEvidence:true,independentQuestions:true,quietTimers:true,legacyExactLink:true,restartIdempotence:true,peerExactClock:true}));
 }finally{communication.stop();rmSync(scratch,{recursive:true,force:true});}

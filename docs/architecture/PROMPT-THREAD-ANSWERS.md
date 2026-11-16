@@ -1,5 +1,43 @@
 # Prompt answers to human thread replies
 
+## Exact tracked-question evidence (implementation under review)
+
+A retained `kind:asked` question is independent of its build dispatch. Neither
+`--answers-question` nor a final work disposition settles it. Those commands still
+retain and display the original words. Historical waiting posts are never edited,
+reclassified by a word filter, or removed.
+
+After posting an answer, the Inbox agent uses `sessions topics question settle
+<question-id> --state answered --answer <retained-post-id> -- <coverage>`.
+For asked questions, this existing command now requires a nonempty retained agent
+post linked to the exact dispatch (or the exact source when no dispatch exists).
+The durable question answer records both question and post identities, the responder,
+and the coverage judgment. Canonical and prepared question reads require that pair;
+an old request-wide flag provides no answer evidence. Repeating an action uses the
+existing mutation identity. Each question requires its own explicit settlement,
+even when one post answers several questions under the same dispatch. The request
+clock settles only after all its tracked questions have retained evidence; its
+build disposition remains independent. Startup discards obsolete request-wide
+answer timestamps for still-open tracked questions without replaying work.
+
+Mac posts use the same retained origin post and authenticated peer reply identities.
+The origin Inbox records question settlement after receiving that post; it does not
+resubmit work or ask the Mac to manufacture a second receipt. A sleeping peer still
+cannot promise timely delivery. Reminder scheduling remains request scoped; the
+question view retains an unanswered obligation after a work request ends.
+
+Semantic boundary: the protocol verifies identity, retention and exact association.
+An agent must judge whether the cited words actually answer that question. It can
+still make a wrong judgment about a waiting post. No boolean, word filter, or typed
+coverage claim can prove semantic adequacy mechanically. Historical questions that
+were explicitly settled without this evidence require separate adjudication; this
+change does not rewrite their history.
+
+The older description below documents the legacy request-wide signaling path,
+which remains for forwarded replies without a separately tracked asked question.
+For tracked asked questions the evidence contract above takes precedence.
+
+
 When Tejas writes in an Inbox thread addressed to its working agent, the Inbox owner retains his
 words and creates one request under that exact thread. Every such human reply has a prompt-answer
 obligation. This deliberately includes messages without a question mark: punctuation and prose

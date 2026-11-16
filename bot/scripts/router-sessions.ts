@@ -137,7 +137,7 @@ router-actions.sh sessions topics request merge <duplicateRequestId> <source-fla
 router-actions.sh sessions topics request close <requestId> <source-flags> --action-id A --disposition completed|declined|withdrawn|superseded|failed [--evidence <id> ...] [--human-quote "<his exact withdrawal words>"] -- <reason>
 router-actions.sh sessions topics request reopen <requestId> <source-flags> --action-id A -- <reason>
 router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>
-router-actions.sh sessions topics question settle <questionId> <source-flags> --action-id A --state answered|declined|withdrawn|superseded|deferred [--answer <inputId>] [--replacement <questionId>] -- <reason>
+router-actions.sh sessions topics question settle <questionId> <source-flags> --action-id A --state answered|declined|withdrawn|superseded|deferred [--answer <inputId-or-retained-post-id-for-asked-question>] [--replacement <questionId>] -- <reason>
 router-actions.sh sessions topics question restore <questionId> <source-flags> --action-id A --dispatch <erroneous finishing dispatch> --expected-revision N -- <reason>
 router-actions.sh sessions topics answer <inputId> <source-flags> --action-id A --json-file <file>
 router-actions.sh sessions topics acknowledge <topicId> <source-flags> --action-id A --item <questionId|messageId> [...] --source <inputId>

@@ -107,6 +107,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   carry the live syntax and enforcement. The [request and return contract](docs/architecture/SESSION-OWNER.md#requests-and-returns)
   and [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md)
   own return position, partial answers and final disposition.
+- Tracked asked questions require an exact question-to-retained-agent-post settlement;
+  a request-wide answer flag or build disposition supplies no answer evidence. See
+  [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md).
 - Asked-question clocks, exact retained-answer recovery and owner-derived delay status follow
   [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md); historical questions stay in the
   one Inbox's [prepared global views](docs/architecture/PREPARED-TOPICS.md).

@@ -1,3 +1,4 @@
+import {hasTrackedAskedQuestions} from './asked-answer';
 import {contentReaderHeaders} from './lab-content-disclosure';
 import {outsideContentReader} from './content-reader-scope';
 import {createHash,randomUUID} from 'node:crypto';
@@ -1233,7 +1234,7 @@ export class SessionPeers {
         ...(disposition==='completed'&&typeof input.quiet==='string'&&input.quiet.trim()?{quiet:input.quiet.trim().slice(0,2000)}:{})};
       if(final&&inferred)db.query('UPDATE session_peer_events SET superseded_by_event_id=? WHERE event_id=?').run(input.eventId,inferred.event_id);
       const id=this.event(row,final?'final':'progress',payload,input.eventId);
-      if(promptAnswer&&(final||input.answersQuestion))db.query('UPDATE session_peer_requests SET prompt_answered_at_ms=?,due_at_ms=? WHERE request_id=? AND prompt_answered_at_ms IS NULL')
+      if(promptAnswer&&!hasTrackedAskedQuestions(db,requestId)&&(final||input.answersQuestion))db.query('UPDATE session_peer_requests SET prompt_answered_at_ms=?,due_at_ms=? WHERE request_id=? AND prompt_answered_at_ms IS NULL')
         .run(this.now(),this.now()+STILL_WAITING_AFTER_MS,requestId);
       if(final){
         // Declared completion settles when the reply arrives, not when the peer's run ends.

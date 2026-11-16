@@ -5,7 +5,7 @@ import {custodySelectedTerminalConfirmed} from './codex-custody-terminal';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
 import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
-import {reconcileAskedAnswerClocks} from './asked-answer';
+import {hasTrackedAskedQuestions,reconcileAskedAnswerClocks} from './asked-answer';
 import {implementationEditDecision,recordImplementationEditReason} from './implementation-edit-gate';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, codexUnacknowledgedRecovery, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
@@ -2950,7 +2950,7 @@ export class SessionCommunicationCoordinator {
             if (input.final && inferred)
                 db.query('UPDATE session_communication_events SET superseded_by_event_id=? WHERE event_id=?').run(eventId, inferred.event_id);
             const id = this.event(request, input.final ? 'final' : 'progress', payload, key, eventId);
-            if(requestPayload.promptAnswer&&(input.final||input.answers_question)) {
+            if(requestPayload.promptAnswer&&!hasTrackedAskedQuestions(db,request.request_id)&&(input.final||input.answers_question)) {
                 this.healthyRechecks.delete(request.request_id);
                 db.query('UPDATE session_communication_requests SET prompt_answered_at_ms=?,due_at_ms=? WHERE request_id=? AND prompt_answered_at_ms IS NULL')
                     .run(this.now(),this.now()+STILL_WAITING_AFTER_MS,request.request_id);
