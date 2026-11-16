@@ -67,7 +67,7 @@ export function takeBackgroundReleaseDetail(turnId: number): string | null {
 }
 
 type BackgroundNoticeAdmission = {
-  sessionId: number; inputId: string; origin: "service"; sourceInputId: string;
+  sessionId: number; inputId: string; origin: "service"; threadReplyNotRequired: true; sourceInputId: string;
   sourceRunId: string; requestId: string; text: string; delivery: "steer";
 };
 let admitNotice: ((input: BackgroundNoticeAdmission) => unknown) | null = null;
@@ -82,7 +82,7 @@ export function noticeMissingBackgroundReport(turnId: number, task: BackgroundRe
   if (!admitNotice || !turn || turn.status !== "running") return;
   const id = `background-job:${nativeRunId(turnId)}:${task.id}:report-missing`;
   try {
-    admitNotice({ sessionId: turn.session_id, inputId: id, origin: "service", sourceInputId: id,
+    admitNotice({ sessionId: turn.session_id, inputId: id, origin: "service", threadReplyNotRequired: true, sourceInputId: id,
       sourceRunId: nativeRunId(turnId), requestId: id, delivery: "steer",
       text: `Your background job “${task.description}” (${task.id}) ended with status ${task.status}, but Claude Code's report of it did not arrive. Read its output (TaskOutput ${task.id}, or the output file it named when it started) and carry on from it. You do not need to reply to this.` });
     log("info", "background_report_missing_notice_sent", { turn_id: turnId, task_id: task.id, status: task.status });
@@ -110,7 +110,7 @@ export function startBackgroundJobWatch(admit: (input: BackgroundNoticeAdmission
           const id = `background-job:${nativeRunId(turnId)}:${task.id}:${mark}`;
           if (notices.has(id)) continue;
           const input: BackgroundNoticeAdmission = { sessionId: turn.session_id, inputId: id,
-            origin: "service", sourceInputId: id, sourceRunId: nativeRunId(turnId), requestId: id,
+            origin: "service", threadReplyNotRequired: true, sourceInputId: id, sourceRunId: nativeRunId(turnId), requestId: id,
             delivery: "steer",
             text: `Your background job “${task.description}” has been running for at least ${mark} minutes. Do you still intend to keep it running? If not, stop it now. You do not need to reply to this.` };
           let alreadyAccepted = false;
@@ -142,7 +142,7 @@ export function startBackgroundJobWatch(admit: (input: BackgroundNoticeAdmission
           const id = `background-job:${nativeRunId(turnId)}:${task.id}:update`;
           if (!notices.has(id)) {
             const input: BackgroundNoticeAdmission = { sessionId: turn.session_id, inputId: id,
-              origin: "service", sourceInputId: id, sourceRunId: nativeRunId(turnId), requestId: id,
+              origin: "service", threadReplyNotRequired: true, sourceInputId: id, sourceRunId: nativeRunId(turnId), requestId: id,
               delivery: "steer",
               text: `A Concierge update is waiting for this run while your background job “${task.description}” has been running for at least ${STILL_WAITING_MINUTES} minutes. Do you still intend to keep it running? If not, stop it now. No reply is owed.` };
             try {

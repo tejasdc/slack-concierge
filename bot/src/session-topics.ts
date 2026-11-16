@@ -3002,7 +3002,7 @@ export function closeQuestionsAnsweredByTodosSoon(admit:Parameters<typeof closeQ
  * his tick is his answer, so the question leaves Needs you and the agent that asked is told to carry
  * on. Runs on the owner's reading cadence; one read of his to-dos covers every linked question.
  */
-export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown,
+export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown,
   scope:'all'|'inbox'|number='all'):Promise<number> {
   const session=inboxSession();
   if(!session)return 0;
@@ -3052,7 +3052,7 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
       const owner=conciergeSessionNumber(question.owner?.sessionId);
       const noticeId=`question-todo-done:${question.questionId}`;
       if(admit&&owner!==null&&owner!==session.id&&!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(noticeId))
-        admit({sessionId:owner,inputId:noticeId,origin:'service',sourceInputId:noticeId,sourceRunId:noticeId,requestId:noticeId,
+        admit({sessionId:owner,inputId:noticeId,origin:'service',threadReplyNotRequired:true,sourceInputId:noticeId,sourceRunId:noticeId,requestId:noticeId,
           text:`${reason} Your question to him, "${String(question.brief?.decision??'').slice(0,300)}", is closed by that: carry on from there and check the result yourself. You do not need to reply to this.`});
     } catch(error) {log('error','question_todo_close_failed',{question:question_id,message:error instanceof Error?error.message:String(error)});}
   }
@@ -3070,7 +3070,7 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
         closed++;
         const noticeId=`direct-todo-done:${need.eventId}`;
         if(admit&&!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(noticeId))
-          admit({sessionId:id,inputId:noticeId,origin:'service',sourceInputId:noticeId,sourceRunId:noticeId,requestId:noticeId,
+          admit({sessionId:id,inputId:noticeId,origin:'service',threadReplyNotRequired:true,sourceInputId:noticeId,sourceRunId:noticeId,requestId:noticeId,
             text:`${reason} Your question to him, "${need.question.slice(0,300)}", is closed by that: carry on from there and check the result yourself. You do not need to reply to this.`});
       }catch(error){log('error','direct_question_todo_close_failed',{session:id,need:need.eventId,message:error instanceof Error?error.message:String(error)});}
     }
@@ -3079,7 +3079,7 @@ export async function closeQuestionsAnsweredByTodos(admit?:(input:{sessionId:num
   return closed;
 }
 
-export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string})=>unknown):number {
+export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown):number {
   const session=inboxSession();
   if(!session)return 0;
   const at=new Date(now).toISOString();
@@ -3113,7 +3113,7 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
       const inputId2=`question-returned:${question.questionId}:${stamp}`;
       if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(inputId2)) {
         try {
-          admit({sessionId:owner,inputId:inputId2,origin:'service',sourceInputId:`question-reminder:${question.questionId}:${stamp}`,sourceRunId:`question-reminder:${question.questionId}:${stamp}`,requestId:inputId2,
+          admit({sessionId:owner,inputId:inputId2,origin:'service',threadReplyNotRequired:true,sourceInputId:`question-reminder:${question.questionId}:${stamp}`,sourceRunId:`question-reminder:${question.questionId}:${stamp}`,requestId:inputId2,
             text:`The question you asked Tejas, "${decision}" (${question.questionId}) in the Inbox thread "${topic.title}" (${topic.topicId}, root message ${inputId??'unknown'}), was set aside by him until ${question.deferUntil} and is back in front of him now. If anything in it expires (a one-time form link, a code), refresh it now and send the fresh words to the Inbox for that thread (sessions ask to the Inbox session with --thread ${inputId??'<root>'}), so what he opens works. You do not need to reply to this.`});
         } catch { /* the reminder itself has gone out; the refresh is the owner session's to retry */ }
       }

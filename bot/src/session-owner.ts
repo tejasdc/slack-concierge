@@ -621,6 +621,15 @@ export function readInputExecution(input:AcceptedSessionInput) {
 }
 
 /** One surface facade over the existing session and turn ledger; never a provider writer. */
+/** agent-ecology keeps each selected expertise offer as an immutable snapshot outside any project
+ * (its expertise-offers.py MATERIAL_ROOT/snapshots). Lab materials may come from there or from a
+ * registered project; nowhere else, so an agent cannot push arbitrary private files into a prompt
+ * sent to an outside provider. The digest check, not the folder, guarantees the exact bytes. */
+const LAB_OFFER_SNAPSHOTS=process.env.CONCIERGE_LAB_OFFER_SNAPSHOTS??'/root/.local/state/agent-ecology/offer-material/snapshots';
+function insideOfferSnapshots(real:string):boolean {
+  let root:string;try{root=realpathSync(LAB_OFFER_SNAPSHOTS);}catch{return false;}
+  return real.startsWith(`${root}/`);
+}
 export class SessionOwner {
   private readonly historyDetails=new HistoryDetailCache();
   projectSetup?:ProjectSetup;
@@ -660,7 +669,7 @@ export class SessionOwner {
       let real:string,bytes:Buffer;
       try{real=realpathSync(path);}catch{throw unavailable(`The material ${path} does not exist or cannot be read.`);}
       const project=containingProject(this.defaultCwd,real);
-      if(!project||!real.startsWith(`${project.cwd}/`))throw unavailable(`The material ${path} is outside every registered project.`);
+      if(!(project&&real.startsWith(`${project.cwd}/`))&&!insideOfferSnapshots(real))throw unavailable(`The material ${path} is outside every registered project and the expertise offer snapshots.`);
       try{
         const size=statSync(real);
         if(!size.isFile())throw unavailable(`The material ${path} is not a regular file.`);
@@ -3183,7 +3192,7 @@ export class SessionOwner {
     const active=db.query("SELECT id,accepted_input_id FROM turns WHERE session_id=? AND status='running' AND stop_requested_at IS NULL LIMIT 1").get(sessionId) as {id:number;accepted_input_id:string|null}|null;
     if(!active?.accepted_input_id)return;
     const notice=retainSessionInput({id:`handoff-notice:${handoffId}`,sessionId,scope:`handoff-notice:${handoffId}`,actionId:'notice',
-      kind:'input',origin:'service',payload:{text:`${successor} now continues this work at ${supersededAddress(sessionId)}. Your session is superseded: owner writes are refused. Stop making changes and let your current run end. Read sessions obligations to see what moved.`,delivery:'steer'},
+      kind:'input',origin:'service',payload:{threadReplyNotRequired:true,text:`${successor} now continues this work at ${supersededAddress(sessionId)}. Your session is superseded: owner writes are refused. Stop making changes and let your current run end. Read sessions obligations to see what moved.`,delivery:'steer'},
       sourceInputId:active.accepted_input_id,sourceRunId:nativeRunId(active.id)}).input;
     this.runtime.steer(notice);
   }
