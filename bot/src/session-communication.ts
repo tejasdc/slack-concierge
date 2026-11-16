@@ -53,7 +53,7 @@ import {escalationReason} from './model-escalation';
 import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptAttachmentCorrectionPending,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,recordChatGptToolRead,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,validateChatGptToolRead,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, endRepeatingScheduleForInput, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
-import { completionWithCheck, finalClosingLine, leadFirst, NEEDS_YOU_SUMMARY_REQUIRED, questionForTejas } from './answers-to-tejas';
+import { completionWithCheck, finalClosingLine, leadFirst, NEEDS_YOU_SUMMARY_REQUIRED, questionForTejas, saysSomething } from './answers-to-tejas';
 import { answerNotice, requestLabel, sessionLabel, unresolvedRequestReminder } from './session-notices';
 import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
 import { noticeTime } from './provider-free-notice';
@@ -1336,6 +1336,7 @@ export class SessionCommunicationCoordinator {
             ?questionForTejas({actorInputId:actor.inputId,question:stated,lead,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action}):stated;
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim():'';
         if(quiet&&input.outcome!=='done')throw new Error('--quiet-because belongs to done: it says why he need not read the answer.');
+        if(quiet&&!saysSomething(quiet))throw new Error('--quiet-because needs words: why he need not read this answer.');
         // Only the Inbox router's handoff leaves a routing receipt on his message. A worker that
         // asks another session for facts while answering him has routed nothing: its answer is
         // its own closing text, and it has no Inbox thread of its own to post into (2026-11-05,
@@ -2734,6 +2735,7 @@ export class SessionCommunicationCoordinator {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
         if(input.summary!==undefined)input={...input,summary:oneLineSummary(input.summary)};
+        if(input.summary?.trim()&&!saysSomething(input.summary))throw new Error('--summary needs words: one line saying what this reply is.');
         // What the requester, and through it Tejas, reads: a decision carries his words and why
         // they leave it open; completed work carries what was checked live. Folded into the words
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
@@ -2756,7 +2758,7 @@ export class SessionCommunicationCoordinator {
         // findings sat in the request unread; with it the requester, and Tejas in his thread, see that
         // the agent started from them. A hand-back is exempt: it declines the work.
         const before=typeof input.before==='string'?input.before.trim().slice(0,4000):'';
-        if(input.before!==undefined&&!before)throw new Error('--before needs words: what earlier agents did on this problem and how your approach differs.');
+        if(input.before!==undefined&&!saysSomething(before))throw new Error('--before needs words: what earlier agents did on this problem and how your approach differs.');
         if(!before&&input.hand_back===undefined) {
             const asked=db.query('SELECT payload_json FROM session_communication_requests WHERE request_id=?').get(input.request_id) as {payload_json:string}|null;
             const history=asked?JSON.parse(asked.payload_json).history:null;
@@ -2803,7 +2805,7 @@ export class SessionCommunicationCoordinator {
         // [decision: sends-notify-only-on-failure]. Only completed work may be quiet: a failure or a
         // question is always his to read.
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim().slice(0,2000):'';
-        if(input.quiet_because!==undefined&&(!quiet||input.workDisposition!=='completed'))
+        if(input.quiet_because!==undefined&&(!saysSomething(quiet)||input.workDisposition!=='completed'))
             throw new Error('--quiet-because goes with --work-disposition completed and says why he need not read it; a failed or needs_decision reply is always his to read.');
         if(input.hand_back!==undefined) {
             if(input.workDisposition!=='failed')throw new Error('--hand-back goes with --work-disposition failed: the request returns to the requester to start fresh.');
