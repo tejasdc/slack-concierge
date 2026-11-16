@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
 import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
+import {reconcileAskedAnswerClocks} from './asked-answer';
 import {implementationEditDecision,recordImplementationEditReason} from './implementation-edit-gate';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, codexUnacknowledgedRecovery, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
@@ -1553,6 +1554,7 @@ export class SessionCommunicationCoordinator {
             sourceMs=performance.now()-phaseStart;
             phaseStart=performance.now();phaseName='command';
             const result=topicsCommand({sessionId:actor.session,turnId:actor.turn,inputId:sourceInputId,runId:nativeRunId(actor.turn)},input,listHead);
+            if(input.action_id){this.healthyRechecks.clear();this.wake();}
             commandMs=performance.now()-phaseStart;
             phaseName='done';
             completed=true;
@@ -3682,6 +3684,7 @@ export class SessionCommunicationCoordinator {
             if (!await releaseLateRetainedReturns(() => this.stopped)) return;
             if (this.stopped) return;
             this.startupReconciled = true;
+            reconcileAskedAnswerClocks(db);
             this.dependencies.peers?.start();
             // Topic backfill followed retained-return restoration before this sweep yielded.
             const backfill = setTimeout(() => void backfillRequestTopics(() => this.stopped).catch(error => log('warn', 'request_topics_backfill_failed', { error: error instanceof Error ? error.message : String(error) })), 60_000);

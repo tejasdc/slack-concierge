@@ -108,12 +108,24 @@ background CPU per topic. Reverse dependency indexes keep unrelated token events
 The overview returns exact per-filter question totals plus one selected-filter page, request
 count and a request page. Additional pages are explicit. Requests may also be paged by their
 source input for cards beside a visible conversation entry. Global question pages retain
-topic groups (without a duplicate flat question array) and exact filter counts. The current
-Inbox owns catalogue and global-question visibility. Older topics remain directly readable,
-with work and reply routing derived from the current Inbox, matching the canonical owner.
+topic groups (without a duplicate flat question array) and exact filter counts. Global questions
+use the active Inbox context for their prepared partition, just as the topic catalogue does.
+The verified Inbox lineage includes topics created by earlier Inbox agents; changing routers
+does not remove their questions from Asked, Open, Reading or the other applicable filters.
+Canonical topic and question ownership remains historical. Work and reply routing use the current Inbox.
 Inbox attention still includes actionable questions from older topics, as the owner does.
 Inbox attention uses those prepared facts and indexed
 maximum generation; incomplete coverage returns unknown attention, never false.
+
+The asked-answer projection upgrade queues existing topics in the worker's bounded dirty
+queue. Its version remains incomplete until that queue is drained and checkpointed; this
+does not copy canonical records or rebuild the message archive. A new reader can meet the
+older metadata schema and reports incomplete coverage until the worker upgrades it.
+Asked questions derive retained answers through their explicit dispatch, or one unambiguous
+exact question-source/Inbox-obligation/dispatch link for legacy records. The corresponding
+request is a prepared dependency even when the old question did not record its dispatch.
+The additive `answerStatus: {text, delayed}` is computed by Concierge; clients display its
+words rather than inventing another deadline or deriving failure from session activity.
 
 Whole-topic detail is metadata only (`collections: 'paged'`), suitable for an explicit Manage
 action needing complete roots; it does not eagerly copy all requests/questions. Large item,

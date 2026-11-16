@@ -184,6 +184,16 @@ is never a clean zero. Both commands use the same authenticated owner entrance a
 including from a runner where the ledger file is hidden; the query runs in the isolated read
 process. The owning contract is [Runners](../architecture/RUNNERS.md).
 
+The window also joins ordinary human inputs through their exact Inbox obligation/dispatch
+links, including shared or later-routed work. Each post carries its reply kind, explicit
+answer signal, disposition and service/agent attribution. `answeredInThread` requires the
+semantic answer contract; progress and service terminal notices remain evidence without
+being called answers. `answeredAt` is the original qualifying post time, not recovery time.
+Request source/run/thread identity, answer-clock timestamps, final event receipt and disposition
+are returned as bounded diagnostic facts. A final receipt proves recorded return, not provider
+consumption, push delivery or physical-device display. Untyped historical posts retain their
+unknown classification; inspect their exact words with `topics message` before judging coverage.
+
 ## Waiting for a local process
 
 Use `router-actions.sh wait --pid <pid> [--pid <pid> ...] [--timeout 30m]` when

@@ -5,13 +5,14 @@ import {inboxRootResolver} from './presentation-message-source';
 import {gram,shortTokens} from './prepared-search';
 import {topicEventDisplay} from './topic-event-display';
 import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
+import {askedDispatch} from './asked-answer';
 
 const PAGE=20,CHUNK_BYTES=16*1024;
 type State='open'|'closed'|'background'|'all';
 const orderKey=(band:number,at:string,id:string)=>`${band}:${String(9999999999999-Date.parse(at)).padStart(13,'0')}:${id}`;
 /** A pinned thread's key: '-' sorts before every unpinned '0:' key, newest pin first, so rows prepared before pins existed keep their place. */
 const listKey=(band:number,pinnedAt:string|null|undefined,at:string,id:string)=>band<0&&pinnedAt?`-${String(9999999999999-Date.parse(pinnedAt)).padStart(13,'0')}:${orderKey(0,at,id)}`:orderKey(band,at,id);
-type Meta={generation:number;source_head:number;ready:number;retained_after:number;inbox_session:number};
+type Meta={generation:number;source_head:number;ready:number;retained_after:number;inbox_session:number;asked_answers_version?:number};
 const json=(value:unknown)=>JSON.stringify(value);
 /** Owner times have two spellings ('2026-09-23 18:46:23' and ISO); keep one in prepared rows. */
 const instant=(at:string)=>at.includes('T')?at:at.replace(' ','T')+'Z';
@@ -203,6 +204,10 @@ export class PreparedTopics {
     INSERT INTO presentation_inbox_attention_counts VALUES(new.generation,new.scope,1) ON CONFLICT(generation,scope) DO UPDATE SET count=count+1; END;
    CREATE TRIGGER IF NOT EXISTS presentation_inbox_attention_removed AFTER DELETE ON presentation_inbox_attention BEGIN
     UPDATE presentation_inbox_attention_counts SET count=count-1 WHERE generation=old.generation AND scope=old.scope; END;`);
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='asked_answers_version'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN asked_answers_version INTEGER NOT NULL DEFAULT 0');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
  }
  isReady(generation:number){const current=meta(this.prepared);return !!current.ready&&current.generation===generation;}
  writeEvent(generation:number,sequence:number){
@@ -354,6 +359,7 @@ export class PreparedTopics {
  write(context:TopicContext,topicId:string){
   const generation=context.generation;
   const owner=(this.source.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(topicId) as {session_id:number}|null)?.session_id??context.sessionId;
+  const questionScope=context.sessionIds.includes(owner)?context.sessionId:owner;
   this.retainedBy={generation,owner:`topic:${topicId}`};
   const previous=this.prepared.query('SELECT summary_json,detail_hash,session_id,search_text,projection_hash FROM presentation_topics WHERE generation=? AND topic_id=?')
    .get(generation,topicId) as {summary_json:string;detail_hash:string;session_id:number;search_text:string;projection_hash:string}|null;
@@ -379,12 +385,13 @@ export class PreparedTopics {
    question:question=>{
     const compact=writeItem(question,'questions');
     if(question.owner?.sessionId)depend('session',question.owner.sessionId);
-   if(question.kind==='asked'&&question.owner?.dispatchRequestId)depend('request',question.owner.dispatchRequestId);
+   const askedRequest=askedDispatch(this.source,question);
+   if(askedRequest)depend('request',askedRequest);
     if(question.waiting)attentions.push({inputId:question.sources[0]??topicId,
      outcome:question.kind==='reading'?'response':'needs_you',question:question.brief?.decision??'',generation:question.generation??0,
      at:question.createdAt,runId:question.owner?.runId??'',eventId:question.id,...(question.reads.length?{reads:question.reads}:{})});
     for(const selected of ['asked','open','reading','checking','deferred','history'])if(questionSet(question,selected))
-     questions.push([generation,topicId,question.id,selected,question.createdAt,json(compact),orderKey(selected==='asked'&&question.reads.length?1:0,question.createdAt,question.id),owner]);
+     questions.push([generation,topicId,question.id,selected,question.createdAt,json(compact),orderKey(selected==='asked'&&question.reads.length?1:0,question.createdAt,question.id),questionScope]);
    },
    request:request=>{
     writeItem(request,'requests');
@@ -496,8 +503,8 @@ export class PreparedTopics {
     need_generation=excluded.need_generation,order_key=excluded.order_key,value_json=excluded.value_json`)
    .run(generation,scope,need.eventId,topicId,need.generation??0,`${String(need.generation??0).padStart(16,'0')}:${need.eventId}`,json(value));
  }
- activate(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET generation=?,source_head=?,ready=1,retained_after=0,inbox_session=? WHERE singleton=1').run(generation,sourceHead,this.inboxSession());}
- checkpoint(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET source_head=?,inbox_session=? WHERE singleton=1 AND generation=?').run(sourceHead,this.inboxSession(),generation);}
+ activate(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET generation=?,source_head=?,ready=1,retained_after=0,inbox_session=?,asked_answers_version=1 WHERE singleton=1').run(generation,sourceHead,this.inboxSession());}
+ checkpoint(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET source_head=?,inbox_session=?,asked_answers_version=1 WHERE singleton=1 AND generation=?').run(sourceHead,this.inboxSession(),generation);}
  private retain(value:unknown){
   const text=json(value),hash=createHash('sha256').update(text).digest('hex');
   if(!this.retainedBy)throw new Error('Topic detail has no retaining projection');
@@ -553,9 +560,9 @@ export class PreparedTopics {
  }
 }
 
-function meta(db:Database){return db.query('SELECT generation,source_head,ready,retained_after,inbox_session FROM presentation_topics_meta WHERE singleton=1').get() as Meta;}
-function coverage(current:Meta,head:number){return {complete:!!current.ready&&current.source_head>=head,
- code:!current.ready||current.source_head<head?'presentation_indexing':null,appliedSequence:current.source_head};}
+function meta(db:Database){return db.query('SELECT * FROM presentation_topics_meta WHERE singleton=1').get() as Meta;}
+function coverage(current:Meta,head:number){const complete=!!current.ready&&current.source_head>=head&&(current.asked_answers_version??0)>=1;return {complete,
+ code:complete?null:'presentation_indexing',appliedSequence:current.source_head};}
 function reset(current:Meta){return {topics:[],nextCursor:null,coverage:{complete:false,code:'reset_required',appliedSequence:current.source_head}};}
 
 export function readPreparedTopics(db:Database,options:{state?:State;order?:'updated'|'started';query?:string|null;cursor?:string|null;limit?:number;canonicalHead:number}){
