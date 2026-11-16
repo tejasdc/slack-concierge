@@ -1291,8 +1291,10 @@ export class SessionOwner {
     if(!uploader||uploader.session_id!==creatorSessionId)return false;
     if(row.source_input_id===source.inputId&&row.source_run_id===source.runId)return true;
     if(uploadOnly)return false;
-    return !!db.query(`SELECT 1 FROM session_inputs AS target WHERE target.session_id=? AND EXISTS
-      (SELECT 1 FROM json_each(target.payload_json,'$.attachments') WHERE json_each.value=?) LIMIT 1`).get(targetSessionNumber,attachmentId);
+    // Attachments sit at payload.attachments on ordinary inputs and at payload.firstInput.attachments on the create request.
+    return !!db.query(`SELECT 1 FROM session_inputs AS target WHERE target.session_id=? AND (EXISTS
+      (SELECT 1 FROM json_each(target.payload_json,'$.attachments') WHERE json_each.value=?) OR EXISTS
+      (SELECT 1 FROM json_each(target.payload_json,'$.firstInput.attachments') WHERE json_each.value=?)) LIMIT 1`).get(targetSessionNumber,attachmentId,attachmentId);
   }
   /**
    * Admits one bound test-session request. The source pair is the caller's CURRENT admitted live

@@ -17,11 +17,11 @@ Best explanation, from source reading (no runtime probe was made): the Lab conte
 
 ## Fix
 
-The caller's current live run is the source; the create request is the immutable lineage; they meet by creator session. Authorship, child operations and attachments (with a target proof) follow creator-session membership; controls use one validated create ID; writes need an unfenced session. Lab privacy is unchanged and decided by the current run.
+The caller's current live run is the source; the create request is the immutable lineage; they meet by creator session. Authorship, child operations and attachments (with a target proof) follow creator-session membership; controls use one validated create ID and keep their original creation-pair admission (creation run only, no live check, no fence) so their one-time allowance cannot be renewed; writes need an unfenced session. Lab privacy is unchanged and decided by the current run.
 
 ## Acceptance scenario
 
 - **Seed:** a test session created by a run that has ended, with only the creator's own and the test session's own inputs.
 - **Action:** a later live run of the creator session reads the view through the bound route with its own pair and the original create request; another session and a human-origin input are then tried.
-- **Expected:** the creator's current run is admitted; another session is refused (AGENT_TEST_SCOPE_REFUSED); the human input closes the entrance (AGENT_TEST_SCOPE_CHANGED); an ended pair is refused (AGENT_SOURCE_REQUIRED).
+- **Expected:** the creator's current run is admitted; another session is refused (AGENT_TEST_SCOPE_REFUSED); the human input closes the entrance (AGENT_TEST_SCOPE_CHANGED); an ended pair is refused (AGENT_SOURCE_REQUIRED); a later creator run calling Stop or connection loss is refused (AGENT_TEST_SCOPE_REFUSED).
 - **Replayable offline:** yes
