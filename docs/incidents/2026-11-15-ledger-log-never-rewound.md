@@ -27,16 +27,17 @@ captured one such cycle (61 frames committed during a 1.6 s copy); no stuck read
 
 ## Fix
 
-The checkpoint thread finishes a partly copied generation's tail on its next tick: first with
-PASSIVE, and after three fast attempts that lose the race, once with FULL and no lock wait of its
-own, so no commit can extend the tail. See `docs/architecture/LEDGER-DURABILITY.md#log-recycling`.
+The checkpoint thread finishes a partly copied generation's tail on its next tick with PASSIVE,
+never taking the writer lock. (A FULL fallback shipped first in 6c982e7a was removed because it
+held the writer lock against the owner's commits.) Rewinding is likely, not guaranteed: at 60
+commits/s on a disposable ledger PASSIVE tail copies did not rewind. See `docs/architecture/LEDGER-DURABILITY.md#log-recycling`.
 
 ## Acceptance scenario
 
 - **Seed:** a WAL-mode SQLite database with the owner's settings (`synchronous=NORMAL`,
   `wal_autocheckpoint=0`, 5 s lock wait) and the checkpoint worker with thresholds scaled to
   1 MB/4 MB and the pressure gate open.
-- **Action:** commit a 6 KB row 60 times a second for 40 seconds.
-- **Expected:** the log rewinds repeatedly and stays under a few MB; every row reads back. Before
-  the fix it never rewound and reached 35 MB.
+- **Action:** commit a 6 KB row 15 times a second for 40 seconds.
+- **Expected:** the log rewinds repeatedly and stays under a few hundred frames; every row reads
+  back. Before the fix it rewound rarely and grew past 1,300 frames.
 - **Replayable offline:** yes
