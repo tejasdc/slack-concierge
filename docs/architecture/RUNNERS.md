@@ -263,8 +263,12 @@ Custody-successor recovery uses the configured relay through the separate
 `codex-app-server-protected-v1` target and `protected-open-v1` listener operation.
 An old runner cannot interpret that as an ordinary managing open. A protected
 pair requires an already-running native endpoint and skips daemon startup,
-tuning, scope changes and hook pruning. Ordinary connections retain their
-existing management behavior.
+tuning, scope changes and hook pruning. Ordinary connections retain their direct
+Bun WebSocket path and existing management behavior. They do not spawn the
+association child or Python probe and are not capturable as associated custody
+senders. Missing association holds custody; it never fails ordinary traffic.
+A covered predecessor needs its own explicit protected connection. A later
+connection cannot upgrade an ordinary sender's proof.
 
 The pair carries its own correlated association envelope before native traffic:
 pair/challenge, serving runner incarnation and loaded helper identity, actual

@@ -22,6 +22,10 @@ import {log} from './log';
 export const RELAY_TARGETS=new Set(['codex-app-server','codex-app-server-protected-v1','runner-machine']);
 const ACCEPT_DEADLINE_MS=15_000;
 const BUFFER_LIMIT=16*1024*1024;
+const ASSOCIATION_PREFIX='{"conciergeRelay":"association-v1",';
+const ASSOCIATION_PREFIX_BYTES=Buffer.from(ASSOCIATION_PREFIX);
+function associationPrefix(message:Message){return typeof message==='string'?message.startsWith(ASSOCIATION_PREFIX):
+  message.length>=ASSOCIATION_PREFIX_BYTES.length&&message.subarray(0,ASSOCIATION_PREFIX_BYTES.length).equals(ASSOCIATION_PREFIX_BYTES);}
 
 type Message=string|Buffer;
 export type RelaySocketData=
@@ -29,7 +33,7 @@ export type RelaySocketData=
   |{role:'local';runner:string;id:string;target:string;challenge:string}
   |{role:'accept';runner:string;id:string};
 type Pair={id:string;runner:string;target:string;challenge:string;ticket:string;local:ServerWebSocket<RelaySocketData>;remote:ServerWebSocket<RelaySocketData>|null;
-  waiting:Message[];waitingBytes:number;timer:ReturnType<typeof setTimeout>|null};
+  associationPending:boolean;waiting:Message[];waitingBytes:number;timer:ReturnType<typeof setTimeout>|null};
 
 export class RunnerRelay {
   private readonly listeners=new Map<string,ServerWebSocket<RelaySocketData>>();
@@ -89,7 +93,8 @@ export class RunnerRelay {
       if(data.role==='local'){
         const listener=this.listeners.get(data.runner);
         if(!listener){socket.close(1013,'runner not listening');return;}
-        const pair:Pair={id:data.id,runner:data.runner,target:data.target,challenge:data.challenge,ticket:randomUUID(),local:socket,remote:null,waiting:[],waitingBytes:0,
+        const pair:Pair={id:data.id,runner:data.runner,target:data.target,challenge:data.challenge,ticket:randomUUID(),local:socket,remote:null,
+          associationPending:data.target==='codex-app-server-protected-v1',waiting:[],waitingBytes:0,
           timer:setTimeout(()=>this.end(pair,'the runner did not accept the relay in time'),ACCEPT_DEADLINE_MS)};
         this.pairs.set(data.id,pair);
         listener.send(JSON.stringify({op:data.target==='codex-app-server-protected-v1'?'protected-open-v1':'open',id:data.id,
@@ -110,15 +115,18 @@ export class RunnerRelay {
       const pair=this.pairs.get(data.id);
       if(!pair)return;
       if(data.role==='accept'){
-        // This control record belongs to the accepted pair, not the runner's current listener.
-        // Stamp the authenticated principal and validate owner correlation before it reaches a bridge.
-        let frame:any;try{frame=JSON.parse(String(message));}catch{}
-        if(frame?.conciergeRelay==='association-v1'){
+        if(pair.associationPending){
+          pair.associationPending=false;
+          // Only the first protected frame is control. Ordinary relays and the native stream
+          // never pass through JSON.parse here, regardless of payload size.
+          if(!associationPrefix(message)){this.end(pair,'protected relay association must be the first frame');return;}
+          let frame:any;try{frame=JSON.parse(String(message));}catch{this.end(pair,'invalid relay association');return;}
           const association=frame.association;
-          if(association?.pairId!==pair.id||association?.challenge!==pair.challenge||association?.runner!==pair.runner
-            ||association?.protected!==(pair.target==='codex-app-server-protected-v1')){this.end(pair,'relay association did not match its pair');return;}
+          if(frame?.conciergeRelay!=='association-v1'||association?.pairId!==pair.id||association?.challenge!==pair.challenge||association?.runner!==pair.runner
+            ||association?.protected!==true){this.end(pair,'relay association did not match its pair');return;}
           this.forward(pair,pair.local,JSON.stringify({...frame,association:{...association,runner:data.runner}}));return;
         }
+        if(associationPrefix(message)){this.end(pair,'late relay association');return;}
         this.forward(pair,pair.local,message);return;
       }
       if(pair.remote){this.forward(pair,pair.remote,message);return;}

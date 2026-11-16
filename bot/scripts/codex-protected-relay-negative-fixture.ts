@@ -49,7 +49,7 @@ try {
 
   // The substitute native serializer is deliberate; all forwarding hops and capture/barrier code
   // are real. In particular, an RPC response must NOT stand in for handler completion.
-  const predecessor=harness.client(false);const delayed=heldHandler('relay-barrier-delayed');
+  const predecessor=harness.client();const delayed=heldHandler('relay-barrier-delayed');
   await predecessor.request('thread/resume',{threadId:'relay-barrier-delayed'},{custodyOwnerSessionId:901});
   const cutoff=freezeManagedCodexTarget({ownerSessionId:901,threadId:'relay-barrier-delayed',endpoint:client.nativeEndpoint,timeoutMs:2000});
   const reconciling=cutoff.reconcile();await delayed.read;
@@ -58,7 +58,7 @@ try {
   assert.equal(receipt.barriers.length,1);assert.deepEqual(receipt.unresolved,[]);
   assert.equal(receipt.captured[0]?.generation,predecessor.activeGeneration);
 
-  const lost=harness.client(false);const lostHandler=heldHandler('relay-close-before-barrier');
+  const lost=harness.client();const lostHandler=heldHandler('relay-close-before-barrier');
   await lost.request('thread/resume',{threadId:'relay-close-before-barrier'},{custodyOwnerSessionId:902});
   const lostCutoff=freezeManagedCodexTarget({ownerSessionId:902,threadId:'relay-close-before-barrier',endpoint:client.nativeEndpoint,timeoutMs:2000});
   await lost.close();const lostReceipt=await lostCutoff.reconcile();lostHandler.finish();
@@ -68,27 +68,33 @@ try {
     [903,'thread/resume',{threadId:'relay-path-remainder',path:join(root,'retained-rollout')},'thread-path'],
     [904,'thread/start',{cwd:root},'unkeyed-thread'],
   ] as const){
-    const remainder=harness.client(false);await remainder.request(method,params,{custodyOwnerSessionId:ownerSessionId});
+    const remainder=harness.client();await remainder.request(method,params,{custodyOwnerSessionId:ownerSessionId});
     const remainderReceipt=await freezeManagedCodexTarget({ownerSessionId,threadId:ownerSessionId===903?'relay-path-remainder':'relay-unkeyed-remainder',endpoint:client.nativeEndpoint,timeoutMs:2000}).reconcile();
     assert.ok(remainderReceipt.unresolved.some(reason=>reason.includes(classification)),'a thread barrier cannot dispose another serialization key');
     await remainder.close();
   }
+  const ordinary=harness.client(false);
+  await ordinary.request('thread/resume',{threadId:'ordinary-unassociated'},{custodyOwnerSessionId:905});
+  assert.equal(ordinary.nativeEndpoint.relayAssociation,undefined,'ordinary relay must not construct an association');
+  const ordinaryHold=await freezeManagedCodexTarget({ownerSessionId:905,threadId:'ordinary-unassociated',endpoint:client.nativeEndpoint,timeoutMs:2000}).reconcile();
+  assert.equal(ordinaryHold.barriers.length,0);
+  assert.ok(ordinaryHold.unresolved.some(reason=>reason.includes('association')),'unassociated ordinary predecessor must keep custody held');
+  await ordinary.close();
   // A required pin cannot be created when the pin directory is a regular file.
   writeFileSync(join(harness.runnerState,'hook-pins'),'cannot create codex directory');
   const before=methods.length;
   await assert.rejects(client.request('turn/start',{threadId:'fixture-pin-failure',input:[]},{requestTimeoutMs:2000}));
   assert.equal(methods.slice(before).includes('turn/start'),false,'protected pin failure must prevent native turn/start');
 
-  // Directly exercise the production pair adapter's management callbacks against an ABSENT endpoint.
-  // These callbacks substitute host effects; none may be called by a protected open.
-  const callbacks={open:0,error:0};
+  // The protected-only adapter exposes no daemon-management callbacks. An absent native
+  // endpoint must close this exact pair rather than starting or replacing native.
   const machineForAbsent={...machine,stateDir:join(root,'absent-state')};
   let closed!:()=>void;const didClose=new Promise<void>(resolve=>{closed=resolve;});
   const remote={readyState:1,binaryType:'',send(){},close(){closed();}} as unknown as WebSocket;
   const pair=serveCodexRelayPair({id:'absent',challenge:'absent-challenge',protected:true,remote,socketPath:join(root,'absent.sock'),
     machine:machineForAbsent,identity:loadedRunnerIdentity(machineForAbsent),nodeExecutable:process.env.CONCIERGE_NODE_BIN||'/usr/bin/node',
-    pinThread(){throw new Error('not expected');},onOrdinaryOpen(){callbacks.open++;},onOrdinaryError(){callbacks.error++;}});
-  await didClose;await pair.exited;assert.deepEqual(callbacks,{open:0,error:0});
+    pinThread(){throw new Error('not expected');}});
+  await didClose;await pair.exited;
 
   // An old runner recognizes only op=open. The gateway sends a distinct protected command,
   // so its managing native-open code cannot run even before an acknowledgement is available.
@@ -107,6 +113,6 @@ try {
   await legacyClient.close();await rejected;legacy.close();relay.closeAll();gateway.stop(true);
   console.log(JSON.stringify({ok:true,kind:'native-effect-substitutes',assertions:['effective configuration reaches native substitute unchanged after idempotent rewrite',
     'same-generation relayed barrier waits for delayed literal-key handler after RPC response','relay close before barrier remains unresolved','path and unkeyed effects remain unresolved after target barrier',
-    'required hook pin failure withholds protected turn/start','absent native endpoint invokes zero protected management callbacks','old runner never receives ordinary open for protected request'],
-    substitutes:'native RPC responses and host management callbacks; actual client/bridge/gateway/runner forwarding, actual FD peer credentials'}));
+    'ordinary unassociated predecessor remains held','required hook pin failure withholds protected turn/start','absent native endpoint refuses through protected-only adapter','old runner never receives ordinary open for protected request'],
+    substitutes:'native RPC responses; actual client/bridge/gateway/runner forwarding, actual FD peer credentials'}));
 }finally{await harness?.close();native.stop(true);rmSync(root,{recursive:true,force:true});}

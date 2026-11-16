@@ -13,6 +13,7 @@ const relayPath = process.argv[3] || "/";
 const relayUrl=new URL(relayPath,'http://localhost');
 const protectedRelay=relayUrl.searchParams.get('target')==='codex-app-server-protected-v1';
 let relayAssociation=null;
+let awaitingAssociation=protectedRelay;
 const initializeId = "slack-concierge-initialize";
 let ready = false;
 let disconnectReported = false;
@@ -50,17 +51,22 @@ appServer.on("message", (data) => {
   try {
     message = JSON.parse(data.toString());
   } catch {
+    if(awaitingAssociation){disconnect(new Error('Protected relay association must be the first frame.'));appServer.close();}
     return;
   }
-  if(message.conciergeRelay==='association-v1'){
+  if(awaitingAssociation){
+    awaitingAssociation=false;
     const receipt=message.association;
-    if(relayAssociation||receipt?.version!==1||receipt?.challenge!==relayUrl.searchParams.get('challenge')
+    if(message.conciergeRelay!=='association-v1'||receipt?.version!==1||receipt?.challenge!==relayUrl.searchParams.get('challenge')
       ||receipt?.runner!==relayUrl.searchParams.get('runner')||receipt?.protected!==protectedRelay){
       disconnect(new Error('Relay association mismatch.'));appServer.close();return;
     }
     relayAssociation=receipt;
     if(protectedRelay)initialize();
     return;
+  }
+  if(message.conciergeRelay==='association-v1'){
+    disconnect(new Error('Late relay association.'));appServer.close();return;
   }
   if (message.id === initializeId) {
     if (message.error) {

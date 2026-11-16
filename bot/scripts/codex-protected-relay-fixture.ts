@@ -36,7 +36,7 @@ try {
     runnerEntry=join(selectedControl,'bot/scripts/runner.js');
   }
   harness=await createCustodyRelayFixture(root,nativeSocket,{runnerEntry});
-  const old=harness.client(false);await old.connect();
+  const old=harness.client();await old.connect();
   assertCustodyEndpoint(old.nativeEndpoint,false);
   assert.equal(old.nativeEndpoint.relayAssociation?.nativePeer.pid,native.pid,'peer must be the actual isolated native process');
   const client=harness.client();const bound=custodyConnection(client);
@@ -67,6 +67,6 @@ try {
   const generation=await client.connect();await client.loseConnectionGeneration(generation);await assert.rejects(bound.assert(witness),/connection changed/);
   console.log(JSON.stringify({ok:true,kind:'stock-native-transport',sealed:!!runnerEntry,version,binary,binaryDigest,nativePid:native.pid,
     assertions:['actual connected native peer via duplicated FD SO_PEERCRED','boot/start/namespaces corroborated locally','protected association before native initialization',
-      'ordinary predecessor association','listener replacement cannot reassign old pair','reconnect invalidates custody witness','isolated thread/list read'],
+      'explicit protected predecessor association','listener replacement cannot reassign old pair','reconnect invalidates custody witness','isolated thread/list read'],
     nativeEffectSubstitutes:'none: transport/read only; no provider execution or custody construction/admission asserted'}));
 }finally{await harness?.close();native.kill();await native.exited;rmSync(root,{recursive:true,force:true});}

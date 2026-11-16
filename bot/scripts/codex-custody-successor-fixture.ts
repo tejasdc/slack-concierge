@@ -157,7 +157,7 @@ onJsonLines(process.stdin,line=>{const call=JSON.parse(line);
 const {CodexAppServerClient,freezeManagedCodexTarget}=await import('../src/codex-app-server-client');
 async function registerLegacyPrefix(sessionId:number,threadId:string,sourcePath:string,bindingGeneration:number,providerTurnId:string){
  const backend=relayBackend;if(relayThreads.has(threadId))relayBackend='legacy';
- const sender=relay&&relayThreads.has(threadId)?relay.client(false):new CodexAppServerClient('/disposable',process.execPath,{bridgePath:cutoffBridge,manageDaemon:false,shutdownGraceMs:50});
+ const sender=relay&&relayThreads.has(threadId)?relay.client(true):new CodexAppServerClient('/disposable',process.execPath,{bridgePath:cutoffBridge,manageDaemon:false,shutdownGraceMs:50});
  managedLegacySenders.push(sender);
  await sender.request('turn/start',{threadId,clientUserMessageId:providerTurnId,input:[]},{custodyOwnerSessionId:sessionId});
  relayBackend=backend;

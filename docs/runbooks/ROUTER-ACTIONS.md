@@ -268,6 +268,11 @@ configured fallback, and is never erased to pass recovery. The plan retains the
 effective runner shell/helper transformation; required hook preparation must finish
 before protected admission. Unsupported mappings remain held. See
 [protected runner transport](../architecture/RUNNERS.md#codex-app-server-on-a-runner-built-off-until-concierge_codex_runner-is-set).
+Ordinary relays keep their direct forwarding path and do not produce custody
+association. A captured ordinary predecessor therefore holds recovery; a new
+protected pair cannot retrospectively attest it. Covered predecessors need their
+own protected pair. Association failures never change ordinary traffic or its
+daemon-management behavior.
 This is connection association evidence, not native writer exclusion.
 First selected `turn/start` repeats the explicit local selection, cwd,
 roots, model and effort; transport staging never becomes the native context.

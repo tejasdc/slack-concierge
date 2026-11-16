@@ -94,7 +94,11 @@ const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
 const botDir=realpathSync(resolve(import.meta.dir,'..'));
 const machine:RunnerMachine={botDir,stateDir,bunPath:process.execPath,runnerName:process.env.CONCIERGE_RUNNER_NAME??'',
   basePath:process.env.PATH??'/usr/local/bin:/usr/bin:/bin',routerActionsPath:installedRouterActionsPath()};
-const relayIdentity=process.platform==='linux'?loadedRunnerIdentity(machine):null;
+const relayIdentity=(()=>{
+  if(process.platform!=='linux')return null;
+  try{return loadedRunnerIdentity(machine);}
+  catch(error){console.error(JSON.stringify({event:'runner_custody_association_unavailable',error:String(error)}));return null;}
+})();
 // Every helper on this runner (Codex shells and hooks included) reads where the owner is from here.
 if(!once)writeRunnerConnection(stateDir,{ownerUrl:owner,tokenFile:resolve(tokenFile),thinkeringUrl:process.env.THINKERING_CAPABILITY_URL?.trim()||null});
 
@@ -593,10 +597,9 @@ function superviseCodexAppServer() {
 }
 function relayCodexAppServer(id:string,challenge='',protectedMode=false,ticket='') {
   const remote=new WebSocket(`${relayBase}/runner/v1/relay/accept?id=${encodeURIComponent(id)}&ticket=${encodeURIComponent(ticket)}`,{headers:{authorization:`Bearer ${token}`}} as any);
-  if(relayIdentity&&challenge){
-    serveCodexRelayPair({id,challenge,protected:protectedMode,remote,socketPath:codexAppServerSocketPath(),machine,identity:relayIdentity,
-      nodeExecutable:process.env.CONCIERGE_NODE_BIN?.trim()||'/usr/bin/node',pinThread:pinCodexThread,onOrdinaryOpen:superviseCodexAppServer,
-      onOrdinaryError:()=>{if(managedAppServer&&(!existsSync(codexAppServerSocketPath())||!controlSocketListeners(codexAppServerSocketPath()).length))startCodexDaemonWhenAbsent('ECONNREFUSED');},
+  if(protectedMode&&relayIdentity&&challenge){
+    serveCodexRelayPair({id,challenge,protected:true,remote,socketPath:codexAppServerSocketPath(),machine,identity:relayIdentity,
+      nodeExecutable:process.env.CONCIERGE_NODE_BIN?.trim()||'/usr/bin/node',pinThread:pinCodexThread,
       onClosed:why=>say('runner_relay_closed',{relay:id,why})});return;
   }
   if(protectedMode){remote.close(1008,'protected relay requires Linux socket association');return;}

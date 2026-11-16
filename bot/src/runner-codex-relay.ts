@@ -37,9 +37,9 @@ export function loadedRunnerIdentity(machine:RunnerMachine):CodexRelayRunnerIden
 
 /** One native helper belongs to one relay pair, including when its runner listen channel is replaced.
  * It never reconnects. Protected failures close the pair without starting or changing the daemon. */
-export function serveCodexRelayPair(options:{id:string;challenge:string;protected:boolean;remote:WebSocket;socketPath:string;
+export function serveCodexRelayPair(options:{id:string;challenge:string;protected:true;remote:WebSocket;socketPath:string;
   machine:RunnerMachine;identity:CodexRelayRunnerIdentity;nodeExecutable:string;pinThread:(threadId:string,required:boolean)=>void;
-  onOrdinaryOpen:()=>void;onOrdinaryError:()=>void;onClosed?:(why:string)=>void}) {
+  onClosed?:(why:string)=>void}) {
   const {remote,machine,identity}=options;
   const child=spawn(options.nodeExecutable,[nativeBridgeFiles(machine)[0]!,options.socketPath,'--runner-native-pair'],{stdio:['pipe','pipe','pipe']});
   let ended=false,peer:CodexRelayAssociation['nativePeer']|null=null,announced=false,stderr='';
@@ -75,13 +75,11 @@ export function serveCodexRelayPair(options:{id:string;challenge:string;protecte
       if(frame.type==='native-peer'){
         if(frame.implementationSha256!==identity.nativeTransportSha256)throw new Error('loaded native transport differs from runner identity');
         peer=frame.peer;
-        if(!options.protected)options.onOrdinaryOpen();
         announce();
       }else if(frame.type==='data'){
         if(!announced)throw new Error('native data preceded association');
         const bytes=Buffer.from(frame.data,'base64');remote.send(frame.binary?bytes:bytes.toString('utf8'));
       }else if(frame.type==='disconnect'){
-        if(!peer&&!options.protected)options.onOrdinaryError();
         end(String(frame.error));
       }
     }catch(error){end(String(error));}

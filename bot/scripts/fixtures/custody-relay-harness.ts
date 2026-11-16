@@ -6,7 +6,7 @@ import {CodexAppServerClient} from '../../src/codex-app-server-client';
 
 /** Production client -> bridge -> foreground gateway -> runner.ts -> actual native socket.
  * Native/provider semantics belong to the caller's isolated server, never to this harness. */
-export async function createCustodyRelayFixture(root:string,nativeSocket:string,options:{runnerEntry?:string}={}) {
+export async function createCustodyRelayFixture(root:string,nativeSocket:string,options:{runnerEntry?:string;runnerEnvironment?:Record<string,string>}={}) {
   if(!nativeSocket.startsWith(root+'/'))throw new Error('fixture native socket must belong to fixture root');
   delete process.env.THINKERING_CAPABILITY_URL;
   const entry=join(root,'fixture-read-worker.ts');
@@ -23,7 +23,7 @@ export async function createCustodyRelayFixture(root:string,nativeSocket:string,
   const runnerState=join(root,'runner');mkdirSync(runnerState,{recursive:true});
   const environment={...process.env,HOME:join(root,'home'),CODEX_HOME:join(root,'codex'),CONCIERGE_OWNER_URL:`http://127.0.0.1:${port}`,
     CONCIERGE_RUNNER_TOKEN_FILE:tokenFile,CONCIERGE_RUNNER_NAME:'ax41',CONCIERGE_RUNNER_STATE:runnerState,
-    CONCIERGE_RUNNER_KINDS:'codex',CONCIERGE_CODEX_APP_SERVER_SOCKET:nativeSocket};
+    CONCIERGE_RUNNER_KINDS:'codex',CONCIERGE_CODEX_APP_SERVER_SOCKET:nativeSocket,...options.runnerEnvironment};
   const runners:ReturnType<typeof Bun.spawn>[]=[];
   const spawnRunner=()=>{
     const runner=Bun.spawn([process.execPath,'run',options.runnerEntry??resolve(import.meta.dir,'../runner.ts')],{stdout:'pipe',stderr:'pipe',env:environment});

@@ -15,6 +15,11 @@ local-only predicates and process observations had the same assumption. Removing
 factory refusal would have allowed ordinary runner-side daemon management and left actual
 connection association and effective helper preparation unproved.
 
+Parent review found a second source regression before release: every ordinary relay
+was routed through the association child and credential probe, and the gateway
+parsed every native output frame. Missing association dependencies could therefore
+interrupt otherwise ordinary Codex traffic.
+
 ## Cause
 
 Direct transport was being used as a proxy for shared observation namespaces. The
@@ -40,6 +45,15 @@ with --relay. Each fixture/report names its native-response or host-effect subst
 The stock fixture isolates HOME, CODEX_HOME and its native socket. No fixture result
 establishes live target coverage, native effect disposition or repaired productive work.
 
+The correction restores ordinary direct Bun WebSocket forwarding. Only explicit
+protected opens use the child/probe/stdio path; unavailable loaded identity is a
+protected refusal rather than runner startup failure. This avoids charging ordinary
+connections the new per-pair child cost. It trades ordinary predecessor capture
+for truthful custody holds, rather than silently granting unproved association.
+The gateway parses only the first protected control frame and rejects later
+canonical control prefixes without parsing native output. The bridge rejects any
+later association receipt rather than replacing connection evidence.
+
 ## Acceptance scenario
 
 - **Seed:** Isolated HOME/CODEX_HOME, an already-running stock native socket, co-located
@@ -48,6 +62,12 @@ establishes live target coverage, native effect disposition or repaired producti
   `bun run bot/scripts/codex-protected-relay-negative-fixture.ts`, and from `bot/`
   `bun run scripts/codex-custody-successor-fixture.ts --relay` and
   `bun run scripts/runner-worktree-inventory-fixture.ts`.
+- **Ordinary regression:** Run `bun run bot/scripts/codex-ordinary-relay-independence-fixture.ts`
+  and `bun run bot/scripts/codex-relay-protocol-fixture.ts`. Missing Python, failed
+  peer probe and missing association files preserve ordinary traffic with zero
+  runner-owned pair children; protected opens refuse. Gateway parse instrumentation
+  sees zero ordinary parses and zero native parses after the protected first frame.
+  The negative fixture proves an unassociated predecessor keeps custody held.
 - **Expected:** Exact physical association and one protected selected attempt work;
   old listener, stale pair, unsupported namespace, missing daemon, failed hook pin,
   unresolved effects and failed inventory cannot authorize construction/admission.
