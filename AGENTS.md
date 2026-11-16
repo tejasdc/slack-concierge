@@ -93,6 +93,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 
 ## Session and Inbox obligations
 
+- The Inbox stays in its current Claude Code conversation, across saved-account switches;
+  only a retained explicit human instruction can move it. Automatic exhaustion waits in place.
+  See [Inbox conversation pin](docs/architecture/PROVIDER-STATE-FLOW.md#inbox-conversation-pin).
 - Saved context is a settled input, never queued work. Preserve its exact attribution,
   attachments and chosen recipient; only a later active message brings it to the provider.
   See [passive session context](docs/contracts/session-owner-v1.md#passive-session-context).

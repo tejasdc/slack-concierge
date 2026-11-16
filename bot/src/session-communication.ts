@@ -747,7 +747,7 @@ export class SessionCommunicationCoordinator {
             if(saved.duplicate)return JSON.parse(saved.input.receipt_json??'{}');
             const session=getSessionById(target.id);
             if(!session)throw new Error('The exact session does not exist.');
-            const {former}=bindStandingAgentSession(this.dependencies.owner.defaultCwd,input.role,session);
+            const {former}=bindStandingAgentSession(this.dependencies.owner.defaultCwd,input.role,session,sourceInputId);
             // What the binding moves is said in the receipt, so a stand-in knows what it now owns
             // and what is still waiting on the session it replaced.
             const stillQueued=former?(db.query(`SELECT input.id FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id

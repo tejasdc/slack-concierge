@@ -15,6 +15,7 @@ import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './sessio
 import {codexRelayRunner} from './codex-app-server-client';
 import {runnerMachineCall} from './runner-machine-calls';
 import {claudeAccountSelection} from './provider-account-selection';
+import {holdsInbox} from './inbox-session-pin';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {homedir} from 'node:os';
@@ -326,7 +327,7 @@ interface AgentSessionStatusProjectionResult {
 
 function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatchAttempt:number,message:string,
   reason:'model_capacity_refusal'|'usage_refusal'='model_capacity_refusal'):boolean {
-  if(input.presentation!=='native'||!sessionMetadata(input.session).automaticProviderChoice||
+  if(input.presentation!=='native'||holdsInbox(input.session)||!sessionMetadata(input.session).automaticProviderChoice||
     input.providerId==='chatgpt')return false;
   let other: keyof typeof AUTOMATIC_PROVIDER_ALIASES;
   try {
@@ -343,7 +344,7 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
       status:string;owner_instance_id:string|null;dispatch_attempt:number;saved_kind:string|null;
       outbound_text:string|null;stop_requested_at:string|null;
     }|null;
-    if(!session||session.provider_id!==input.providerId||!sessionMetadata(session).automaticProviderChoice||
+    if(!session||holdsInbox(session)||session.provider_id!==input.providerId||!sessionMetadata(session).automaticProviderChoice||
       !turn||turn.status!=='running'||turn.owner_instance_id!==input.ownerInstanceId||
       turn.dispatch_attempt!==dispatchAttempt||turn.saved_kind||turn.outbound_text||turn.stop_requested_at||
       db.query('SELECT 1 FROM turns WHERE session_id=? AND id<>? LIMIT 1').get(session.id,input.turnId)||

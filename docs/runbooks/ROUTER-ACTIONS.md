@@ -516,7 +516,10 @@ name for creation. `sessions agents bind <role> <session-address> <source-flags>
 moves a role's binding to an existing non-archived session in its exact declared folder. The
 source and action ID make retries idempotent. Moving a bound session to another folder clears its
 binding. The role table in `bot/src/standing-agents.ts` is the sole home for these folders and wake facts.
-Binding `inbox` makes that session the Inbox router, exactly as an accepted provider handoff does:
+Binding `inbox` requires retained human words explicitly authorizing that destination; agents
+cannot change the pinned Inbox conversation. Account exhaustion changes Claude accounts within
+the same conversation or holds its queue. See [Inbox conversation pin](../architecture/PROVIDER-STATE-FLOW.md#inbox-conversation-pin).
+An authorized binding makes that session the Inbox router, exactly as an authorized provider handoff does:
 new captures, his thread replies, thread-named requests (`sessions ask --thread`), topic commands
 and Inbox reads go through it, and it carries the former router's open attention. Every session
 ever marked as the Inbox stays part of the one Inbox, so their threads and topics remain usable

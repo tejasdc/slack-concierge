@@ -453,7 +453,7 @@ account read as out while its other account had room (Tejas: "It has to look at 
 usage per provider, not existing usage per single account"; failure record
 [2026-11-16](../incidents/2026-11-16-new-work-choice-weighed-one-account-per-provider.md)).
 Whether a provider can start now is still its roomiest account; the total decides only the
-share. The held-work and Inbox failovers prefer the receiver with the most total room the same
+share. The held-work and non-Inbox standing-role failovers prefer the receiver with the most total room the same
 way. That mixes providers even when their readings are equal without
 storing a second rotation counter or delaying the request. As usage changes, the mix
 shifts toward the roomier provider. No selection promises that a running turn cannot
