@@ -32,6 +32,7 @@ if(!/^\/tmp\/thnkr-agent-capabilities-[0-9]+\/session\.sock$/.test(capabilitySoc
 if(!Number.isSafeInteger(seconds)||seconds<60||seconds>7200)throw new Error('Refused: --deadline-seconds must be 60-7200.');
 if(!Number.isSafeInteger(maxTurns)||maxTurns<1||maxTurns>60)throw new Error('Refused: --max-turns must be 1-60.');
 if(process.getuid?.()!==0)throw new Error('Refused: run as root so the owner directory is root-private.');
+const RUNNER_NAME='lab-disposable';
 
 const stateDir=mkdtempSync('/tmp/concierge-lab-owner-');
 chmodSync(stateDir,0o700);
@@ -61,14 +62,22 @@ requireGuardNoop();
 for(const key of ['CONCIERGE_CODEX_RUNNER','CONCIERGE_TURN_RUNNERS','CONCIERGE_TURN_RUNNER','CONCIERGE_RUNNER_STATE','CONCIERGE_RUNNER_TOKEN_FILE','CONCIERGE_OWNER_URL','CONCIERGE_AGENT_TOKEN','CONCIERGE_THINKERING_CAPABILITY_URL','CONCIERGE_THINKERING_TOKEN_FILE','CONCIERGE_AGENT_API_URL'])delete process.env[key];
 Object.assign(process.env,{CONCIERGE_STATE_DIR:stateDir,CONCIERGE_CAPTURE_STATE_DIR:join(stateDir,'capture'),CONCIERGE_TEST_MODE:'1',
  CONCIERGE_TEST_AUTHORIZATION:LAB_CONVERSATIONS_TEST_AUTHORIZATION,CONCIERGE_EXECUTION_HOSTS:'0',THINKERING_SESSION_CAPABILITY_SOCKET:capabilitySocket,
- CONCIERGE_SESSION_CAPABILITY_SOCKET:capabilitySocket,CONCIERGE_CODEX_APP_SERVER_SOCKET:join(stateDir,'codex.sock')});
+ CONCIERGE_SESSION_CAPABILITY_SOCKET:capabilitySocket,CONCIERGE_CODEX_APP_SERVER_SOCKET:join(stateDir,'codex.sock'),
+ // Claude turns run on a runner exactly as in production (CONCIERGE_TURN_RUNNERS=all): the owner never
+ // launches Claude itself, and account rooms are judged by the runner's homes.
+ CONCIERGE_TURN_RUNNERS:'all',CONCIERGE_TURN_RUNNER:RUNNER_NAME});
 mkdirSync(join(stateDir,'capture'),{mode:0o700});
 const [{agentTokenKey,mintAgentToken,verifyAgentToken,agentPrincipalHeader},{writeRunnerConnection},{SessionExecutionHost},{ActiveTurnDispatchRegistry},{providers},{claimNextQueuedTurn,registerProcessInstance,db},{currentProcessIdentity},{holdCodexDaemonAutoStart},{closeSharedCodexAppServerClient},{SessionCommunicationCoordinator},{requestApiHandler}]=await Promise.all([
  import('../src/agent-run-tokens'),import('../src/runner-machine'),import('../src/session-execution-host'),import('../src/turn-dispatch-seams'),import('../src/providers'),import('../src/state'),import('../src/runtime-identity'),import('../src/codex-daemon-file-limit'),import('../src/codex-app-server-client'),import('../src/session-communication'),import('../src/routed-request-api')]);
+const {scheduleProviderAccountUsageRefresh,startProviderUsageWatch}=await import('../src/provider-account-usage');
+const {newWorkCapacity}=await import('../src/provider-start-choice');
+const {RunnerRelay}=await import('../src/runner-relay');
+const {runnerRoutes}=await import('../src/runner-routes');
+const relay=new RunnerRelay();
 // A missing disposable socket must never trigger the ordinary production daemon recovery.
 holdCodexDaemonAutoStart(true);
 const key=agentTokenKey(stateDir),tokenFile=join(stateDir,'runner.token');
-await Bun.write(tokenFile,mintAgentToken(key,{kind:'runner',runner:'lab-disposable-owner'}));chmodSync(tokenFile,0o600);
+await Bun.write(tokenFile,mintAgentToken(key,{kind:'runner',runner:RUNNER_NAME}));chmodSync(tokenFile,0o600);
 const instanceId=randomUUID(),identity=currentProcessIdentity();registerProcessInstance(instanceId,identity.pid,identity.bootId,identity.startTicks);
 let stopping=false,active=0,starts=0,refusedOverBudget=0;
 const claimed=new Set<number>(),running=new Map<number,number>();
@@ -105,7 +114,9 @@ function hookTurn(body:any){
 /** Every read serves this fresh ledger only; writes are limited to Lab commands and participants' own hooks. */
 async function guarded(request:Request){
  const url=new URL(request.url),path=url.pathname;
- if(path==='/disposable/status'&&request.method==='GET')return Response.json({stateDir,starts,active,maxTurns,refusedOverBudget,deadlineMs});
+ // Only this owner's own runner reaches the lease protocol.
+ if(path.startsWith('/runner/v1/'))return request.headers.get('x-concierge-agent-principal')===`runner:${RUNNER_NAME}`?runnerRoutes(request,url):bad(403,'RUNNER_ONLY','Runner routes are for this owner\'s runner.');
+ if(path==='/disposable/status'&&request.method==='GET')return Response.json({stateDir,starts,active,maxTurns,refusedOverBudget,deadlineMs,capacity:Object.fromEntries((['claude-code','codex'] as const).map(provider=>{let room:any=null;try{room=newWorkCapacity(provider);}catch(error){room={unknown:String(error)};}return [provider,room?{account:room.account??null,used:room.used??null,unknown:room.unknown}:null];}))});
  if(request.method==='POST'&&HOOKS.includes(path)){
   const turn=hookTurn(await request.clone().json().catch(()=>null));
   if(!turn||!claimed.has(turn.id))return bad(400,'NOT_AN_OWNED_TURN','The hook does not identify a turn of this disposable owner.');
@@ -124,14 +135,26 @@ async function guarded(request:Request){
 }
 const deadlineMs=Date.now()+seconds*1000;
 let local:any=null,gateway:any=null,server:any=null,timer:ReturnType<typeof setInterval>|null=null;
+let stopUsageWatch:()=>void=()=>{};
+let runner:ReturnType<typeof Bun.spawn>|null=null,runnerState:string|null=null,requestsSocket:any=null;
 const requestStop=()=>{stopping=true;};process.once('SIGINT',requestStop);process.once('SIGTERM',requestStop);
 let exitCode=0;
 try {
  local=Bun.serve({unix:join(stateDir,'owner.sock'),idleTimeout:0,fetch:guarded});chmodSync(join(stateDir,'owner.sock'),0o600);
- // Participants' own commands (router-actions) reach this owner through an authenticated loopback entrance.
- gateway=Bun.serve({hostname:'127.0.0.1',port:0,idleTimeout:0,fetch:async (request:Request)=>{
+ // The owner's own private socket, as in production: its runner-machine calls (account readings,
+ // project resolution) open a relay to the runner here, and internal reads come back through it.
+ requestsSocket=Bun.serve({unix:join(stateDir,'requests.sock'),idleTimeout:0,websocket:relay.handlers,fetch:(request:Request,bunServer)=>
+  new URL(request.url).pathname==='/runner/v1/relay/connect'?relay.upgradeLocal(request,bunServer):routed(request)});
+ chmodSync(join(stateDir,'requests.sock'),0o600);
+ // Participants' commands and this owner's runner reach it through an authenticated loopback entrance.
+ gateway=Bun.serve({hostname:'127.0.0.1',port:0,idleTimeout:0,websocket:relay.handlers,fetch:async (request:Request,bunServer)=>{
   const auth=request.headers.get('authorization')??'',principal=auth.startsWith('Bearer ')?verifyAgentToken(key,auth.slice(7)):null;
   if(!principal)return Response.json({error:'AGENT_UNAUTHORIZED'},{status:401});
+  const pathname=new URL(request.url).pathname;
+  if(pathname==='/runner/v1/relay/listen'||pathname==='/runner/v1/relay/accept'){
+   if(agentPrincipalHeader(principal)!==`runner:${RUNNER_NAME}`)return bad(403,'RUNNER_ONLY','Relay connections are for this owner\'s runner.');
+   return relay.upgradeRunner(request,bunServer,agentPrincipalHeader(principal));
+  }
   const headers=new Headers(request.headers);headers.delete('authorization');headers.set('x-concierge-agent-principal',agentPrincipalHeader(principal));
   return guarded(new Request(request,{headers}));
  }});
@@ -147,6 +170,32 @@ try {
   if(!existsSync(join(stateDir,'codex.sock')))console.error('Disposable Codex App Server did not listen; Codex voices will fail.');
   requireGuardNoop();
  }
+ // The real runner daemon, with its own state outside the owner directory. Its agent hosts cannot
+ // read the production ledger or this owner's ledger (the same hiding as the production runner).
+ // Its diagnostics go to stderr so the first stdout line stays the ready record.
+ runnerState=mkdtempSync('/tmp/concierge-lab-runner-');chmodSync(runnerState,0o700);
+ runner=Bun.spawn([process.execPath,resolve(import.meta.dir,'runner.ts')],{
+  env:{PATH:process.env.PATH??'/root/.bun/bin:/usr/local/bin:/usr/bin:/bin',HOME:'/root',CONCIERGE_OWNER_URL:origin,CONCIERGE_RUNNER_TOKEN_FILE:tokenFile,
+   CONCIERGE_RUNNER_STATE:runnerState,CONCIERGE_RUNNER_KINDS:'turn',CONCIERGE_RUNNER_NAME:RUNNER_NAME,
+   CONCIERGE_RUNNER_HIDE_PATHS:`/root/.local/state/concierge:/var/lib/concierge-ledger:${stateDir}`},
+  stdout:'pipe',stderr:'inherit'});
+ void (async()=>{for await(const chunk of runner.stdout as ReadableStream<Uint8Array>)process.stderr.write(chunk);})().catch(()=>{});
+ const listenBy=Date.now()+60_000;
+ while(!relay.snapshot().listening.includes(RUNNER_NAME)){
+  if(runner.exitCode!==null)throw new Error(`The disposable runner exited (${runner.exitCode}) before connecting.`);
+  if(Date.now()>listenBy)throw new Error('The disposable runner did not connect its relay within 60 s.');
+  await Bun.sleep(200);
+ }
+ // New work starts only on a current allowance reading. An empty ledger has none, so take the same
+ // real reading production takes (through the runner) before saying ready, then keep refreshing.
+ const capacityBy=Date.now()+120_000;let claudeRoom:any=null;
+ while(!(claudeRoom=newWorkCapacity('claude-code'))){
+  if(Date.now()>capacityBy)throw new Error('No current Claude allowance reading arrived through the runner within 120 s; group starts would be refused.');
+  await Promise.race([scheduleProviderAccountUsageRefresh(),Bun.sleep(60_000)]).catch(()=>{});
+  if(!newWorkCapacity('claude-code'))await Bun.sleep(3000);
+ }
+ if(claudeRoom.used>=100)console.error('Every Claude account is out of allowance; Claude voices will wait for a reset.');
+ stopUsageWatch=startProviderUsageWatch({stopped:()=>stopping});
  communication.start();
  let observing=false;
  async function tick(){if(observing||stopping)return;observing=true;try{
@@ -162,11 +211,11 @@ try {
  function claimNextQueuedTurnPeek(){return !!db.query("SELECT 1 FROM turns WHERE status='queued' LIMIT 1").get();}
  timer=setInterval(()=>void tick(),500);
  console.log(JSON.stringify({ready:true,ownerSocket:join(stateDir,'owner.sock'),stateDir,deadline:new Date(deadlineMs).toISOString(),maxTurns,
-  providers:{'claude-code':'runs','codex':existsSync(join(stateDir,'codex.sock'))?'runs if the Codex account has allowance':'unavailable','chatgpt':'refused: isolated workspace has no ChatGPT capability'}}));
+  providers:{'claude-code':`runs on runner ${RUNNER_NAME}; least-used account ${newWorkCapacity('claude-code')?.used??'?'}% weekly`,'codex':existsSync(join(stateDir,'codex.sock'))?'runs if the Codex account has allowance':'unavailable','chatgpt':'refused: isolated workspace has no ChatGPT capability'}}));
  while(Date.now()<deadlineMs&&!stopping)await Bun.sleep(250);
 } catch(error){exitCode=1;console.error(String(error));
 } finally {
- stopping=true;if(timer)clearInterval(timer);await Promise.race([communication.stop(),Bun.sleep(5000)]);owner.labConversations.stop();
+ stopping=true;if(timer)clearInterval(timer);stopUsageWatch();await Promise.race([communication.stop(),Bun.sleep(5000)]);owner.labConversations.stop();
  // Stop only this owner's exact turns; preserve uncertainty if no terminal receipt arrives.
  const stops=[...running].map(([turn,session])=>{
   const row=db.query('SELECT native_run_id AS runId FROM turns WHERE id=? AND session_id=?').get(turn,session) as {runId:string|null}|null;
@@ -176,7 +225,9 @@ try {
  const waitUntil=Date.now()+15000;while(active&&Date.now()<waitUntil)await Bun.sleep(200);
  const unconfirmed=[...running.keys()];
  await Promise.race([host.stop(),Bun.sleep(5000)]);await Promise.race([closeSharedCodexAppServerClient(),Bun.sleep(5000)]);
- await local?.stop(true);await gateway?.stop(true);
+ relay.closeAll();await local?.stop(true);await gateway?.stop(true);await requestsSocket?.stop(true);
+ if(runner){runner.kill('SIGTERM');await Promise.race([runner.exited,Bun.sleep(10000)]);if(runner.exitCode===null)runner.kill('SIGKILL');}
+ if(runnerState&&!keep&&resolve(runnerState).startsWith('/tmp/concierge-lab-runner-'))rmSync(runnerState,{recursive:true,force:true});
  if(server){const stop=Bun.spawn(['systemctl','stop',`codex-app-server-${process.pid}.scope`],{stdout:'ignore',stderr:'inherit'});await Promise.race([stop.exited,Bun.sleep(5000)]);await Promise.race([server.exited,Bun.sleep(5000)]);}
  db.close();
  // The directory holds only this disposable ledger and sockets; it is removed unless kept for inspection.
