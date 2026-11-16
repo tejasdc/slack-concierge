@@ -53,6 +53,22 @@ checks, never private content. A fresh run of the same isolated check passing do
 establish why an earlier candidate timed out; compare its last marker with the host's
 resources before changing the gate's deadline or candidate behavior.
 
+### Candidate check boundary
+
+Candidate preparation runs the candidate's presentation release check inside the private-code
+boundary, not the capability-less database boundary, so the check can create its own nested
+private sandboxes. The outer bubblewrap still masks the live ledger directory, its backing files
+and loop images exactly as before. The inner user namespace keeps `--cap-drop ALL` and adds only
+`CAP_SYS_ADMIN` (create nested mounts and namespaces), `CAP_DAC_OVERRIDE` and `CAP_SETFCAP`
+(nested namespaces map their parent's root); the Codex home is hidden and the environment is
+verified before the check starts. The masks stay locked because mounts inherited into a mount
+namespace owned by a less-privileged user namespace cannot be unmounted or moved by it
+(`mount_namespaces(7)`, "Restrictions on mount namespaces"). The timeout, environment variables,
+refusal and retained evidence are unchanged. Because `CAP_DAC_OVERRIDE` lets the check read the
+mode-000 mask directory, a candidate built before this change, whose database safety check
+expects an access refusal there, fails its presentation check and is refused (fail closed).
+Candidates must carry the updated safety check; the previous controller can still prepare them.
+
 The serving coordinator records the start and elapsed time of each request-surface stop during
 SIGTERM. For a long `verifying` interval, compare `service_drain_surface_stopping` and
 `service_drain_surface_stopped` in `concierge-bot.service`'s journal with the deployment run's

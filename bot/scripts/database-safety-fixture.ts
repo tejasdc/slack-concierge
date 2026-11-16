@@ -165,7 +165,7 @@ try {
     }
   } finally { owner.exec('ROLLBACK'); owner.close(); }
   if (process.platform === 'linux') {
-    const command = privateDatabaseCommand(['/usr/bin/python3', '-c', 'import os; p=os.path.expanduser("~/.local/state/concierge/state.db");\ntry: open(p,"rb")\nexcept PermissionError: print("refused")\nelse: raise SystemExit("live file was accessible")']);
+    const command = privateDatabaseCommand(['/usr/bin/python3', '-c', 'import os; p=os.path.expanduser("~/.local/state/concierge/state.db");\ntry: open(p,"rb")\nexcept (PermissionError,FileNotFoundError): print("refused")\nelse: raise SystemExit("live file was accessible")']);
     if (existsSync(join(homedir(),'.local/state/concierge'))) {
       const isolated = Bun.spawnSync(command, { stdout:'pipe', stderr:'pipe', timeout:5_000 });
       assert.equal(isolated.exitCode, 0, isolated.stderr.toString());
@@ -190,23 +190,35 @@ try {
         stdout: 'pipe', stderr: 'pipe', timeout: 5_000,
       });
       assert.equal(mounted.exitCode, 0, mounted.stderr.toString());
-      const ledgerSource = Bun.spawnSync(['/usr/bin/findmnt', '-no', 'SOURCE', '-T', join(homedir(), '.local/state/concierge/state.db')],
-        { stdout: 'pipe', stderr: 'pipe' });
-      assert.equal(ledgerSource.exitCode, 0, ledgerSource.stderr.toString());
-      const device = basename(ledgerSource.stdout.toString().trim());
-      if (/^loop\d+$/.test(device)) {
-        const image = readFileSync(`/sys/block/${device}/loop/backing_file`, 'utf8').trim();
-        assert(statSync(image).size > 0);
-        for (const mountCapable of [false, true]) {
-          const imageCheck = Bun.spawnSync(privateDatabaseCommand(['/usr/bin/stat', '-c', '%s', image], mountCapable),
-            { stdout: 'pipe', stderr: 'pipe', timeout: 5_000 });
-          assert.equal(imageCheck.exitCode, 0, imageCheck.stderr.toString());
-          assert.equal(imageCheck.stdout.toString().trim(), '0', `loop backing image exposed with mountCapable=${mountCapable}`);
+      const identityProbe=['/usr/bin/true'];
+      const inherited=privateDatabaseCommand(identityProbe,true)===identityProbe;
+      const images:string[]=[];
+      if(inherited){
+        // The verified root concealed backing files before imports. Check retained
+        // mask identity instead of trying to discover the now-hidden original device.
+        const masks=JSON.parse(process.env.CONCIERGE_PRIVATE_DATABASE_MASKS!);
+        for(const image of masks.backingFiles){
+          const item=statSync(image);assert(item.isCharacterDevice());
+          assert.equal(item.dev,masks.nullIdentity.device);assert.equal(item.ino,masks.nullIdentity.inode);
+          images.push(image);
         }
+      }else{
+        const ledgerSource=Bun.spawnSync(['/usr/bin/findmnt','-no','SOURCE','-T',join(homedir(),'.local/state/concierge/state.db')],{stdout:'pipe',stderr:'pipe'});
+        assert.equal(ledgerSource.exitCode,0,ledgerSource.stderr.toString());
+        const device=basename(ledgerSource.stdout.toString().trim());
+        if(/^loop\d+$/.test(device)){
+          const image=readFileSync(`/sys/block/${device}/loop/backing_file`,'utf8').trim();
+          assert(statSync(image).size>0);images.push(image);
+        }
+      }
+      for(const image of images)for(const mountCapable of [false,true]){
+        const imageCheck=Bun.spawnSync(privateDatabaseCommand(['/usr/bin/stat','-c','%s',image],mountCapable),{stdout:'pipe',stderr:'pipe',timeout:5_000});
+        assert.equal(imageCheck.exitCode,0,imageCheck.stderr.toString());
+        assert.equal(imageCheck.stdout.toString().trim(),'0',`loop backing image exposed with mountCapable=${mountCapable}`);
       }
     }
     console.log(JSON.stringify({check:'database-isolation-boundary',
-      freshBoundary:canMountCanonical?'exercised':'not-exercised',
+      freshBoundary:process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED==='1'?'inherited-verified':canMountCanonical?'exercised':'not-exercised',
       reason:canMountCanonical?'canonical-directory-accessible':'canonical-directory-unavailable'}));
   }
   console.log(JSON.stringify({check:'database-safety',status:'passed',atomicPublication:true,verifiedRetention:true,readHelperUnderWriter:true,rawScriptRefusal:true}));
