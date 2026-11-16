@@ -125,7 +125,7 @@ import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
 import {currentAccount} from './provider-accounts';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {PeerAccountAnswers} from './peer-account-answers';
-import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
+import {maybeStartStandingRoleFailover} from './standing-role-provider-failover';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -2083,7 +2083,7 @@ export class SessionOwner {
   private ensureInboxSession() {
     const current=inboxSession(),meta=current?sessionMetadata(current):null;
     if(current&&meta?.inboxRole==='project-router'&&meta.standingRole==='inbox'){
-      maybeStartInboxProviderFailover(current);
+      maybeStartStandingRoleFailover(current);
       return current;
     }
     const runner=this.configuredProjectRunner();

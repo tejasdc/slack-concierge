@@ -33,7 +33,7 @@ import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {OwnerDrainBeforeProviderAdmissionError,ProviderDispatchError} from './provider-failures';
 import {providerRetryDelayMs} from './provider-failures';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
-import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
+import {maybeStartStandingRoleFailover} from './standing-role-provider-failover';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
 import {proveCodexInputNeverAcknowledged} from './codex-unacknowledged-proof';
@@ -1358,7 +1358,8 @@ export class SessionExecutionHost {
         ?`recovered-terminal:${claim.turn_id}:${claim.dispatch_attempt}:${count}`
         :`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
       // A drain's proven-unsent requeue is a handoff, not a provider failure.
-      if(!this.draining&&sessionMetadata(session).inboxRole==='project-router')maybeStartInboxProviderFailover(session);
+      // Any standing role (the Inbox, the repair agent, …) whose provider just refused it can move.
+      if(!this.draining)maybeStartStandingRoleFailover(getSessionById(session.id));
       if(session.provider_id==='codex'&&(process.platform==='linux'||process.env.CONCIERGE_CODEX_RUNNER))await this.auditCodexTurn(claim.turn_id).catch(error=>
         log('warn','codex_process_audit_failed',{turn_id:claim.turn_id,...errorFields(error)}));
       const ownedClient=this.testCodexClients.get(claim.turn_id);

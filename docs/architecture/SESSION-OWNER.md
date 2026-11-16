@@ -270,7 +270,8 @@ moves unless Tejas himself chose its provider or model (`providerChosenBy: 'teja
 the owner verifies his choice: a human create or model control naming one, or a request whose
 provider choice is verified from his words; older sessions count as his when their human create
 named a provider or model). An agent-passed `--provider`, the owner's own Claude-allowance transfers
-and handoff successors are movable. The Inbox and standing roles (each with their own failover),
+and handoff successors are movable. The Inbox and standing roles (moved by the
+[standing-role failover](PROVIDER-STATE-FLOW.md#standing-role-provider-continuity) instead),
 paused and consultation-only sessions stay. The successor keeps the predecessor's model tier and
 reasoning effort (`aliasKeepingTier` in `aliases.ts`). Each skipped candidate is logged once per
 session and reason per 30 minutes as `held_work_failover_skipped` (`pinned`, `source_can_start`,

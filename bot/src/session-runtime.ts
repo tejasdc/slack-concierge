@@ -33,7 +33,7 @@ import {startMachineWatchWorker,wakeWatchWorker} from './watches';
 import {claimAdoptableExecutions,hostedTurns,watchHeldExecution,type Adoption} from './executions';
 import {interruptOrphanedTurn,failUnacknowledgedClaudeParkedTurns} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
-import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
+import {moveStandingRolesOffSpentProviders} from './standing-role-provider-failover';
 import {moveHeldWork} from './held-work-failover';
 import {reconcileCoveredTasteRequest,recoverOctoberBudgetPauses} from './incident-budget-pause-recovery';
 import {startAreaFiling} from './area-filing';
@@ -143,7 +143,7 @@ export async function startSessionRuntime() {
   // composition, so this runtime spent the same accounts while never watching them.
   const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:banked.hasActiveUnattendedBanked,
     onReading:()=>{void keepThreadsCurrent(admission=>host.owner.admit(admission),(requestId,replacedBy)=>communication.withdrawSupersededAttempt(requestId,replacedBy)).catch(error=>log('error','inbox_recovery_pass_failed',errorFields(error)));
-      banked.onReading();reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();maybeStartInboxProviderFailover();moveHeldWork();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));void closeQuestionsAnsweredByTodos(admission=>host.owner.admit(admission)).catch(()=>{});queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
+      banked.onReading();reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();moveStandingRolesOffSpentProviders();moveHeldWork();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));void closeQuestionsAnsweredByTodos(admission=>host.owner.admit(admission)).catch(()=>{});queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
   const stopBackgroundJobWatch=startBackgroundJobWatch(admission=>host.owner.admit(admission));
   const stopUpdateWaitWatch=startUpdateWaitWatch({admit:admission=>host.owner.admit(admission),stateDir:process.env.CONCIERGE_STATE_DIR!});
   const stopWatchWorker=startMachineWatchWorker(admission=>host.owner.admit(admission),()=>draining);
