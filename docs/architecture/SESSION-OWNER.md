@@ -182,7 +182,8 @@ entries stay where they were and keep their original authors.
 Only a live successor run can accept with the inventory digest. The owner recomputes the
 inventory; a changed digest or an unsafe queued input refuses acceptance and returns the current inventory for
 acknowledgement. An answer with no acknowledged return receipt also holds acceptance until
-that exact return settles. Acceptance transfers the open request return and reply ownership,
+that exact return settles, unless that return still waits in a never-started queued turn the
+handoff moves; then the duty and the return move together and the successor acknowledges it. Acceptance transfers the open request return and reply ownership,
 ChatGPT answer handling and repair ownership, safe never-started queued inputs and inputs held by a
 terminal zero-work usage refusal, scheduled firings,
 and watches in one ledger transaction, recording each
