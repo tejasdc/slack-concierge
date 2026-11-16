@@ -217,7 +217,7 @@ export type SessionCommunicationRequest =
   | { operation: "control"; body: { source: Source; verb:'pause'|'continue'; address:string; action_id:string } }
   | { operation: "codex-test-control"; body: { source: Source; verb:'stop'|'connection-loss'; session_id:string; create_input_id:string; run_id:string; action_id:string } }
   | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } }
-  | { operation:'lab-roster'|'lab-participant-change';body:{thread:string;action_id?:string} }
+  | { operation:'lab-roster'|'lab-participant-change';body:{thread:string;action_id?:string;source?:Source} }
   | { operation:'lab-participants';body:{thread:string;source:{input_id:string;run_id:string};action_id:string;revision:number;add:unknown[];remove:unknown[]} };
 
 class SessionUsageError extends Error {}
@@ -375,7 +375,7 @@ const BOARD_VERBS=['read','thread','post','claim','reveal','close','product','ci
 const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--reply-to','--kind','--title','--blind','--decider','--end','--outcome','--text-file','--product','--supersedes','--medium','--address','--to','--relation','--reason','--target','--intent','--disposition-file','--speaker','--his-input','--inbox-session','--inbox-message','--design','--verdict','--scope','--json-file'];
 const BOARD_REPEATED=['--mention','--member','--from','--response-target'];
 function parseLabRosterArgs(verb:string,args:string[]):SessionCommunicationRequest {
-  const allowed=verb==='roster'?['--thread']:verb==='participant-change'?['--thread','--action-id']:
+  const allowed=verb==='roster'?['--thread','--source-input','--source-run']:verb==='participant-change'?['--thread','--action-id','--source-input','--source-run']:
     ['--thread','--revision','--json-file','--source-input','--source-run','--action-id'];
   const flags=new Map<string,string>();
   while(args.length){const flag=args.shift()!,value=args.shift();
@@ -383,9 +383,10 @@ function parseLabRosterArgs(verb:string,args:string[]):SessionCommunicationReque
     flags.set(flag,value);
   }
   const thread=flags.get('--thread')?.replace(/^lab:/,'');if(!thread)invalid(`${verb} needs --thread.`);
-  if(verb==='roster')return {operation:'lab-roster',body:{thread}};
+  const readSource=flags.has('--source-input')||flags.has('--source-run')?sourceFrom(flags):undefined;
+  if(verb==='roster')return {operation:'lab-roster',body:{thread,...(readSource?{source:readSource}:{})}};
   const action_id=flags.get('--action-id');if(!action_id)invalid(`${verb} needs --action-id.`);
-  if(verb==='participant-change')return {operation:'lab-participant-change',body:{thread,action_id}};
+  if(verb==='participant-change')return {operation:'lab-participant-change',body:{thread,action_id,...(readSource?{source:readSource}:{})}};
   const source=sourceFrom(flags);if(!('input_id' in source))invalid('Lab participants needs an exact native source input and run.');
   const revision=Number(flags.get('--revision'));if(!Number.isSafeInteger(revision)||revision<1)invalid('Lab participants needs a positive --revision.');
   const file=flags.get('--json-file');if(!file)invalid('Lab participants needs --json-file containing add and remove arrays.');
@@ -1231,7 +1232,8 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
 export async function runRouterSessions(request: SessionCommunicationRequest) {
   if(request.operation==='lab-roster'||request.operation==='lab-participant-change'){
     const path=`/sessions/v1/lab/conversations/${encodeURIComponent(request.body.thread)}`;
-    return requestApiResponse(request.operation==='lab-roster'?path:`${path}/participant-changes/${encodeURIComponent(request.body.action_id!)}`);
+    const source=request.body.source;
+    return requestApiResponse(request.operation==='lab-roster'?path:`${path}/participant-changes/${encodeURIComponent(request.body.action_id!)}`,undefined,undefined,source&&'input_id' in source?{inputId:source.input_id,runId:source.run_id}:undefined);
   }
   if(request.operation==='lab-participants'){
     const {thread,source,action_id,revision,add,remove}=request.body;

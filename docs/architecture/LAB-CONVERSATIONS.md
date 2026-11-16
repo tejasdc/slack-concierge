@@ -65,6 +65,23 @@ answers from a still-independent reader while the human can see answers as they 
 This is isolation at the supported Lab and prompt entrances, not a claim that a coding
 agent's arbitrary shell or pre-existing private history is an adversarial sandbox.
 
+The same rule covers every ordinary owner read, not only the Lab view. Each agent read
+carries its reader (a run token, or a declared `X-Concierge-Agent-Source` pair that the
+owner checks against an admitted live run) through HTTP, native read workers, routed
+commands, direct communication calls, event streams and peer calls. While a reader's
+own invocation is an independent opening, any accepted input, receipt, run, history
+message, event, search hit or context whose retained provenance belongs to that thread
+is withheld: exact entities (operation, run, message detail, publication verifier) are
+refused with 403, collections drop only the protected items. The reader's own invocation
+and its earlier unrelated history stay readable. An agent read without a provable source
+is never promoted to a trusted read; it is refused Lab content. Human and private service
+reads are unchanged. A reader lives only as long as its request: work the request starts
+(the request-delivery, peer and turn-queue loops, timers, provider runs) never runs as
+that reader, and an invocation that has not yet proven its admitted binding carries no
+comparison fact instead of failing the whole read. `scripts/lab-content-disclosure-fixture.ts`
+exercises all seven read paths against a real held-open ChatGPT participant through the
+agent gateway, and the reader's lifetime.
+
 Selected participant instructions are retained verbatim before the question. Retained
 source references use the existing verified source/version/branch/event capability;
 the exact bytes and their digest enter the frozen prompt. A source label alone cannot

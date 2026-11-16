@@ -1,3 +1,5 @@
+import {withContentReader,trustedContentReader,verifiedContentSource,contentReader,contentReaderHeaders,assertInputContent,inputContentVisible,assertMessageContent,messageContentVisible,evidenceContentVisible,assertOpaqueSession,opaqueSessionProtected,LabDisclosureError} from './lab-content-disclosure';
+import {comparisonContext} from './lab-invocation-facts';
 import {requirementsFor} from './request-history';
 import {parseAgentPrincipalHeader} from './agent-token-verify';
 import {LabConversations,LabConversationError,type LabParticipantChoice,type LabPreparedParticipant,type LabActor} from './lab-conversations';
@@ -673,7 +675,7 @@ export class SessionOwner {
   private labActor(request:Request,body:unknown):LabActor|undefined {
     const input=object(body),bodySource=input.agentSource;
     if(bodySource!==undefined&&(!bodySource||typeof bodySource.inputId!=='string'||typeof bodySource.runId!=='string'))throw new LabConversationError('A marked Lab action needs its complete exact source pair.',403,'AGENT_SOURCE_REQUIRED');
-    const marked=request.headers.get('x-concierge-verified-agent-source'),supplied=bodySource?`${bodySource.inputId} ${bodySource.runId}`:null;
+    const marked=request.headers.get('x-concierge-agent-source')??request.headers.get('x-concierge-verified-agent-source'),supplied=bodySource?`${bodySource.inputId} ${bodySource.runId}`:null;
     if(marked&&supplied&&marked!==supplied)throw new LabConversationError('The marked Lab source differs from its submitted source.',403,'AGENT_SOURCE_MISMATCH');
     const header=marked??supplied;
     const authenticated=request.headers.get('x-concierge-agent-principal'),principal=authenticated?parseAgentPrincipalHeader(authenticated):null;
@@ -681,11 +683,7 @@ export class SessionOwner {
     if(!header)return undefined;
     const pair=/^(\S+) (\S+)$/.exec(header);
     if(!pair)throw new LabConversationError('The marked Lab source is invalid.',403,'AGENT_SOURCE_REQUIRED');
-    const value={inputId:pair[1]!,runId:pair[2]!};
-    const source=getAcceptedSessionInput(value.inputId),observed=source?readInputExecution(source):null;
-    if(!source||!observed?.turn||nativeRunId(observed.turn.id)!==value.runId||observed.turn.session_id!==source.session_id||observed.turn.status!=='running'||!observed.turn.provider_admission_intended_at||observed.turn.stop_requested_at)throw new LabConversationError('The marked Lab source must be its exact admitted live run.',403,'AGENT_SOURCE_REQUIRED');
-    if(principal?.kind==='run'&&(principal.sessionId!==source.session_id||principal.turnId!==observed.turn.id))throw new LabConversationError('The Lab source does not belong to this authenticated agent run.',403,'AGENT_SOURCE_MISMATCH');
-    return {inputId:source.id,runId:value.runId,sessionId:source.session_id};
+    return verifiedContentSource({inputId:pair[1]!,runId:pair[2]!});
   }
   captureDeliveryStatus?:()=>{available:boolean;reason:string|null};
   private readonly openStreams=new Set<()=>void>();
@@ -1289,6 +1287,11 @@ export class SessionOwner {
     return {ready:true,reason:null};
   }
   view(session:SessionRow) {
+    const view=this.rawView(session);
+    if(!opaqueSessionProtected(session.id))return view;
+    return {id:view.id,address:view.address,provider:view.provider,bindingGeneration:view.bindingGeneration,model:view.model,reasoningEffort:view.reasoningEffort,capabilities:{...view.capabilities,reason:null},contentRestricted:true} as typeof view;
+  }
+  private rawView(session:SessionRow) {
     const meta=sessionMetadata(session);
     // Who the agent is and what it is doing come from the one presence rule the sidebar card
     // also uses, never from a second derivation here.
@@ -1384,6 +1387,7 @@ export class SessionOwner {
   /** Admission changes are attempt-scoped even when the accepted-input receipt has settled. */
   invalidateReceipt(inputId:string){this.settledReceipts.delete(inputId);}
   receipt(input:AcceptedSessionInput) {
+    assertInputContent(input);
     const cached=this.settledReceipts.get(input.id);
     // Author corrections can arrive after a receipt settles; never cache send authority.
     if(cached)return {...cached,humanAuthored:humanAuthored(input)};
@@ -1392,6 +1396,11 @@ export class SessionOwner {
     return built;
   }
   buildReceipt(input:AcceptedSessionInput) {
+    assertInputContent(input);
+    let comparison:ReturnType<typeof comparisonContext>=null;
+    // An invocation that has not proven its admitted binding yet (queued, or retained before proof)
+    // carries no comparison fact; readers treat a typed invocation without one as restricted.
+    try{comparison=comparisonContext(input);}catch{comparison=null;}
     const parsed=JSON.parse(input.payload_json),observed=readInputExecution(input);
     const saved=input.receipt_json?JSON.parse(input.receipt_json):{};
     const admissionAttempts=db.query("SELECT payload_json FROM session_owner_events WHERE input_id=? AND kind='provider_admission' ORDER BY sequence")
@@ -1417,7 +1426,7 @@ export class SessionOwner {
     const attachments=receiptAttachmentProjection(db,input.kind,parsed).attachments;
     const retainedError=saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null);
     const steeringError=observed.state==='failed'?observed.turn?.agent_text:observed.state==='uncertain'?{code:statusDetail?.code,message:statusDetail?.message}:null;
-    return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,humanAuthored:humanAuthored(input),...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
+    return {version:1,...(comparison?{comparisonContext:comparison}:{}),operationId:input.id,sessionId:`concierge:${input.session_id}`,humanAuthored:humanAuthored(input),...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
       requestId:input.request_id,runId:input.kind==='stop'?parsed.runId:control?null:observed.turn?nativeRunId(observed.turn.id):null,
       kind:input.kind,origin:input.origin,state:switchState??stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,
@@ -1460,7 +1469,7 @@ export class SessionOwner {
       :(db.query('SELECT rowid AS sequence,* FROM session_inputs WHERE session_id=? AND (? IS NULL OR rowid<?) ORDER BY rowid DESC LIMIT ?')
         .all(row.id,before,before,limit) as any[]).reverse()) as (AcceptedSessionInput&{sequence:number})[];
     const older=page.length>0&&limit!==null?db.query('SELECT 1 FROM session_inputs WHERE session_id=? AND rowid<? LIMIT 1').get(row.id,page[0]!.sequence):null;
-    const operations=page.map(input=>this.receipt(input));
+    const operations=page.filter(inputContentVisible).map(input=>this.receipt(input));
     // Only a complete read can anchor a later delta; a page is a window, not a held set.
     const complete=limit===null&&before===null;
     return {session:this.view(row),operations,nextCursor:older?String(page[0]!.sequence):null,
@@ -1481,20 +1490,24 @@ export class SessionOwner {
     const page=db.query(`SELECT rowid AS sequence,* FROM session_inputs WHERE session_id=?
         AND (rowid>? OR rowid IN (SELECT value FROM json_each(?))) ORDER BY rowid`)
       .all(row.id,position.w,JSON.stringify(position.live)) as (AcceptedSessionInput&{sequence:number})[];
-    const operations=page.map(input=>this.receipt(input));
+    const operations=page.filter(inputContentVisible).map(input=>this.receipt(input));
     // Everything settled before this read stays settled, so what is still open now is
     // exactly the open ones among these.
     return {session:this.view(row),operations,asOf:encodeReceiptPosition(row.id,watermark,page,operations)};
   }
   presentationReceiptWindow(id:string,requestedLimit:number|null,cursor:string|null) {
     const session=this.session(id);
-    return preparedReceiptWindow(session.id,cursor,requestedLimit??PRESENTATION_PAGE);
+    const page=preparedReceiptWindow(session.id,cursor,requestedLimit??PRESENTATION_PAGE);
+    if(trustedContentReader())return page;
+    return {...page,operations:page.operations.filter(value=>{const input=getAcceptedSessionInput(value.operationId);return input?inputContentVisible(input):!opaqueSessionProtected(session.id);})};
   }
   /** A compact, fixed-head change position. Unlike v1, it never contains the open receipt set.
    * This resolves only the changed page; it is not an all-history export. */
   presentationReceiptChanges(id:string,token:string,requestedLimit:number|null) {
     const session=this.session(id);
-    return preparedReceiptChanges(session.id,token,requestedLimit??PRESENTATION_PAGE);
+    const page=preparedReceiptChanges(session.id,token,requestedLimit??PRESENTATION_PAGE);
+    if(trustedContentReader())return page;
+    return {...page,operations:page.operations.filter(value=>{const input=getAcceptedSessionInput(value.operationId);return input?inputContentVisible(input):!opaqueSessionProtected(session.id);})};
   }
   dispatch(input:AcceptedSessionInput) {
     if(db.query(`SELECT 1 FROM session_inputs input WHERE input.id=? AND ${threadOnlyReturnInputSql('input')}`).get(input.id))return input;
@@ -3603,6 +3616,10 @@ export class SessionOwner {
     return {...first,messages,nextCursor:last.nextCursor,...(last.coverage?{coverage:last.coverage}:{}),collectedPages:reads};
   }
   private async historyPage(id:string,cursor:string|null,limit:number,activity=false,want?:{dialogue:number;untilInput:boolean}) {
+    const page=await this.rawHistoryPage(id,cursor,limit,activity,want) as any;
+    return {...page,messages:page.messages.filter((message:any)=>messageContentVisible(parseSessionId(id),message))};
+  }
+  private async rawHistoryPage(id:string,cursor:string|null,limit:number,activity=false,want?:{dialogue:number;untilInput:boolean}) {
     const session=this.session(id);
     // Continuation pages of a window may be larger than a client page, but only where the page
     // comes from the provider; ledger-backed positions stay bounded by the client window.
@@ -3649,6 +3666,10 @@ export class SessionOwner {
    * latest-page read; a wrong delta would leave a client silently showing stale history.
    */
   async historyDelta(id:string,after:string,activity=false) {
+    const page=await this.rawHistoryDelta(id,after,activity) as any;
+    return page.messages?{...page,messages:page.messages.filter((message:any)=>messageContentVisible(parseSessionId(id),message))}:page;
+  }
+  private async rawHistoryDelta(id:string,after:string,activity=false) {
     const delegated=this.session(id);
     if(sessionMetadata(delegated).canvasObservation){
       const position=decodePosition(after),head=ledgerHead();
@@ -3710,6 +3731,7 @@ export class SessionOwner {
       ||part!==null&&(!Number.isSafeInteger(part)||part<0)||turnId!==null&&turnId.length>512)
       throw new SessionOwnerError('An exact message version and part are required.');
     const session=this.session(id),metadata=sessionMetadata(session);
+    assertMessageContent(session.id,{id:messageId});
     const key=JSON.stringify([session.id,session.binding_generation??1,messageId,turnId,digest]);
     try{const load=async()=>{
     const event=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='message'
@@ -3750,6 +3772,10 @@ export class SessionOwner {
     return inboxAttribution(db)(message);
   }
   private async readHistory(id:string,cursor:string|null,limit:number,activity=false) {
+    const page=await this.rawReadHistory(id,cursor,limit,activity) as any;
+    return {...page,messages:page.messages.filter((message:any)=>messageContentVisible(parseSessionId(id),message))};
+  }
+  private async rawReadHistory(id:string,cursor:string|null,limit:number,activity=false) {
     const session=this.session(id);
     const inbox=inboxHistory(session,cursor,limit,activity);if(inbox)return {...inbox,[ledgerHistory]:true,[historyPath]:'inbox',messages:inbox.messages.map(message=>this.projectInboxMessage(message))};
     const source=sessionMetadata(session).source;
@@ -3835,6 +3861,8 @@ export class SessionOwner {
     // A full view reads the session's whole run history, so it is built once per returned candidate, not per scanned row.
     const results=new Map<number,{session:SessionRow;evidence:any[];passages:Set<string>}>();
     const add=(session:SessionRow,evidence:any[])=>{
+      evidence=evidence.filter(item=>evidenceContentVisible(session.id,item));
+      if(!evidence.length&&opaqueSessionProtected(session.id))return;
       const entry=results.get(session.id)??{session,evidence:[],passages:new Set<string>()};
       entry.session=session;results.set(session.id,entry);
       // The same words reach a session as an accepted input and again as the provider's echo; show them once.
@@ -3980,6 +4008,7 @@ export class SessionOwner {
     if(input.sourceId?.startsWith('input:')) {
       const accepted=getAcceptedSessionInput(input.sourceId.slice('input:'.length));
       if(!accepted||accepted.session_id!==session.id||!['input','create'].includes(accepted.kind))throw new SessionOwnerError('Input source does not belong to this exact session.',409);
+      assertInputContent(accepted);
       const payload=JSON.parse(accepted.payload_json),text=payload.text??payload.firstInput?.text??'';
       if((input.eventId!==undefined&&input.eventId!==accepted.id)||(input.sourceVersion!=null&&input.sourceVersion!==hash(text)))throw new SessionOwnerError('Exact accepted input event or version changed.',409);
       return {session:this.view(session),evidence:[{sessionId,sourceId:input.sourceId,sourceVersion:hash(text),eventId:accepted.id,ordinal:0,role:'user',locator:accepted.id,textHash:hash(text),text}],hasMore:false};
@@ -3988,18 +4017,20 @@ export class SessionOwner {
       const match=/^routing:([^:]+):([0-9]+\.[0-9]+)$/.exec(input.sourceId),channel=match?getChannel(match[1]!):null;
       if(!match||!channel||resolveReplySession(db,channel,match[2]!).session?.id!==session.id)throw new SessionOwnerError('Routing source does not belong to this exact session binding.',409);
       if(input.sourceVersion!=null)throw new SessionOwnerError('Routing evidence has no immutable native source version.',409);
+      assertOpaqueSession(session.id);
       const context=getRouterThreadContext(db,{channel:channel.slack_channel_id,rootTs:match[2]!,beforeTs:(Date.now()/1000).toFixed(6),limit:20});
       if(input.eventId&&input.eventId!==match[2]&&!context.fragments.some(fragment=>fragment.message_ts===input.eventId))throw new SessionOwnerError('Exact routing context event is unavailable.',404);
       return {session:this.view(session),evidence:context.fragments.map((fragment,index)=>({sessionId,sourceId:input.sourceId,sourceVersion:null,eventId:fragment.message_ts,ordinal:index,role:fragment.source==='delivered_tldr'?'assistant':'user',locator:fragment.message_ts,textHash:hash(fragment.text),text:fragment.text,corpus:'routing_evidence',truncated:fragment.truncated})),hasMore:context.has_more};
     }
     if(meta.source&&(!input.sourceId||input.sourceId===meta.source.id)) {
+      assertOpaqueSession(session.id);
       if(!this.runtime.sources)throw new SessionOwnerError('Archive source adapter unavailable.',409,'CAPABILITY_UNAVAILABLE');
       const context=await this.runtime.sources.context({sourceId:meta.source.id,sourceVersion:input.sourceVersion??meta.source.version,branch:meta.source.branch,eventId:input.eventId});
       return {session:this.view(session),evidence:context.evidence.map((item:any)=>({...item,sessionId:`concierge:${session.id}`})),hasMore:context.hasMore};
     }
     if(input.sourceId&&input.sourceId!==nativeSource)throw new SessionOwnerError('Source does not belong to this exact session.',409);
     if(input.sourceVersion!=null&&!input.eventId)throw new SessionOwnerError('A native message version requires its exact event ID.');
-    const evidence=(message:any,ordinal:number)=>({sessionId,sourceId:nativeSource,sourceVersion:hash(stablePayload(message)),eventId:message.id,ordinal,role:message.role,locator:message.id,textHash:hash(message.content),text:message.content,...(message.detailKey?{detailKey:message.detailKey}:{})});
+    const evidence=(message:any,ordinal:number)=>{assertMessageContent(session.id,message);return ({sessionId,sourceId:nativeSource,sourceVersion:hash(stablePayload(message)),eventId:message.id,ordinal,role:message.role,locator:message.id,textHash:hash(message.content),text:message.content,...(message.detailKey?{detailKey:message.detailKey}:{})});};
     if(input.eventId) {
       const retained=db.query("SELECT sequence,payload_json FROM session_owner_events WHERE session_id=? AND kind='message' AND json_extract(payload_json,'$.message.id')=? ORDER BY sequence DESC").all(session.id,input.eventId) as any[];
       if(retained.length) {
@@ -4464,6 +4495,7 @@ export class SessionOwner {
     const turn=db.query('SELECT * FROM turns WHERE native_run_id=?').get(id) as any;
     if(!turn)throw new SessionOwnerError('Unknown exact run.',404);
     const session=getSessionById(turn.session_id)!,meta=sessionMetadata(session),input=acceptedInputForTurn(turn.id);
+    if(input)assertInputContent(input);else assertOpaqueSession(session.id);
     const payload=input?JSON.parse(input.payload_json):{};
     const failure=input?.receipt_json?JSON.parse(input.receipt_json).error:null;
     const state=TURN_STATE[turn.status]??turn.status;
@@ -4494,7 +4526,8 @@ export class SessionOwner {
       .all(...params,limit??-1) as any[]).map(row=>({...row,payload:JSON.parse(row.payload_json)}));
     const entries=rows.flatMap(row=>row.kind==='message'&&row.payload.message?[{sessionId:row.session_id,message:row.payload.message}]:[]);
     const metadata=sessionMessageMetadataProjection(entries),identity=sessionMessageInputProjection(entries);
-    const events=rows.map(row=>{
+    const trusted=trustedContentReader();
+    const events=rows.filter(row=>{if(trusted)return true;const input=row.input_id?getAcceptedSessionInput(row.input_id):row.turn_id?acceptedInputForTurn(row.turn_id):null;return input?inputContentVisible(input):!opaqueSessionProtected(row.session_id);}).map(row=>{
       const payload=row.payload;
       const projected=row.kind==='message'&&payload.message?projectSessionHistoryMessage(row.session_id,payload.message,metadata,identity):null;
       const inputId=projected?.inputId??row.input_id;
@@ -4512,6 +4545,7 @@ export class SessionOwner {
     return {events,nextCursor:rows.length?String(rows.at(-1).sequence):null,hasMore:limit!==null&&rows.length===limit};
   }
   private stream(request:Request,url:URL,scope?:()=>void) {
+    const readerHeaders=contentReaderHeaders();
     let detach=()=>{},dispose=()=>{},readable=()=>{};
     const stream=new ReadableStream<Uint8Array>({start:controller=>{
       const resume=request.headers.get('last-event-id')??url.searchParams.get('after');
@@ -4533,7 +4567,7 @@ export class SessionOwner {
             const query=new URLSearchParams({after:String(after),limit:String(STREAM_PAGE_EVENTS)});
             for(const name of ['sessionId','runId','kind'] as const){const value=url.searchParams.get(name);if(value!==null)query.set(name,value);}
             const response=await fetch('http://localhost/internal/event-stream-page?'+query,{
-              unix:join(process.env.CONCIERGE_STATE_DIR!,'requests.sock'),signal:request.signal,
+              unix:join(process.env.CONCIERGE_STATE_DIR!,'requests.sock'),signal:request.signal,headers:readerHeaders,
             } as RequestInit);
             if(!response.ok)throw new Error(`Event stream reader returned ${response.status}.`);
             const nextCursor=response.headers.get('x-event-next-cursor');
@@ -4592,7 +4626,7 @@ export class SessionOwner {
       const run=()=>{
         if(request.method==='GET'&&!policy)
           return ownerJson({error:{code:'READER_CONTRACT_REQUIRED',message:'This owner read has no declared cost contract or named control exception.'}},{status:503});
-        return contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request);
+        return withContentReader(request,()=>contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request));
       };
       let response=await withTaskLabel(`request ${label}`,()=>observeStorageOperation(label,run,measured=>{work=measured;}));
       if(policy&&policy.maxResponseBytes>0&&Number(response?.headers.get('content-length'))>policy.maxResponseBytes){
@@ -4630,7 +4664,7 @@ export class SessionOwner {
     const policy=ownerGetPolicy('GET',url.pathname);
     if(!policy)return ownerJson({error:{code:'READER_CONTRACT_REQUIRED',message:'This owner read has no declared cost contract or named control exception.'}},{status:503});
     const contract=policy.kind==='presentation'?policy.contract:null;
-    const response=contract?await withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):await this.handleRequest(request);
+    const response=await withContentReader(request,()=>contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request));
     if(response&&policy.maxResponseBytes>0&&Number(response.headers.get('content-length'))>policy.maxResponseBytes)
       return ownerJson({error:{code:'READ_BUDGET_EXCEEDED',message:'This page exceeded its declared read size.'}},{status:503});
     return response;
@@ -4639,6 +4673,7 @@ export class SessionOwner {
     const url=new URL(request.url);
     if(url.pathname!=='/sessions/v1'&&!url.pathname.startsWith('/sessions/v1/'))return null;
     try {
+      contentReader();
       const parts=url.pathname.slice('/sessions/v1'.length).split('/').filter(Boolean).map(decodeURIComponent);
       // The body arrives from outside the owner: a Mac agent's reply with screenshots crosses the
       // Tailscale relay while this awaits. On 2026-10-24 a 7.3 MB reply took 13.7 s to arrive and
@@ -4653,7 +4688,7 @@ export class SessionOwner {
         if(request.method==='GET'&&parts.length===5&&parts[3]==='memberships')return ownerJson(this.labConversations.membership(parts[2]!,Number(parts[4])));
         if(request.method==='GET'&&parts.length===5&&parts[3]==='participant-changes')return ownerJson(this.labConversations.participantChange(parts[2]!,parts[4]!));
         if(request.method==='GET'&&parts.length===6&&parts[3]==='responses'){
-          if(request.headers.has('x-concierge-agent-principal')||request.headers.has('x-concierge-verified-agent-source')||request.headers.has('x-concierge-agent-test-create'))throw new LabConversationError('Original Lab answer verification is reserved for the trusted publication service.',403,'LAB_OUTPUT_SERVICE_ONLY');
+          if(request.headers.has('x-concierge-agent-principal')||request.headers.has('x-concierge-verified-agent-source')||request.headers.has('x-concierge-agent-source')||request.headers.has('x-concierge-agent-origin')||request.headers.has('x-concierge-agent-test-create'))throw new LabConversationError('Original Lab answer verification is reserved for the trusted publication service.',403,'LAB_OUTPUT_SERVICE_ONLY');
           return ownerJson(this.labConversations.answerFacts(parts[2]!,parts[4]!,parts[5]!));
         }
         throw new LabConversationError('Unknown Lab conversation operation.',404,'LAB_ROUTE_NOT_FOUND');
@@ -5159,7 +5194,7 @@ export class SessionOwner {
       if(error instanceof TopicError||error instanceof AreaError)return ownerJson({error:{code:error.code,message:error.message}},{status:error.status});
       // A busy ledger is a moment, not a refusal: a 4xx made the Mac drop a finished answer after one try (2026-10-04, 2026-10-08).
       if(isTransientDatabaseError(error))return ownerJson({error:{code:'DATABASE_BUSY',message:error instanceof Error?error.message:String(error)}},{status:503});
-      return ownerJson({error:{code:error instanceof SessionOwnerError||error instanceof LabConversationError?error.code:'OWNER_ERROR',message:error instanceof Error?error.message:String(error)}},{status:error instanceof SessionOwnerError||error instanceof LabConversationError?error.status:error instanceof Error&&error.message.includes('conflict')?409:400});
+      return ownerJson({error:{code:error instanceof SessionOwnerError||error instanceof LabConversationError||error instanceof LabDisclosureError?error.code:'OWNER_ERROR',message:error instanceof Error?error.message:String(error)}},{status:error instanceof SessionOwnerError||error instanceof LabConversationError||error instanceof LabDisclosureError?error.status:error instanceof Error&&error.message.includes('conflict')?409:400});
     }
   }
 }

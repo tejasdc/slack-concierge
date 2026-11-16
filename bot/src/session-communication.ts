@@ -1,3 +1,4 @@
+import {adoptContentSource,assertCommunicationContent,assertInputContent,contentReaderHeaders,outsideContentReader,withContentSource} from './lab-content-disclosure';
 import {pendingJournalProcessing} from "./journal-processing";
 import { readFileSync } from 'node:fs';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
@@ -310,6 +311,7 @@ export class SessionCommunicationCoordinator {
             // since any live run of the recipient session may already reply.
             if (!live || (observed!.steering && !['sending','sent','ambiguous'].includes(observed!.steering.status)))
                 throw new Error('Source must identify this admitted input and its exact live run.');
+            adoptContentSource({inputId:input.id,runId:source.run_id});
             const session = getSessionById(input.session_id)!;
             if (sessionMetadata(session).interactionPolicy === 'consultation-only')
                 throw new Error('Consultation-only sessions cannot send requests or replies.');
@@ -667,7 +669,7 @@ export class SessionCommunicationCoordinator {
             throw new Error('Use one to eight nonempty search concepts.');
         if (input.peer !== undefined) return boundSearchResponse(await this.peers().search(input.peer, input.concepts, input.limit));
         if (!this.dependencies.owner) throw new Error('Common session discovery is unavailable.');
-        const local = () => this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, actor.inputId ? undefined : {
+        const local = () => actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit})):this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
         });
         // One search for every machine: where this machine has no meaning index (the Mac), the
@@ -708,7 +710,7 @@ export class SessionCommunicationCoordinator {
             }
         }
         const address = this.address(input.address);
-        const context:any = await this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
+        const context:any = await (actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)})):this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)}));
         return this.withWorkload([context],actor,input.thread)[0];
     }
     async projects(input:{source:CommunicationSource;peer?:string}) {
@@ -1725,6 +1727,7 @@ export class SessionCommunicationCoordinator {
         return true;
     }
     private receipt(row: RequestRow, withTarget = true) {
+        assertCommunicationContent(row.request_id);
         const recheck = this.healthyRechecks.get(row.request_id);
         const due = !row.outcome && row.overdue_at_ms === null && recheck?.storedDue === row.due_at_ms && recheck.nextCheck > this.now()
             ? recheck.nextCheck : row.due_at_ms;
@@ -3863,7 +3866,8 @@ export class SessionCommunicationCoordinator {
         if (this.stopped) return;
         this.reconciliationDirty = true;
         if (this.reconciliation) return;
-        this.reconciliation = new Promise<void>(resolve => setImmediate(resolve))
+        // The loop serves every session; it never inherits the reader of the request that woke it.
+        this.reconciliation = outsideContentReader(() => new Promise<void>(resolve => setImmediate(resolve))
             .then(() => this.reconcile())
             .catch(error => {
                 this.reconciliationDirty = false;
@@ -3874,20 +3878,20 @@ export class SessionCommunicationCoordinator {
             .finally(() => {
                 this.reconciliation = null;
                 if (this.reconciliationDirty && !this.stopped) this.wake();
-            });
+            }));
     }
     private schedule(key: string, work: () => Promise<void>) {
         if (this.tasks.has(key)) {
             this.again.add(key);
             return;
         }
-        const task = Promise.resolve().then(work);
+        const task = outsideContentReader(() => Promise.resolve().then(work));
         this.tasks.set(key, task);
-        void task.catch(this.dependencies.onError).finally(() => {
+        outsideContentReader(() => void task.catch(this.dependencies.onError).finally(() => {
             this.tasks.delete(key);
             if (this.again.delete(key) && !this.stopped)
                 this.schedule(key, work);
-        });
+        }));
     }
     private arm() {
         this.disarm?.();
@@ -3909,9 +3913,9 @@ export class SessionCommunicationCoordinator {
         const delay = Math.min(this.pendingLabConversations?30_000:Infinity,this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,
             Math.max(0,requestDue-now),Math.max(0,(chatGptNext.due??Infinity)-now));
         if (this.dependencies.arm)
-            this.disarm = this.dependencies.arm(() => this.wake(), delay);
+            this.disarm = this.dependencies.arm(() => outsideContentReader(() => this.wake()), delay);
         else {
-            const timer = setTimeout(() => this.wake(), delay);
+            const timer = outsideContentReader(() => setTimeout(() => this.wake(), delay));
             timer.unref();
             this.disarm = () => clearTimeout(timer);
         }

@@ -1,3 +1,4 @@
+import {withContentReader,contentReader,LabDisclosureError} from './lab-content-disclosure';
 import {chmodSync,lstatSync,readFileSync,unlinkSync} from 'node:fs';
 import {createConnection} from 'node:net';
 import {classifyNativeReadRoute,assertNativeReadRouteCoverage} from './native-read-routes';
@@ -186,8 +187,8 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
       return failure(400,'EVENT_PAGE_INVALID','Invalid stream page boundary.');
     let storage:StorageWork|null=null;
     const page=await observeStorageOperation('/internal/event-stream-page',async()=>
-      composition.owner.eventPage(after,url.searchParams.get('sessionId'),url.searchParams.get('runId'),
-        {kind:url.searchParams.get('kind'),limit}),measured=>{storage=measured;});
+      withContentReader(request,()=>{contentReader();return composition.owner.eventPage(after,url.searchParams.get('sessionId'),url.searchParams.get('runId'),
+        {kind:url.searchParams.get('kind'),limit});}),measured=>{storage=measured;});
     const body=page.events.map(event=>`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`).join('');
     const durationMs=Math.round(performance.now()-began);
     if(durationMs>=250)log('warn','event_stream_page_slow',{
@@ -211,7 +212,7 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
       return await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
     },measured=>{work=measured;});
   }catch(error){
-    if(error instanceof SessionOwnerError||error instanceof WorkspaceFileError)
+    if(error instanceof SessionOwnerError||error instanceof WorkspaceFileError||error instanceof LabDisclosureError)
       response=failure(error.status,error.code,error.message);
     else response=failure(503,'READ_WORKER_UNAVAILABLE',error instanceof Error?error.message:'Read unavailable.');
   }

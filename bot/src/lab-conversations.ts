@@ -3,6 +3,9 @@ import {db,getSessionById,executionChanged,type ProviderId} from './state';
 import {createNativeSession,getAcceptedSessionInput,retainSessionInput,recordSessionEvent,sessionMetadata,stablePayload,withdrawUnstartedServiceInput,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import {agentIdentity} from './session-presence';
 import {topModel} from './model-escalation';
+import {activationBinding,labInvocationBindingMatches} from './lab-invocation-facts';
+export {boundLabInvocation,labInvocationBindingMatches} from './lab-invocation-facts';
+import {restrictedLabThread} from './lab-content-disclosure';
 
 export class LabConversationError extends Error {
   constructor(message:string,readonly status=400,readonly code='LAB_CONVERSATION_REFUSED'){super(message);}
@@ -12,11 +15,11 @@ export type LabParticipant={key:string;label:string;agentName:string|null;sessio
 export type LabContext={version:1;thread:string;entryId:string;sessionId:string;membershipRevision:number;entries:Array<{id:string;revision?:string;address?:string;author?:unknown;text:string}>;responseTargets?:string[];[key:string]:unknown};
 type Invocation={key:string;requestId:string;inputId:string;state:'context_pending'|'accepted'|'published'|'failed'|'refused';context?:LabContext;eventId?:string;publication?:unknown;error?:string};
 type ActionReceipt={state:'pending'|'completed';invocations:Invocation[];entries?:LabContext['entries']};
-type Conversation={thread:string;questionEntryId:string;coordinatorSessionId:string;membershipRevision:number;participants:LabParticipant[];opening:LabContext['entries'][number]};
+type Conversation={thread:string;questionEntryId:string;coordinatorSessionId:string;membershipRevision:number;participants:LabParticipant[];opening:LabContext['entries'][number];presentation?:unknown};
 export type LabActor={inputId:string;runId:string;sessionId:number};
 export type LabPreparedParticipant={choice:LabParticipantChoice;sessionId?:number;provider?:ProviderId;metadata?:NativeSessionMetadata};
 export type LabConversationPorts={
-  bootstrap(thread:string):Promise<{version:1;state:{owner:string;[key:string]:unknown};entries:LabContext['entries']}>;
+  bootstrap(thread:string):Promise<{version:1;state:{owner:string;[key:string]:unknown};entries:LabContext['entries'];presentation?:unknown}>;
   prepare(choice:LabParticipantChoice,actor?:LabActor):Promise<LabPreparedParticipant>;
   sources(references:unknown[]):Promise<Array<{reference:unknown;text:string;sha256:string}>>;
   bind(thread:string,membershipRevision:number,signal:AbortSignal):Promise<unknown>;
@@ -26,6 +29,7 @@ export type LabConversationPorts={
   available?(sessionId:number):boolean;
   wake():void;
 };
+function structuralParticipant(member:LabParticipant){return {key:member.key,sessionId:member.sessionId,provider:member.provider,model:member.model,reasoningEffort:member.reasoningEffort,generation:member.generation,existing:member.existing,tools:member.tools};}
 const digest=(value:unknown)=>createHash('sha256').update(stablePayload(value)).digest('hex');
 const sessionNumber=(value:string)=>{if(!/^concierge:[1-9][0-9]*$/.test(value))throw new LabConversationError('Choose an exact session on this Concierge instance.');return Number(value.slice(10));};
 const object=(value:unknown):Record<string,any>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new LabConversationError('A Lab conversation action is required.');return value as Record<string,any>;};
@@ -49,27 +53,6 @@ function participantChoices(value:unknown,min=1):LabParticipantChoice[]{
   if(new Set(choices.map(choice=>choice.key)).size!==choices.length)throw new LabConversationError('Participant keys must be unique.');
   return choices;
 }
-function activationBinding(action:AcceptedSessionInput):Conversation {
-  const payload=JSON.parse(action.payload_json);
-  return payload.binding??JSON.parse(getAcceptedSessionInput(payload.membershipInputId??payload.conversationInputId)!.payload_json).binding;
-}
-
-/** A service notice cannot opt itself into model execution by carrying a label. */
-export function boundLabInvocation(input:AcceptedSessionInput):boolean {
-  if(input.origin!=='service'||input.kind!=='input'||input.scope!=='lab:invocation'||!input.request_id||!input.source_input_id)return false;
-  const binding=readAction('lab:binding',input.request_id),action=getAcceptedSessionInput(input.source_input_id),payload=JSON.parse(input.payload_json);
-  return !!binding&&binding.source_input_id===action?.id&&binding.session_id===input.session_id&&action?.kind==='lab-activation'
-    &&payload.labInvocation?.requestId===input.request_id&&payload.labInvocation?.thread===JSON.parse(action.payload_json).thread;
-}
-export function labInvocationBindingMatches(input:AcceptedSessionInput):boolean {
-  if(!boundLabInvocation(input))return false;
-  const action=getAcceptedSessionInput(input.source_input_id!)!;
-  const member=activationBinding(action).participants.find((value:LabParticipant)=>value.sessionId===`concierge:${input.session_id}`);
-  const session=getSessionById(input.session_id),metadata=session?sessionMetadata(session):null;
-  return !!member&&!!session&&session.status!=='archived'&&!metadata?.suspended&&session.provider_id===member.provider&&(session.binding_generation??1)===member.generation
-    &&(metadata?.model??null)===member.model&&(metadata?.reasoningEffort??null)===member.reasoningEffort&&(metadata?.project??null)===member.project&&(metadata?.projectPath??null)===member.projectPath;
-}
-
 /** Typed Lab invocations share the existing accepted-input ledger and execution queue. */
 export class LabConversations {
   private after='';
@@ -106,6 +89,7 @@ export class LabConversations {
   membership(thread:string,revision:number){
     if(!Number.isSafeInteger(revision)||revision<1)throw new LabConversationError('Choose an exact membership revision.');
     const {binding}=this.membershipRecord(thread,revision),{opening,...publicBinding}=binding;
+    if(restrictedLabThread(thread)){publicBinding.participants=publicBinding.participants.map(structuralParticipant) as LabParticipant[];delete publicBinding.presentation;}
     return {version:1,...publicBinding};
   }
   private retainMembership(record:AcceptedSessionInput,binding:Conversation){
@@ -148,7 +132,7 @@ export class LabConversations {
       const raced=readAction('lab:conversation',thread);if(raced){this.checkRetry(raced,input,actor);return;}
       const participants=prepared.map(member=>this.bindParticipant(member)),coordinatorBinding=this.bindParticipant(coordinator);
       if(new Set(participants.map(member=>member.sessionId)).size!==participants.length||participants.some(member=>member.sessionId===coordinatorBinding.sessionId))throw new LabConversationError('Each voice and the coordinator need distinct sessions.');
-      const binding:Conversation={thread,questionEntryId:entryId,coordinatorSessionId:coordinatorBinding.sessionId,membershipRevision:1,participants:[coordinatorBinding,...participants],opening};
+      const binding:Conversation={thread,questionEntryId:entryId,coordinatorSessionId:coordinatorBinding.sessionId,membershipRevision:1,participants:[coordinatorBinding,...participants],opening,...(bootstrap.presentation?{presentation:bootstrap.presentation}:{})};
       const saved=retainSessionInput({sessionId:sessionNumber(binding.coordinatorSessionId),scope:'lab:conversation',actionId:thread,kind:'lab-conversation',origin:actor?'agent':'human',
         payload:{request:input,binding,...(actor?{actor}:{})},...(actor?{sourceInputId:actor.inputId,sourceRunId:actor.runId}:{})}).input;
       this.retainMembership(saved,binding);
@@ -243,7 +227,7 @@ export class LabConversations {
     const {action}=this.activationFor(thread,requestId),payload=JSON.parse(action.payload_json),invocation=receipt(action).invocations.find(value=>value.requestId===requestId)!;
     const binding=activationBinding(action),participant=binding.participants.find(member=>member.key===invocation.key)!;
     return {version:1,thread,entryId:payload.entryId,requestId,sessionId:participant.sessionId,coordinatorSessionId:binding.coordinatorSessionId,membershipRevision:binding.membershipRevision,independent:payload.independent,
-      participant,state:invocation.state,sourceInputId:action.source_input_id,sourceRunId:action.source_run_id,origin:action.origin,
+      participant:restrictedLabThread(thread)?structuralParticipant(participant):participant,state:invocation.state,sourceInputId:action.source_input_id,sourceRunId:action.source_run_id,origin:action.origin,
       responseTargets:payload.targets.map((key:string)=>binding.participants.find(member=>member.key===key)!.sessionId)};
   }
   answerFacts(thread:string,requestId:string,eventId:string){
@@ -272,14 +256,16 @@ export class LabConversations {
     if(before!==undefined&&(!Number.isSafeInteger(before)||before<1))throw new LabConversationError('The Lab activation cursor is invalid.');
     const actions=db.query("SELECT rowid AS position,* FROM session_inputs INDEXED BY session_inputs_lab_history WHERE kind='lab-activation' AND scope=? AND rowid<? ORDER BY rowid DESC LIMIT 21").all(`lab:activation:${thread}`,before??Number.MAX_SAFE_INTEGER) as (AcceptedSessionInput&{position:number})[];
     const {opening,...publicBinding}=binding;
+    const restricted=restrictedLabThread(thread);
+    if(restricted){publicBinding.participants=publicBinding.participants.map(structuralParticipant) as LabParticipant[];delete publicBinding.presentation;}
     const journalBinding=JSON.parse(membership.receipt_json??'{}');
-    return {version:1,...publicBinding,journalBinding:{state:journalBinding.state,error:journalBinding.error??null},activations:actions.slice(0,20).map(action=>{
+    return {version:1,...publicBinding,journalBinding:{state:journalBinding.state,error:restricted?null:journalBinding.error??null},activations:actions.slice(0,20).map(action=>{
       const snapshot=activationBinding(action);
       return {actionId:action.action_id,entryId:JSON.parse(action.payload_json).entryId,independent:JSON.parse(action.payload_json).independent,membershipRevision:snapshot.membershipRevision,
       state:receipt(action).state,invocations:receipt(action).invocations.map(({context,...invocation})=>{
         const accepted=getAcceptedSessionInput(invocation.inputId),execution=accepted?.turn_id?db.query('SELECT status,native_run_id AS runId,dispatch_failure_class AS failureClass,dispatch_hold AS hold,dispatch_next_attempt_ms AS nextAttemptMs FROM turns WHERE id=?').get(accepted.turn_id):null;
         const admission=accepted?.receipt_json?JSON.parse(accepted.receipt_json):null;
-        return {...invocation,sessionId:snapshot.participants.find(member=>member.key===invocation.key)!.sessionId,...(accepted?{operationId:invocation.inputId,execution,admission:{state:admission?.state??null,error:admission?.error??null}}:{} )};
+        return {key:invocation.key,requestId:invocation.requestId,inputId:invocation.inputId,state:invocation.state,eventId:invocation.eventId,sessionId:snapshot.participants.find(member=>member.key===invocation.key)!.sessionId,...(!restricted?{publication:invocation.publication,error:invocation.error}:{}),...(accepted?{operationId:invocation.inputId,execution:restricted&&execution?{status:(execution as any).status,runId:(execution as any).runId,nextAttemptMs:(execution as any).nextAttemptMs}:execution,admission:{state:admission?.state??null,error:restricted?null:admission?.error??null}}:{} )};
       })};}),
       nextCursor:actions.length>20?String(actions[19]!.position):null};
   }
@@ -348,6 +334,7 @@ export class LabConversations {
             const prompt=[payload.independent?'Answer the common question independently. Other participants’ first answers are deliberately absent. Do not inspect or publish into the Lab yourself.':member.key==='coordinator'
               ?`You coordinate this Lab thread independently of the Inbox. Respond using the exact visible discussion below. To route a follow-up question to selected bound voices, post your attributed question with router-actions.sh sessions board post --thread ${binding.thread} --response-target <bound session ID> (repeat for each selected voice) --source-input <this input> --source-run <this run> --action-id <stable id> -- <question>. Only those selected voices run. Bound participants: ${JSON.stringify(binding.participants.map(({sessionId,label})=>({sessionId,label})))}`
               :'Respond to the selected Lab entry using only the visible discussion below through that exact entry. Do not publish into the Lab yourself.',
+              ...(member.key==='coordinator'&&context.presentation?[`Group presentation from the canonical preferences service (pass unchanged): ${JSON.stringify(context.presentation)}. To adjust presentation, first read /app/account/preferences using the existing thinkering curl-compatible command. Then write only this supplied preference key and a value supported by the current service. Send X-Concierge-Agent-Source with this actual input and run, and X-Agent-Why with the reason on both requests. Do not invent preference keys, options, defaults, or tool results.`]:[]),
               'This is a shared group conversation. Address the selected contribution directly and keep your reply concise by default. Give a fuller answer when the human asks for depth or detail. The runtime preserves your full original answer without trimming it.',
               'The runtime retains your original final answer and publishes it under your own participant identity. Answer directly; no sessions reply is required for this typed invocation.',
               `Your binding and source differences: ${JSON.stringify(member)}`,
