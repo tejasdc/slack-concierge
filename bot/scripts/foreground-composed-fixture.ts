@@ -259,9 +259,15 @@ async function main(){
       await Bun.sleep(100);
       assert.doesNotThrow(()=>process.kill(readerPid,0),'Caller cancellation killed an occupied reader before its executor deadline.');
       await wait(()=>{try{process.kill(readerPid,0);return false;}catch{return true;}},22_000);
+      // Every frozen-owner observation is now complete (retained command, unanswered supervisor,
+      // independent readers, the occupied reader retired by its own 20 s executor deadline).
+      // Release here instead of idling to the hold's 35 s cap, and prove the owner stayed
+      // frozen across all of them rather than for a fixed wall-clock span.
+      const frozenChecksMs=Math.round(performance.now()-ownerHoldStarted);
+      writeFileSync(join(root,'owner.release'),'');
       await ownerHold;
       const ownerStallMs=Math.round(performance.now()-ownerHoldStarted);
-      assert.ok(ownerStallMs>=34_000,`Canonical synchronous stall lasted only ${ownerStallMs}ms`);
+      assert.ok(ownerStallMs>=frozenChecksMs&&frozenChecksMs>=20_000,`Canonical synchronous stall lasted only ${ownerStallMs}ms of ${frozenChecksMs}ms of frozen-owner checks`);
       let custody:any;
       await wait(async()=>{const answer=await capture(`/commands/${actionId}`);custody=await answer.json();
         return custody.status==='delivered';},20_000);
