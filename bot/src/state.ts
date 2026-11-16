@@ -4514,7 +4514,9 @@ export function failUnacknowledgedClaudeParkedTurns(): number[] {
   return db.transaction(() => {
     const rows = db.query(`SELECT turn.id FROM turns turn JOIN sessions session ON session.id=turn.session_id
       WHERE turn.status='parked' AND turn.dispatch_failure_class='parked_ambiguous' AND session.provider_id='claude-code'
-        AND turn.agent_text=? AND turn.provider_input_acknowledged_at IS NULL AND turn.ended_at<'2026-11-17'`).all(CLAUDE_UNACKNOWLEDGED_PARK_TEXT) as { id: number }[];
+        AND turn.agent_text IN (?1,'Error: '||?1) AND turn.provider_input_acknowledged_at IS NULL AND turn.ended_at<'2026-11-17'`)
+      // The turn runner parks with String(error), so the stored text carries "Error: " in front.
+      .all(CLAUDE_UNACKNOWLEDGED_PARK_TEXT) as { id: number }[];
     const failed: number[] = [];
     for (const row of rows) {
       if (db.query(`UPDATE turns SET status='error', dispatch_failure_class=NULL,
