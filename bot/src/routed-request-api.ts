@@ -138,6 +138,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'handoff') return Response.json(await sessions.handoff(input));
         if (operation === 'obligations') return Response.json(await sessions.obligations(input));
+        if (operation === 'agent-test-scope') return Response.json(sessions.agentTestScopeDiagnostic(input));
         if (operation === 'mutation-admission') return Response.json(sessions.mutationAdmission(input));
         if (operation === 'open') return Response.json(await sessions.openLink(input));
         if (operation === 'board') return Response.json(await sessions.board(input));

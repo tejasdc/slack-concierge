@@ -590,6 +590,15 @@ function validateCanvasContext(input:Record<string,any>) {
   }
 }
 /**
+ * The one definition of "another author wrote into this test session". The bound browser
+ * entrance refuses on it and the metadata diagnostic explains it from the same text, so the
+ * two cannot drift. Parameters: source input, source run (each bound once, in this order).
+ */
+const FOREIGN_AUTHORSHIP_PREDICATE=`(candidate.origin<>'agent' OR ((candidate.source_input_id IS NOT ? OR candidate.source_run_id IS NOT ?)
+        AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source
+          WHERE own_source.id=candidate.source_input_id AND own_source.session_id=candidate.session_id)))`;
+
+/**
  * The agent a delivery came from, when it names one of that agent's own runs: the accepted
  * input its run started from and the run id, exactly as agent commands name their source. Agents
  * report issues and test delivery paths with this so the result is recorded as theirs, never as his
@@ -1211,6 +1220,40 @@ export class SessionOwner {
   }
   private session(id:string) {const row=getSessionById(parseSessionId(id));if(!row)throw new SessionOwnerError('Unknown session.',404);return row;}
   private input(id:string) {const row=getAcceptedSessionInput(id);if(!row)throw new SessionOwnerError('Unknown operation.',404);return row;}
+  /**
+   * Metadata-only explanation of AGENT_TEST_SCOPE_CHANGED for the session that created the
+   * test session. The caller has already been proven a current, fenced run of `creatorSessionId`
+   * by session communication; this checks the creation lineage (exact create request, its
+   * recorded source and target) and then reports the first input the content guard would reject,
+   * judged against the creation's own source pair. It reads no payload, receipt, file or event
+   * and has no success branch that opens content. The scan is the guard's own predicate over the
+   * target's inputs, so coverage is complete; no examined/hasMore paging is needed.
+   */
+  diagnoseAgentTestScope(creatorSessionId:number,createInputId:string,targetAddress:string) {
+    if(!/^request:[0-9a-f-]{36}$/i.test(createInputId))
+      throw new SessionOwnerError('Name the exact creation request.',400,'AGENT_TEST_SCOPE_REQUIRED');
+    const created=getAcceptedSessionInput(createInputId);
+    const creatorSource=created?.source_input_id?getAcceptedSessionInput(created.source_input_id):null;
+    if(!created||created.kind!=='create'||created.origin!=='agent'||created.request_id!==createInputId.slice('request:'.length)
+      ||!created.source_input_id||!created.source_run_id||!creatorSource||creatorSource.session_id!==creatorSessionId
+      ||`concierge:${created.session_id}`!==targetAddress)
+      throw new SessionOwnerError('This session did not create the exact test session.',403,'AGENT_TEST_SCOPE_REFUSED');
+    const rows=db.query(`SELECT candidate.id AS inputId,candidate.kind AS kind,candidate.origin AS origin,candidate.source_input_id AS sourceInputId,
+        candidate.source_run_id AS sourceRunId,candidate.request_id AS requestId,
+        CASE WHEN candidate.origin<>'agent' THEN 'origin_not_agent' ELSE 'source_pair_not_creator_and_not_own_session' END AS predicateReason,
+        CASE WHEN candidate.source_input_id IS NULL THEN 'missing'
+          WHEN (SELECT session_id FROM session_inputs WHERE id=candidate.source_input_id) IS NULL THEN 'missing'
+          WHEN (SELECT session_id FROM session_inputs WHERE id=candidate.source_input_id)=candidate.session_id THEN 'same_target'
+          ELSE 'other' END AS sourceRelation
+      FROM session_inputs AS candidate WHERE candidate.session_id=? AND ${FOREIGN_AUTHORSHIP_PREDICATE} ORDER BY candidate.rowid LIMIT 1`)
+      .all(created.session_id,created.source_input_id,created.source_run_id) as Record<string,string|null>[];
+    const total=(db.query(`SELECT COUNT(*) AS n FROM session_inputs AS candidate WHERE candidate.session_id=? AND ${FOREIGN_AUTHORSHIP_PREDICATE}`)
+      .get(created.session_id,created.source_input_id,created.source_run_id) as {n:number}).n;
+    return {kind:'agent_test_scope_diagnostic' as const,targetSessionId:targetAddress,createInputId,
+      creationSource:{inputId:created.source_input_id,runId:created.source_run_id},
+      coverage:{complete:true as const,rejectingInputs:total},
+      witness:rows[0]??null};
+  }
   private agentBrowserBinding(request:Request,sessionId?:string,body?:Record<string,any>,requireCodexTestOptIn=false) {
     const marked=request.headers.get('x-concierge-verified-agent-source')
       ??(body?.agentSource&&typeof body.agentSource.inputId==='string'&&typeof body.agentSource.runId==='string'
@@ -1233,10 +1276,7 @@ export class SessionOwner {
     }
     // The session's own replies and requests use its current input as their source.
     // A human or another agent may also write here; their words close this entrance.
-    const foreign=db.query(`SELECT 1 FROM session_inputs AS candidate WHERE candidate.session_id=? AND
-      (candidate.origin<>'agent' OR ((candidate.source_input_id IS NOT ? OR candidate.source_run_id IS NOT ?)
-        AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source
-          WHERE own_source.id=candidate.source_input_id AND own_source.session_id=candidate.session_id))) LIMIT 1`)
+    const foreign=db.query(`SELECT 1 FROM session_inputs AS candidate WHERE candidate.session_id=? AND ${FOREIGN_AUTHORSHIP_PREDICATE} LIMIT 1`)
       .get(created.session_id,source.inputId,source.runId);
     if(foreign)throw new SessionOwnerError('This session now contains other authorship.',403,'AGENT_TEST_SCOPE_CHANGED');
     return {source,sessionId:`concierge:${created.session_id}`};

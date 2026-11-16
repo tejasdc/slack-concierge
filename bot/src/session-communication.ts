@@ -1848,6 +1848,19 @@ export class SessionCommunicationCoordinator {
         return {admitted:true as const,sessionId:`concierge:${actor.session}`,inputId:actor.inputId!,
             runId:nativeRunId(actor.turn),origin:actor.user};
     }
+    /**
+     * Metadata-only explanation of why a bound test-session read refused for changed authorship.
+     * Disclosure needs a current admitted, fenced run of the session that created the target; the
+     * historical creation pair alone never qualifies, and a different session (even one repairing
+     * on its behalf) is refused. The owner checks the creation lineage and reads no content.
+     */
+    agentTestScopeDiagnostic(input:{source:CommunicationSource;create_input_id?:string;address?:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(!input.source?.input_id||!input.source?.run_id||!input.create_input_id||!input.address)
+            throw new Error('The diagnostic needs the caller source, the exact creation request and the target address.');
+        const actor=this.fenced(this.actor(input.source));
+        return this.dependencies.owner.diagnoseAgentTestScope(actor.session,input.create_input_id,input.address);
+    }
     async obligations(input:{source:CommunicationSource;address?:string}) {
         const actor=this.actor(input.source);
         if(!actor.inputId)throw new Error('Obligations require an exact native source input and run.');
