@@ -115,8 +115,11 @@ function projection(value:Accumulator,allMeters:Map<string,Meter>):Projection{
 
 /** How many unlinked sessions each account names; the rest are counted, not listed. */
 const UNLINKED_SESSIONS_SHOWN=12;
-const accountShare=(value:Projection,provider:string,account:string)=>value.components.find(part=>part.provider===provider
-  &&part.account===account&&part.window==='Weekly')?.usedPercent??-1;
+/** Ranked by the share Accounts draws: the current reset period's, else the seven-day estimate. */
+const accountShare=(value:Projection,provider:string,account:string)=>{
+  const part=value.components.find(part=>part.provider===provider&&part.account===account&&part.window==='Weekly');
+  return part?.currentPeriodPercent??part?.usedPercent??-1;
+};
 
 /** Called after all runner reports are merged, so a provider-meter delta is allocated once. */
 export function attributeWeeklyAllowance(report:any,readings:Reading[],nowMs=Date.now()):any{
