@@ -46,5 +46,5 @@ continues to choose a Claude home with room while resuming the same conversation
 - **Replayable offline:** yes, `cd bot && bun run scripts/inbox-session-pin-fixture.ts`.
 
 This record describes candidate behavior. Installed acceptance requires rerunning the disposable
-fixture against the installed release and independently reading the live role and native identity.
+sealed `control/bot/scripts/inbox-session-pin-fixture.js` from the installed release and independently reading the live role and native identity.
 No live exhaustion, handoff or role mutation is needed to check installation.
