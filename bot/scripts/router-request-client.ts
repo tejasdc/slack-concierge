@@ -1,3 +1,4 @@
+import {agentJson} from "../src/agent-local-time";
 import { dirname, join } from "node:path";
 import { readFileSync, realpathSync } from "node:fs";
 import type { Action } from "./router-post";
@@ -165,6 +166,6 @@ export async function runRouterWork(args: string[]) {
 }
 
 if (import.meta.main) {
-  try { console.log(JSON.stringify(await runRouterWork(process.argv.slice(2)))); }
+  try { console.log(agentJson(await runRouterWork(process.argv.slice(2)))); }
   catch (error) { console.error(JSON.stringify({ error: String(error) })); process.exitCode = 1; }
 }

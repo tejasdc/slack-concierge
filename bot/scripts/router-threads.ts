@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import {agentJson} from "../src/agent-local-time";
 import { Database } from "bun:sqlite";
 import {
   getRouterThreadContext, parseRouterSearchArgs, parseRouterThreadContextArgs,
@@ -22,7 +23,7 @@ export function runRouterThreads(argv: string[]) {
 }
 
 if (import.meta.main) {
-  try { console.log(JSON.stringify(runRouterThreads(process.argv.slice(2)))); }
+  try { console.log(agentJson(runRouterThreads(process.argv.slice(2)))); }
   catch (error) {
     const known = error instanceof RouterSearchError;
     console.error(JSON.stringify({ ok: false, complete: false,
