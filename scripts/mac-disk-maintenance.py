@@ -14,6 +14,7 @@ import stat
 import subprocess
 import time
 import urllib.request
+import uuid
 
 MIB = 1024 ** 2
 GIB = 1024 ** 3
@@ -222,12 +223,20 @@ def retire_worktrees(workspace, state, repo, bun, now):
     env = dict(os.environ, CONCIERGE_STATE_DIR=str(state))
     command = [bun, repo / 'bot/scripts/drain-status.ts']
     run(command + ['recover'], env=env)
+    previous_path = state / 'mac-disk-maintenance.json'
+    previous = json.loads(previous_path.read_text()) if previous_path.exists() else {}
+    unconfirmed = previous.get('retirement_unconfirmed', [])
+    result = {'retired': [], 'retirement_unconfirmed': unconfirmed, 'held': None, 'gate_released': True}
+    if unconfirmed:
+        result['held'] = 'prior worktree effect needs reconciliation'
+        return result
     pending_cwds(state)
     claim = json.loads(run(command + ['claim', '--worktree-retirement', '--owner-pid', os.getpid()], env=env).decode())
     token = claim.get('token')
     if not token:
-        return {'retired': [], 'held': 'update gate unavailable'}
-    retired = []
+        result['held'] = 'update gate unavailable'
+        return result
+    result['gate_released'] = False
     retirement_deadline = time.monotonic() + 30
     try:
         busy = cwd_paths() + pending_cwds(state)
@@ -235,7 +244,9 @@ def retire_worktrees(workspace, state, repo, bun, now):
         candidates = sorted(set(workspace.glob('*/.wt/*')) | set(workspace.glob('*/*/.wt/*')))
         for path in candidates:
             if time.time() - now > 30:
-                return {'retired': retired, 'held': 'thirty-second upkeep budget'}
+                result['held'] = 'thirty-second upkeep budget'
+                return result
+            attempt = None
             try:
                 if not eligible(path, now, busy):
                     continue
@@ -243,18 +254,36 @@ def retire_worktrees(workspace, state, repo, bun, now):
                     continue
                 common = run(['git', '-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir']).decode().strip()
                 head = run(['git', '-C', path, 'rev-parse', 'HEAD']).decode().strip()
+                attempt = {'path': str(path), 'head': head, 'attempt': uuid.uuid4().hex, 'step': 'trash'}
                 run(['/usr/bin/trash', '--stopOnError', path])
                 receipt = {'path': str(path), 'head': head, 'registration_removed': False}
-                retired.append(receipt)
+                result['retired'].append(receipt)
                 # The folder is already in Trash; remove only this missing worktree's registration.
+                attempt['step'] = 'registration'
                 run(['git', '--git-dir=' + common, 'worktree', 'remove', '--force', path])
                 receipt['registration_removed'] = True
+            except (TimeoutError, subprocess.TimeoutExpired):
+                if attempt:
+                    result['retirement_unconfirmed'].append({**attempt, 'outcome': 'unconfirmed'})
+                result['held'] = 'thirty-second upkeep budget'
+                return result
             except subprocess.CalledProcessError:
+                if attempt:
+                    result['retirement_unconfirmed'].append({**attempt, 'outcome': 'unconfirmed'})
+                    result['held'] = 'worktree effect needs reconciliation'
+                    return result
                 continue
-        return {'retired': retired, 'held': None}
+        return result
+    except (TimeoutError, subprocess.TimeoutExpired):
+        result['held'] = 'thirty-second upkeep budget'
+        return result
     finally:
         retirement_deadline = None
-        run(command + ['release', token], env=env)
+        try:
+            run(command + ['release', token], env=env)
+            result['gate_released'] = True
+        except Exception as error:
+            result['gate_error'] = 'retirement gate release unconfirmed: ' + str(error)
 
 
 def write_state(path, value):
@@ -343,6 +372,14 @@ def main():
             report['errors'].append('identity: ' + str(error))
         try:
             report.update(retire_worktrees(args.workspace.resolve(), state, args.repo.resolve(), bun, now))
+            if report.get('retirement_unconfirmed'):
+                attempt = report['retirement_unconfirmed'][0]
+                run([bun, args.repo / 'bot/scripts/service-notice.ts', '--key',
+                     'mac-worktree-retirement:' + attempt['attempt'], '--title', 'Mac worktree cleanup needs reconciliation', '--',
+                     'A Mac worktree cleanup command ended without a confirmed outcome. Preserve the '
+                     'exact path, commit and operation in the maintenance receipt; reconcile Trash '
+                     'and Git registration before clearing it. Do not repeat the uncertain effect.'],
+                    env=dict(os.environ, CONCIERGE_STATE_DIR=str(state)))
         except Exception as error:
             report['errors'].append('worktrees: ' + str(error))
         report['free_bytes'] = shutil.disk_usage(state).free
