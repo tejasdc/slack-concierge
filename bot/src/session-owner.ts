@@ -2,7 +2,7 @@ import {withContentReader,trustedContentReader,verifiedContentSource,contentRead
 import {comparisonContext} from './lab-invocation-facts';
 import {requirementsFor} from './request-history';
 import {parseAgentPrincipalHeader} from './agent-token-verify';
-import {LabConversations,LabConversationError,type LabParticipantChoice,type LabPreparedParticipant,type LabActor} from './lab-conversations';
+import {LabConversations,LabConversationError,type LabParticipantChoice,type LabPreparedParticipant,type LabMaterial,type LabMaterialRequest,type LabActor} from './lab-conversations';
 import {labConversationCapability} from './lab-conversation-capability';
 import {threadOnlyReturnInputSql} from "./inbox-request-root";
 import {ownerRequestLabel} from './owner-request-label';
@@ -651,7 +651,35 @@ export class SessionOwner {
       return {reference,text:evidence.text,sha256:evidence.textHash};
     }));
   }
+  /** Freeze exact file bytes once, at selection: the Lab keeps the text, so later invocations never re-read the repository. */
+  materializeLabMaterials(requests:LabMaterialRequest[]):LabMaterial[] {
+    const unavailable=(message:string)=>new LabConversationError(message,409,'LAB_MATERIAL_UNAVAILABLE');
+    const decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
+    let total=0;
+    return requests.map(({path,sha256})=>{
+      let real:string,bytes:Buffer;
+      try{real=realpathSync(path);}catch{throw unavailable(`The material ${path} does not exist or cannot be read.`);}
+      const project=containingProject(this.defaultCwd,real);
+      if(!project||!real.startsWith(`${project.cwd}/`))throw unavailable(`The material ${path} is outside every registered project.`);
+      try{
+        const size=statSync(real);
+        if(!size.isFile())throw unavailable(`The material ${path} is not a regular file.`);
+        if(total+size.size>1_048_576)throw unavailable('Selected materials may total at most 1 MiB per participant.');
+        bytes=readFileSync(real);
+      }catch(error){if(error instanceof LabConversationError)throw error;throw unavailable(`The material ${path} cannot be read.`);}
+      total+=bytes.length;
+      if(total>1_048_576)throw unavailable('Selected materials may total at most 1 MiB per participant.');
+      if(createHash('sha256').update(bytes).digest('hex')!==sha256)throw new LabConversationError(`The material ${path} does not match its selected sha256.`,409,'LAB_MATERIAL_MISMATCH');
+      let text:string;
+      try{text=decoder.decode(bytes);}catch{throw unavailable(`The material ${path} is not valid UTF-8 text.`);}
+      return {path,sha256,text};
+    });
+  }
   private async prepareLabParticipant(choice:LabParticipantChoice,actor?:LabActor):Promise<LabPreparedParticipant> {
+    const prepared=await this.prepareLabParticipantBase(choice,actor);
+    return choice.materials?.length?{...prepared,materials:this.materializeLabMaterials(choice.materials)}:prepared;
+  }
+  private async prepareLabParticipantBase(choice:LabParticipantChoice,actor?:LabActor):Promise<LabPreparedParticipant> {
     if(choice.sessionId){
       const session=this.session(choice.sessionId),metadata=sessionMetadata(session);
       if(metadata.inbox||metadata.canvasObservation||metadata.outside||metadata.interactionPolicy==='consultation-only'||metadata.origin==='imported'&&!metadata.nativeBinding||supersededBy(session.id))throw new LabConversationError('Choose a native participant that can continue this conversation; the Inbox does not coordinate Lab threads.',409,'LAB_PARTICIPANT_UNAVAILABLE');
