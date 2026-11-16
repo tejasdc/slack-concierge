@@ -163,21 +163,26 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   const inputColumn=getAcceptedSessionInput(inputId)?inputId:null;
   db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
     .run(input.eventId,input.sessionId,inputColumn,input.turnId,'turn_outcome',JSON.stringify(payload));
+  if(quiet&&meta.inbox){
+    const answer=readsForTurn(input.sessionId,input.turnId,new Set([inputId])).at(-1);
+    if(answer)consumeThreadNotification(input.sessionId,inputId,answer.messageId,true);
+  }
   if(question) {
     const answer=meta.inbox
       ?readsForTurn(input.sessionId,input.turnId,new Set([inputId])).at(-1):null;
+    const rang=threadRangThisRun(input.sessionId,inputId,runId);
     const notificationInputId=outcome==='response'&&answer&&!dispatchedFromInput(input.inputId)
-      ?consumeThreadNotification(input.sessionId,inputId,answer.messageId):null;
+      ?consumeThreadNotification(input.sessionId,inputId,answer.messageId,false,runId):null;
     const alreadyNotified=returnedDecision||!!answer&&messageAlreadyNotified(input.sessionId,answer.messageId)
-      ||!!runId&&!!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND json_extract(payload_json,'$.inputId')=? AND kind='needs_you'
+      ||!notificationInputId&&!!runId&&!!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND json_extract(payload_json,'$.inputId')=? AND kind='needs_you'
         AND json_extract(payload_json,'$.blockingNotification')=1 AND json_extract(payload_json,'$.runId')=? LIMIT 1`).get(input.sessionId,inputId,runId)
-      ||threadRangThisRun(input.sessionId,inputId,runId);
+      ||rang&&!notificationInputId;
     const author=sessionAuthor(`concierge:${input.sessionId}`);
     // The attention event is what a client lists: the question and the input (in the
     // Inbox, the thread) it opens.
     if(!alreadyNotified)db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
       .run(`needs_you:${input.eventId}`,input.sessionId,inputColumn,input.turnId,'needs_you',JSON.stringify({outcome:outcome,
-        question:notificationInputId?answer!.text.trim().slice(0,2000):question,inputId,generation,
+        question:notificationInputId?answer!.text.trim().slice(0,2000):question,inputId,generation,runId,
         ...(outcome==='needs_you'&&input.todoId?{todoId:input.todoId}:{}),
         ...(author?.agentName?{agentName:author.agentName}:{}),...(author?.title?{taskTitle:author.title}:{}),
         ...(answer?{postId:answer.messageId}:{}),

@@ -3135,8 +3135,8 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
  * reading item otherwise (its answer, or that it could not finish) — and, when it answered as done,
  * the thread's request it was linked to closes completed by the same rule the router is held to
  * (`refuseUnfinishedCompletion`). A partial that answers his question is posted; a
- * progress-only partial stays on the Work receipt unless its agent explicitly requests a
- * notification. Server and Mac agents both arrive here
+ * progress-only partial stays on the Work receipt. A substantive prompt answer consumes an
+ * explicit human notification arm or honors its own explicit notification. Server and Mac agents both arrive here
  * [decision: mac-sessions-have-parity] [decision: thread-replies-go-to-the-working-agent].
  */
 export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean;summary?:string|null;todoId?:string|null}):string|null {
@@ -3148,9 +3148,9 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   }
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
-  if(post&&!answer.final&&answer.notify){
+  if(post&&!answer.final&&(answer.answersQuestion||answer.notify)){
     const row=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(post) as {payload_json:string}|null;
-    notifyAgentPost(answer.inboxSessionId,answer.root,post,String(row?JSON.parse(row.payload_json).text??'':answer.text),answer.notify===true);
+    notifyAgentPost(answer.inboxSessionId,answer.root,post,String(row?JSON.parse(row.payload_json).text??'':answer.text),answer.notify===true,answer.answerSource?.runId??null);
   }
   if(!post||!answer.final)return post;
   if(answer.stalled&&answer.quiet){
@@ -3507,7 +3507,8 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     if(seen(filedId))return;
     // Completed work its agent said he need not read is posted and closes its request, and is filed
     // for nobody: no reading item, no notification [decision: sends-notify-only-on-failure].
-    if(answer.quiet&&answer.disposition==='completed'&&!answer.notify&&(!answer.text.trim()||!hasPendingThreadNotification(session.id,answer.root))){
+    if(answer.quiet&&answer.disposition==='completed'){
+      consumeThreadNotification(session.id,answer.root,answer.postId,true);
       log('info','inbox_answer_quiet',{thread:answer.root,post:answer.postId,request_id:answer.dispatchRequestId});
       return;
     }
@@ -3515,7 +3516,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     const open=topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state));
     // One answer posted once is filed once, however many requests it closed.
     if(!decision&&open.some(question=>question.kind==='reading'&&Array.isArray(question.brief?.reads)&&question.brief.reads.includes(answer.postId))){
-      if(answer.text.trim()&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,answer.text,answer.notify===true);
+      if(answer.text.trim()&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,answer.text,answer.notify===true,answer.askedInRun??null);
       return;
     }
     // What he reads first, on his Lock Screen and in Needs you, is the agent's own one-line summary:
@@ -3531,11 +3532,12 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
         why:{text:'',sources:[answer.postId]},known:'',choices:[],uncertain:[],answerable:'',reads:[answer.postId]};
     if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)
       ||sameAsk(question,answer.respondingSessionId,answer.askedInRun??null))){
-      if(words&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,words,answer.notify===true);
+      if(words&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,words,answer.notify===true,answer.askedInRun??null);
       return;
     }
-    const notificationInputId=words?consumeThreadNotification(session.id,answer.root,answer.postId):null;
-    const requestedResult=!!notificationInputId||!!words&&!!answer.notify&&!messageAlreadyNotified(session.id,answer.postId);
+    const rang=threadRangThisRun(session.id,answer.root,answer.askedInRun);
+    const notificationInputId=words?consumeThreadNotification(session.id,answer.root,answer.postId,false,answer.askedInRun??null):null;
+    const requestedResult=!!notificationInputId||!rang&&!!words&&!!answer.notify&&!messageAlreadyNotified(session.id,answer.postId);
     const at=nowIso(),generation=raiseGeneration(session);
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId,revision:1,state:'open',blocking:decision,optional:false,context:'ready',brief,
       // A decision belongs to the agent that asked, so its later final reply or the request's closure ends it;
@@ -3553,7 +3555,8 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
       payload:{outcome:requestedResult?'response':decision?'needs_you':'response',question:requestedResult?words.slice(0,2000):brief.decision,
         inputId:answer.root,generation,topicId,questionId:question.questionId,postId:answer.postId,
         ...(decision&&answer.todoId&&answer.todoId!=='none'?{todoId:answer.todoId}:{}),
-        ...(decision?{blockingNotification:true,agentName:sessionAuthor(answer.respondingSessionId)?.agentName??null,
+        ...(answer.askedInRun?{runId:answer.askedInRun}:{}),
+        ...(decision&&(!rang||notificationInputId)?{blockingNotification:true,agentName:sessionAuthor(answer.respondingSessionId)?.agentName??null,
           taskTitle:answer.respondingTitle??sessionAuthor(answer.respondingSessionId)?.title??null}:{}),
         ...(requestedResult?{requestedNotification:true}:{}),...(notificationInputId?{notificationInputId}:{})}});
   })();

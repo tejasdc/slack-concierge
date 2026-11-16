@@ -39,7 +39,7 @@ import {checkSnooze,continuationText,recordSnooze} from './snooze';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {inspectWatchPair,reconcileWatchPair} from './watch-custody';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
-import {notifyAgentPost} from './thread-notifications';
+import {notifyAgentPost,dispatchedFromInput} from './thread-notifications';
 import {acceptHandoff,handoffObligations,proposeHandoff,supersededAddress,supersededBy,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
 import {askAsideOnce} from './session-asides';
 import {awaitingOutside} from './storage-observation';
@@ -1217,7 +1217,7 @@ export class SessionCommunicationCoordinator {
                 throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open topic request with --promise-request. Nothing was posted.');
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
                 payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),postSource:{inputId:sourceInputId,runId:nativeRunId(actor.turn)},...(attachments.length?{attachments}:{})}});
-            if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text,true,nativeRunId(actor.turn));
+            if(input.notify||router&&!input.keep_working&&!dispatchedFromInput(sourceInputId))notifyAgentPost(session.id,rootInputId,messageId,text,input.notify===true,nativeRunId(actor.turn));
             // Post and release: a deliberate reply ends the router's declared work on the
             // inputs it covers, unless it said it keeps working.
             const topic=input.keep_working||!router?null:releaseFocusForPost(session,rootInputId,input.topic??null);
@@ -2761,14 +2761,11 @@ export class SessionCommunicationCoordinator {
             dropAnswerMark('--answers-question was ignored: a final reply already answers the request. Your reply was recorded.');
         else if(input.answers_question&&!input.text.trim())
             dropAnswerMark('--answers-question was ignored because the reply has no words. It was recorded as ordinary progress.');
-        // His phone rings for a question only he can answer (needs_decision files its own alert) or
-        // once for a finished result that was checked live; progress, corrections and partial updates
-        // never ring, whatever an agent or its instructions ask (Tejas, 2026-11-02: "Why can't it wait
-        // until everything is deployed and tested and then let me know?", after one agent sent 14
-        // partial-update alerts in two hours). The flag is dropped, never the reply.
-        if(input.notify&&!(input.final&&input.workDisposition==='completed'&&typeof input.checked==='string'&&input.checked.trim())){
+        // Prompt answers are substantive even while work continues; ordinary progress stays quiet.
+        // Preserve the finished-and-checked requirement for other explicit reply notifications.
+        if(input.notify&&!((!input.final&&input.answers_question&&input.text.trim())||(input.final&&input.workDisposition==='completed'&&typeof input.checked==='string'&&input.checked.trim()))){
             input={...input,notify:false};
-            answerNotice=(answerNotice?answerNotice+' ':'')+'--notify was ignored: only a final completed reply with --checked rings his phone; progress, corrections and failures stay in the thread.';
+            answerNotice=(answerNotice?answerNotice+' ':'')+'--notify was ignored: only a substantive --partial --answers-question answer or a final completed reply with --checked rings his phone; progress, corrections and failures stay in the thread.';
         }
         const noted=<T extends object>(receipt:T):T=>answerNotice?{...receipt,notice:answerNotice}:receipt;
         if(input.waiting_on_watch!==undefined){

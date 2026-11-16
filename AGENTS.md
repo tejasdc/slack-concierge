@@ -144,7 +144,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   requests close only on evidence for their exact obligation. See
   [native Inbox](docs/contracts/native-inbox.md),
   [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping),
-  and [requested phone delivery](docs/contracts/requested-phone-notifications.md).
+  and [requested phone delivery](docs/contracts/requested-phone-notifications.md): explicit human notification requests
+  survive progress and dispatch acknowledgements until a substantive answer or quiet completion.
 - Cross-router filing displays and bounded repair follow [prepared topics](docs/architecture/PREPARED-TOPICS.md);
   the existing [filing upkeep](docs/contracts/native-inbox.md#filing-before-stopping)
   retains a thirty-minute inspection for a busy Inbox without replaying captures.
