@@ -1,5 +1,5 @@
 import {questionDisplay} from './topic-display-rules';
-import {askedAnswerPostIds,askedAnswerStatus} from './asked-answer';
+import {askedAnswerPostIds,askedAnswerStatus,routeForMessage} from './asked-answer';
 import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
@@ -94,28 +94,6 @@ function messageById(context:TopicContext,id:string):{content:string;at:string;r
 }
 const readingValue=(id:string,message:NonNullable<ReturnType<typeof messageById>>)=>({messageId:id,text:message.content,at:message.at,
  ...(message.detailRef?{detailRef:message.detailRef,contentCoverage:message.contentCoverage}:{})});
-
-function routeForMessage(source:Database,messageId:unknown):{destinationMessageId?:string;sourceMessageId?:string}|null{
- if(typeof messageId!=='string'||!messageId.trim())return null;
- const id=messageId.trim();
- let row:{payload_json:string}|null=null;
- if(id.startsWith('topic-change:')||id.startsWith('session-route:')){
-  row=source.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind IN ('topic_route','session_route')").get(id) as {payload_json:string}|null;
- }
- if(!row&&id.startsWith('request:')){
-  row=source.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind='session_route'").get(`session-route:${id.slice('request:'.length)}`) as {payload_json:string}|null;
- }
- if(!row){
-  const routes=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 2")
-   .all(id) as {payload_json:string}[];
-  if(routes.length>1)return null;
-  row=routes[0]??null;
- }
- if(!row){
-  row=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.destinationMessageId')=? ORDER BY sequence DESC LIMIT 1").get(id) as {payload_json:string}|null;
- }
- return row?JSON.parse(row.payload_json):null;
-}
 
 function readsFor(context:TopicContext,question:any,roots:Set<string>){
  if(question.kind==='asked'){

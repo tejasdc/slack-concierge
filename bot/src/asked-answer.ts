@@ -7,18 +7,50 @@ const parse=(raw:string|null|undefined)=>{try{return JSON.parse(raw??'{}');}catc
 /** A retained question names its dispatch. Older questions may use their exact obligation's
  * source link, but a shared thread or several attempts never chooses an answer for them. */
 export function askedDispatch(db:Database,question:Asked):string|null {
- if(question.kind!=='asked')return null;
+ const found=askedDispatchCandidates(db,question);
+ return found.length===1?found[0]!:null;
+}
+
+/** Every dispatch this question may belong to: its named one, or all exact obligation links.
+ * Callers distinguish none (a direct answer may still reply to the source) from several
+ * (the shared source must never pick one of them). */
+function askedDispatchCandidates(db:Database,question:Asked):string[] {
+ if(question.kind!=='asked')return [];
  const explicit=question.owner?.dispatchRequestId;
- if(typeof explicit==='string'&&explicit)return explicit;
+ if(typeof explicit==='string'&&explicit)return [explicit];
  const sources=question.sources??[];
- if(!sources.length)return null;
+ if(!sources.length)return [];
  const rows=db.query(`SELECT dispatches_json FROM inbox_requests WHERE topic_id=?
   AND EXISTS(SELECT 1 FROM json_each(inbox_requests.sources_json) source
    WHERE json_extract(source.value,'$.inputId') IN (SELECT value FROM json_each(?)))`).all(question.topicId,JSON.stringify(sources)) as {dispatches_json:string}[];
  const ids=new Set<string>();
  for(const row of rows)for(const dispatch of JSON.parse(row.dispatches_json))
   if(typeof dispatch.requestId==='string')ids.add(dispatch.requestId);
- return ids.size===1?[...ids][0]!:null;
+ return [...ids];
+}
+
+/** The route a message belongs to. An exact route event wins, then a `request:<id>` source's
+ * own route, then a unique source match (several never choose), then the destination. */
+export function routeForMessage(source:Database,messageId:unknown):{destinationMessageId?:string;sourceMessageId?:string}|null{
+ if(typeof messageId!=='string'||!messageId.trim())return null;
+ const id=messageId.trim();
+ let row:{payload_json:string}|null=null;
+ if(id.startsWith('topic-change:')||id.startsWith('session-route:')){
+  row=source.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind IN ('topic_route','session_route')").get(id) as {payload_json:string}|null;
+ }
+ if(!row&&id.startsWith('request:')){
+  row=source.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind='session_route'").get(`session-route:${id.slice('request:'.length)}`) as {payload_json:string}|null;
+ }
+ if(!row){
+  const routes=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 2")
+   .all(id) as {payload_json:string}[];
+  if(routes.length>1)return null;
+  row=routes[0]??null;
+ }
+ if(!row){
+  row=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.destinationMessageId')=? ORDER BY sequence DESC LIMIT 1").get(id) as {payload_json:string}|null;
+ }
+ return row?JSON.parse(row.payload_json):null;
 }
 
 /** Semantic answer evidence is shared by recovery diagnostics and question projections. */
@@ -28,13 +60,15 @@ export const ANSWERING_POST_SQL=`(coalesce(json_extract(payload_json,'$.postedBy
 
 export function askedAnswerPostIds(db:Database,question:Asked,sessionIds:number[]):string[]{
  if(!sessionIds.length)return [];
- const dispatch=askedDispatch(db,question),sources=question.sources??[];
- const followups=dispatch?sources.slice(1):sources;
+ const candidates=askedDispatchCandidates(db,question),sources=question.sources??[];
+ const dispatch=candidates.length===1?candidates[0]!:null;
+ // With no dispatch association a direct reply to the source still answers; with several,
+ // the shared original source cannot tell which dispatch it was, so only follow-ups remain.
+ const followups=candidates.length?sources.slice(1):sources;
  const expanded=new Set(followups);
  for(const id of followups){
-  const routes=db.query(`SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route')
-   AND (event_id=? OR json_extract(payload_json,'$.sourceMessageId')=?) LIMIT 2`).all(id,id) as {payload_json:string}[];
-  if(routes.length===1){const route=parse(routes[0]!.payload_json);for(const key of ['sourceMessageId','destinationMessageId'])if(typeof route[key]==='string')expanded.add(route[key]);}
+  const route=routeForMessage(db,id);
+  if(route)for(const key of ['sourceMessageId','destinationMessageId'] as const)if(typeof route[key]==='string')expanded.add(route[key]!);
  }
  return (db.query(`SELECT event_id FROM session_owner_events WHERE session_id IN (${sessionIds.map(()=>'?').join(',')})
   AND kind='post' AND ((?<>'' AND json_extract(payload_json,'$.requestId')=?)

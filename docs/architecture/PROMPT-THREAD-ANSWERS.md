@@ -31,6 +31,14 @@ postponed itself while the recipient was healthy, so it could not detect an unan
 during active work. The new answer clock belongs to the human thread request, not the work-stall
 clock.
 
+A question's answers are found through one matcher shared by the canonical and prepared reads.
+It follows the retained route identities of follow-ups (an exact route event first, then a
+`request:<id>` source's own route, then a unique source match, then the routed destination) so the
+original qualifying post stays discoverable. When an older question's source links to several
+dispatches, the shared original source never picks one of them as its answer; only its own
+follow-ups and an unambiguous dispatch associate a post. A question with no dispatch link still
+accepts a direct reply to its source.
+
 The request enters the recipient's live run through the ordinary agent-input channel. If that run
 ends between acceptance and delivery, the same input enters its queue; it is not replayed after an
 ambiguous provider send. A Mac recipient uses the same peer request and live-input path. When the

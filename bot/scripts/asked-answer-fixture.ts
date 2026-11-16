@@ -66,6 +66,29 @@ try{
  assert.equal(askedDispatch(db,legacy),dispatched.request_id,'A legacy question may use one exact source-to-obligation-to-dispatch link');
  assert.equal(askedAnswerPostIds(db,legacy,[inboxId]).length,1);
  assert.equal(askedAnswerStatus(db,questionRecord,true)?.text,'Answered');
+ // Retained route identities keep an original follow-up answer discoverable.
+ const addEvent=(id:string,kind:string,payload:unknown)=>db.query('INSERT INTO session_owner_events(event_id,session_id,kind,payload_json) VALUES(?,?,?,?)')
+  .run(id,inboxId,kind,JSON.stringify(payload));
+ const answerReplyingTo=(id:string,replyTo:string,requestId:string)=>addEvent(id,'post',{requestId,answersQuestion:1,replyToMessage:{messageId:replyTo}});
+ const followUp=(sources:string[])=>({kind:'asked',topicId,sources,owner:{dispatchRequestId:'dispatch-main'}});
+ addEvent('session-route:route-a','session_route',{sourceMessageId:'request:route-a',destinationMessageId:'human-a'});
+ answerReplyingTo('post-a','human-a','route-a');
+ assert.deepEqual(askedAnswerPostIds(db,followUp([root,'request:route-a']),[inboxId]),['post-a'],'A request:<id> follow-up resolves through its exact session route');
+ addEvent('topic-change:route-b','topic_route',{sourceMessageId:'human-b',destinationMessageId:'dest-b'});
+ answerReplyingTo('post-b','human-b','route-b');
+ assert.deepEqual(askedAnswerPostIds(db,followUp([root,'dest-b']),[inboxId]),['post-b'],'A routed destination resolves to the human message it answers');
+ addEvent('topic-change:route-c','topic_route',{sourceMessageId:'human-c',destinationMessageId:'dest-c'});
+ addEvent('topic-change:route-c-other','topic_route',{sourceMessageId:'topic-change:route-c',destinationMessageId:'dest-c-other'});
+ answerReplyingTo('post-c','human-c','route-c');
+ assert.deepEqual(askedAnswerPostIds(db,followUp([root,'topic-change:route-c']),[inboxId]),['post-c'],'An exact route event wins over another source match');
+ // Several dispatches for one shared source never let a reply to that source pick one.
+ for(const [id,dispatch] of [['obligation-1','dispatch-1'],['obligation-2','dispatch-2']] as const)
+  db.query('INSERT INTO inbox_requests(request_id,topic_id,title,sources_json,dispatches_json) VALUES(?,?,?,?,?)')
+   .run(id,'shared-source-topic',id,JSON.stringify([{inputId:'shared-source'}]),JSON.stringify([{requestId:dispatch}]));
+ answerReplyingTo('post-shared','shared-source','dispatch-1');
+ const shared={kind:'asked',topicId:'shared-source-topic',sources:['shared-source'],owner:null};
+ assert.equal(askedDispatch(db,shared),null);
+ assert.deepEqual(askedAnswerPostIds(db,shared,[inboxId]),[],'Ambiguous dispatch ownership stays unresolved');
  // Before asked declarations armed clocks, an answering partial could already exist.
  // Replay that retained state: its original answer time must win over recognition time.
  db.query("UPDATE session_communication_requests SET payload_json=json_remove(payload_json,'$.promptAnswer'),prompt_answered_at_ms=NULL WHERE request_id=?")
