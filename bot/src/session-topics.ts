@@ -1534,7 +1534,8 @@ function spokenBySession(sessionId:number,messageId:string):string|null {
     return row?`concierge:${row.target_session_id}`:null;
   }
   if(messageId.startsWith('post:')) {
-    const row=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=? AND session_id=?').get(messageId,sessionId) as {payload_json:string}|null;
+    // The selected post may have been written under an earlier Inbox router in this same thread.
+    const row=db.query(`SELECT payload_json FROM session_owner_events WHERE event_id=? AND session_id IN (${inboxLineageSql})`).get(messageId,sessionId) as {payload_json:string}|null;
     const from=row?JSON.parse(row.payload_json)?.postedBySession:null;
     return typeof from==='string'?from:null;
   }

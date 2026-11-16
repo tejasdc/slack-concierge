@@ -1,5 +1,6 @@
 import type {Database} from 'bun:sqlite';
 import {OPEN_QUESTION_STATES} from './topic-attention-rules';
+import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 
 /**
  * Who a reply inside an Inbox thread can go to, and the default: the one rule, used by the live
@@ -118,8 +119,10 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
   const written=named.replace(/^([\w-]+):concierge:([1-9]\d*)$/,'$1:$2');
   return sessionTitle(source,written)??input.resolve(written)?.title??null;
  };
+ // Topics keep posts from earlier Inbox sessions after the router role moves. The thread read
+ // already follows that lineage; its reply choices must read the same messages.
  if(roots.length)for(const row of source.query(`SELECT event_id,json_extract(payload_json,'$.postedBySession') AS from_session,json_extract(payload_json,'$.postedBy') AS posted_by FROM session_owner_events
-  WHERE session_id=? AND kind='post' AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id) IN (${roots.map(()=>'?').join(',')}) ORDER BY sequence DESC`).all(input.inboxSessionId,...roots) as {event_id:string;from_session:string|null;posted_by:string|null}[]){
+  WHERE session_id IN (${INBOX_LINEAGE_SQL}) AND kind='post' AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id) IN (${roots.map(()=>'?').join(',')}) ORDER BY sequence DESC`).all(input.inboxSessionId,...roots) as {event_id:string;from_session:string|null;posted_by:string|null}[]){
   if(row.posted_by==='service')continue;
   // A post with no writing session is the Inbox agent's own reply in the thread.
   const speaker=row.from_session?add(row.from_session,'answered here',[row.event_id]):router;
