@@ -201,6 +201,13 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           WHERE accepted_input_id IS NOT NULL AND NOT (status='failed' AND provider_sent_at IS NULL);
         CREATE INDEX IF NOT EXISTS steering_accepted_input_attempts ON turn_steering_messages(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS communication_source_input ON session_communication_requests(source_input_id,action_id) WHERE source_input_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS session_inputs_lab_pending ON session_inputs(id)
+          WHERE kind='lab-activation' AND json_extract(receipt_json,'$.state')='pending';
+        CREATE INDEX IF NOT EXISTS session_inputs_lab_content ON session_inputs(session_id) WHERE scope='lab:invocation';
+        CREATE INDEX IF NOT EXISTS session_inputs_reply_source ON session_inputs(request_id) WHERE kind='reply';
+        CREATE INDEX IF NOT EXISTS session_inputs_lab_history ON session_inputs(scope) WHERE kind='lab-activation';
+        CREATE INDEX IF NOT EXISTS session_inputs_lab_roster_pending ON session_inputs(id)
+          WHERE kind='lab-roster' AND json_extract(receipt_json,'$.state')='pending';
         CREATE TABLE IF NOT EXISTS canvas_project_policies (
           revision_id TEXT PRIMARY KEY,
           group_name TEXT NOT NULL,

@@ -471,6 +471,13 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
     // work at a boundary it chose ends as cancelled too, and that work is owed a continuation.
     if(!source || source.stop_requested_at || !source.ended_at
       || (reason.kind==='provider_refused'?source.status!=='error':!['done','error','cancelled'].includes(source.status)))return null;
+    // A typed Lab invocation publishes its original terminal provider answer. A new
+    // generic continuation would lose its exact question, visibility and publication
+    // binding. In-turn retries and existing-execution reconciliation keep that identity.
+    if(source.accepted_input_id&&db.query(`SELECT 1 FROM session_inputs input JOIN session_inputs binding
+      ON binding.scope='lab:binding' AND binding.action_id=input.request_id
+        AND binding.source_input_id=input.source_input_id AND binding.session_id=input.session_id
+      WHERE input.id=? AND input.scope='lab:invocation' AND input.origin='service'`).get(source.accepted_input_id))return null;
     // A crash after the agent declared its result is not unfinished work. Preserve that
     // declaration, including a question waiting for him, rather than restarting it.
     if(reason.kind==='interrupted'&&db.query(`SELECT 1 FROM session_owner_events

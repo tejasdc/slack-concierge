@@ -1,3 +1,4 @@
+import {adoptContentSource,assertCommunicationContent,assertInputContent,contentReaderHeaders,outsideContentReader,withContentSource} from './lab-content-disclosure';
 import {pendingJournalProcessing} from "./journal-processing";
 import { readFileSync } from 'node:fs';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
@@ -230,6 +231,7 @@ export class SessionCommunicationCoordinator {
     private disarm: (() => void) | null = null;
     private detach: (() => void) | null = null;
     private readonly healthyRechecks = new Map<string, { storedDue: number; nextCheck: number }>();
+    private pendingLabConversations=false;
     private nextRequestInspectionAt = 0;
     private readonly now: () => number;
     constructor(private readonly dependencies: Dependencies) { this.now = dependencies.now ?? Date.now; }
@@ -309,6 +311,7 @@ export class SessionCommunicationCoordinator {
             // since any live run of the recipient session may already reply.
             if (!live || (observed!.steering && !['sending','sent','ambiguous'].includes(observed!.steering.status)))
                 throw new Error('Source must identify this admitted input and its exact live run.');
+            adoptContentSource({inputId:input.id,runId:source.run_id});
             const session = getSessionById(input.session_id)!;
             if (sessionMetadata(session).interactionPolicy === 'consultation-only')
                 throw new Error('Consultation-only sessions cannot send requests or replies.');
@@ -666,7 +669,7 @@ export class SessionCommunicationCoordinator {
             throw new Error('Use one to eight nonempty search concepts.');
         if (input.peer !== undefined) return boundSearchResponse(await this.peers().search(input.peer, input.concepts, input.limit));
         if (!this.dependencies.owner) throw new Error('Common session discovery is unavailable.');
-        const local = () => this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, actor.inputId ? undefined : {
+        const local = () => actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit})):this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
         });
         // One search for every machine: where this machine has no meaning index (the Mac), the
@@ -707,7 +710,7 @@ export class SessionCommunicationCoordinator {
             }
         }
         const address = this.address(input.address);
-        const context:any = await this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
+        const context:any = await (actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)})):this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)}));
         return this.withWorkload([context],actor,input.thread)[0];
     }
     async projects(input:{source:CommunicationSource;peer?:string}) {
@@ -1724,6 +1727,7 @@ export class SessionCommunicationCoordinator {
         return true;
     }
     private receipt(row: RequestRow, withTarget = true) {
+        assertCommunicationContent(row.request_id);
         const recheck = this.healthyRechecks.get(row.request_id);
         const due = !row.outcome && row.overdue_at_ms === null && recheck?.storedDue === row.due_at_ms && recheck.nextCheck > this.now()
             ? recheck.nextCheck : row.due_at_ms;
@@ -1820,10 +1824,21 @@ export class SessionCommunicationCoordinator {
                     {method,path,inputId:source.inputId,runId:source.runId,...(body===undefined?{}:{body})})};
             }
         }
-        return boardCommand(input,actor,{
+        if(input.responseTargets!==undefined){
+            if(input.verb!=='post'||!input.thread||!actor)throw new Error('Selected Lab responses require an attributed post in a comparison conversation.');
+            const binding=this.dependencies.owner.labConversations.view(input.thread.replace(/^lab:/,''));
+            if(input.responseTargets.some(sessionId=>!binding.participants.some(member=>member.sessionId===sessionId)))throw new Error('Choose only exact sessions bound to this Lab conversation.');
+        }
+        const result=await boardCommand(input,actor,{
             admit:admission=>this.dependencies.owner.admit(admission),
             askPeer:({address,actionId,text,sourceInputId,sourceRunId})=>this.ask({source:{input_id:sourceInputId,run_id:sourceRunId},action_id:actionId,address,text,requestedEffect:'informational'}),
         });
+        if(input.responseTargets?.length&&actor&&'id' in result){
+            const thread=input.thread!.replace(/^lab:/,'');
+            this.dependencies.owner.labConversations.respond(thread,{clientActionId:`lab-post:${actor.inputId}:${input.action_id}`,entryId:result.id,targets:input.responseTargets},
+                {inputId:actor.inputId!,runId:actor.runId!,sessionId:actor.session});
+        }
+        return result;
     }
     mutationAdmission(input:{source:CommunicationSource}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -3755,6 +3770,10 @@ export class SessionCommunicationCoordinator {
         }
         while (this.reconciliationDirty && !this.stopped) {
             this.reconciliationDirty = false;
+            this.schedule('lab-conversations',async()=>{
+                this.pendingLabConversations=await this.dependencies.owner.labConversations.reconcile();
+                if(!this.stopped)this.arm();
+            });
             if (!startedPeers) this.dependencies.peers?.wake();
             startedPeers = false;
             let pendingAcceptedRecovery=false;
@@ -3847,7 +3866,8 @@ export class SessionCommunicationCoordinator {
         if (this.stopped) return;
         this.reconciliationDirty = true;
         if (this.reconciliation) return;
-        this.reconciliation = new Promise<void>(resolve => setImmediate(resolve))
+        // The loop serves every session; it never inherits the reader of the request that woke it.
+        this.reconciliation = outsideContentReader(() => new Promise<void>(resolve => setImmediate(resolve))
             .then(() => this.reconcile())
             .catch(error => {
                 this.reconciliationDirty = false;
@@ -3858,20 +3878,20 @@ export class SessionCommunicationCoordinator {
             .finally(() => {
                 this.reconciliation = null;
                 if (this.reconciliationDirty && !this.stopped) this.wake();
-            });
+            }));
     }
     private schedule(key: string, work: () => Promise<void>) {
         if (this.tasks.has(key)) {
             this.again.add(key);
             return;
         }
-        const task = Promise.resolve().then(work);
+        const task = outsideContentReader(() => Promise.resolve().then(work));
         this.tasks.set(key, task);
-        void task.catch(this.dependencies.onError).finally(() => {
+        outsideContentReader(() => void task.catch(this.dependencies.onError).finally(() => {
             this.tasks.delete(key);
             if (this.again.delete(key) && !this.stopped)
                 this.schedule(key, work);
-        });
+        }));
     }
     private arm() {
         this.disarm?.();
@@ -3888,20 +3908,21 @@ export class SessionCommunicationCoordinator {
         this.nextRequestInspectionAt = requestDue;
         const chatGptNext=db.query(`SELECT min(due_at_ms) AS due FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
             WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL`).get() as {due:number|null};
-        if (requestDue === Infinity && chatGptNext.due===null && !this.pendingAcceptedRecovery)
+        if (requestDue === Infinity && chatGptNext.due===null && !this.pendingAcceptedRecovery&&!this.pendingLabConversations)
             return;
-        const delay = Math.min(this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,
+        const delay = Math.min(this.pendingLabConversations?30_000:Infinity,this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,
             Math.max(0,requestDue-now),Math.max(0,(chatGptNext.due??Infinity)-now));
         if (this.dependencies.arm)
-            this.disarm = this.dependencies.arm(() => this.wake(), delay);
+            this.disarm = this.dependencies.arm(() => outsideContentReader(() => this.wake()), delay);
         else {
-            const timer = setTimeout(() => this.wake(), delay);
+            const timer = outsideContentReader(() => setTimeout(() => this.wake(), delay));
             timer.unref();
             this.disarm = () => clearTimeout(timer);
         }
     }
     start() { if (!this.stopped) return;
         this.stopped = false; this.startupReconciled = false;
+        this.dependencies.owner.labConversations.start();
         this.detach = observeExecutionChanges(() => this.wake());
         this.wake();
     }
@@ -3909,5 +3930,5 @@ export class SessionCommunicationCoordinator {
         await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
-    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.nextRequestInspectionAt = 0; }
+    async stop() { this.stopped = true; this.dependencies.owner.labConversations.stop(); this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.nextRequestInspectionAt = 0; }
 }

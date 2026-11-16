@@ -1,3 +1,5 @@
+import {contentReaderHeaders} from './lab-content-disclosure';
+import {outsideContentReader} from './content-reader-scope';
 import {createHash,randomUUID} from 'node:crypto';
 import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} from 'node:fs';
 import {homedir} from 'node:os';
@@ -196,7 +198,7 @@ export class PeerClient {
       // The peer's answer is a wait on another machine, never owner time: on 2026-11-07 the Mac
       // stopped answering and six reply reads of 20 s each, inside its notify requests, were
       // counted as owner slowness (work-flow supervisor incident 474d66cd, reopened 15 times).
-      response=await awaitingOutside(()=>fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})}));
+      response=await awaitingOutside(()=>fetch(this.url+path,{method,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]):AbortSignal.timeout(timeoutMs),headers:{...contentReaderHeaders(true),authorization:`Bearer ${this.token}`,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})}));
     } catch(error) {
       if(signal?.aborted)throw error;
       // A peer that sleeps is normal, so its unreachability is never a notice to Tejas: it
@@ -2379,14 +2381,14 @@ export class SessionPeers {
     this.reconciliationDirty=true;
     if(this.reconciliation)return;
     this.dependencies.onWake?.();
-    this.reconciliation=new Promise<void>(resolve=>setImmediate(resolve))
+    this.reconciliation=outsideContentReader(()=>new Promise<void>(resolve=>setImmediate(resolve))
       .then(()=>this.reconcile())
       .catch(error=>{this.reconciliationDirty=false;this.disarm?.();this.disarm=null;this.dependencies.onError(error);})
-      .finally(()=>{this.reconciliation=null;if(this.reconciliationDirty&&!this.stopped)this.wake();});
+      .finally(()=>{this.reconciliation=null;if(this.reconciliationDirty&&!this.stopped)this.wake();}));
   }
   private schedule(key:string,work:()=>Promise<void>) {
     if(this.tasks.has(key)){this.again.add(key);return;}
-    const task=Promise.resolve().then(work);
+    const task=outsideContentReader(()=>Promise.resolve().then(work));
     this.tasks.set(key,task);
     void task.catch(this.dependencies.onError).finally(()=>{this.tasks.delete(key);if(this.again.delete(key)&&!this.stopped)this.schedule(key,work);});
   }
