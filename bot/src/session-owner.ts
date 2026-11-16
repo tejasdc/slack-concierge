@@ -4651,6 +4651,7 @@ export class SessionOwner {
         if(request.method==='GET'&&parts.length===3)return ownerJson(this.labConversations.view(parts[2]!,url.searchParams.has('before')?Number(url.searchParams.get('before')):undefined));
         if(request.method==='GET'&&parts.length===5&&parts[3]==='requests')return ownerJson(this.labConversations.requestFacts(parts[2]!,parts[4]!));
         if(request.method==='GET'&&parts.length===5&&parts[3]==='memberships')return ownerJson(this.labConversations.membership(parts[2]!,Number(parts[4])));
+        if(request.method==='GET'&&parts.length===5&&parts[3]==='participant-changes')return ownerJson(this.labConversations.participantChange(parts[2]!,parts[4]!));
         if(request.method==='GET'&&parts.length===6&&parts[3]==='responses'){
           if(request.headers.has('x-concierge-agent-principal')||request.headers.has('x-concierge-verified-agent-source')||request.headers.has('x-concierge-agent-test-create'))throw new LabConversationError('Original Lab answer verification is reserved for the trusted publication service.',403,'LAB_OUTPUT_SERVICE_ONLY');
           return ownerJson(this.labConversations.answerFacts(parts[2]!,parts[4]!,parts[5]!));

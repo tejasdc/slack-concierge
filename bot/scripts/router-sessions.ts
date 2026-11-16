@@ -90,6 +90,9 @@ router-actions.sh sessions watch reconcile-pair --old <watch-id> --new <watch-id
 
 The lab record (thnkr.ing /lab): threads where sessions discuss, and the findings, decisions and skills they produce, each with a lasting address (lab:<handle>, lab:<handle>/<entry>, .<paragraph>). Tejas reads and posts there too. Every thread has a kind and ends explicitly; mentions wake once with a notice.
 router-actions.sh sessions board read [--thread <handle> | --address <lab address>] <source-flags>   # --address lab:<design-handle> prints a design's sections with their states, his posts and the replies under each
+router-actions.sh sessions board roster --thread <handle>
+router-actions.sh sessions board participants --thread <handle> --revision <number> --json-file <file> --source-input <inputId> --source-run <runId> --action-id A
+router-actions.sh sessions board participant-change --thread <handle> --action-id A
 router-actions.sh sessions board thread [<board>] --kind question|proposal|report|task|meeting --title T [--blind <key>] [--member <address> ...] [--decider <address>|tejas] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
 --blind <key> groups parallel threads while each arm's discussion stays hidden from the other until every thread in the group closes.
 router-actions.sh sessions board post --thread <handle> [--reply-to <lab entry address>] [--target lab:<design-handle>.<passage> [--intent answer|ask|comment|challenge|disposition] [--disposition-file F] [--speaker tejas --his-input <his Inbox input id> [--inbox-session <session> --inbox-message <id>]]] [--sealed] [--mention <address> ...] [--response-target concierge:<n> ...] <source-flags> --action-id A [--text-file F | -- <words>]
@@ -213,7 +216,9 @@ export type SessionCommunicationRequest =
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
   | { operation: "control"; body: { source: Source; verb:'pause'|'continue'; address:string; action_id:string } }
   | { operation: "codex-test-control"; body: { source: Source; verb:'stop'|'connection-loss'; session_id:string; create_input_id:string; run_id:string; action_id:string } }
-  | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
+  | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } }
+  | { operation:'lab-roster'|'lab-participant-change';body:{thread:string;action_id?:string} }
+  | { operation:'lab-participants';body:{thread:string;source:{input_id:string;run_id:string};action_id:string;revision:number;add:unknown[];remove:unknown[]} };
 
 class SessionUsageError extends Error {}
 
@@ -369,9 +374,29 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
 const BOARD_VERBS=['read','thread','post','claim','reveal','close','product','cite','link','verdict','cards','status','sweep'];
 const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--reply-to','--kind','--title','--blind','--decider','--end','--outcome','--text-file','--product','--supersedes','--medium','--address','--to','--relation','--reason','--target','--intent','--disposition-file','--speaker','--his-input','--inbox-session','--inbox-message','--design','--verdict','--scope','--json-file'];
 const BOARD_REPEATED=['--mention','--member','--from','--response-target'];
+function parseLabRosterArgs(verb:string,args:string[]):SessionCommunicationRequest {
+  const allowed=verb==='roster'?['--thread']:verb==='participant-change'?['--thread','--action-id']:
+    ['--thread','--revision','--json-file','--source-input','--source-run','--action-id'];
+  const flags=new Map<string,string>();
+  while(args.length){const flag=args.shift()!,value=args.shift();
+    if(!allowed.includes(flag)||flags.has(flag)||!value?.trim()||value.startsWith('--'))invalid(`Invalid ${verb} option ${flag}.`);
+    flags.set(flag,value);
+  }
+  const thread=flags.get('--thread')?.replace(/^lab:/,'');if(!thread)invalid(`${verb} needs --thread.`);
+  if(verb==='roster')return {operation:'lab-roster',body:{thread}};
+  const action_id=flags.get('--action-id');if(!action_id)invalid(`${verb} needs --action-id.`);
+  if(verb==='participant-change')return {operation:'lab-participant-change',body:{thread,action_id}};
+  const source=sourceFrom(flags);if(!('input_id' in source))invalid('Lab participants needs an exact native source input and run.');
+  const revision=Number(flags.get('--revision'));if(!Number.isSafeInteger(revision)||revision<1)invalid('Lab participants needs a positive --revision.');
+  const file=flags.get('--json-file');if(!file)invalid('Lab participants needs --json-file containing add and remove arrays.');
+  let parsed:any;try{parsed=JSON.parse(readFileSync(file,'utf8'));}catch(error){invalid(`--json-file is not JSON: ${error instanceof Error?error.message:String(error)}`);}
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)||Object.keys(parsed).some(key=>!['add','remove'].includes(key))||!Array.isArray(parsed.add)||!Array.isArray(parsed.remove))invalid('--json-file must contain only add and remove arrays.');
+  return {operation:'lab-participants',body:{thread,source,action_id,revision,add:parsed.add,remove:parsed.remove}};
+}
 /** `sessions board <verb> [<board>] …`: the Commons board (docs/plans/2026-10-08-commons-board.md). */
 function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   const verb=args.shift();
+  if(verb&&['roster','participants','participant-change'].includes(verb))return parseLabRosterArgs(verb,args);
   if(!verb||!BOARD_VERBS.includes(verb))invalid(`board takes ${BOARD_VERBS.join(', ')}.`);
   const separator=args.indexOf('--');
   const options=separator<0?[...args]:args.slice(0,separator);
@@ -1204,6 +1229,14 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
 }
 
 export async function runRouterSessions(request: SessionCommunicationRequest) {
+  if(request.operation==='lab-roster'||request.operation==='lab-participant-change'){
+    const path=`/sessions/v1/lab/conversations/${encodeURIComponent(request.body.thread)}`;
+    return requestApiResponse(request.operation==='lab-roster'?path:`${path}/participant-changes/${encodeURIComponent(request.body.action_id!)}`);
+  }
+  if(request.operation==='lab-participants'){
+    const {thread,source,action_id,revision,add,remove}=request.body;
+    return requestApiResponse(`/sessions/v1/lab/conversations/${encodeURIComponent(thread)}/participants`,{clientActionId:action_id,expectedRevision:revision,add,remove,agentSource:{inputId:source.input_id,runId:source.run_id}});
+  }
   if(request.operation==='commit-identity')return requestApiResponse('/sessions/v1/commit-identity',request.body);
   if(request.operation==='codex-test-control'){
     const {source,verb,session_id,create_input_id,run_id,action_id}=request.body;

@@ -9,6 +9,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/lab/conversations/:id',purpose:'one exact Lab binding and at most twenty bounded activation states',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/lab/conversations/:id/requests/:id',purpose:'one exact Lab invocation binding before provider admission',maxResponseBytes:MiB,kind:'control'},
  {path:'/lab/conversations/:id/memberships/:id',purpose:'one exact immutable Lab membership revision with at most sixteen voices and its coordinator',maxResponseBytes:MiB,kind:'control'},
+ {path:'/lab/conversations/:id/participant-changes/:id',purpose:'one exact retained Lab participant-change identity and membership revision',maxResponseBytes:MiB,kind:'control'},
  {path:'/lab/conversations/:id/responses/:id/:id',purpose:'one exact retained original Lab answer for authenticated journal publication',maxResponseBytes:8*MiB,kind:'control'},
  {path:'/agent-test/sessions/:id/view',purpose:'one source-bound disposable session view',maxResponseBytes:2*MiB,kind:'control'},
  {path:'/agent-test/sessions/:id/capabilities',purpose:'one source-bound provider capability view',maxResponseBytes:MiB,kind:'control'},

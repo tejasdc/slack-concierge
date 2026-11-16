@@ -166,6 +166,13 @@ export class LabConversations {
     const payload=JSON.parse(saved.payload_json);
     return {...this.view(payload.binding.thread),change:{inputId:saved.id,revision:payload.binding.membershipRevision,add:payload.added,remove:payload.request.remove,duplicate}};
   }
+  participantChange(thread:string,actionId:string){
+    identifier(thread,'Lab thread');identifier(actionId,'Stable action identity');
+    const saved=readAction(`lab:roster:${thread}`,actionId);
+    if(!saved)throw new LabConversationError('This exact participant change is unavailable.',404,'LAB_PARTICIPANT_CHANGE_NOT_FOUND');
+    const payload=JSON.parse(saved.payload_json);
+    return {version:1,thread,clientActionId:actionId,inputId:saved.id,membershipRevision:payload.binding.membershipRevision,add:payload.added,remove:payload.request.remove};
+  }
   async participants(thread:string,body:unknown,actor?:LabActor){
     const input=object(body);only(input,['clientActionId','expectedRevision','add','remove','agentSource']);
     const action=identifier(input.clientActionId,'Stable action identity'),scope=`lab:roster:${thread}`;
