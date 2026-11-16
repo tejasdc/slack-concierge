@@ -65,8 +65,16 @@ try {
   await assert.rejects(()=>serveProjectCall('projects.todos.update',{project:'example-project',content:'# Stale\n',sha256:priorTodos.sha256}),/changed/);
   assert.equal((await serveProjectCall('projects.files',{project:'example-project',path:'docs'}) as any).entries[0].name,'guide.md');
   const transcript=join(workspace,'session.jsonl');writeFileSync(transcript,JSON.stringify({cwd:worktree})+'\n');
+  const lookups:Array<[string,string|null]>=[];
+  const findHome=(provider:string,account:string|null)=>{lookups.push([provider,account]);return {account,home:workspace,transcript};};
   const worktrees=await serveProjectCall('projects.worktrees',{project:'example-project',provider:'codex',sessionUUID:'01234567-89ab-cdef-0123-456789abcdef',account:'test'},
-    {findProviderSessionHome:()=>({account:'test',home:workspace,transcript})}) as any;
+    {findProviderSessionHome:findHome as any}) as any;
+  // A Codex thread's transcript stays under the live home after an account switch, so the
+  // worktree read must not narrow the lookup to the retained account's credential home.
+  assert.deepEqual(lookups.at(-1),['codex',null],'Codex worktree inventory uses the content-only transcript lookup');
+  await serveProjectCall('projects.worktrees',{project:'example-project',provider:'claude-code',sessionUUID:'01234567-89ab-cdef-0123-456789abcdef',account:'test'},
+    {findProviderSessionHome:findHome as any});
+  assert.deepEqual(lookups.at(-1),['claude-code','test'],'Claude worktree inventory keeps its account-scoped home');
   assert.equal(worktrees.items.length,1);
   assert.ok(worktrees.items.every((item:any)=>typeof item.head==='string'&&item.head.length===40));
   assert.ok(worktrees.items[0].uncommittedFiles>0);

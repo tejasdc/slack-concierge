@@ -41,11 +41,13 @@ export async function codexLeftoverProcesses(threadId: string,options:{strict?:b
 }
 
 /** Recovery must not turn a partial diagnostic scan into a clean process disposition. */
-export async function observeCodexCustodyProcesses(threadId:string,socketPath:string):Promise<CodexLeftoverProcess[]> {
+export async function observeCodexCustodyProcesses(threadId:string,socketPath:string,nativePid?:number):Promise<CodexLeftoverProcess[]> {
   if(process.platform!=='linux'||!/^[0-9a-f-]{36}$/.test(threadId)||!socketPath.startsWith('/'))
     throw new Error('Current custody process observation requires its exact local Linux native endpoint and thread.');
   const listeners=controlSocketListeners(socketPath);
   if(!listeners.length)throw new Error('The actual native endpoint listener could not be identified for process observation.');
+  if(nativePid!==undefined&&!listeners.includes(nativePid))
+    throw new Error('The observed native control endpoint no longer belongs to the connected peer incarnation.');
   for(const pid of listeners){
     const cgroup=await readFile(`/proc/${pid}/cgroup`,'utf8');
     if(!/^0::\/agents\.slice\/codex-app-server-[^/\n]+\.scope(?:\/|$)/m.test(cgroup))

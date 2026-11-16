@@ -14,10 +14,40 @@ import { isSensitiveWorkspacePath, readWorkspaceFile } from './workspace-files';
 import { renderTodoItemContents } from './todo-markdown';
 import { expectedRunnerProjectOrigin } from './runner-project-setup';
 import {runnerGithubGitEnvironment} from './runner-git-auth';
+import {createReadStream} from 'node:fs';
 
 const workspaceRoot=()=>process.env.CONCIERGE_WORKSPACE_ROOT?.trim()||join(homedir(),'workspace');
 const within=(root:string,path:string)=>path===root||path.startsWith(root.endsWith(sep)?root:root+sep);
 const execFile=promisify(execFileCallback);
+
+/** Read the exact conversation without making its total size an inventory admission limit. */
+export async function referencedWorktreePaths(transcript:string,paths:string[]):Promise<string[]> {
+  const pending=new Set(paths),found=new Set<string>();
+  const overlap=Math.max(0,...paths.map(path=>path.length));
+  let tail='';
+  for await(const chunk of createReadStream(transcript,{encoding:'utf8'})) {
+    const text=tail+chunk;
+    for(const path of pending) {
+      let at=text.indexOf(path);
+      while(at>=0) {
+        const after=at+path.length;
+        if(after<text.length&&/[\s"',}]/.test(text[after]!)) {found.add(path);pending.delete(path);break;}
+        at=text.indexOf(path,at+1);
+      }
+    }
+    tail=overlap?text.slice(-overlap):'';
+    if(!pending.size)break;
+  }
+  for(const path of pending)if(tail.endsWith(path))found.add(path);
+  return paths.filter(path=>found.has(path));
+}
+
+async function worktreePhase<T>(phase:string,action:()=>T|Promise<T>):Promise<T> {
+  try{return await action();}catch(error){
+    const failure=new Error(error instanceof Error?error.message:String(error));
+    Object.assign(failure,{phase,code:(error as any)?.code});throw failure;
+  }
+}
 
 function projectFolder(id:unknown) {
   if(typeof id!=='string'||!id.trim()||id.length>512||id.includes('\\')||id.includes('\0')||isAbsolute(id))
@@ -208,25 +238,30 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
     return {project:project.name,path:'notes/TODOS.md',appended:true};
   }
   if(method==='projects.worktrees') {
-    const {project}=projectFolder(params.project);
+    const {project}=await worktreePhase('project-resolution',()=>projectFolder(params.project));
     if(!['codex','claude-code'].includes(String(params.provider))
       ||typeof params.sessionUUID!=='string'||! /^[a-f0-9-]{20,64}$/i.test(params.sessionUUID)
       ||(params.account!==undefined&&params.account!==null&&(typeof params.account!=='string'||params.account.length>200)))
       throw new Error('An exact provider session and optional account are required.');
     const findSessionHome=services.findProviderSessionHome;
     if(!findSessionHome)throw new Error('Runner provider transcript lookup is unavailable.');
-    const sessionHome=findSessionHome(params.provider as 'codex'|'claude-code',
-      typeof params.account==='string'?params.account:null,params.sessionUUID);
-    if(!sessionHome)throw new Error('The exact provider transcript is unavailable or ambiguous on this runner.');
+    const sessionHome=await worktreePhase('provider-transcript-resolution',()=>{
+      // Only the transcript's text is read here, never an account's credentials. The shared Codex
+      // App Server writes every thread under the live home whichever account is signed in, so an
+      // account switch moves the label away from the transcript; Codex therefore uses the
+      // content-only lookup, which still refuses a thread found in more than one place.
+      const home=findSessionHome(params.provider as 'codex'|'claude-code',
+        params.provider!=='codex'&&typeof params.account==='string'?params.account:null,params.sessionUUID as string);
+      if(!home)throw new Error('The exact provider transcript is unavailable or ambiguous on this runner.');
+      return home;
+    });
     const safeEnv={PATH:process.env.PATH??'/usr/local/bin:/usr/bin:/bin',HOME:homedir(),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_OPTIONAL_LOCKS:'0'};
-    const {stdout}=await execFile('git',['-c','core.fsmonitor=false','-C',project.cwd,'worktree','list','--porcelain'],
-      {timeout:5000,maxBuffer:1024*1024,env:safeEnv});
-    const transcriptStat=statSync(sessionHome.transcript);
-    if(!transcriptStat.isFile()||transcriptStat.size>64*1024*1024)
-      throw new Error('The exact provider transcript is too large to inspect for worktree references.');
-    const transcript=readFileSync(sessionHome.transcript,'utf8');
-    const paths=[...stdout.matchAll(/^worktree (.+)$/gm)].map(match=>match[1]!).filter(path=>
-      new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?=[\\s"',}]|$)`).test(transcript));
+    const {stdout}=await worktreePhase('git-worktree-list',()=>execFile('git',['-c','core.fsmonitor=false','-C',project.cwd,'worktree','list','--porcelain'],
+      {timeout:5000,maxBuffer:1024*1024,env:safeEnv}));
+    const paths=await worktreePhase('provider-transcript-scan',async()=>{
+      if(!statSync(sessionHome.transcript).isFile())throw new Error('The exact provider transcript is not a file.');
+      return referencedWorktreePaths(sessionHome.transcript,[...stdout.matchAll(/^worktree (.+)$/gm)].map(match=>match[1]!));
+    });
     const items=[];
     for(const path of paths) {
       let real:string;

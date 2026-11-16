@@ -60,6 +60,11 @@ only Python's standard library and the already installed Git, Bun, lsof and nati
   time, then releases the claim in `finally`. The next upkeep invokes the existing
   kernel-identity recovery before claiming, clearing a previous dead housekeeping
   process's gate without stealing a live update. No running process is stopped.
+  A timeout returns the already-confirmed moves and a normal budget hold instead of
+  losing partial results. If a Trash or registration command's outcome is uncertain,
+  the receipt retains its exact path, HEAD, attempt and step; later upkeep holds
+  retirement and records one existing repair notice until that effect is reconciled.
+  It never repeats an uncertain Trash or registration effect for a new receipt.
 - Free space below 20 GiB starts one incident; 25 GiB clears it for a later incident.
   The 20 GiB margin is an operational choice grounded in this incident's 13 GB debug
   cache and remaining headroom for swap and ordinary work, not a measured maximum
