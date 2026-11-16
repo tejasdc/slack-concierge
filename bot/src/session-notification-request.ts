@@ -29,6 +29,9 @@ export function notificationRequest(text:string):'result'|'scheduled'|null {
     if(negated(words,match.index!))continue;
     const before=words.slice(Math.max(0,match.index!-80),match.index!);
     if(/\b(?:trying to|was|were|did not|didn't|will|would|already|asked (?:me|you|them) to)\s*$/i.test(before))continue;
+    const imperativeDetail=/^notify me\s+(?:with|on|about|of)\b/i.test(match[0]+words.slice(match.index!+match[0].length))
+      && !/\b(?:why|how|when|did|do|does|you|it)\s+(?:\w+\s+){0,2}$/i.test(before);
+    if(imperativeDetail)return 'result';
     if(/(?:^|[.!?]\s*|\b(?:please|can you|could you|would you|i want|i need|so|by the way)\s+)$/i.test(before))return 'result';
   }
   const bare=/\b(?:please|just|then|can you|could you|would you) notify\b|^\s*notify[.!?\s]*$/im.exec(words);

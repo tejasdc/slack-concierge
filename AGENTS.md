@@ -122,9 +122,17 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#stop-while-taking-back-an-existing-codex-turn).
   The one-time source-bound native recovery controls and post-release acceptance procedure are
   documented in [the Codex recovery runbook](docs/runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md).
+  Custody-successor terminal continuation follows [exact recovery](docs/runbooks/ROUTER-ACTIONS.md#exact-codex-report-back-recovery);
+  transferred peer-duty status and final proof follow [the peer wire contract](docs/contracts/session-owner-v1.md#peer-instances).
 - Empty, unacknowledged service report-backs use a separate exact-input recovery with durable
   deduplication and immutable result history; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#exact-codex-report-back-recovery)
   and [the incident evidence](docs/runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md).
+  The [custody-successor mode](docs/runbooks/ROUTER-ACTIONS.md#custody-successor-recovery)
+  preserves a separate canonical attempt allowance, control state and obligation custody;
+  its current source-review holds are not satisfied by disposable fixture success.
+- The explicit Astra Medium custody-successor mode preserves the original reminder and
+  attempts, commits custody before native construction, and spends one shared allowance
+  before admission. It has no cold-resume fallback; see the [custody-successor contract](docs/runbooks/ROUTER-ACTIONS.md#custody-successor-recovery).
 - Final replies expire only questions linked to that dispatch; repair an older
   sibling expiry through the exact-event restoration described in the
   [native Inbox contract](docs/contracts/native-inbox.md).
@@ -136,7 +144,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   requests close only on evidence for their exact obligation. See
   [native Inbox](docs/contracts/native-inbox.md),
   [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping),
-  and [requested phone delivery](docs/contracts/requested-phone-notifications.md).
+  and [requested phone delivery](docs/contracts/requested-phone-notifications.md): explicit human notification requests
+  survive progress and dispatch acknowledgements until a substantive answer or quiet completion.
 - Cross-router filing displays and bounded repair follow [prepared topics](docs/architecture/PREPARED-TOPICS.md);
   the existing [filing upkeep](docs/contracts/native-inbox.md#filing-before-stopping)
   retains a thirty-minute inspection for a busy Inbox without replaying captures.

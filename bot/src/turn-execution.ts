@@ -1,4 +1,6 @@
+import {recordCustodyNativeTerminal} from './codex-custody-terminal';
 import { createHash, randomUUID } from "node:crypto";
+import {nativeInputClientMessageId} from './native-result-identity';
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias} from './aliases';
@@ -719,7 +721,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       model: input.providerId === "claude-code" ? claudeLaunchModel??undefined : input.model,
       onPreferredModel: (model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model),
       reasoning_effort: input.reasoningEffort,
-      clientUserMessageId: `slack-concierge:turn:${input.turnId}:attempt:${dispatchAttempt}`,
+      clientUserMessageId: nativeInputClientMessageId(input.turnId,dispatchAttempt),
       environment: {
         AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_MS),
         ...input.providerEnvironment,
@@ -834,6 +836,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         }
       },
       onProviderTerminal: () => {
+        if(input.providerId==='codex')recordCustodyNativeTerminal(input.turnId,input.ownerInstanceId,dispatchAttempt);
         try { flushPendingProviderProgressEvents(); }
         catch(error){log('error','session_progress_terminal_flush_failed',{turn_id:input.turnId,...errorFields(error)});}
         input.closeSteering(new Error("The provider turn completed."));
@@ -1363,6 +1366,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       let retryable = replaySafe
         && (authWait || googleUsageWait || runnerAccountReadingWait || chatgptNeverSent || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
           structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
+      if(db.query('SELECT 1 FROM codex_custody_successors WHERE placement_turn_id=? AND attempt_spent_at IS NOT NULL').get(input.turnId))retryable=false;
       let policyRetryAtMs: number | null = null;
       // A rejected model is a property of this session's binding, not of the Google
       // account. The request below fails with the provider's reason, but it must not

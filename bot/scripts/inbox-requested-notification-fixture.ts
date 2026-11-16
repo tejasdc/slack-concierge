@@ -1,0 +1,86 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {notificationRequest} from '../src/session-notification-request';
+import {LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION} from '../src/test-authorizations';
+for(const words of ['Notify me with the link','What the fuck not is this Notify me with the fucking link where I can go now','Yeah, and I also notify me on, like, on this topic'])assert.equal(notificationRequest(words),'result');
+for(const words of ['Why do you notify me with this?','You already notify me about that','Do not notify me with a link','What happened?','Save this note'])assert.equal(notificationRequest(words),null,words);
+const scratch=mkdtempSync(join(tmpdir(),'concierge-requested-notification-'));
+Object.assign(process.env,{CONCIERGE_STATE_DIR:scratch,CONCIERGE_CAPTURE_STATE_DIR:join(scratch,'capture'),CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION});
+const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},{SessionOwner},{SessionCommunicationCoordinator},
+ {nativeRunId,updateSessionMetadata,recordSessionEvent,retainSessionInput},{topicsCommand},{hasPendingThreadNotification}]=await Promise.all([
+ import('../src/state'),import('../src/session-owner'),import('../src/session-communication'),import('../src/session-inputs'),import('../src/session-topics'),import('../src/thread-notifications')]);
+const errors:unknown[]=[];
+const owner=new SessionOwner({available:()=>true,wake:()=>{},steer:()=>false,stop:async()=>false},scratch);
+const communication=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>true,onError:error=>errors.push(error)});owner.communication=communication;
+function run(){
+ const claim=claimNextQueuedTurn('requested-notification-fixture');assert.ok(claim);
+ assert.equal(markTurnProviderAdmissionIntended(claim.turn_id,'requested-notification-fixture',claim.dispatch_attempt),true);
+ acknowledgeTurnProviderInput(claim.turn_id,'requested-notification-fixture',claim.dispatch_attempt,[]);
+ const runId=nativeRunId(claim.turn_id),inputId=claim.accepted_input_id!;
+ return {actor:{sessionId:claim.session_id,turnId:claim.turn_id,inputId,runId},source:{input_id:inputId,run_id:runId}};
+}
+try{
+ communication.start();await communication.idle();
+ const inbox=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Disposable notification check'}});
+ const inboxId=Number(inbox.session.id.slice(10));updateSessionMetadata(inboxId,{inbox:true});const router=run();
+ const area=topicsCommand(router.actor,{verb:'area.create',action_id:'area',name:'Question notification checks'}).area;
+ const capture=(text:string,origin:'human'|'agent'='human')=>{
+  const id=randomUUID();retainSessionInput({id,sessionId:inboxId,scope:'surface:thinkering',actionId:id,kind:'input',origin,payload:{text}});
+  recordSessionEvent({eventId:`admitted:${id}`,sessionId:inboxId,inputId:id,kind:'inbox_capture',payload:{}});return id;
+ };
+ const root=capture('Notify me when the answer is ready.');
+ const topic=topicsCommand(router.actor,{verb:'create',action_id:'topic',title:'Answer delivery',roots:[root],area_ids:[area.id]}).topic.topicId;
+ const place=(id:string)=>topicsCommand(router.actor,{verb:'place',action_id:`place:${id}`,topic_id:topic,roots:[id]});
+ assert.equal(hasPendingThreadNotification(inboxId,root),true,'Explicit human request arms delivery');
+ const note=capture('Keep this note');place(note);
+ const ordinaryQuestion=capture('Why did it stop?');place(ordinaryQuestion);
+ assert.equal(db.query('SELECT 1 FROM inbox_thread_notifications WHERE input_id=?').get(ordinaryQuestion),null,'Questions alone never arm');
+ const agent=capture('Why did it stop?','agent');place(agent);
+ assert.equal(db.query('SELECT 1 FROM inbox_thread_notifications WHERE input_id=?').get(note),null);
+ assert.equal(db.query('SELECT 1 FROM inbox_thread_notifications WHERE input_id=?').get(agent),null);
+ const target=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
+ const request=await communication.ask({source:router.source,action_id:'dispatch',address:target.session.address,thread:root,summary:'Answer the question',text:'Answer the retained question while repairing the issue.',requestedEffect:'work'});
+ await communication.idle();const worker=run();
+ const rings=()=>db.query("SELECT payload_json FROM session_owner_events WHERE kind='needs_you' AND json_extract(payload_json,'$.requestedNotification')=1 ORDER BY sequence").all().map((r:any)=>JSON.parse(r.payload_json));
+ communication.post({source:router.source,action_id:'acknowledgement',thread:root,text:'I have sent this to the working agent.'});
+ assert.equal(rings().length,0,'Router acknowledgement leaves pending dispatched result quiet');
+ assert.equal(hasPendingThreadNotification(inboxId,root),true);
+ communication.reply({source:worker.source,action_id:'progress',request_id:request.request_id,text:'Still investigating.',final:false,notify:true});await communication.idle();
+ assert.equal(rings().length,0);assert.equal(hasPendingThreadNotification(inboxId,root),true);
+ communication.reply({source:worker.source,action_id:'answer',request_id:request.request_id,text:'The answer stopped during handoff; the repair continues.',final:false,answers_question:true});await communication.idle();
+ assert.equal(rings().length,1,'Prompt answer rings by default');assert.equal(rings()[0].question,'The answer stopped during handoff; the repair continues.');
+ assert.equal(hasPendingThreadNotification(inboxId,root),false);assert.equal(communication.inspect(request.request_id).outcome,null);
+ const followup=capture('Notify me once recovery is explained.');place(followup);
+ // A second exact question in the same run is a new arm, not a duplicate of its first answer.
+ const second=await communication.ask({source:router.source,action_id:'dispatch-second',address:target.session.address,thread:followup,summary:'Explain recovery',text:'Explain recovery.',requestedEffect:'work'});await communication.idle();
+ communication.reply({source:worker.source,action_id:'explicit-answer',request_id:second.request_id,text:'The retained input will recover through its existing request.',final:false,answers_question:true,notify:true});await communication.idle();
+ assert.equal(rings().length,2);assert.equal(hasPendingThreadNotification(inboxId,root),false);
+ communication.reply({source:worker.source,action_id:'close',request_id:request.request_id,text:'',final:true,workDisposition:'completed',summary:'The repair is complete',all_done:true,checked:'Disposable owner entrance exercised.'});await communication.idle();assert.equal(rings().length,2,'Bodyless final never rings the same answer twice');
+ communication.reply({source:worker.source,action_id:'close-second',request_id:second.request_id,text:'Recovery is now verified.',final:true,workDisposition:'completed',summary:'Recovery verified',all_done:true,checked:'Disposable recovery exercised.',notify:true});await communication.idle();
+ assert.equal(rings().length,2,'Final notify after prompt answer in the same worker run does not ring twice');
+ const unrelated=capture('Notify me about the other answer.');place(unrelated);
+ const quiet=capture('Notify me when the send is confirmed.');place(quiet);
+ const quietRequest=await communication.ask({source:router.source,action_id:'dispatch-quiet',address:target.session.address,thread:quiet,summary:'Check the send',text:'Check the send.',requestedEffect:'work'});await communication.idle();
+ communication.reply({source:worker.source,action_id:'quiet-close',request_id:quietRequest.request_id,text:'The send was accepted.',final:true,workDisposition:'completed',summary:'Send accepted',all_done:true,checked:'Disposable send receipt.',quiet_because:'The send went exactly as requested.'});await communication.idle();
+ assert.equal(rings().length,2);assert.equal(db.query('SELECT consumed_by_message_id FROM inbox_thread_notifications WHERE input_id=?').get(quiet).consumed_by_message_id!=null,true,'Quiet completion consumes its own arm silently');
+ assert.equal(db.query('SELECT consumed_by_message_id FROM inbox_thread_notifications WHERE input_id=?').get(unrelated).consumed_by_message_id,null,'Quiet completion cannot consume another request in the same topic');
+ const direct=capture('Notify me when you have explained the result.');place(direct);
+ communication.post({source:router.source,action_id:'direct-answer',thread:direct,text:'The result is retained and verified.'});
+ assert.equal(rings().length,3,'Router answer consumes explicit human arm without notify flag');
+ assert.equal(rings()[2].question,'The result is retained and verified.');
+ const {recordTurnOutcome}=await import('../src/session-turn-outcome');
+ const response=capture('Notify me with the explanation when it is ready.');place(response);
+ communication.post({source:router.source,action_id:'response-answer',thread:response,text:'The explanation is now complete.',keep_working:true});
+ assert.equal(rings().length,3,'A keep-working post does not consume the arm');
+ recordTurnOutcome({eventId:'outcome:response',sessionId:inboxId,turnId:router.actor.turnId,inputId:response,outcome:'response',text:'Read the explanation'});
+ assert.equal(rings().length,4,'Response outcome consumes a later explicit arm in the same router run');
+ assert.equal(rings()[3].question,'The explanation is now complete.');
+ const quietOutcome=capture('Notify me with the receipt.');place(quietOutcome);
+ communication.post({source:router.source,action_id:'quiet-outcome-answer',thread:quietOutcome,text:'The receipt is retained.',keep_working:true});
+ recordTurnOutcome({eventId:'outcome:quiet',sessionId:inboxId,turnId:router.actor.turnId,inputId:quietOutcome,outcome:'done',text:null,quiet:'The send went as requested.'});
+ assert.equal(rings().length,4);assert.equal(hasPendingThreadNotification(inboxId,quietOutcome),false,'Quiet router outcome consumes without a ring');
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({fixture:'inbox-requested-notification',explicitHumanRequest:true,progressQuiet:true,promptAnswer:true,explicitPartial:true,bodylessFinal:true,quietConsumes:true}));
+}finally{await communication.stop();rmSync(scratch,{recursive:true,force:true});}

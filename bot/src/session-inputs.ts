@@ -73,6 +73,8 @@ export type NativeSessionMetadata = {
   origin?:'native'|'imported'|'reconstructed'; source?:any; interactionPolicy?:'consultation-only'; canvasObservation?:boolean; canvasBoardId?:string; nativeBinding?:any;
   lineage?:{boundary:string;sourceVersion:string|null};
   recovery?:{sourceAddress:string;reason:'claude_usage_exhausted'};
+  /** A human Pause that supersedes a recovery constructor's passive hold (Codex custody successor). */
+  custodyUserPaused?:boolean;
   /** Native continuation stays on its owning machine; archive resurrection remains a distinct copy. */
   resurrection?:{peer:string;sessionId:string;address:string;threadId:string;archivedAt:string;archivePath:string;resurrectedAt:string;kind?:'continued-in-place'|'archive-copy'};
 };

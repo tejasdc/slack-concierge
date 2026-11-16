@@ -58,11 +58,11 @@ router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flag
 router-actions.sh sessions answer <original-chatgpt-request-id> <source-flags> --action-id A --answer-event <exact-event-id> --handling used|context_supplied|scoped|superseded [--read-receipt <receipt-id> (after sessions get)] [--follow-up-request <exact-request-id> (context_supplied)] [--successor-request <answered-request-id> --reason "<how it covers the original>" (superseded)] [--reason "<narrowed claim and missing context>" (scoped)]
 router-actions.sh sessions legacy-link <historical-chatgpt-request-id> <source-flags> --action-id A --for-task <kind>:<exact-id> --provider chatgpt|other --reason "<inspected target and task evidence>"
 router-actions.sh sessions chatgpt-recover <original-chatgpt-request-id> <source-flags> --action-id A  # requeue the same original run only when its browser receipt proves Send never happened
-router-actions.sh sessions codex-recover <original-request-id> <source-flags> --action-id A  # recover its exact failed report-back only when every native attempt is proven empty and unacknowledged
+router-actions.sh sessions codex-recover <original-request-id> [--custody-successor] <source-flags> --action-id A  # recover only the exact retained reminder; custody-successor preserves Astra Medium in a new native thread
 router-actions.sh sessions attention withdraw <session-address> <source-flags> --action-id A --need <exact open event ID> --reason "<why no answer is needed>"
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
 router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--notify] [--also-main-thread] [--partial [--answers-question] [--waiting-on-watch <watch-id>] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>" | --nothing-changed "<what the answer rests on>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--before "<what earlier agents did and how this differs>" (required on the first reply to a request that came with WHAT CAME BEFORE)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
---notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes any waiting one-shot notification on that Inbox topic. On reply it is honored only for a final --work-disposition completed reply with --checked: progress, partial updates, corrections and failures never ring his phone, and the flag is dropped with a notice. A bodyless final cannot use it.
+--notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes any waiting one-shot notification on that Inbox topic. On reply it is honored for a substantive --partial --answers-question answer or a final --work-disposition completed reply with --checked: ordinary progress, corrections and failures stay quiet and the flag is dropped with a notice. A bodyless final cannot use it.
 When a ready decision question, needs_you outcome, or needs_decision reply blocks work on Tejas, the owner raises one phone notification by default. The question opens with its one-line --summary (required on needs_you as on every final reply): say what he must decide and the result it depends on, because it is the first line of his notice; background and other news go in the text after it. Name what he must do and where he can answer; --notify is for an additional explicit request on a different message, not needed for the blocked question. Routine progress and completed answers keep their existing notification rule. A question that asks him to sign in, give a secret or do something on his device names the to-do it is about with --todo <id> (find it in his to-dos: thinkering -s 'http://x/todos/tasks?limit=200', which reaches thnkr.ing from the server or a runner, or curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL where thinkering is not found; from the Mac, curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL through ssh remote-box), or --todo none when no to-do for that step exists. Concierge refuses the question when that to-do is already done or dropped (he has already done it, so continue from there), and closes the question by itself when he ticks the to-do off.
 --also-main-thread copies a nested answer into the Inbox thread's main conversation; it is refused for ordinary main-thread requests.
 router-actions.sh sessions get <request-id> <source-flags>
@@ -202,7 +202,7 @@ export type SessionCommunicationRequest =
   | { operation: "answer"; body: { source: Source; action_id:string; obligation_id:string; answer_event_id:string; handling:'used'|'context_supplied'|'scoped'|'superseded'; reason?:string; follow_up_request_id?:string; successor_request_id?:string; read_receipt_id?:string } }
   | { operation: "legacy-link"; body: { source: Source; action_id:string; request_id:string; for_task:string; provider:'chatgpt'|'other'; reason:string } }
   | { operation: "chatgpt-recover"; body: { source: Source; action_id:string; request_id:string } }
-  | { operation: "codex-recover"; body: { source: Source; action_id:string; request_id:string } }
+  | { operation: "codex-recover"; body: { source: Source; action_id:string; request_id:string; custody_successor?:boolean } }
   | { operation: "attention-withdraw"; body: { source: Source; action_id:string; address:string; need_event_id:string; reason:string } }
   | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
@@ -497,14 +497,17 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(first==='codex-recover'){
     const requestId=args.shift();
     if(!requestId||requestId.startsWith('--'))invalid('codex-recover needs the exact original work request ID.');
-    const flags=new Map<string,string>();
-    while(args.length){const flag=args.shift()!,value=args.shift();
+    const flags=new Map<string,string>();let custodySuccessor=false;
+    while(args.length){const flag=args.shift()!;
+      if(flag==='--custody-successor'){if(custodySuccessor)invalid('Repeated custody-successor mode.');custodySuccessor=true;continue;}
+      const value=args.shift();
       if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id'].includes(flag)
         ||!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`Invalid or repeated codex-recover option ${flag}.`);
       flags.set(flag,value);
     }
     if(!flags.get('--action-id'))invalid('codex-recover needs a stable --action-id.');
-    return {operation:'codex-recover',body:{source:sourceFrom(flags),action_id:flags.get('--action-id')!,request_id:requestId}};
+    return {operation:'codex-recover',body:{source:sourceFrom(flags),action_id:flags.get('--action-id')!,request_id:requestId,
+      ...(custodySuccessor?{custody_successor:true}:{})}};
   }
   if(first==='codex-test'){
     const verb=args.shift(),session_id=args.shift();
