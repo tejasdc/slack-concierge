@@ -1726,6 +1726,14 @@ export class SessionCommunicationCoordinator {
             askPeer:({address,actionId,text,sourceInputId,sourceRunId})=>this.ask({source:{input_id:sourceInputId,run_id:sourceRunId},action_id:actionId,address,text,requestedEffect:'informational'}),
         });
     }
+    mutationAdmission(input:{source:CommunicationSource}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        if(!input.source?.input_id||!input.source?.run_id)
+            throw new Error('Mutation admission requires an exact native source input and run.');
+        const actor=this.fenced(this.actor(input.source));
+        return {admitted:true as const,sessionId:`concierge:${actor.session}`,inputId:actor.inputId!,
+            runId:nativeRunId(actor.turn),origin:actor.user};
+    }
     async obligations(input:{source:CommunicationSource;address?:string}) {
         const actor=this.actor(input.source);
         if(!actor.inputId)throw new Error('Obligations require an exact native source input and run.');

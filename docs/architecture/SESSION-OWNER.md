@@ -153,6 +153,12 @@ Every work request carries the earlier work on its problem, and its first reply 
 
 ### Provider-change handoff
 
+Native custody mutation clients use the existing communication owner's
+[current mutation admission](../contracts/session-owner-v1.md#current-mutation-admission)
+decision for their exact source input/run. Obligations reads intentionally remain
+available after handoff and must not substitute for mutation admission. The check
+reuses current actor validation and the existing handoff fence without inventory fan-out.
+
 A provider change creates a successor on the same Concierge instance; it never changes the
 predecessor's bound provider or replays work in progress. A source-bound `sessions handoff`
 proposes the successor in the predecessor's project folder and retains one inventory and
