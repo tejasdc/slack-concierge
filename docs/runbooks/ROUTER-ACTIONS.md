@@ -261,8 +261,14 @@ actual endpoint/initialize response. Protected requests refuse before an implici
 reconnect for consequential calls. Read-only reconciliation remains available after
 a transport change; construction, admission and other mutations remain held pending
 boundary revalidation.
-A configured runner route is incompatible with this local-only construction and
-is refused. This is connection association evidence, not native writer exclusion.
+A configured runner route is supported only through its protected relay with a
+pair-bound native incarnation and demonstrated shared observation namespaces.
+The retained runner binding is validated, including explicit local null versus
+configured fallback, and is never erased to pass recovery. The plan retains the
+effective runner shell/helper transformation; required hook preparation must finish
+before protected admission. Unsupported mappings remain held. See
+[protected runner transport](../architecture/RUNNERS.md#codex-app-server-on-a-runner-built-off-until-concierge_codex_runner-is-set).
+This is connection association evidence, not native writer exclusion.
 First selected `turn/start` repeats the explicit local selection, cwd,
 roots, model and effort; transport staging never becomes the native context.
 Preparation supplies current source/run identity as application context while the

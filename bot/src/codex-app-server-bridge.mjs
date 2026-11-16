@@ -1,11 +1,18 @@
 import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
 import WebSocket from "ws-node";
+import {runRunnerNativeBridge} from './runner-codex-native-bridge.mjs';
+
+if(process.argv[3]==='--runner-native-pair')runRunnerNativeBridge(process.argv[2]);
+else {
 
 const socketPath = process.argv[2];
 // A path names the owner's relay to a runner's App Server (docs/architecture/RUNNERS.md); the
 // App Server's own socket answers at its root. Either way the same WebSocket protocol passes.
 const relayPath = process.argv[3] || "/";
+const relayUrl=new URL(relayPath,'http://localhost');
+const protectedRelay=relayUrl.searchParams.get('target')==='codex-app-server-protected-v1';
+let relayAssociation=null;
 const initializeId = "slack-concierge-initialize";
 let ready = false;
 let disconnectReported = false;
@@ -26,7 +33,7 @@ const appServer = new WebSocket(`ws://localhost${relayPath}`, {
   perMessageDeflate: false,
 });
 
-appServer.on("open", () => {
+function initialize() {
   appServer.send(JSON.stringify({
     id: initializeId,
     method: "initialize",
@@ -35,13 +42,24 @@ appServer.on("open", () => {
       capabilities: { experimentalApi: true, requestAttestation: false },
     },
   }));
-});
+}
+appServer.on("open", () => {if(!protectedRelay)initialize();});
 
 appServer.on("message", (data) => {
   let message;
   try {
     message = JSON.parse(data.toString());
   } catch {
+    return;
+  }
+  if(message.conciergeRelay==='association-v1'){
+    const receipt=message.association;
+    if(relayAssociation||receipt?.version!==1||receipt?.challenge!==relayUrl.searchParams.get('challenge')
+      ||receipt?.runner!==relayUrl.searchParams.get('runner')||receipt?.protected!==protectedRelay){
+      disconnect(new Error('Relay association mismatch.'));appServer.close();return;
+    }
+    relayAssociation=receipt;
+    if(protectedRelay)initialize();
     return;
   }
   if (message.id === initializeId) {
@@ -52,7 +70,7 @@ appServer.on("message", (data) => {
     }
     appServer.send(JSON.stringify({ method: "initialized", params: {} }));
     ready = true;
-    write({ type: "ready", serverInfo: message.result });
+    write({ type: "ready", serverInfo: message.result,relayAssociation });
     return;
   }
   if (Object.prototype.hasOwnProperty.call(message, "id") && ("result" in message || "error" in message)) {
@@ -98,3 +116,4 @@ input.on("line", (line) => {
 
 input.on("close", () => appServer.close());
 process.on("SIGTERM", () => appServer.close());
+}

@@ -42,6 +42,8 @@ import {serveProviderUsageBreakdownCall} from '../src/runner-provider-usage-brea
 import {runProjectSetupJob} from '../src/runner-project-setup';
 import {runProjectPlacementJob} from '../src/runner-project-placement';
 import {assertRunnerGoogleCreditPolicy} from '../src/runner-google-policy';
+import {loadedRunnerIdentity,serveCodexRelayPair} from '../src/runner-codex-relay';
+import {installedRouterActionsPath} from '../src/session-command-path';
 
 const owner=process.env.CONCIERGE_OWNER_URL?.replace(/\/+$/,'');
 const tokenFile=process.env.CONCIERGE_RUNNER_TOKEN_FILE;
@@ -89,9 +91,10 @@ const once=process.argv.includes('--once');
 const kinds=(process.env.CONCIERGE_RUNNER_KINDS??'probe,turn,codex,project-setup,project-place').split(',').map(kind=>kind.trim()).filter(Boolean);
 const maxTurns=Number(process.env.CONCIERGE_RUNNER_MAX_TURNS)||64;
 /** This runner's release: the host program and the agents' helpers come from here, never from the owner. */
-const botDir=resolve(import.meta.dir,'..');
+const botDir=realpathSync(resolve(import.meta.dir,'..'));
 const machine:RunnerMachine={botDir,stateDir,bunPath:process.execPath,runnerName:process.env.CONCIERGE_RUNNER_NAME??'',
-  basePath:process.env.PATH??'/usr/local/bin:/usr/bin:/bin'};
+  basePath:process.env.PATH??'/usr/local/bin:/usr/bin:/bin',routerActionsPath:installedRouterActionsPath()};
+const relayIdentity=process.platform==='linux'?loadedRunnerIdentity(machine):null;
 // Every helper on this runner (Codex shells and hooks included) reads where the owner is from here.
 if(!once)writeRunnerConnection(stateDir,{ownerUrl:owner,tokenFile:resolve(tokenFile),thinkeringUrl:process.env.THINKERING_CAPABILITY_URL?.trim()||null});
 
@@ -101,14 +104,14 @@ if(!once)writeRunnerConnection(stateDir,{ownerUrl:owner,tokenFile:resolve(tokenF
  * rewritten at every turn start and dropped after the longest life of an execution host.
  */
 const runnerPins=join(stateDir,'hook-pins','codex');
-function pinCodexThread(threadId:string) {
-  if(!/^[A-Za-z0-9-]{1,128}$/.test(threadId))return;
+function pinCodexThread(threadId:string,required=false) {
+  if(!/^[A-Za-z0-9-]{1,128}$/.test(threadId)){if(required)throw new Error('protected hook pin requires a valid thread ID');return;}
   try {
     mkdirSync(runnerPins,{recursive:true,mode:0o700});
     const target=join(runnerPins,threadId);
     writeFileSync(`${target}.${process.pid}.tmp`,`${botDir}\nrunner\n`,{mode:0o600});
     renameSync(`${target}.${process.pid}.tmp`,target);
-  } catch(error){say('runner_codex_hook_pin_failed',{thread:threadId,error:String(error)});}
+  } catch(error){say('runner_codex_hook_pin_failed',{thread:threadId,error:String(error)});if(required)throw error;}
 }
 function pruneCodexPins() {
   let names:string[]=[];try{names=readdirSync(runnerPins);}catch{return;}
@@ -588,8 +591,15 @@ function superviseCodexAppServer() {
   void moveCodexDaemonToOwnScope();
   pruneCodexPins();
 }
-function relayCodexAppServer(id:string) {
-  const remote=new WebSocket(`${relayBase}/runner/v1/relay/accept?id=${encodeURIComponent(id)}`,{headers:{authorization:`Bearer ${token}`}} as any);
+function relayCodexAppServer(id:string,challenge='',protectedMode=false,ticket='') {
+  const remote=new WebSocket(`${relayBase}/runner/v1/relay/accept?id=${encodeURIComponent(id)}&ticket=${encodeURIComponent(ticket)}`,{headers:{authorization:`Bearer ${token}`}} as any);
+  if(relayIdentity&&challenge){
+    serveCodexRelayPair({id,challenge,protected:protectedMode,remote,socketPath:codexAppServerSocketPath(),machine,identity:relayIdentity,
+      nodeExecutable:process.env.CONCIERGE_NODE_BIN?.trim()||'/usr/bin/node',pinThread:pinCodexThread,onOrdinaryOpen:superviseCodexAppServer,
+      onOrdinaryError:()=>{if(managedAppServer&&(!existsSync(codexAppServerSocketPath())||!controlSocketListeners(codexAppServerSocketPath()).length))startCodexDaemonWhenAbsent('ECONNREFUSED');},
+      onClosed:why=>say('runner_relay_closed',{relay:id,why})});return;
+  }
+  if(protectedMode){remote.close(1008,'protected relay requires Linux socket association');return;}
   const local=new WebSocket(`ws+unix://${codexAppServerSocketPath()}:/`);
   const waiting:(string|ArrayBuffer|Uint8Array)[]=[];
   let ended=false;
@@ -655,7 +665,7 @@ function answerMachineCalls(id:string) {
       return codexProcessStillRunning(processRecord);
     }
     throw new Error(`this runner does not answer ${method}`);
-  });
+  },relayIdentity??undefined);
   remote.onclose=event=>say('runner_machine_calls_closed',{relay:id,code:event.code});
 }
 let relayChannel:WebSocket|null=null;
@@ -666,7 +676,8 @@ function listenForRelays(delayMs=0) {
     channel.onopen=()=>say('runner_relay_listening');
     channel.onmessage=event=>{
       let message:any;try{message=JSON.parse(String(event.data));}catch{return;}
-      if(message?.op==='open'&&message.target==='codex-app-server'&&typeof message.id==='string'&&kinds.includes('codex'))relayCodexAppServer(message.id);
+      if(message?.op==='open'&&message.target==='codex-app-server'&&typeof message.id==='string'&&kinds.includes('codex'))relayCodexAppServer(message.id,message.challenge??'',false,message.ticket??'');
+      if(message?.op==='protected-open-v1'&&message.target==='codex-app-server'&&typeof message.id==='string'&&typeof message.challenge==='string'&&typeof message.ticket==='string'&&kinds.includes('codex'))relayCodexAppServer(message.id,message.challenge,true,message.ticket);
       if(message?.op==='open'&&message.target==='runner-machine'&&typeof message.id==='string')answerMachineCalls(message.id);
     };
     channel.onclose=event=>{

@@ -25,17 +25,17 @@ export function withoutMachinePaths(environment:Record<string,string>):Record<st
   return kept;
 }
 
-export type RunnerMachine={botDir:string;stateDir:string;bunPath:string;runnerName:string;basePath:string};
+export type RunnerMachine={botDir:string;stateDir:string;bunPath:string;runnerName:string;basePath:string;routerActionsPath?:string};
 
 /** The runner's half: this machine's folders, with its helpers first on `PATH`. */
 export function runnerMachineEnvironment(machine:RunnerMachine,runPath='',ownerScripts:string|null=null):Record<string,string> {
   const run=runPath.split(':').filter(part=>part&&part!==ownerScripts);
   return {
-    PATH:[join(machine.botDir,'scripts'),...new Set([...run,...machine.basePath.split(':').filter(Boolean)])].join(':'),
+    PATH:[...new Set([join(machine.botDir,'scripts'),...run,...machine.basePath.split(':').filter(Boolean)])].join(':'),
     CONCIERGE_STATE_DIR:machine.stateDir,
     CONCIERGE_STATE_DB:join(machine.stateDir,'no-ledger-on-a-runner.db'),
     CONCIERGE_ROUTER_BOT_DIR:machine.botDir,
-    CONCIERGE_ROUTER_ACTIONS:installedRouterActionsPath(),
+    CONCIERGE_ROUTER_ACTIONS:machine.routerActionsPath??installedRouterActionsPath(),
     CONCIERGE_CODEX_CLI:'codex',
     CONCIERGE_BUN_BIN:machine.bunPath,
     // The helpers find this runner's connection file (below) through it.

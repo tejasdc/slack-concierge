@@ -1,5 +1,7 @@
 import type { CodexAppServerClientLike } from './codex-app-server-client';
 import type {CustodyNativeConnection} from './codex-custody-connection';
+import {assertCustodyEndpoint} from './codex-custody-colocation';
+import {rewriteRelayedCodexRequest} from './runner-machine';
 
 /** Owner-derived construction facts. Persistence and eligibility remain with session-owner. */
 export interface CodexSuccessorPlan {
@@ -68,11 +70,19 @@ const nonempty = (value: string, field: string) => {
 export function successorThreadStartParams(plan:CodexSuccessorPlan) {
   assertCommitted(plan);
   const roots=normalizedRoots(plan);
-  return {model:plan.model,modelProvider:nonempty(plan.provider,'provider'),allowProviderModelFallback:false,
+  const params={model:plan.model,modelProvider:nonempty(plan.provider,'provider'),allowProviderModelFallback:false,
     cwd:plan.cwd,runtimeWorkspaceRoots:roots,
     environments:[{environmentId:nonempty(plan.environmentId,'environment id'),cwd:plan.cwd,runtimeWorkspaceRoots:roots}],
     config:{...plan.config,model_reasoning_effort:'medium'},approvalPolicy:plan.approvalPolicy,sandbox:plan.sandbox,
     ephemeral:false,...(plan.additionalContext?{developerInstructions:renderContext(plan.additionalContext)}:{})};
+  const endpoint=plan.nativeConnection?.endpoint;
+  assertCustodyEndpoint(endpoint??undefined);
+  if(!endpoint?.relayRunner)return params;
+  // The final owner guard and the runner assess the same effective native request.
+  // Its machine mapping is retained with this physical connection, never re-resolved
+  // through whichever runner happens to own the current listen channel.
+  return JSON.parse(rewriteRelayedCodexRequest(JSON.stringify({method:'thread/start',params}),
+    endpoint.relayAssociation!.preparation.machine).text).params;
 }
 
 /**
