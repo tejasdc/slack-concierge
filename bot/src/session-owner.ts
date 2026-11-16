@@ -3183,7 +3183,7 @@ export class SessionOwner {
     const active=db.query("SELECT id,accepted_input_id FROM turns WHERE session_id=? AND status='running' AND stop_requested_at IS NULL LIMIT 1").get(sessionId) as {id:number;accepted_input_id:string|null}|null;
     if(!active?.accepted_input_id)return;
     const notice=retainSessionInput({id:`handoff-notice:${handoffId}`,sessionId,scope:`handoff-notice:${handoffId}`,actionId:'notice',
-      kind:'input',origin:'service',payload:{text:`${successor} now continues this work at ${supersededAddress(sessionId)}. Your session is superseded: owner writes are refused. Stop making changes and let your current run end. Read sessions obligations to see what moved.`,delivery:'steer'},
+      kind:'input',origin:'service',payload:{threadReplyNotRequired:true,text:`${successor} now continues this work at ${supersededAddress(sessionId)}. Your session is superseded: owner writes are refused. Stop making changes and let your current run end. Read sessions obligations to see what moved.`,delivery:'steer'},
       sourceInputId:active.accepted_input_id,sourceRunId:nativeRunId(active.id)}).input;
     this.runtime.steer(notice);
   }

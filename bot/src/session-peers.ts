@@ -1651,7 +1651,7 @@ export class SessionPeers {
     }
     recoverUnsentSteeredInput(`return:${event.event_id}`);
     const existing=getAcceptedSessionInput(`return:${event.event_id}`);
-    const accepted=existing?this.dependencies.owner.dispatch(existing):this.dependencies.owner.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
+    const accepted=existing?this.dependencies.owner.dispatch(existing):this.dependencies.owner.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',...(event.kind==='overdue'?{threadReplyNotRequired:true}:{}),sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
       text:answerNotice({responder:(()=>{const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
           const title=catalogue?JSON.parse(catalogue.view_json)?.title:null;return title?`“${title}” on the ${row.peer}`:`the session on the ${row.peer}`;})(),
         labels:[row,...group.joining.map(joined=>this.row(joined.request_id))].map(item=>requestLabel(item.payload_json)),kind:event.kind,stalled:!!declared.stalled,
