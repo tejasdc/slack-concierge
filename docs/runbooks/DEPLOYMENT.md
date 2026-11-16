@@ -1503,7 +1503,10 @@ in [capture ingress](../architecture/CAPTURE-INGRESS.md).
 
 The Concierge service journal records `retry_budget_exhausted` with the operation,
 attempt count, elapsed time and last error. Peer reply deadlines also record
-`session_peer_reply_deadline_exhausted`. The same exhausted episode places one
+`session_peer_reply_deadline_exhausted`. A retry deadline never stops the first
+attempt, and a peer reply's window counts from the current process's first send,
+so a reply stored before a restart or sleep is always tried. Replies are forwarded
+by their own task, apart from the status notify. The same exhausted episode places one
 service message in the native Inbox's Needs attention list; it starts no provider
 turn. Inspect with `journalctl -u concierge-bot.service -u agent-inbox.service
 --since today` and search those event names. The ledger keeps the one-time notice
