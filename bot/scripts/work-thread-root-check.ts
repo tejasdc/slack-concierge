@@ -1,9 +1,10 @@
 import {Database} from 'bun:sqlite';
+import {ledgerWriteResults} from '../src/ledger-write-results';
 import {turnTopicRootIn} from '../src/work-thread-root';
 
 // A watch wake, a report-back and a request each reach his thread through the retained links the
 // owner uses; the weekly allowance report counts them by this same rule.
-const db=new Database(':memory:');
+const db=ledgerWriteResults(new Database(':memory:'));
 db.exec(`CREATE TABLE session_inputs(id TEXT PRIMARY KEY,session_id INTEGER,scope TEXT,action_id TEXT,kind TEXT,origin TEXT,payload_json TEXT,
     turn_id INTEGER,steering_id INTEGER,source_input_id TEXT,source_run_id TEXT,request_id TEXT);
   CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,native_run_id TEXT);
