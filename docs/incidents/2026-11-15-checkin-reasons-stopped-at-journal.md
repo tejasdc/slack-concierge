@@ -1,7 +1,7 @@
 ---
 failure: Saved check-in reasons could remain documented without reaching an agent who could act on them.
 date: 2026-11-15
-fix_commits: []
+fix_commits: [24cb159d, 1b49937c, 0b8634e7, 578a0690, 4ec995ec]
 cause_status: confirmed
 ---
 
