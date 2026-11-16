@@ -1301,7 +1301,7 @@ export class SessionOwner {
    * have ended, so the caller must belong to the session that created it, not be that run. A write
    * (`fenced`) also needs a session that has not handed its work off.
    */
-  private agentBrowserBinding(request:Request,sessionId?:string,body?:Record<string,any>,requireCodexTestOptIn=false,fenced=false) {
+  private agentBrowserBinding(request:Request,sessionId?:string,body?:Record<string,any>,requireCodexTestOptIn=false,fenced=false,creationRunOnly=false) {
     const header=request.headers.get('x-concierge-verified-agent-source');
     const fromBody=body?.agentSource&&typeof body.agentSource.inputId==='string'&&typeof body.agentSource.runId==='string'
       ?`${body.agentSource.inputId} ${body.agentSource.runId}`:null;
@@ -1323,6 +1323,10 @@ export class SessionOwner {
     if(!created||created.kind!=='create'||created.origin!=='agent'||!creatorSource||creatorSource.session_id!==source.sessionId
       ||created.request_id!==createId.slice('request:'.length)||sessionId&&`concierge:${created.session_id}`!==sessionId)
       throw new SessionOwnerError('This agent did not create the exact test session.',403,'AGENT_TEST_SCOPE_REFUSED');
+    // The one-time finite Stop and connection-loss controls are granted to the run that created the
+    // disposable session and counted by that run's pair. A later run of the creator must not renew them.
+    if(creationRunOnly&&(created.source_input_id!==source.inputId||created.source_run_id!==source.runId))
+      throw new SessionOwnerError('Native test controls stay with the run that created this test session.',403,'AGENT_TEST_SCOPE_REFUSED');
     if(requireCodexTestOptIn){
       const payload=JSON.parse(created.payload_json) as {codexNativeTestFaultDeadlineMs?:unknown};
       if(getSessionById(created.session_id)?.provider_id!=='codex'||typeof payload.codexNativeTestFaultDeadlineMs!=='number'
@@ -4828,7 +4832,7 @@ export class SessionOwner {
         if(request.method==='POST'&&parts.length===4&&['stop','connection-loss'].includes(parts[3]!)){
           const input=object(body);
           only(input,['clientActionId','runId','agentSource','createInputId']);
-          const {source,sessionId,createInputId}=this.agentBrowserBinding(request,parts[2],input,true,true);
+          const {source,sessionId,createInputId}=this.agentBrowserBinding(request,parts[2],input,true,true,true);
           const control={clientActionId:input.clientActionId,runId:input.runId};
           if(parts[3]==='stop')return ownerJson(await this.stopExact(sessionId,control,{inputId:source.inputId,runId:source.runId,
             targetAddress:sessionId,authorityInputId:createInputId}));
