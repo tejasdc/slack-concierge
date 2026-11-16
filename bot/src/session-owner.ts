@@ -604,7 +604,7 @@ function validateCanvasContext(input:Record<string,any>) {
  * exact shape must not put another session's content in it.
  */
 const FOREIGN_AUTHORSHIP_PREDICATE=`((candidate.origin<>'agent' AND NOT (candidate.origin='service' AND candidate.kind='input'
-        AND candidate.source_input_id=candidate.id AND candidate.request_id=candidate.id
+        AND candidate.source_input_id IS candidate.id AND candidate.request_id IS candidate.id
         AND EXISTS (SELECT 1 FROM turns AS own_run WHERE own_run.native_run_id=candidate.source_run_id AND own_run.session_id=candidate.session_id)))
       OR (candidate.origin='agent' AND (candidate.source_input_id IS NOT ? OR candidate.source_run_id IS NOT ?)
         AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source

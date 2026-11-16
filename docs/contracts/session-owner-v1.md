@@ -17,8 +17,8 @@ output is read; there is no clean/allowed result and the content refusal is unch
 
 The bound content entrance's authorship check treats a session's own steered owner notice as
 the session's own: a service-origin input of kind `input` whose source and request equal its own
-id and whose source run is a turn of that same session (account budget brief, background-job
-notices). Spelling of the id and the text are not read. Any other service or human input, and
+id and whose source run is a turn of that same session (for example the account budget brief and background-job
+notices; a missing source or request never qualifies). Spelling of the id and the text are not read. Any other service or human input, and
 any agent input from another source, still closes the entrance with AGENT_TEST_SCOPE_CHANGED.
 
 ## Current mutation admission
