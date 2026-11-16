@@ -255,6 +255,11 @@ async function child(){
   await refusal([{...member,materials:[{...matSkill,extra:true}]}],'LAB_CONVERSATION_REFUSED',400,'extra-field');
   await refusal([{...member,materials:Array.from({length:33},(_,index)=>({path:join(project,`n${index}.md`),sha256:matSkill.sha256}))}],'LAB_CONVERSATION_REFUSED',400,'too-many');
   assert.equal((await (owner as any).prepareLabParticipant({key:'wired',label:'Wired',sessionId:codingId,materials:[matSkill]})).materials[0].text,skillText,'the owner preparation path freezes the exact text');
+  const offerSnapshots=process.env.CONCIERGE_LAB_OFFER_SNAPSHOTS!,offerFile=join(offerSnapshots,'offer-1','SKILL.md'),candidateFile=join(offerSnapshots,'..','candidates','offer-2.md');
+  mkdirSync(join(offerSnapshots,'offer-1'),{recursive:true});mkdirSync(join(offerSnapshots,'..','candidates'),{recursive:true});
+  writeFileSync(offerFile,'Offer snapshot skill.'+String.fromCharCode(10));writeFileSync(candidateFile,'Unselected candidate.');
+  assert.equal((await (owner as any).prepareLabParticipant({key:'offer',label:'Offer',sessionId:codingId,materials:[{path:offerFile,sha256:hash('Offer snapshot skill.'+String.fromCharCode(10))}]})).materials[0].text,'Offer snapshot skill.'+String.fromCharCode(10),'an expertise offer snapshot outside every project is frozen exactly');
+  await refusal([{...member,materials:[{path:candidateFile,sha256:hash('Unselected candidate.')}]}],'LAB_MATERIAL_UNAVAILABLE',409,'offer-candidate-outside-snapshots');
 
   await lab.create(matCreate);await lab.create(matCreate);
   assert.equal(db.query("SELECT count(*) AS n FROM session_inputs WHERE kind='lab-conversation' AND action_id='materials'").get()?.n,1,'same materials retry is a duplicate');
@@ -313,4 +318,4 @@ async function child(){
 }
 
 if(process.argv.includes('--child')){await child();process.exit(0);}
-else{const scratch=await mkdtemp(join(tmpdir(),'concierge-lab-conversations-'));try{console.log(JSON.stringify(await runFixtureChild({command:process.execPath,args:[import.meta.path,'--child'],env:{...process.env,CONCIERGE_STATE_DIR:scratch,CONCIERGE_CAPTURE_STATE_DIR:join(scratch,'capture'),CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:LAB_CONVERSATIONS_TEST_AUTHORIZATION,CONCIERGE_EXECUTION_HOSTS:'0',THINKERING_SESSION_CAPABILITY_SOCKET:join(scratch,'absent.sock'),CONCIERGE_THINKERING_CAPABILITY_URL:'',CONCIERGE_THINKERING_TOKEN_FILE:''},deadlineMs:60_000,fixture:'lab-conversations'})));}finally{await rm(scratch,{recursive:true,force:true});}}
+else{const scratch=await mkdtemp(join(tmpdir(),'concierge-lab-conversations-'));try{console.log(JSON.stringify(await runFixtureChild({command:process.execPath,args:[import.meta.path,'--child'],env:{...process.env,CONCIERGE_STATE_DIR:scratch,CONCIERGE_CAPTURE_STATE_DIR:join(scratch,'capture'),CONCIERGE_TEST_MODE:'1',CONCIERGE_TEST_AUTHORIZATION:LAB_CONVERSATIONS_TEST_AUTHORIZATION,CONCIERGE_LAB_OFFER_SNAPSHOTS:join(scratch,'offer-material','snapshots'),CONCIERGE_EXECUTION_HOSTS:'0',THINKERING_SESSION_CAPABILITY_SOCKET:join(scratch,'absent.sock'),CONCIERGE_THINKERING_CAPABILITY_URL:'',CONCIERGE_THINKERING_TOKEN_FILE:''},deadlineMs:60_000,fixture:'lab-conversations'})));}finally{await rm(scratch,{recursive:true,force:true});}}
