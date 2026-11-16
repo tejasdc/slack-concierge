@@ -60,7 +60,7 @@ try {
   };
 
   // Requests. Each claim takes the one queued turn just made, so a holder can ask on.
-  const [a,c,d,e,f,g,h,old,j]=[await create(),await create(),await create(),await create(),await create(),await create(),await create(),await create(),await create()];
+  const [a,c,d,e,f,g,h,old,j,k,m]=[await create(),await create(),await create(),await create(),await create(),await create(),await create(),await create(),await create(),await create(),await create()];
   const waitingId=await ask('thread',router.source,a,root);
   const aRun=run();assert.equal(aRun.sessionId,a.id);
   const chainId=await ask('chain',router.source,f,root);
@@ -71,10 +71,17 @@ try {
   const heldId=await ask('held',router.source,e,root);
   const quietId=await ask('quiet',router.source,h,root);
   const resetId=await ask('reset',router.source,j,root);
+  const watchUnnamedId=await ask('watch-unnamed',router.source,k,root);
+  const watchNamedId=await ask('watch-named',router.source,m,root);
   await communication.stop();
-  endTurns(a.id);endTurns(c.id);endTurns(f.id);endTurns(h.id);endTurns(j.id);
+  endTurns(a.id);endTurns(c.id);endTurns(f.id);endTurns(h.id);endTurns(j.id);endTurns(k.id);endTurns(m.id);
   db.query("UPDATE turns SET status='running' WHERE session_id=?").run(d.id);
   db.query("UPDATE turns SET dispatch_hold='usage' WHERE session_id=? AND status='queued'").run(e.id);
+  // Two holders wait on a live watch of their own: one never said so, one named it in a progress reply.
+  const addWatch=(id:string,session:number)=>db.query(`INSERT INTO watches(watch_id,session_id,origin_input_id,origin_run_id,action_id,request_hash,kind,condition_json,baseline_json,baseline_mode,deadline_ms,state,created_at_ms)
+    VALUES(?,?,'i','r',?,'h','file','{}','{}','none',?,'observing',?)`).run(id,session,id,clock+100*HOUR,clock);
+  addWatch('watch-unnamed',k.id);addWatch('watch-named',m.id);
+  db.query("INSERT INTO session_communication_events(event_id,request_id,kind,action_key,payload_json,created_at_ms) VALUES(?,?,'progress',NULL,?,?)").run(randomUUID(),watchNamedId,JSON.stringify({text:'Waiting for the release.',waitingOnWatch:'watch-named'}),clock);
 
   assert.equal(standing(quietId).state,'quiet');
 
@@ -139,6 +146,22 @@ try {
   assert.equal(streakOf().count,0,'the holder was seen working on it: the count starts again');
   endTurns(j.id);await tick(61*60_000);
   assert.equal(streakOf().count,1);assert.equal(stalledAt(resetId),null);
+
+  // A holder a live watch will wake is not quiet, named or not: nothing is sent and nothing is counted until the watch ends.
+  for(const [id,watch] of [[watchUnnamedId,'watch-unnamed'],[watchNamedId,'watch-named']] as const){
+    assert.deepEqual(quietInputs(id),[],`no wake so far for ${id}`);
+    const live=standing(id);assert.equal(live.state,'waiting');assert.equal(live.text,'Waiting for something it is watching');
+    db.query('UPDATE watches SET deadline_ms=? WHERE watch_id=?').run(clock+190*60_000,watch);
+    assert.equal(standing(id).until,new Date(clock+190*60_000).toISOString(),'until is the watch deadline');
+  }
+  (communication as any).quietChecks.clear();
+  for(let step=0;step<3;step++){await tick(HOUR);for(const id of [watchUnnamedId,watchNamedId])assert.deepEqual(quietInputs(id),[],'no wake for three hours');}
+  db.query("UPDATE watches SET gaps_json='[{\"gap\":1}]' WHERE watch_id='watch-named'").run();
+  assert.equal(standing(watchNamedId).state,'quiet','a gap in coverage is not a live watch');
+  db.query("UPDATE watches SET gaps_json='[]' WHERE watch_id='watch-named'").run();
+  await tick(11*60_000);
+  for(const id of [watchUnnamedId,watchNamedId])assert.deepEqual(quietInputs(id),[`request-quiet:${id}:1`],'woken once the watch has expired');
+  assert.equal((db.query('SELECT quiet_streak_count AS n FROM session_communication_requests WHERE request_id=?').get(watchUnnamedId) as {n:number}).n,1,'the live-watch hours added nothing to the streak');
 
   // Quiet with nothing to wait on gets its wake too; stalled says so.
   assert.equal(quietInputs(quietId)[0],`request-quiet:${quietId}:1`,'a holder with nothing to wait on is woken too');

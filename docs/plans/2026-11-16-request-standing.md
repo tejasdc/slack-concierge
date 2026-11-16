@@ -46,5 +46,7 @@ Hand-off card pill and one-line state from the standing, naming the current hold
 - A session row for an idle holder of an open request reads "Request open".
 - Focused check (`bot/scripts/request-standing-fixture.ts`): an open thread request whose holder waits on a sent request that is itself idle gets exactly one `request-quiet:` input after 60 minutes, a second only after another 60, none while anything in the chain runs or while held.
 
+A live watch of the holder (any, named or not; accepted or observing, deadline ahead, no coverage gap) makes a request `waiting`, not `quiet`: it wakes the session by itself, so the quiet clock sends nothing and counts nothing until it ends.
+
 ## Known limits
 'working' still means the holder session has a running turn, not that the turn serves this request; binding turns to requests is follow-on work.

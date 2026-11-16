@@ -31,7 +31,7 @@ import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {codexAccountSwitchReply} from './codex-account-switch-receipt';
 import { log } from './log';
 import { deliverRequestReminder } from './request-reminder-carrier';
-import { QUIET_WAKE_MS, QUIET_WAKES_BEFORE_STALL, QUIET_WAKES_PER_WINDOW, QUIET_WAKE_WINDOW_MS, dependencySettledSince, dependencyStuck, quietWakeText, requestLastWordMs, requestStanding } from './request-standing';
+import { QUIET_WAKE_MS, QUIET_WAKES_BEFORE_STALL, QUIET_WAKES_PER_WINDOW, QUIET_WAKE_WINDOW_MS, dependencySettledSince, dependencyStuck, liveWatchOf, quietWakeText, requestLastWordMs, requestStanding } from './request-standing';
 import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
@@ -3742,6 +3742,10 @@ export class SessionCommunicationCoordinator {
                 db.query('UPDATE session_communication_requests SET quiet_streak_since_ms=NULL,quiet_streak_count=0 WHERE request_id=?').run(request.request_id);
             return recheck(now + STILL_WAITING_AFTER_MS);
         }
+        // A holder something already in the system will wake (a live watch of its own) is not quiet: no wake, nothing added to the
+        // streak. Look again when the watch ends, or in an hour if sooner. When the watch is gone the normal rules apply.
+        const watch = liveWatchOf(db, request.target_session_id, request.request_id, now);
+        if (watch) return recheck(Math.min(watch.deadlineMs, now + QUIET_WAKE_MS));
         // A wait on something itself stuck is actionable at once; only a wait on live or held work keeps the hour.
         const stuck = dependencyStuck(db, request.request_id, standing, now);
         const due = stuck ? 0 : requestLastWordMs(db, request) + QUIET_WAKE_MS;

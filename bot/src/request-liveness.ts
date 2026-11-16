@@ -90,7 +90,10 @@ export function waitingOnDependency(sessionId: number, requestId: string, sinceM
                 WHERE request.request_id=? AND request.target_session_id=? AND request.outcome IS NULL AND request.created_at_ms>=?
                   AND coalesce(named.series_id,named.watch_id)=coalesce(watch.series_id,watch.watch_id))) LIMIT 1`)
             .get(sessionId,requestId,sessionId,sinceMs,requestId,sessionId,sinceMs,requestId,sessionId,sinceMs)
-        || waitingOnLiveRequest(sessionId, sinceMs, untakenAnswers);
+        || waitingOnLiveRequest(sessionId, sinceMs, untakenAnswers)
+        // Any live watch of the session wakes it when it fires, fails or expires, named by this request's partial or not: many agents
+        // wait on a watch without saying so. A watch with a gap in its coverage or a past deadline wakes nothing.
+        || !!db.query("SELECT 1 FROM watches WHERE session_id=? AND state IN ('accepted','observing') AND deadline_ms>? AND gaps_json IN ('[]','') LIMIT 1").get(sessionId, Date.now());
 }
 
 /** Whether something already in the system will wake this worker again. */
