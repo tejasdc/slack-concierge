@@ -186,8 +186,11 @@ That fixture is source acceptance, not a live browser or real-provider claim.
 starts a throwaway owner for thnkr.ing's isolated agent workspace (its
 `THINKERING_AGENT_WORKSPACE_LAB_OWNER_SOCKET`). It creates a new root-only
 `/tmp/concierge-lab-owner-*` directory with a fresh, empty ledger (nothing of Tejas's is copied),
-prints `{ready, ownerSocket, stateDir, providers}`, and runs real participants through the ordinary
-execution host and its own Codex App Server. Lab bootstrap, context and publication go to the given
+prints `{ready, ownerSocket, stateDir, providers}` only once its own runner is connected and a current
+Claude allowance reading has arrived, and runs participants the way production does: Claude turns go
+through its own instance of the real runner daemon (`CONCIERGE_TURN_RUNNERS=all`, relay over a private
+`requests.sock` and the authenticated loopback entrance), never launched by the owner itself, because
+account rooms and launches exist only on a runner; Codex uses its own App Server. Lab bootstrap, context and publication go to the given
 isolated workspace socket only. It serves Lab commands, its own participants' hooks and reads of its
 own ledger; everything else is refused. The turn budget (default 24) bounds provider spend. At the
 deadline or SIGTERM it stops only its own turns and App Server and removes the directory unless
