@@ -181,6 +181,15 @@ its digest. The successor's first input is a handoff brief with that inventory, 
 to `sessions context` for the predecessor's decisions, and references to worktree state.
 The predecessor still owns and can work on every obligation while the handoff is proposed.
 Only one proposal may be open per predecessor; the caller or predecessor can withdraw it.
+Withdrawal suspends the proposed successor and cancels its queued turns in the same owner
+transaction, including waiting continuations. Each retained input receives a withdrawal reason;
+its exact words, source identity and provider evidence remain. A queued retry with possible
+earlier provider effects has an uncertain receipt, rather than a claim that nothing executed.
+Running turns retain their existing Stop and reconciliation path, and a withdrawn successor
+cannot create further continuations. Normal owner startup idempotently applies this same queue
+transition to historical withdrawn successors; it neither reactivates sessions nor resubmits work.
+The held-work movability fixture covers historical repair, new withdrawal, retained acknowledgement,
+running work, continuation suppression and repeat reconciliation.
 
 The inventory names open requests sent by and owed by the predecessor, open ChatGPT
 answer duties, queued inputs, active watches, open Lab roles where available, and referenced worktrees. Each item has

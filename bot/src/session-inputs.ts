@@ -484,6 +484,8 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
     // work at a boundary it chose ends as cancelled too, and that work is owed a continuation.
     if(!source || source.stop_requested_at || !source.ended_at
       || (reason.kind==='provider_refused'?source.status!=='error':!['done','error','cancelled'].includes(source.status)))return null;
+    // A withdrawn successor may retain a running provider attempt, but owes no new execution.
+    if(db.query("SELECT 1 FROM session_handoffs WHERE successor_session_id=? AND state='withdrawn'").get(source.session_id))return null;
     // A typed Lab invocation publishes its original terminal provider answer. A new
     // generic continuation would lose its exact question, visibility and publication
     // binding. In-turn retries and existing-execution reconciliation keep that identity.

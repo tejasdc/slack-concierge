@@ -77,6 +77,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Managed native Codex helper edit identity and parent-turn retention follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md); the Nov 13 lifecycle failure and replay are [here](docs/incidents/2026-11-13-codex-helper-lifetime.md), preserving the earlier [Nov 12 attribution incident](docs/incidents/2026-11-12-codex-helper-edit-gate.md).
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
+- Withdrawn handoffs terminalize successor queues without replaying earlier attempts;
+  startup repairs historical queues through the same owner transition. See
+  [session ownership](docs/architecture/SESSION-OWNER.md).
 - Owner-generated no-reply notices may finish without posting or automatic closing-text
   relay; genuine agent questions and worker answers keep their thread obligation. See
   [quiet service notices](docs/contracts/native-inbox.md#quiet-service-notices).
