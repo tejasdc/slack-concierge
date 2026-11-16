@@ -10,7 +10,7 @@ process.env.CONCIERGE_TEST_AUTHORIZATION='journal-processing-a168df69';
 const [{SessionOwner},{SessionCommunicationCoordinator},{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},{retainSessionInput,nativeRunId,updateSessionMetadata},{validateJournalReview,pendingJournalProcessing}]=await Promise.all([
   import('../src/session-owner'),import('../src/session-communication'),import('../src/state'),import('../src/session-inputs'),import('../src/journal-processing')]);
 const root='checkin:fixture12345';
-const canonical={version:1,rootId:root,sourceRoot:{objectId:root,revision:'r1',actor:{id:'human',kind:'human'}},lines:[
+const canonical={version:1,sourceVersion:'complete-v1',rootId:root,sourceRoot:{objectId:root,revision:'r1',actor:{id:'human',kind:'human'}},lines:[
   {objectId:root,parentId:null,at:'2026-11-14T21:47:53Z',text:'Please assess the reason for this block.',revision:'l1',actor:{id:'human',kind:'human'},evidence:{test:true}},
   {objectId:'line:second',parentId:root,at:'2026-11-14T21:48:00Z',text:'Also assess this other reason.',revision:'l2',actor:{id:'human',kind:'human'}}]};
 const owner=new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false,steer:()=>false,readJournalEntry:async()=>structuredClone(canonical)},scratch);
@@ -26,7 +26,7 @@ const inputId=first.accepted_input_id!,runId=nativeRunId(first.turn_id);
 db.query('UPDATE session_inputs SET payload_json=? WHERE id=?').run(JSON.stringify({text:'service filing',journalProcessing:{version:1,rootId:root}}),inputId);
 communication.start();await communication.idle();
 const source={input_id:inputId,run_id:runId};
-const review={rootId:root,revision:'r1',disposition:'context-only' as const,reason:'Passive reflection only.',items:[] as any[]};
+const review={rootId:root,revision:'r1',sourceVersion:'complete-v1',disposition:'context-only' as const,reason:'Passive reflection only.',items:[] as any[]};
 const count=()=>Number((db.query('SELECT count(*) AS n FROM inbox_requests').get() as any).n);
 try {
   assert.ok(pendingJournalProcessing(inputId));
@@ -35,6 +35,9 @@ try {
   assert.equal(parseRouterSessionsArgs(['journal-review','--review-file',join(scratch,'review.json'),'--source-input',inputId,'--source-run',runId,'--action-id','cli']).operation,'journal-review');
   assert.throws(()=>communication.outcome({source,action_id:'tracker-only',outcome:'done'}),/journal-review/);
   const before=count();
+  const withNewChild={...canonical,sourceVersion:'complete-v2',lines:[...canonical.lines,{...canonical.lines[1],objectId:'line:new-command',text:'Please also do this.'}]};
+  assert.throws(()=>validateJournalReview(review,withNewChild),/stale/);
+  assert.equal(validateJournalReview({...review,sourceVersion:'complete-v2'},withNewChild).length,0);
   await owner.reviewJournal({source,action_id:'context',review});
   assert.equal(count(),before);assert.equal(pendingJournalProcessing(inputId),null);
   const actionable={...review,disposition:'actionable',items:canonical.lines.map(line=>({lineId:line.objectId,quote:line.text,classification:'actionable-reason',title:'Assess journal reason',reason:'This reason may require action.'}))};

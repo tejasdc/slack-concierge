@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {db} from './state';
 import {getAcceptedSessionInput} from './session-inputs';
 
-export type JournalReview = {rootId:string;revision:string;disposition:'context-only'|'actionable';reason:string;items:{lineId:string;quote:string;offset?:number;classification:'explicit-request'|'actionable-reason';title:string;reason:string;existingRequestId?:string}[]};
+export type JournalReview = {rootId:string;revision:string;sourceVersion:string;disposition:'context-only'|'actionable';reason:string;items:{lineId:string;quote:string;offset?:number;classification:'explicit-request'|'actionable-reason';title:string;reason:string;existingRequestId?:string}[]};
 export function journalPortionIdentity(root:string,line:string,quote:string) {
   return createHash('sha256').update(JSON.stringify([root,line,quote])).digest('hex');
 }
@@ -10,6 +10,7 @@ export function validateJournalReview(review:JournalReview,source:any) {
   if(!review||typeof review.rootId!=='string'||!review.revision||!review.reason?.trim()||!Array.isArray(review.items)
     ||!['context-only','actionable'].includes(review.disposition)
     ||(review.disposition==='context-only'?review.items.length!==0:review.items.length===0))throw new Error('Invalid journal review disposition.');
+  if(typeof review.sourceVersion!=='string'||!review.sourceVersion||source?.sourceVersion!==review.sourceVersion)throw new Error("Journal complete source version is missing or stale.");
   if(source?.rootId!==review.rootId||source?.sourceRoot?.objectId!==review.rootId||source.sourceRoot.revision!==review.revision
     ||!source.sourceRoot.actor?.id||!source.sourceRoot.actor?.kind||!Array.isArray(source.lines))throw new Error('Journal source revision and actor proof required.');
   if(source.lines.some((line:any)=>!line.revision||!line.actor?.id||!line.actor?.kind))throw new Error("Every journal line requires revision and actor proof.");
