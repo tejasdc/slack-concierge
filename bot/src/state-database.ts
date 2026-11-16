@@ -89,8 +89,11 @@ export const db = observedDatabase(
   access.readonly ? undefined : () => {
     // A surviving transaction can commit after a WAL sync without increasing total_changes().
     // Its state cannot be credited by the durability barrier; restart from the disk instead.
-    writeSync(2, JSON.stringify({ ts: new Date().toISOString(), level: 'critical', event: 'ledger_transaction_cleanup_failed' }) + '\n');
-    process.exit(75);
+    try {
+      writeSync(2, JSON.stringify({ ts: new Date().toISOString(), level: 'critical', event: 'ledger_transaction_cleanup_failed' }) + '\n');
+    } finally {
+      process.exit(75);
+    }
   },
 );
 if (access.readonly) db.exec("PRAGMA query_only = ON");
