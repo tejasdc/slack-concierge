@@ -56,7 +56,17 @@ Linux only) changes where the disk is waited for, not what is written or when it
   request and once a second while rows are unsynced. Requests coalesce (group commit).
 - `ledgerDurable()` (`ledger-durability-barrier.ts`) resolves once every commit made before the
   call is synced. Waiters resolve in call order. It samples the connection's `total_changes()` in a
-  microtask, after any enclosing synchronous transaction has committed.
+  microtask, after any enclosing synchronous transaction has committed. The accepting connection
+  retains a dedicated prepared counter statement for its lifetime. The periodic pump runs only
+  from a microtask, timer or worker callback, after the synchronous transaction wrapper has
+  committed or rolled back; it does not read Bun's transaction-state accessor. That accessor
+  acquires a process-wide SQLite registry lock and blocked the accepting thread for 7.338 seconds
+  during the 2026-11-16 release. A confirmed sync credits only the counter target captured before
+  that sync, never a later counter value. This ordering requires that no accepting-connection
+  transaction remain open across an event-loop callback and later commit without another write.
+  If an outer transaction throws and Bun's cleanup leaves the connection in a transaction (or
+  its state cannot be read), the accepting process exits before another callback can credit a
+  sync. Nested savepoint failures are checked at the containing outer transaction boundary.
 - A slow-sync record joins up to 16 labelled released waiters to that successful sync. It keeps
   the committed change target sampled by the barrier, sample time, the sync already in flight
   when a later target arrived, the selected sync ID, worker notification time and owner delivery

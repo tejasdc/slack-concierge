@@ -115,6 +115,24 @@ try {
     throw failure;
   }).exclusive(), error => error === failure);
   assert.equal(db.query('SELECT id FROM facts WHERE id=5').get(), null);
+  // The accepting connection's exceptional outer boundary must refuse further
+  // durability work if Bun cannot establish that cleanup closed the transaction.
+  const uncertain = new Error('transaction cleanup uncertain');
+  const unresolved = new Proxy(raw, { get(target, property) {
+    if (property === 'inTransaction') return true;
+    if (property === 'transaction') return () => () => { throw failure; };
+    const value = Reflect.get(target, property, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  }}) as Database;
+  const guarded = observedDatabase(unresolved, () => { throw uncertain; });
+  assert.throws(() => guarded.transaction(() => {})(), error => error === uncertain);
+  let falseAlarm = 0;
+  const nested = observedDatabase(raw, () => { falseAlarm++; throw uncertain; });
+  nested.transaction(() => {
+    assert.throws(() => nested.transaction(() => { throw failure; })(), error => error === failure);
+    nested.query('SELECT id FROM facts WHERE id=1').get();
+  })();
+  assert.equal(falseAlarm, 0);
   takeStorageInterval();
   assert.equal(observeSynchronousStorage('statement', () => { throw failure; }, () => { Bun.sleepSync(30); return 42; }), 42);
   assert.equal(takeStorageInterval().observation_failures, 1);
