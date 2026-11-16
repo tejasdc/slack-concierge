@@ -1315,7 +1315,10 @@ export class SessionOwner {
       throw new SessionOwnerError('The marked request names two different sources or creation requests.',403,'AGENT_TEST_SCOPE_REFUSED');
     const pair=/^(\S+) (\S+)$/.exec(marked);
     if(!pair)throw new SessionOwnerError('A verified agent source pair is required.',403,'AGENT_TEST_SCOPE_REQUIRED');
-    const source=verifiedContentSource({inputId:pair[1]!,runId:pair[2]!});
+    // The finite fault controls keep their original admission: the creation run's pair as an accepted
+    // association, with no live check, so a saved receipt for the same action stays readable after the
+    // run ends. Every other bound route admits the caller's current live run.
+    const source=creationRunOnly?agentTestSource({inputId:pair[1],runId:pair[2]})!:verifiedContentSource({inputId:pair[1]!,runId:pair[2]!});
     if(fenced&&(supersededAddress(source.sessionId)||withdrawnSuccessor(source.sessionId)))
       throw new SessionOwnerError('This session handed its work off; it can no longer change this test session.',403,'AGENT_TEST_SCOPE_REFUSED');
     const created=getAcceptedSessionInput(createId);
@@ -4832,7 +4835,7 @@ export class SessionOwner {
         if(request.method==='POST'&&parts.length===4&&['stop','connection-loss'].includes(parts[3]!)){
           const input=object(body);
           only(input,['clientActionId','runId','agentSource','createInputId']);
-          const {source,sessionId,createInputId}=this.agentBrowserBinding(request,parts[2],input,true,true,true);
+          const {source,sessionId,createInputId}=this.agentBrowserBinding(request,parts[2],input,true,false,true);
           const control={clientActionId:input.clientActionId,runId:input.runId};
           if(parts[3]==='stop')return ownerJson(await this.stopExact(sessionId,control,{inputId:source.inputId,runId:source.runId,
             targetAddress:sessionId,authorityInputId:createInputId}));
