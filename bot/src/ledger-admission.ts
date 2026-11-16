@@ -14,17 +14,23 @@ export class LedgerAdmission {
   private current: Promise<void> | null = null;
   private scheduled = false;
   private onViolation:((error:Error)=>void)|undefined;
+  private onUnadmitted:((error:Error)=>void)|undefined;
 
-  enable(onViolation?:(error:Error)=>void): void { this.enabled = true;this.onViolation=onViolation; }
+  enable(onViolation?:(error:Error)=>void, onUnadmitted?:(error:Error)=>void): void { this.enabled = true;this.onViolation=onViolation;this.onUnadmitted=onUnadmitted; }
 
   snapshot() {
     return { enabled: this.enabled, phase: this.phase, epoch: this.epoch,
       pending: this.waiting.length, insideSegment: this.depth > 0 };
   }
 
+  /** A statement outside a segment can only contend with the checkpoint worker while a
+   * maintenance epoch holds its writer lock; that is fatal before SQLite is entered. While
+   * serving, no maintenance can begin under a synchronous statement, so a missed wrap is
+   * reported with its stack and allowed rather than ending the owner. */
   assertSegment(): void {
     if (this.enabled && this.depth === 0) {
       const error=new Error('LEDGER_OPERATION_NOT_ADMITTED');
+      if (this.phase === 'serving') { this.onUnadmitted?.(error); return; }
       this.onViolation?.(error);
       throw error;
     }
@@ -99,7 +105,7 @@ const admission = new LedgerAdmission();
 export const runLedgerSegment = <T>(operation: LedgerSegment<T>): Promise<T> => admission.run<T>(operation);
 export const runSynchronousLedgerSegment = <T>(operation: LedgerSegment<T>): T => admission.synchronous<T>(operation);
 export const assertLedgerSegment = (): void => admission.assertSegment();
-export const enableLedgerAdmission = (onViolation?:(error:Error)=>void): void => admission.enable(onViolation);
+export const enableLedgerAdmission = (onViolation?:(error:Error)=>void, onUnadmitted?:(error:Error)=>void): void => admission.enable(onViolation, onUnadmitted);
 export const ledgerAdmissionSnapshot = () => admission.snapshot();
 export const maintainLedger = (operation: (epoch: number) => Promise<void>): Promise<void> => admission.maintain(operation);
 export const pendingLedgerMaintenance = (): Promise<void> => admission.pendingMaintenance();

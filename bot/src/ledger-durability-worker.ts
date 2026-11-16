@@ -156,6 +156,9 @@ if (setup.role === 'sync') {
       try {
         const result = get<{ busy: number; log: number; checkpointed: number }>('PRAGMA wal_checkpoint(RESTART)');
         if (result.busy || result.log !== result.checkpointed) {
+          // Business writes stay held meanwhile; say so at the busy handler's own pace.
+          if (result.busy) port.postMessage({ kind: 'recycle-waiting', epoch: message.epoch,
+            ms: performance.now() - started, ...result });
           // The same frozen frontier and grant survive finite old readers. Never return to
           // eligibility after partial backfill: pendingBytes may now be zero.
           setImmediate(attempt);
@@ -203,7 +206,29 @@ if (setup.role === 'sync') {
       obligationId = null;
     }
   });
+  // Until the release handover grants fixed-tail recycling, a legacy direct writer may still
+  // exist, so this worker keeps the installed lock-free behavior: PASSIVE copies under the
+  // same quiet/forced eligibility, with the partly-copied tail finished on the next tick.
+  // It never takes the writer lock and cannot stall another writer.
+  const passiveTick = () => {
+    let log: number, checkpointed: number;
+    try { ({ log, checkpointed } = get<{ log: number; checkpointed: number }>('PRAGMA wal_checkpoint(NOOP)')); } catch { return; }
+    const bytes = Math.max(0, log - checkpointed) * (pageSize + 24);
+    const ioPressure = pressure();
+    const tail = checkpointed > 0 && bytes > 0 && bytes < setup.quietBytes;
+    if ((bytes < setup.quietBytes && !tail) || (ioPressure > setup.quietPressure && bytes < setup.forceBytes)) return;
+    const started = performance.now();
+    try {
+      const result = get<{ busy: number; log: number; checkpointed: number }>('PRAGMA wal_checkpoint(PASSIVE)');
+      if (tail && result.checkpointed <= checkpointed) return;
+      port.postMessage({ kind: 'passive-checkpoint', ms: performance.now() - started, bytes, ioPressure, tail, ...result });
+    } catch (error) {
+      port.postMessage({ kind: 'passive-checkpoint', ms: performance.now() - started, bytes, ioPressure,
+        error: error instanceof Error ? error.message : String(error) });
+    }
+  };
   const tick = () => {
+    if (!retiring && !ownerReady && activeEpoch === null) { passiveTick(); return; }
     if (retiring || !ownerReady || requested || activeEpoch !== null) return;
     let bytes = 0;
     try { bytes = pendingBytes(); } catch { return; }

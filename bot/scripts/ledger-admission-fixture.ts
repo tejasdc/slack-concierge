@@ -7,8 +7,10 @@ const latch = () => {
   return { promise, release };
 };
 const gate = new LedgerAdmission();
-gate.enable();
-assert.throws(() => gate.assertSegment(), /NOT_ADMITTED/);
+const reported: Error[] = [];
+gate.enable(undefined, error => { reported.push(error); });
+gate.assertSegment();
+assert.equal(reported.length, 1, 'a serving-phase miss is reported, not fatal');
 const entered = latch(), finished = latch();
 const events: string[] = [];
 const maintenance = gate.maintain(async epoch => {
@@ -16,6 +18,7 @@ const maintenance = gate.maintain(async epoch => {
   events.push('maintenance'); entered.release(); await finished.promise;
 });
 await entered.promise;
+assert.throws(() => gate.assertSegment(), /NOT_ADMITTED/, 'a miss inside maintenance is refused');
 let settled = false;
 const command = gate.run(() => {
   gate.assertSegment();
@@ -30,12 +33,15 @@ finished.release();
 await maintenance;
 assert.equal(await command, 42);
 assert.deepEqual(events, ['maintenance', 'command']);
-assert.throws(() => gate.assertSegment(), /NOT_ADMITTED/);
+gate.assertSegment();
+assert.equal(reported.length, 2, 'serving again: a miss is reported, not fatal');
 
 let continuation!: Promise<void>;
 await gate.run(() => {
   continuation = Promise.resolve().then(() => {
-    assert.throws(() => gate.assertSegment(), /NOT_ADMITTED/);
+    // A continuation after the segment holds no permission; while serving it is reported.
+    gate.assertSegment();
+    assert.equal(reported.length, 3);
   });
 });
 await continuation;

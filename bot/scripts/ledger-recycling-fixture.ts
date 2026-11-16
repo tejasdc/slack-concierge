@@ -48,7 +48,9 @@ async function retire(w:Worker){
 try {
   worker = start();
   for (let cycle = 1; cycle <= 3; cycle++) {
-    if (cycle > 1) await gate.run(() => owner.exec('UPDATE application SET value=value+1'));
+    // Before the grant the worker keeps PASSIVE copying, which can empty the log; a commit
+    // after enabling makes this cycle eligible exactly as a live owner commit would.
+    await gate.run(() => owner.exec('UPDATE application SET value=value+1'));
     await next(worker, 'maintenance-request');
     const before = generation();
     const changes = (owner.query('SELECT total_changes() n').get() as any).n;

@@ -181,8 +181,25 @@ certificate. Replacement requires both that certificate and the worker's own exi
 never force-terminates an attached checkpoint worker: Bun can hold a process-global SQLite
 mutex during its termination sweep, blocking even owner getters while a native sync stalls.
 An own-error/own-exit hook clears the registered connection before that sweep. A refused close
-keeps the worker and epoch owned and parked; it does not exit with the connection registered.
-The existing replacement interval repeats RESTART plus prime before resuming. A timer,
+is not parked: a maintenance epoch that fails after admission closed would hold every business
+write forever, so the owner logs `ledger_maintenance_failed_closed` and exits with the same
+status as lost sync authority. Ending the whole process (unlike terminating one thread in a
+living process) releases its native locks, and nothing unsynced was ever answered; the existing
+startup recovery reopens the ledger. A lost close certificate, where the worker may still be
+inside a native call, stays held: no timer can prove that call ended. While a RESTART waits on
+an old reader, each busy return (the existing five-second lock wait) logs
+`ledger_recycle_waiting_for_reader`, so a long hold of business writes is visible.
+
+Admission misses are fatal only inside a maintenance window, where the worker holds the writer.
+While serving, no epoch can begin under a synchronous statement, so a statement outside a
+segment is allowed and reported once per call site as `ledger_operation_unadmitted_while_serving`;
+a grant is refused while such a caller leaves a transaction open, and the worker asks again.
+
+Before the release handover enables fixed-tail recycling, a legacy direct writer may still
+exist, so the checkpoint worker keeps the previously installed lock-free behavior: PASSIVE
+copies under the same quiet/forced eligibility, finishing a partly-copied tail on the next
+tick, logged as `ledger_checkpoint` with mode `passive-before-handover`. A handover that never
+completes therefore leaves the log copied as before rather than uncopied. A timer,
 possible old success, stale epoch, error notification or newly opened descriptor is never
 proof of native cleanup or application durability. Loss of an accepting sync authority remains
 fail-closed. This finite private connection contract is not a claim about arbitrary Bun programs.

@@ -62,11 +62,16 @@ if(process.argv.includes('--sync-loss-child')){
 }
 if(process.argv.includes('--violation-child')){
  const {observedDatabase}=await import('../src/storage-observation');
- const {assertLedgerSql}=await import('../src/ledger-admission');
+ const {assertLedgerSql,maintainLedger}=await import('../src/ledger-admission');
  const raw=ledgerWriteResults(new Database(':memory:'));raw.exec('CREATE TABLE t(value)');
  const canonical=observedDatabase(raw,assertLedgerSql);
  durability.activateLedgerMaintenance();
- try{canonical.query('INSERT INTO t VALUES(1)').run();}catch{console.log('UNSAFE_CAUGHT_AS_BUSINESS_RESULT');}
+ // While serving no worker can hold the writer: a missed wrap is reported and allowed.
+ canonical.query('INSERT INTO t VALUES(1)').run();
+ if((raw.query('SELECT count(*) n FROM t').get() as any).n!==1)throw Error('serving-phase miss was not allowed');
+ // Inside a maintenance window the same miss must end the owner before SQLite is entered.
+ void maintainLedger(()=>new Promise<void>(()=>{}));await tick();
+ try{canonical.query('INSERT INTO t VALUES(2)').run();}catch{console.log('UNSAFE_CAUGHT_AS_BUSINESS_RESULT');}
  throw Error('unadmitted mutation returned');
 }
 changes=1;let receipt1=false;
@@ -117,7 +122,8 @@ assert.equal(providerEffect,true);
 for(const mode of ['--sync-loss-child','--violation-child','--close-refusal-child','--lost-close-child']){
  const child=Bun.spawn([process.execPath,import.meta.path,mode],{stdout:'pipe',stderr:'pipe'});
  const [exit,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);
- assert.equal(exit,mode==='--close-refusal-child'||mode==='--lost-close-child'?0:75,JSON.stringify({mode,exit,stdout,stderr}));
+ assert.equal(exit,mode==='--lost-close-child'?0:75,JSON.stringify({mode,exit,stdout,stderr}));
+ if(mode==='--close-refusal-child')assert.match(stderr,/ledger_maintenance_failed_closed/,'a failed-closed epoch exits to owner recovery instead of holding writes forever');
  assert.doesNotMatch(stdout,/UNSAFE/);
  if(mode==='--sync-loss-child'||mode==='--violation-child')assert.match(stderr,mode==='--sync-loss-child'?/ledger_durability_lost/:/ledger_operation_not_admitted/);
 }

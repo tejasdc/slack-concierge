@@ -59,6 +59,7 @@ type CheckpointLifetime = {
   cleanup: Promise<CheckpointClosed | Error>; settleCleanup: (result: CheckpointClosed | Error) => void;
   exit: Promise<void>; settleExit: () => void;
 };
+const unadmittedSites = new Set<string>();
 const checkpointLifetimes = new WeakMap<Worker, CheckpointLifetime>();
 let nextRetirementId = 0;
 
@@ -94,6 +95,9 @@ function replaceCheckpoint(failed: Worker): Promise<Worker> {
 
 export function recycleLedger(): Promise<void> {
   if (!recyclingEnabled) return Promise.reject(new Error('ledger recycling is not enabled'));
+  // A transaction left open by a reported unadmitted caller holds the writer; granting now
+  // would make its later COMMIT a fatal in-maintenance statement. The worker asks again.
+  if (db.inTransaction) return Promise.reject(new Error('an unadmitted ledger transaction is open'));
   return requestLedgerRecycle();
 }
 
@@ -116,10 +120,15 @@ function requestLedgerRecycle():Promise<void>{
     heldMaintenanceAuthority = null;
   })();
   maintenanceRequest = current;
-  void current.then(() => { maintenanceRequest = null; }, () => {
-    // A failed-closed epoch retains its exact external authority until owner recovery.
+  void current.then(() => { maintenanceRequest = null; }, error => {
     // A failed acquisition has not closed admission or entered SQLite and can be retried.
-    if (!heldMaintenanceAuthority) maintenanceRequest = null;
+    if (!heldMaintenanceAuthority) { maintenanceRequest = null; return; }
+    // A failed-closed epoch would otherwise hold every business write forever. Owner
+    // recovery is the existing boundary for lost ledger authority: exiting ends the worker
+    // and its native locks with the process, and nothing unsynced was ever answered.
+    writeSync(2, JSON.stringify({ ts: new Date().toISOString(), level: 'critical', event: 'ledger_maintenance_failed_closed',
+      reason: error instanceof Error ? error.message : String(error) }) + '\n');
+    process.exit(75);
   });
   return current;
 }
@@ -315,6 +324,15 @@ function startWorker(role: 'sync' | 'checkpoint'): Worker {
       fail('checkpoint', result.error ?? 'checkpoint native cleanup failed');
       return;
     }
+    if (result.kind === 'recycle-waiting') {
+      log('warn', 'ledger_recycle_waiting_for_reader', { epoch: result.epoch, held_ms: Math.round(result.ms ?? 0),
+        log: result.log, checkpointed: result.checkpointed });
+      return;
+    }
+    if (result.kind === 'passive-checkpoint') {
+      log(result.error ? 'warn' : 'info', 'ledger_checkpoint', { ...result, mode: 'passive-before-handover', ms: Math.round(result.ms ?? 0) });
+      return;
+    }
     if (!recycling || recycling.worker !== worker || result.epoch !== recycling.epoch) return;
     if (result.kind === 'recycle-error') {
       fail('checkpoint', result.error ?? 'checkpoint failed');
@@ -429,6 +447,13 @@ export function activateLedgerMaintenance(options: { recycling?: boolean } = {})
   enableLedgerAdmission(error=>{
     writeSync(2,JSON.stringify({level:'critical',event:'ledger_operation_not_admitted',error:error.stack})+'\n');
     process.exit(75);
+  }, error=>{
+    // Serving-phase miss: harmless now, but the same call during a maintenance window would
+    // end the owner. Reported once per call site so the missing wrap can be fixed.
+    const site = error.stack?.split('\n').slice(2, 6).join('\n') ?? '';
+    if (unadmittedSites.has(site)) return;
+    unadmittedSites.add(site);
+    log('error', 'ledger_operation_unadmitted_while_serving', { stack: error.stack });
   });
   if (options.recycling !== false) enableLedgerRecycling();
 }
