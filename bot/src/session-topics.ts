@@ -18,7 +18,7 @@ import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {errorFields,log} from './log';
 import {ensureTable as ensureRepairNotices,recordRepairNotice,resolveRepairNotice} from './repair-notices';
 import {readTodos,STEP_ASKS,type TodoState} from './question-todos';
-import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough} from './topic-current-workers';
+import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough,unsentRequestStatus,workWithUnsentRequests} from './topic-current-workers';
 import {openRequestStandings,standingFinder,workerWork} from './request-standing';
 import {approvalDecision} from './decision-approval';
 import {hisWordsLine,ONLY_HE_CAN,requireHisWords,requireOnlyHeCan,THREAD_QUESTION_FIELDS_REQUIRED} from './answers-to-tejas';
@@ -789,6 +789,9 @@ function workIndex(sessionId:number):WorkIndex {
  * him nothing and read as if written about someone else (Tejas, 2026-09-22).
  */
 function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:EntryIndex,requests:readonly StoredRequest[]=[]) {
+  return workWithUnsentRequests(topicWorkBase(topic,roots,index,entries,requests),unsentRequestStatus(requests));
+}
+function topicWorkBase(topic:StoredTopic,roots:string[],index:WorkIndex,entries:EntryIndex,requests:readonly StoredRequest[]) {
   const closed=closedRequestDispatches(requests);
   if(index.focus?.topicId===topic.topicId)
     return {kind:'router_working' as const,text:index.focus.summary??'',runId:index.focus.runId,sessionId:`concierge:${index.sessionId}`};
@@ -1010,7 +1013,7 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
     questions:{open:items.length,
       checking:views.filter(preparingForHim).length,
       deferred:views.filter(question=>question.state==='deferred').length},
-    requests:{open:requests.filter(request=>request.state==='open').length,closed:requests.filter(request=>request.state==='closed').length},
+    requests:{open:requests.filter(request=>request.state==='open').length,closed:requests.filter(request=>request.state==='closed').length,unsent:unsentRequestStatus(requests).count},
     work:topicWork(topic,roots,work,index,requests)};
 }
 
@@ -1495,7 +1498,8 @@ export function openInboxObligations() {
     const owner=waitingForHim?'Tejas':live?.target??`concierge:${inbox.id}`;
     return {requestId:request.requestId,topicId:request.topicId,topicTitle:topic.title,title:request.title,
       owner,createdAt:request.createdAt,ageMs:Math.max(0,now-new Date(request.createdAt).getTime()),
-      waitingOn};
+      waitingOn,dispatchState:request.dispatches.length?'sent':'unsent',
+      ...(!request.dispatches.length?{nextAction:'Send this exact request to an agent, or answer its exact source message directly and cite that checked answer.'}:{})};
   });
   return {count:items.length,asOf:new Date(now).toISOString(),items};
 }
@@ -1790,6 +1794,38 @@ function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence
       &&payload.workDisposition===result.workDisposition;
   } catch{return false;}
 }
+/** A direct answer addresses this obligation's source; a shared thread is not coverage. */
+function directRequestAnswer(topic:StoredTopic,request:StoredRequest,id:string,after=request.createdAt):boolean {
+  const post=db.query("SELECT payload_json,created_at FROM session_owner_events WHERE event_id=? AND kind='post'")
+    .get(id) as {payload_json:string;created_at:string}|null;
+  if(!post||new Date(iso(post.created_at)!).getTime()<new Date(iso(after)!).getTime())return false;
+  const payload=JSON.parse(post.payload_json);
+  if(payload.requestId!=null||payload.postedBy==='service'||payload.postedBy==='owner-forward')return false;
+  const repliedTo=payload.replyToMessage?.messageId;
+  return typeof repliedTo==='string'&&request.sources.some(source=>source.inputId===repliedTo)
+    &&topicOfRoot(inboxThreadRoot(topic.sessionId,id)??'')===topic.topicId;
+}
+/** An already accepted attempt may return a new final after its obligation reopened. */
+function reopenedLinkedFinal(topic:StoredTopic,dispatchId:string,row:CompletionRow|null,evidence:readonly string[],reopenedAt:string):boolean {
+  if(!row?.result_json)return false;
+  let result:any;
+  try{result=JSON.parse(row.result_json);}catch{return false;}
+  const eventId=result.event_id;
+  if(typeof eventId!=='string'||!verifiedFinalEvidence(dispatchId,row,[eventId]))return false;
+  const final=(db.query("SELECT created_at_ms FROM session_communication_events WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL")
+    .get(eventId,dispatchId)??db.query("SELECT created_at_ms FROM session_peer_events WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL")
+    .get(eventId,dispatchId)) as {created_at_ms:number}|null;
+  if(!final||final.created_at_ms<Date.parse(reopenedAt))return false;
+  return evidence.includes(eventId)||evidence.some(id=>{
+    if(id!==`post:forward:${eventId}`&&id!==`post:forward:shared:${eventId}:${topic.topicId}`)return false;
+    const post=db.query("SELECT payload_json,created_at FROM session_owner_events WHERE event_id=? AND kind='post'")
+      .get(id) as {payload_json:string;created_at:string}|null;
+    if(!post||Date.parse(iso(post.created_at)!)<Date.parse(reopenedAt))return false;
+    const payload=JSON.parse(post.payload_json);
+    return payload.requestId===dispatchId&&payload.replyKind==='final'&&payload.workDisposition==='completed'
+      &&topicOfRoot(inboxThreadRoot(topic.sessionId,id)??'')===topic.topicId;
+  });
+}
 function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evidence:string[]=[]){
   const settled=(id:string)=>{
     const local=db.query("SELECT outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as CompletionRow|null;
@@ -1817,25 +1853,18 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
     &&verifiedFinalEvidence(latest.id,latest.row,evidence,true)
     &&dispatches.slice(0,-1).some(dispatch=>verifiedFinalEvidence(dispatch.id,dispatch.row,evidence));
   if(!latest){
-    if(humanRequest(topic,request)&&!evidence.some(id=>{
-      const message=inboxMessageById(topic.sessionId,id) as {role?:string;createdAt?:string}|null;
-      const root=inboxThreadRoot(topic.sessionId,id);
-      return !!(message?.role==='assistant'&&message.createdAt&&new Date(iso(message.createdAt)!).getTime()>=new Date(iso(request.createdAt)!).getTime()
-        &&root&&topicOfRoot(root)===topic.topicId);
-    }))throw new TopicError('This human request has no linked work. To close it completed, name the later answer in this thread as evidence of the work you checked.',409,'REQUEST_COMPLETION_EVIDENCE_REQUIRED');
+    if(humanRequest(topic,request)&&!evidence.some(id=>directRequestAnswer(topic,request,id)))
+      throw new TopicError('This human request has no linked work. To close it completed, name the later direct answer to this request’s exact source message as evidence, or link the dispatch that performed its work.',409,'REQUEST_COMPLETION_EVIDENCE_REQUIRED');
   }
   const unfinished=dispatches.filter(dispatch=>(!dispatch.row?.outcome&&!(dispatch!==latest&&dispatch.row?.stalled_at_ms!=null))
       ||(dispatch===latest&&dispatch.row!==null&&!completedBeforeSharedFailure&&!done(dispatch.row)
         &&!verifiedFinalEvidence(dispatch.id,dispatch.row,evidence))).map(dispatch=>({requestId:dispatch.id}));
   if(unfinished.length)throw new TopicError(`This request's work has not finished (${unfinished.map((d:any)=>d.requestId).join(', ')}): close it completed only when that work answered as done. If part of what he asked is not done, do it or have it built, then close.`,409,'REQUEST_WORK_UNFINISHED');
   if(request.reopenedAt&&((request.completionFloor??0)>=dispatches.length
-    ||(latest&&((workRow(latest.id)?.createdAtMs??0)<new Date(request.reopenedAt).getTime())))&&!evidence.some(id=>{
-    const post=db.query("SELECT input_id,payload_json,created_at FROM session_owner_events WHERE event_id=? AND kind='post'").get(id) as {input_id:string;payload_json:string;created_at:string}|null;
-    if(!post||new Date(iso(post.created_at)!).getTime()<new Date(request.reopenedAt!).getTime())return false;
-    const payload=JSON.parse(post.payload_json);
-    return topicOfRoot(String(payload.threadRoot??post.input_id))===topic.topicId
-      &&(!latest||payload.requestId==null||payload.requestId===latest.id);
-  }))throw new TopicError('This request was reopened after its last linked answer. Name a new checked answer in this thread, or link the work that finished the reopened obligation.',409,'REQUEST_REOPENED_COMPLETION_EVIDENCE_REQUIRED');
+    ||(latest&&((workRow(latest.id)?.createdAtMs??0)<new Date(request.reopenedAt).getTime())))
+    &&!evidence.some(id=>directRequestAnswer(topic,request,id,request.reopenedAt!))
+    &&!(latest&&reopenedLinkedFinal(topic,latest.id,latest.row,evidence,request.reopenedAt)))
+    throw new TopicError('This request was reopened after its last linked answer. Name a new checked direct answer to its exact source, the latest dispatch’s new exact final, or link the work that finished the reopened obligation.',409,'REQUEST_REOPENED_COMPLETION_EVIDENCE_REQUIRED');
   if(latest&&humanRequest(topic,request)) {
     const shared=db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
       WHERE json_extract(dispatch.value,'$.requestId')=?`).get(latest.id) as {count:number};
@@ -4429,7 +4458,9 @@ function threadPromptContext(sessionId:number,inputId:string,payload:any):string
   }
   const topic=topicRow(topicId);
   const context:any={id:topic.topicId,title:topic.title,summary:topic.summary,
-    openRequests:topicRequests(topicId).filter(request=>request.state==='open').map(request=>({id:request.requestId,title:request.title})),
+    openRequests:topicRequests(topicId).filter(request=>request.state==='open').map(request=>({id:request.requestId,title:request.title,
+      dispatchState:request.dispatches.length?'sent':'unsent',sources:request.sources,
+      ...(!request.dispatches.length?{nextAction:'Send this exact request or answer its source directly; an answer to another dispatch cannot complete it.'}:{})})),
     openQuestions:topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state))
       .map(question=>({id:question.questionId,revision:question.revision,decision:question.brief?.decision??'',state:question.state,kind:question.kind})),
     rootCount:topicRoots(topicId).length};

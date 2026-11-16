@@ -6,6 +6,8 @@ import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
 import {containingProject,sessionProject} from './session-projects';
 import {sessionAddress} from './session-address';
 import {REPAIR_AGENT_TITLE} from './repair-notices';
+import {assertInboxMove,currentInboxHolder,holdsInbox,INBOX_PIN_REFUSAL,inboxMoveHumanInput} from './inbox-session-pin';
+import {recordSessionEvent} from './session-inputs';
 
 /** One folder owns each continuing job. Paths are relative to this machine's workspace root. */
 export const STANDING_AGENTS = [
@@ -84,16 +86,17 @@ export function assertStandingAgentSession(workspaceRoot:string,role:string,sess
 }
 
 /** The target and every former holder change in one owner transaction. */
-export function bindStandingAgentSession(workspaceRoot:string,role:string,session:SessionRow) {
+export function bindStandingAgentSession(workspaceRoot:string,role:string,session:SessionRow,sourceInputId?:string) {
   return db.transaction(()=>{
     const agent=standingAgent(role);
     if(!agent)throw new Error(`Unknown standing agent role ${role}; use sessions agents.`);
+    if(role!=='inbox'&&holdsInbox(session))throw new Error(INBOX_PIN_REFUSAL);
     if(session.status==='archived')throw new Error('An archived session cannot hold a standing agent role.');
     assertStandingAgentSession(workspaceRoot,agent.role,session);
     if(agent.role==='inbox'){
       const former=db.query(CURRENT_INBOX_ID_SQL).get() as {id:number}|null;
       const formerSession=former&&former.id!==session.id?getSessionById(former.id):null;
-      takeInboxRouterRole(session.id,formerSession?sessionMetadata(formerSession):null);
+      takeInboxRouterRole(session.id,formerSession?sessionMetadata(formerSession):null,sourceInputId);
       return {former:formerSession};
     }
     db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole')
@@ -110,7 +113,10 @@ export function bindStandingAgentSession(workspaceRoot:string,role:string,sessio
  * The former router keeps its marker: its rows stay part of the one Inbox's threads. A provider
  * handoff and `sessions agents bind inbox` are the two ways the role moves; both come here.
  */
-export function takeInboxRouterRole(sessionId:number,from:SessionMetadata|null) {
+export function takeInboxRouterRole(sessionId:number,from:SessionMetadata|null,sourceInputId?:string) {
+  const holder=currentInboxHolder();
+  if(holder)assertInboxMove(holder,{id:sessionId,provider:getSessionById(sessionId)?.provider_id},sourceInputId);
+  else if(getSessionById(sessionId)?.provider_id!=='claude-code')throw new Error('The Inbox requires a Claude Code session.');
   db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole')
     WHERE id<>? AND json_extract(native_metadata_json,'$.standingRole')='inbox'`).run(sessionId);
   const own=sessionMetadata(getSessionById(sessionId)!);
@@ -120,6 +126,11 @@ export function takeInboxRouterRole(sessionId:number,from:SessionMetadata|null) 
   updateSessionMetadata(sessionId,{inbox:true,inboxRole:'project-router',standingRole:'inbox',
     ...(from?{needs,generation:Math.max(from.generation??0,own.generation??0),
       readGeneration:from.readGeneration,dismissedGeneration:from.dismissedGeneration}:{})});
+  if(holder&&holder.id!==sessionId&&sourceInputId){
+    const human=inboxMoveHumanInput(sourceInputId)!;
+    recordSessionEvent({eventId:`inbox-pin-override:${human}`,sessionId,inputId:sourceInputId,kind:'inbox_pin_override',
+      payload:{from:holder.id,to:sessionId,humanInputId:human}});
+  }
 }
 
 export function canOwnStandingWork(workspaceRoot:string,cwd:string|null|undefined):boolean {

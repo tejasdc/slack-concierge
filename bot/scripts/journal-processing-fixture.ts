@@ -8,7 +8,7 @@ process.env.CONCIERGE_STATE_DIR=scratch;
 process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION='journal-processing-a168df69';
-const [{SessionOwner},{SessionCommunicationCoordinator},{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},{retainSessionInput,nativeRunId,updateSessionMetadata},{validateJournalReview,pendingJournalProcessing}]=await Promise.all([
+const [{SessionOwner},{SessionCommunicationCoordinator},{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},{createNativeSession,retainSessionInput,nativeRunId,updateSessionMetadata},{validateJournalReview,pendingJournalProcessing}]=await Promise.all([
   import('../src/session-owner'),import('../src/session-communication'),import('../src/state'),import('../src/session-inputs'),import('../src/journal-processing')]);
 const root='checkin:fixture12345';
 const canonical={version:1,sourceVersion:'complete-v1',rootId:root,sourceRoot:{objectId:root,revision:'r1',actor:{id:'human',kind:'human'}},lines:[
@@ -19,7 +19,9 @@ const communication=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>
 owner.communication=communication;
 const session=(await owner.create({clientActionId:'keeper-fixture',provider:'codex',purpose:'chat',title:'Journal fixture',firstInput:{text:'fixture'}} as any)).session;
 const sessionId=Number(session.id.split(':')[1]);
-updateSessionMetadata(sessionId,{inbox:true,inboxRole:'project-router',standingRole:'inbox'});
+// The reviewer can exercise historical Inbox attribution without changing the pinned router.
+createNativeSession('claude-code',{title:'Inbox',summary:'Fixed router for journal review acceptance',inbox:true,inboxRole:'project-router',standingRole:'inbox'});
+updateSessionMetadata(sessionId,{inbox:true});
 const first=claimNextQueuedTurn('journal-fixture');assert.ok(first);
 markTurnProviderAdmissionIntended(first.turn_id,'journal-fixture',first.dispatch_attempt);
 acknowledgeTurnProviderInput(first.turn_id,'journal-fixture',first.dispatch_attempt,[]);

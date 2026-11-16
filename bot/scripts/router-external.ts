@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import {agentJson} from "../src/agent-local-time";
 import {randomUUID} from 'node:crypto';
 import {basename} from 'node:path';
 import {readFileSync} from 'node:fs';
@@ -43,6 +44,6 @@ const body=verb==='capture'?{name,id:flags.get('--id')??randomUUID(),recordedAt:
   :{name,request_id:target};
 try {
   const answer=await requestApiResponse(`/external/${verb}`,body);
-  console.log(JSON.stringify(answer.result));
+  console.log(agentJson(answer.result));
   if(!answer.ok)process.exitCode=1;
 } catch(error){console.error(error instanceof Error?error.message:String(error));process.exitCode=1;}

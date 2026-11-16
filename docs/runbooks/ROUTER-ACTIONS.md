@@ -550,7 +550,10 @@ name for creation. `sessions agents bind <role> <session-address> <source-flags>
 moves a role's binding to an existing non-archived session in its exact declared folder. The
 source and action ID make retries idempotent. Moving a bound session to another folder clears its
 binding. The role table in `bot/src/standing-agents.ts` is the sole home for these folders and wake facts.
-Binding `inbox` makes that session the Inbox router, exactly as an accepted provider handoff does:
+Binding `inbox` requires retained human words explicitly authorizing that destination; agents
+cannot change the pinned Inbox conversation. Account exhaustion changes Claude accounts within
+the same conversation or holds its queue. See [Inbox conversation pin](../architecture/PROVIDER-STATE-FLOW.md#inbox-conversation-pin).
+An authorized binding makes that session the Inbox router, exactly as an authorized provider handoff does:
 new captures, his thread replies, thread-named requests (`sessions ask --thread`), topic commands
 and Inbox reads go through it, and it carries the former router's open attention. Every session
 ever marked as the Inbox stays part of the one Inbox, so their threads and topics remain usable
@@ -792,6 +795,18 @@ same request ID via `sessions get` or read-only `work request`. Do not create a
 replacement action or invoke `work recover` to bypass uncertain effects.
 
 ## Agent session communication
+
+Every time an agent reads from Concierge also carries Tejas's local clock, written
+the way he says it ("11:25 PM Eastern, Nov 15"), so no agent converts server UTC by
+hand. The router-actions `sessions`, `reports`, `threads`, `external`, `projects`,
+`work`, `report`, posting and `messages` commands keep each machine value exactly and
+add a sibling field (`startedAt` → `startedAtLocal`, `created_at` → `created_at_local`,
+epoch-millisecond moments likewise); an ISO UTC time inside a prose field gains
+`(11:25 PM Eastern, Nov 15)` after it (a field holding embedded JSON is left exact).
+The text of every agent and service input (requests, stall, upkeep and handoff
+notices), the per-turn context and the end-of-turn owed-reply hook get the same
+reading; the input text of his own messages is sent byte-exact. One formatter in
+`bot/src/agent-local-time.ts` does all of it.
 
 An agent carrying a work request can switch the saved Codex account on this server
 or the Mac through `sessions auth switch codex <saved-profile-id> [--machine mac]`

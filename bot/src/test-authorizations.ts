@@ -26,3 +26,4 @@ export const JOURNAL_PROCESSING_TEST_AUTHORIZATION = "journal-processing-a168df6
 export const LAB_CONVERSATIONS_TEST_AUTHORIZATION='lab-conversations-2026-11-15';
 export const THREAD_SURVIVES_ROUTER_HANDOFF_TEST_AUTHORIZATION='thread-survives-router-handoff-2026-11-16';
 export const INPUT_REFUSAL_STREAK_TEST_AUTHORIZATION='input-refusal-streak-2026-11-16';
+export const INBOX_SESSION_PIN_TEST_AUTHORIZATION='inbox-session-pin-b563714b';

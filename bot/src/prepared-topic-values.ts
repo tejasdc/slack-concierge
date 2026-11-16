@@ -1,7 +1,7 @@
 import {questionDisplay} from './topic-display-rules';
 import {askedAnswerPostIds,askedAnswerStatus,routeForMessage} from './asked-answer';
 import {openRequestStandings,standingFinder,workerWork} from './request-standing';
-import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough} from './topic-current-workers';
+import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough,unsentRequestStatus,workWithUnsentRequests} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
@@ -185,7 +185,7 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
   aliases:parse(row.aliases_json,[]),revision:row.revision,recovered:!!row.recovered,readSequence:row.read_sequence,
   closure:parse(row.closure_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!,pinnedAt:iso(row.pinned_at)??null};
  const replies=roots.flatMap(root=>context.humanReplies.get(root)??[]).sort((a,b)=>b.at.localeCompare(a.at));
- const questions:any[]=[],requests:any[]=[],questionCounts={asked:0,open:0,reading:0,checking:0,deferred:0,history:0},requestCounts={open:0,closed:0};
+ const questions:any[]=[],requests:any[]=[],questionCounts={asked:0,open:0,reading:0,checking:0,deferred:0,history:0},requestCounts={open:0,closed:0,unsent:0};
  const needItems:any[]=[],readItems:any[]=[];
  const item=(question:any)=>({questionId:question.id,text:question.brief?.decision??'',at:question.createdAt,revision:question.revision,
   kind:question.kind,owner:question.owner?.sessionId??null,outcome:question.kind==='reading'?'response':'needs_you'});
@@ -209,6 +209,7 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
   dispatches:parse(request.dispatches_json,[]),closure:parse(request.closure_json),createdAt:iso(request.created_at)!,updatedAt:iso(request.updated_at)!};
   sink?.request(requestView(context,value));
   requestStates.push({state:value.state,dispatches:value.dispatches});
+  if(value.state==='open'&&!value.dispatches.length)requestCounts.unsent++;
   if(value.state==='open')requestCounts.open++;else if(value.state==='closed')requestCounts.closed++;
   if(!sink)requests.push(value);
   else if(value.state==='open')requests.push({requestId:value.requestId,title:value.title,state:value.state,sources:value.sources,dispatches:value.dispatches});
@@ -265,6 +266,9 @@ function latestReturnAndPost(context:TopicContext,roots:string[]){
 }
 
 function topicWorkValue(context:TopicContext,topic:any,roots:string[],requests:readonly {state:string;dispatches:any[]}[]){
+ return workWithUnsentRequests(topicWorkValueBase(context,topic,roots,requests),unsentRequestStatus(requests));
+}
+function topicWorkValueBase(context:TopicContext,topic:any,roots:string[],requests:readonly {state:string;dispatches:any[]}[]){
  const closed=closedRequestDispatches(requests);
  if(context.focus?.topicId===topic.topicId)return {kind:'router_working' as const,text:context.focus.summary??'',
   runId:context.focus.runId,sessionId:`concierge:${context.sessionId}`};

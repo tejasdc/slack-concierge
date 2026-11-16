@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import {agentJson,annotateTextWithHisTime} from "../src/agent-local-time";
 import { requestApiResponse } from "./router-request-client";
 import {readFileSync} from 'node:fs';
 import {basename} from 'node:path';
@@ -1302,12 +1303,12 @@ if (import.meta.main) {
       request = parseRouterSessionsArgs(args);
       const response = await runRouterSessions(request);
       if (response.ok) {
-        console.log(JSON.stringify(response.result));
+        console.log(agentJson(response.result));
         const warning=(response.result as {warning?:unknown}|null)?.warning;
-        if (typeof warning==='string') console.error(`warning: ${warning}`);
+        if (typeof warning==='string') console.error(`warning: ${annotateTextWithHisTime(warning)}`);
       }
       else {
-        console.error(JSON.stringify(response.result));
+        console.error(agentJson(response.result));
         process.exitCode = 1;
       }
     }

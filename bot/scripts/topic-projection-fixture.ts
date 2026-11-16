@@ -149,6 +149,7 @@ async function lifecycle(root:string){
   let questionHead=await checkpoint();
   let global=readPreparedQuestions(prepared!,{state:'asked',canonicalHead:questionHead.source_head});
   assert.ok(global.topics.some((group:any)=>group.questions.some((question:any)=>question.id==='q:historical-question')));
+  db.query("UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole') WHERE id=?").run(oldInbox);
   const successor=createNativeSession('codex',{title:'Successor Inbox',cwd:root,inbox:true,standingRole:'inbox'});
   const {updateSessionMetadata}=await import('../src/session-inputs');
   updateSessionMetadata(oldInbox,{standingRole:null});

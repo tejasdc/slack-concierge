@@ -14,6 +14,7 @@ import {humanChoseTopModel} from './model-escalation-custody';
 import {sessionAddress} from './session-address';
 import {transferChatGptAnswerOwnership} from './chatgpt-obligations';
 import {takeInboxRouterRole} from './standing-agents';
+import {assertInboxMove} from './inbox-session-pin';
 import {requesterPlacesHeldBy} from './requester-place';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
 import {runnerMachineCall,RunnerMachineCallError,RunnerUnreachableError,type RunnerMachineAnswerIdentity} from './runner-machine-calls';
@@ -355,6 +356,7 @@ export async function proposeHandoff(input:{actorSession:number;inputId:string;r
   const selector=parseProviderSelector(input.provider);
   if(!selector)throw new Error('Choose a supported coding provider alias for a handoff.');
   const selected=resolveProviderSelector(selector);
+  assertInboxMove(source,{provider:selected.provider},input.inputId);
   const refused=escalationReason(input.model??selected.model,input.reason,humanChoseTopModel(input.inputId,input.model??selected.model??''));
   if(refused)throw new Error(refused);
   if(selected.provider==='chatgpt')throw new Error('ChatGPT cannot acknowledge a handoff.');
@@ -370,6 +372,7 @@ export async function proposeHandoff(input:{actorSession:number;inputId:string;r
     const prior=db.query('SELECT * FROM session_handoffs WHERE requesting_input_id=? AND action_id=?').get(input.inputId,input.actionId) as HandoffRow|null;
     if(prior){if(prior.predecessor_session_id!==source.id||prior.handoff_kind!=='ordinary')throw new Error('Handoff action identity conflicts with another handoff kind or predecessor.');return {handoffId:prior.id,successor:canonical(prior.successor_session_id),inventory:JSON.parse(prior.inventory_json),digest:prior.inventory_digest,state:prior.state,duplicate:true};}
     if(supersededBy(source.id))throw new Error('The predecessor was superseded while preparing handoff.');
+    assertInboxMove(getSessionById(source.id)!,{provider:selected.provider},input.inputId);
     const open=pending(source.id);if(open)throw new Error(`Handoff ${open.id} is already proposed for ${canonical(source.id)}.`);
     const now=inventoryLocalWithExternal(source.id,snapshot);
     const id=randomUUID(),hash=digest(now),meta=sessionMetadata(source);
@@ -489,6 +492,8 @@ async function acceptHandoffInternal(input:{actorSession:number;inputId:string;r
       successor:canonical(proposed.successor_session_id),inventory:JSON.parse(proposed.inventory_json),digest:proposed.inventory_digest};
   }
   if(proposed.state!=='proposed')throw new Error('This handoff is not proposed.');
+  assertInboxMove(getSessionById(proposed.predecessor_session_id)!,{id:proposed.successor_session_id,
+    provider:getSessionById(proposed.successor_session_id)!.provider_id},proposed.requesting_input_id);
   const observed=await inventory(proposed.predecessor_session_id,{inputId:input.inputId,runId:input.runId},recovery?{preservedSourcePath:recovery.preservedSourcePath}:undefined);
   const current=inventoryLocalWithExternal(proposed.predecessor_session_id,observed),currentDigest=digest(current);
   if(recovery)await assertRecoveryResources(proposed.predecessor_session_id,recovery.preservedSourcePath,current.items);
@@ -643,7 +648,10 @@ async function acceptHandoffInternal(input:{actorSession:number;inputId:string;r
     // The Inbox is one logical router across provider sessions. Promote its role only
     // after acceptance, so a proposed successor cannot receive captures prematurely.
     const predecessorMeta=sessionMetadata(getSessionById(from)!);
-    if(predecessorMeta.inboxRole==='project-router')takeInboxRouterRole(to,predecessorMeta);
+    if(predecessorMeta.inboxRole==='project-router'||predecessorMeta.standingRole==='inbox'){
+      assertInboxMove(getSessionById(from)!,{provider:getSessionById(to)!.provider_id},state.requesting_input_id);
+      takeInboxRouterRole(to,predecessorMeta,state.requesting_input_id);
+    }
     // Any other standing role (journal keeper, repair agent, …) follows the work the same way. Left
     // on the superseded predecessor, the role kept receiving saved journal entries and check-ins
     // after concierge:4571 → 9752 (2026-11-15), and no turn ever ran them.

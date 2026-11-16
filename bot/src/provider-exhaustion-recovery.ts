@@ -85,7 +85,7 @@ export function transferSession(sessionId:number):number {
   // usage recovery sweep must not create a competing successor before that proposal settles.
   if(db.query("SELECT 1 FROM session_handoffs WHERE predecessor_session_id=? AND state='proposed' LIMIT 1").get(sessionId))return 0;
   const meta=sessionMetadata(source);
-  if(meta.inbox||meta.suspended||meta.repairAgent||meta.interactionPolicy==='consultation-only')return 0;
+  if(meta.inbox||meta.inboxRole||meta.standingRole==='inbox'||meta.suspended||meta.repairAgent||meta.interactionPolicy==='consultation-only')return 0;
   const turns=waitingTurns(sessionId);
   if(!turns.length||turns.length>50||turns[0]!.dispatch_hold!=='usage')return 0;
   const inputs=turns.map(turn=>getAcceptedSessionInput(turn.accepted_input_id));
