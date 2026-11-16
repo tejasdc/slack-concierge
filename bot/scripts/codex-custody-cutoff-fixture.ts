@@ -35,8 +35,9 @@ onJsonLines(process.stdin,line=>{
      process.stdout.write(JSON.stringify(turn)+'\\n');return;
    }
    const response={type:'response',id:call.id,result:call.method==='thread/resume'?{thread:{id:threadId}}:call.method==='thread/start'?{thread:{id:'started-thread'}}:{turn:{id:'turn-1'}}};
-   process.stdout.write(JSON.stringify(response)+'\\n');
+   // Record before replying: the client can observe the reply before a later append lands.
    appendFileSync(${JSON.stringify(eventFile)},JSON.stringify({event:'rpc-response',method:call.method,threadId,sender:${JSON.stringify(label)}})+'\\n');
+   process.stdout.write(JSON.stringify(response)+'\\n');
    if(call.method==='turn/start'&&threadId==='predecessor-thread'&&${JSON.stringify(label)}!=='other'){
      while(!existsSync(${JSON.stringify(releaseFile)}))await new Promise(resolve=>setTimeout(resolve,5));
    } else await new Promise(resolve=>setTimeout(resolve,call.method==='turn/start'||call.method==='thread/resume'||call.method==='thread/start'?40:0));
