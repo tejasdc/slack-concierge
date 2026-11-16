@@ -92,7 +92,11 @@ A participant may also carry `materials`: up to 32 `{path, sha256}` files (at mo
 total). They exist because an agent-ecology expertise offer is an immutable snapshot of plain
 files, and Thinkering's source import refuses plain files, so they cannot be retained source
 references. When the participant is prepared for create or a roster add, the owner checks that
-each file's real path lies inside a project registered on that owner, is a regular file, hashes to
+each file's real path lies inside a project registered on that owner or inside agent-ecology's
+immutable offer snapshots (`/root/.local/state/agent-ecology/offer-material/snapshots`, where its
+offer ledger keeps selected material outside any project; not its unselected `candidates`), so an
+agent cannot push arbitrary private files into a prompt sent to an outside provider. It must be a
+regular file, hash to
 the supplied digest and is valid UTF-8; it then keeps `{path, sha256, text}` in the participant's
 retained binding. Refusals are `LAB_MATERIAL_UNAVAILABLE` or `LAB_MATERIAL_MISMATCH` and retain
 nothing. Every invocation prompt inlines the frozen text after the instructions, re-verifying its
