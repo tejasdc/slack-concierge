@@ -246,8 +246,12 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
     const findSessionHome=services.findProviderSessionHome;
     if(!findSessionHome)throw new Error('Runner provider transcript lookup is unavailable.');
     const sessionHome=await worktreePhase('provider-transcript-resolution',()=>{
+      // Only the transcript's text is read here, never an account's credentials. The shared Codex
+      // App Server writes every thread under the live home whichever account is signed in, so an
+      // account switch moves the label away from the transcript; Codex therefore uses the
+      // content-only lookup, which still refuses a thread found in more than one place.
       const home=findSessionHome(params.provider as 'codex'|'claude-code',
-        typeof params.account==='string'?params.account:null,params.sessionUUID as string);
+        params.provider!=='codex'&&typeof params.account==='string'?params.account:null,params.sessionUUID as string);
       if(!home)throw new Error('The exact provider transcript is unavailable or ambiguous on this runner.');
       return home;
     });

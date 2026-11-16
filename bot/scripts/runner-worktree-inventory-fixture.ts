@@ -44,7 +44,9 @@ const handler=async(method:string,params:any)=>{
   if(mode==='resolution-error'&&method==='projects.resolve')throw Object.assign(new Error('Fixture project association missing'),{code:'PROJECT_ASSOCIATION'});
   if(mode==='parse-error'&&method==='projects.worktrees')return {items:null,transcriptAvailable:true};
   return serveProjectCall(method,params,{findProviderSessionHome:(_provider,account,id)=>{
-    assert.equal(id,nativeId);assert.equal(account,'fixture-account');
+    // Codex transcripts live under the live home whichever account is signed in, so the
+    // inventory looks them up by thread alone; the retained account still travels in its facts.
+    assert.equal(id,nativeId);assert.equal(account,null);
     return mode==='transcript-error'?null:{account,home:scratch,transcript};
   }});
 };
