@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { receiveMacDiskWarning } from '../src/mac-disk-warning';
+import { ledgerWriteResults } from '../src/ledger-write-results';
 
 const state = mkdtempSync(join(tmpdir(), 'concierge-mac-disk-notice-'));
-const db = new Database(join(state, 'state.db'));
+const db = ledgerWriteResults(new Database(join(state, 'state.db')));
 try {
   db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,native_metadata_json TEXT);
     INSERT INTO sessions VALUES(1,'idle','{"inbox":true,"standingRole":"inbox"}');
