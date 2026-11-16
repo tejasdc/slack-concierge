@@ -7,8 +7,8 @@ import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, obs
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
-import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
+import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, SessionOwnerError, type SessionOwner } from './session-owner';
+import { retainedInboxCapture, inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
@@ -1814,6 +1814,7 @@ export class SessionCommunicationCoordinator {
         return registerWatch({kind:'command',sessionId:actor.session,...origin,actionId:input.action_id,until:input.until,argv:input.argv,cwd:input.cwd,runner:input.runner??null});
     }
     async ask(input: {
+        responseMode?:'context';
         source: CommunicationSource;
         action_id: string;
         address?: string;
@@ -1878,6 +1879,51 @@ export class SessionCommunicationCoordinator {
         const sender = this.authority(live);
         const actor = input.resume_source ? this.resumedActor(live, input.resume_source) : sender.actor;
         action(input.action_id);
+        if(input.responseMode!==undefined&&input.responseMode!=='context')throw new Error('Unknown response mode.');
+        if(input.responseMode==='context') {
+            if(input.provider||input.role||input.saved||input.after?.length||input.pace?.length||input.return_to_requester
+                ||(!input.address&&!input.peer))
+                throw new Error('Saved context names an existing session without a work request or return destination.');
+            const owner=this.dependencies.owner!;
+            const retained=input.routeMessageId!==undefined||input.captureId!==undefined;
+            if(retained&&(input.text!==undefined&&input.text!==''||input.files?.length||input.attachments?.length))
+                throw new Error('Exact retained context accepts no replacement text or files.');
+            const retainedSource=retained?owner.retainedContextSource({...(input.routeMessageId?{messageId:input.routeMessageId}:{}),...(input.captureId?{captureId:input.captureId}:{})}):null;
+            if(!retainedSource)text(input.text);
+            const attachments=retainedSource?[]:[...(input.attachments??[]),...(input.files??[]).map((file,index)=>owner.upload({...file,
+                clientActionId:`context-file:${hash(actor.inputId+':'+input.action_id)}:${index}`,
+                agentSource:{inputId:actor.inputId,runId:nativeRunId(actor.turn)}}).attachment.id)];
+            const original:Record<string,any>=retainedSource?.payload??{text:input.text,...(attachments.length?{attachments}:{})};
+            owner.attachments(original.attachments);
+            const source=retainedSource?.source;
+            const contributor={sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId:nativeRunId(actor.turn),actionId:input.action_id,
+                author:{kind:'agent',session:sessionAuthor(`concierge:${actor.session}`),inputId:actor.inputId,runId:nativeRunId(actor.turn)}};
+            const attribution=source?{contributedFrom:source,contributedBy:contributor,
+                routedFrom:{sessionId:source.sessionId,messageId:source.inputId??source.messageId,originalText:original.text??'',
+                    originalCreatedAt:source.createdAt,authorKind:source.author.kind,author:source.author}}
+                :{contributedBy:contributor};
+            const split=input.address?this.peersOrNull()?.splitAddress(input.address):null;
+            if(input.peer||split){
+                const peer=input.peer??split!.peer,address=input.address?split?.address??input.address:undefined;
+                if(!address)throw new Error('Saved context needs one exact session address on the selected peer.');
+                const attachmentIds=Array.isArray(original.attachments)?original.attachments as string[]:[];
+                const files=attachmentIds.map(id=>{const {id:_id,...file}=owner.attachment(id);return file;});
+                const contextPayload={...original,attachments:[],attachmentSourceIds:attachmentIds,...attribution};
+                return this.peers().ask(this.peerActor(actor),{peer,action_id:input.action_id,address,text:String(original.text??''),responseMode:'context',
+                    contextPayload,contextOperationPayload:{...original,responseMode:'context',...attribution,
+                      targetAddress:`${peer}/${address}`,contextOperationOnly:true},files});
+            }
+            if(!input.address)throw new Error('Saved context names an exact existing session.');
+            const target=this.address(input.address);
+            const saved=db.transaction(()=>{
+                const retained=retainSessionInput({sessionId:target.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+                    kind:'input',origin:'agent',sourceInputId:actor.inputId!,sourceRunId:nativeRunId(actor.turn),
+                    payload:{...original,responseMode:'context',...attribution,targetAddress:input.address}});
+                if(!retained.duplicate)owner.recordContextMessage(retained.input);
+                return retained.input;
+            })();
+            return {operation:owner.receipt(saved)};
+        }
         if(input.purpose!==undefined){
             const thinking=chatgptProjectThinking(input.effort)??input.effort;
             if(!['research','design-critique','design-review'].includes(input.purpose)||input.address||input.role||input.implementation||input.saved||input.outside||input.resurrect)
@@ -2387,6 +2433,22 @@ export class SessionCommunicationCoordinator {
         log('info','inbox_reply_forwarded',{request_id:id,input_id:input.inputId,target_session_id:target.id,topic_id:input.target.topicId});
         this.wake();
         return id;
+    }
+    async forwardContext(input:{inbox:SessionRow;inputId:string;target:{peer:{peer:string;address:string};sessionId:string};payload:Record<string,any>}):Promise<unknown> {
+        if(this.stopped)throw new Error('Session communication is not accepting context.');
+        const accepted=getAcceptedSessionInput(input.inputId);
+        if(!accepted||accepted.session_id!==input.inbox.id)throw new Error('The saved context must name its accepted source input.');
+        const owner=this.dependencies.owner!;
+        const attachmentIds=Array.isArray(input.payload.attachments)?input.payload.attachments as string[]:[];
+        const files=attachmentIds.map(id=>{const {id:_id,...file}=owner.attachment(id);return file;});
+        const contextPayload={...input.payload,attachments:[],attachmentSourceIds:attachmentIds};
+        const actionId=`forward-context:${input.inputId}`;
+        const receipt=await this.peers().ask({session:input.inbox.id,turn:accepted.turn_id,inputId:input.inputId},{
+            peer:input.target.peer.peer,address:input.target.peer.address,action_id:actionId,
+            text:String(input.payload.text??''),responseMode:'context',contextPayload,files,
+        });
+        db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(input.inputId);
+        return receipt;
     }
     /** Post every fresh reply for a named Inbox thread, independently of its effect scope. */
     private threadAnswer(request:RequestRow,event:EventRow,declared:any):{root:string;forwarded:{inboxInputId:string}|null}|null {
@@ -3455,7 +3517,7 @@ export class SessionCommunicationCoordinator {
     }
     private incidentScanTraceRemaining = 200;
     /** One durable record is the fairness boundary; a Promise microtask does not yield to I/O. */
-    private async scanRows<T>(table: string, sql: string, visit: (row: T) => void, ...args: (number | string)[]) {
+    private async scanRows<T>(table: string, sql: string, visit: (row: T) => void|Promise<void>, ...args: (number | string)[]) {
         if (this.incidentScanTraceRemaining-- > 0)
             log('warn', 'incident_reconciliation_scan', { table, sql: sql.replace(/\s+/g, ' ').slice(0, 400) });
         const query = db.query(sql);
@@ -3465,7 +3527,7 @@ export class SessionCommunicationCoordinator {
             const row = query.get(...args, highWater, cursor) as (T & { reconciliation_rowid: number }) | null;
             if (!row) return;
             cursor = row.reconciliation_rowid;
-            visit(row);
+            await visit(row);
             await new Promise<void>(resolve => setImmediate(resolve));
         }
     }
@@ -3623,6 +3685,26 @@ export class SessionCommunicationCoordinator {
                 pendingAcceptedRecovery=true;
                 try{this.dependencies.owner.recoverAcceptedInput(input);}
                 catch(error){log('warn','capture_input_recovery_waiting',{input_id:input.id,error:String(error).slice(0,300)});}
+            });
+            await this.scanRows<AcceptedSessionInput>('session_inputs',`SELECT rowid AS reconciliation_rowid,* FROM session_inputs INDEXED BY session_inputs_context_forward
+                WHERE json_extract(receipt_json,'$.contextForward') IS NOT NULL
+                  AND json_extract(payload_json,'$.responseMode')='context'
+                  AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,async input=>{
+                const forward=JSON.parse(input.receipt_json??'{}').contextForward;
+                const inbox=getSessionById(input.session_id);
+                if(!inbox||typeof forward?.target?.peer?.peer!=='string'||typeof forward.target.peer.address!=='string'
+                  ||typeof forward.target.sessionId!=='string'||!forward.payload||typeof forward.payload!=='object')return;
+                try{
+                    await this.forwardContext({inbox,inputId:input.id,target:forward.target,payload:forward.payload});
+                    db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(input.id);
+                }catch(error){
+                    if(error instanceof SessionOwnerError&&error.code==='PEER_CONTEXT_UNSUPPORTED'){
+                        db.query("UPDATE session_inputs SET receipt_json=json_remove(json_set(coalesce(receipt_json,'{}'),'$.contextDelivery',json(?)),'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
+                          .run(JSON.stringify({peer:forward.target.peer.peer,state:'failed',error:error.message}),input.id);
+                        recordSessionEvent({eventId:`context-delivery-unsupported:${input.id}`,sessionId:input.session_id,inputId:input.id,
+                          kind:'receipt',payload:{change:'context_refused',peer:forward.target.peer.peer}});
+                    }else log('warn','peer_context_forward_waiting',{input_id:input.id,target:forward.target.sessionId,error:String(error).slice(0,300)});
+                }
             });
             this.pendingAcceptedRecovery=pendingAcceptedRecovery;
             // A cancellation that arrived while a session was paused must revoke its already

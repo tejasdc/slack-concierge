@@ -40,6 +40,18 @@ export function providerTroubleText(status:number|null,offer:OutageFact=null):st
 export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTurn|null;steering:StatusSteering|null;state:string},
   saved:any,context:StatusContext):InputStatusDetail|null {
   const {turn,steering,state}=observed;
+  if(saved.responseMode==='context'){
+    if(saved.contextDelivery?.state==='uncertain')return {code:'CONTEXT_DELIVERY_UNCONFIRMED',
+      message:'Saved here. Delivery to the recipient conversation is unconfirmed. Its original identity and context are retained for inspection.',
+      clearsAt:null,automaticRetry:false};
+    if(saved.contextDelivery?.state==='failed')return {code:'CONTEXT_DELIVERY_FAILED',
+      message:'Saved here. The other machine refused delivery to the recipient conversation. The original context is retained.',
+      clearsAt:null,automaticRetry:false};
+    if(saved.contextForward||saved.contextDelivery?.state==='pending')return {
+      code:'CONTEXT_DELIVERY_PENDING',message:'Saved here. Waiting for the other machine to confirm it is saved in the recipient conversation.',
+      clearsAt:null,automaticRetry:true};
+    return {code:'CONTEXT_SAVED',message:'Saved for the next conversation.',clearsAt:null,automaticRetry:false};
+  }
   const waitingWork=input.origin==='human'?'Your message':input.origin==='agent'?'The agent’s request':'The session instruction';
   if(steering?.status==='ambiguous'&&!steering.provider_sent_at){
     const outcome=turn?.status==='done'?'completed':turn?.status==='error'?'failed':turn?.status==='cancelled'?'was canceled':null;

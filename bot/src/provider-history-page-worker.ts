@@ -3,7 +3,7 @@ import {parentPort} from 'node:worker_threads';
 import {SessionOwner} from './session-owner';
 import {log} from './log';
 import {sharedCodexAppServerClient} from './codex-app-server-client';
-import {readClaudeHistory,readCodexHistory,readCodexHistoryWindow} from './provider-history';
+import {readClaudeHistory,readCodexHistory,readCodexHistoryWindow,hasSavedContext} from './provider-history';
 import {getSessionById} from './state';
 import {sessionMetadata} from './session-inputs';
 
@@ -43,7 +43,7 @@ parentPort.on('message',async(input:Work)=>{
           ...(typeof (metadata as any).providerAccount==='string'?{account:(metadata as any).providerAccount}:{})};
         // The newest page of a window read is the conversation's kept window, not a listing.
         // A kept window that cannot be read or topped up falls back to the ordinary listing.
-        if(session.provider_id==='codex'&&cursor===null&&input.operation==='page'&&input.want&&(input.want.dialogue||input.want.untilInput))
+        if(session.provider_id==='codex'&&!hasSavedContext(session.id)&&cursor===null&&input.operation==='page'&&input.want&&(input.want.dialogue||input.want.untilInput))
           try{return await readCodexHistoryWindow({sessionUuid:session.agent_session_uuid,want:input.want,
             ...(typeof (metadata as any).providerRunner==='string'?{runner:(metadata as any).providerRunner}:{}),
             ...(typeof (metadata as any).providerAccount==='string'?{account:(metadata as any).providerAccount}:{})});}

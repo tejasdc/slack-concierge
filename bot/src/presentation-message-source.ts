@@ -1,6 +1,6 @@
 import type {Database} from 'bun:sqlite';
 import {inboxRequestRoot} from './inbox-request-root';
-import {firstInboxAcceptanceSql} from './inbox-message-identity';
+import {firstInboxAcceptanceSql,savedContextMessageSql} from './inbox-message-identity';
 import {retainedReplyTarget} from './inbox-reply-lineage';
 import {routedTurnResultSql} from './inbox-routing-result';
 import {answeredByPostResultSql} from './inbox-posted-result';
@@ -26,6 +26,7 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
   CASE WHEN event.kind IN ('topic','topic_request','topic_question','topic_answer')
     THEN json_extract(event.payload_json,'$.topicId') END AS topic_id,
   CASE WHEN event.kind='message' THEN json_extract(event.payload_json,'$.message.id') END AS owner_message_id
+  ,CASE WHEN ${savedContextMessageSql} THEN 1 ELSE 0 END AS saved_context
   FROM session_owner_events event
   JOIN sessions owner ON owner.id=event.session_id
   LEFT JOIN session_inputs input ON input.id=event.input_id
@@ -33,9 +34,10 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
   WHERE ${firstInboxAcceptanceSql}`;
 
 type SourceRow={sequence:number;session_id:number;event_id:string;input_id:string|null;kind:string;created_at:string;
-  input_origin:string|null;
+  input_origin:string|null;saved_context:number;
   is_inbox:number|null;has_capture:number;already_posted_in_thread:number;agent_request:number;has_result_text:number;has_attachments:number;routed_result:number;posted_result:number;unrequested_progress_post:number;topic_id:string|null;owner_message_id:string|null};
 export function sourceMessageId(row:SourceRow):string|null {
+  if(row.saved_context)return row.owner_message_id;
   return row.kind==='result'||row.kind==='post'||row.kind==='request'||row.kind==='topic_route'?row.event_id:row.input_id;
 }
 
@@ -46,7 +48,9 @@ export function inboxRootResolver(db:Database) {
     const cacheKey=`${sessionId}:${messageId}`;
     if(memo.has(cacheKey))return memo.get(cacheKey)!;
     const row=(db.query(`SELECT event.session_id,event.input_id,event.event_id,event.kind,event.payload_json FROM session_owner_events event
-      WHERE event.session_id IN (${INBOX_LINEAGE_SQL}) AND event.event_id=? AND event.kind IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)
+      LEFT JOIN session_inputs input ON input.id=event.input_id
+      WHERE event.session_id IN (${INBOX_LINEAGE_SQL}) AND event.event_id=? AND (event.kind IN ('result','post','request','topic_route')
+        OR (${savedContextMessageSql})) ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)
       ??db.query(`SELECT event.session_id,event.input_id,event.event_id,event.kind,event.payload_json FROM session_owner_events event
       WHERE event.session_id IN (${INBOX_LINEAGE_SQL}) AND event.input_id=? AND event.kind NOT IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)) as {session_id:number;input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
     if(row?.kind==='request'){
@@ -107,7 +111,7 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
     if(!row.is_inbox||row.agent_request||row.unrequested_progress_post)return [];
     if(row.kind==='post'&&postIsCollapsed(db,row.event_id))return [];
     if(row.kind==='post'&&canceledRequestNotice(db,row.event_id))return [];
-    if(!(['result','inbox_capture','post','request','topic_route'].includes(row.kind)
+    if(!(row.saved_context||['result','inbox_capture','post','request','topic_route'].includes(row.kind)
       ||row.kind==='accepted'&&!row.has_capture&&!row.already_posted_in_thread))return [];
     if(row.kind==='request'){
       const requestId=(db.query('SELECT json_extract(payload_json,\'$.requestId\') AS id FROM session_owner_events WHERE sequence=?').get(row.sequence) as {id:string|null}|null)?.id;

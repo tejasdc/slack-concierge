@@ -808,6 +808,9 @@ async function catchUp() {
       if(request?.sourceMessageId)routedSources.add(request.sourceMessageId);
     }
     if(change.source_table==='session_inputs'){
+      const context=source.query("SELECT 1 FROM session_inputs WHERE id=? AND json_extract(payload_json,'$.responseMode')='context'")
+        .get(change.row_key);
+      if(context)correctedInputs.add(change.row_key);
       const input=source.query("SELECT CASE WHEN json_extract(receipt_json,'$.forwardedTo') IS NOT NULL THEN id END AS sourceMessageId FROM session_inputs WHERE id=?")
         .get(change.row_key) as {sourceMessageId:string|null}|null;
       if(input?.sourceMessageId)routedSources.add(input.sourceMessageId);

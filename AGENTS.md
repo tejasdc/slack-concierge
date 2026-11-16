@@ -80,6 +80,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 
 ## Session and Inbox obligations
 
+- Saved context is a settled input, never queued work. Preserve its exact attribution,
+  attachments and chosen recipient; only a later active message brings it to the provider.
+  See [passive session context](docs/contracts/session-owner-v1.md#passive-session-context).
+
 - Native custody mutation admission and its source-bound, inventory-free result use the
   [current owner port](docs/contracts/session-owner-v1.md#current-mutation-admission);
   ordinary obligations reads do not confer mutation authority.

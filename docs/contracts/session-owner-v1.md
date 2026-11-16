@@ -365,6 +365,70 @@ the initial summary, so regular, service-created and scheduled sessions never lo
 their creator did provide. A later summary action may replace it. Peer creation carries the same
 field; an older peer may omit it and still creates the named session.
 
+### Passive session context
+
+The existing session input route accepts optional `responseMode:"context"`. Omission
+keeps ordinary active admission, including joining a live turn. Context keeps exact
+words, attachment custody, source identity and reply/side-thread/recipient references
+in the accepted-input ledger. Acceptance and its completed receipt commit together;
+the receipt has `state:"completed"`, `runId:null`, `request.responseMode:"context"`
+and status `CONTEXT_SAVED` / `Saved for the next conversation.`
+
+Context creates no turn, steering delivery, answer request, notification request or
+attention acknowledgement. It neither clears an outstanding question nor reopens
+completed work. Recovery sees the same terminal receipt and cannot turn it into work.
+A passive Inbox reply also retains an attributed copy in its selected recipient's
+conversation, with its fixed thread and side-thread references. Its source stays in
+the Inbox. The saved context never asks the recipient to answer.
+
+`contextDelivery` on the operation identifies `{targetSessionId,state,requestId?,peer?,error?}`.
+Local custody has state `saved`. A peer destination is `pending` until the exact peer
+confirms saved custody, `failed` after a definitive refusal, or `uncertain` after an
+identity conflict. The completed source receipt proves the source words were retained
+locally; its delivery explanation explicitly distinguishes pending remote custody.
+The existing peer outbox retains the same request while the other machine sleeps.
+Before posting passive bytes, the sender checks the receiver's passive capability;
+an older release is refused without falling back to active work or an answer request.
+Human context forwarding names the accepted input and its action, with a null provider
+turn and run; it never borrows the Inbox's latest provider turn. An agent contribution
+from an actual provider run keeps that run. The peer outbox permits an absent source
+turn only for passive custody; active requests continue to require their actual run.
+Once the source save commits, a forwarding failure returns that exact saved operation
+with its pending delivery metadata, rather than hiding acceptance behind a transport
+error. Peer settlement, source delivery metadata and its receipt announcement commit
+together. A previous unconfirmed POST remains uncertain if a later capability check
+refuses delivery; its exact retained envelope remains available for inspection.
+
+The next explicit active message includes prior retained context from that session
+as attributed historical data, with exact source/action relationships and attachment
+bytes available through ordinary provider attachment preparation. The saved material
+is explicitly data, never instructions or a new authority grant. Context is retained
+for later active messages too, so provider history compaction cannot silently erase
+it. Canvas observation sessions keep their existing separate behavior; argument-map
+speech keeps its raw transcript and receives saved context in application context.
+
+Agents save their own attributed words with
+`sessions ask <address> --response-mode context -- <text>`, with the current
+source/run and stable action ID. Existing `--file` and `--attachment` custody
+options retain exact bytes. No summary or retained-source selector is required.
+The accepted input is agent-authored and linked to that actual agent run; the
+originating human task is not presented as the author of the agent's words.
+The same source/action claim covers local, peer and active asks. Changing the
+destination, material, source run or response mode for an accepted action conflicts
+before execution. A peer contribution returns its own completed, null-run passive
+operation with delivery custody; it does not alter the agent's current task receipt.
+
+Agents may instead contribute exact already-retained material with:
+`sessions ask <address> --response-mode context --route-message <message-id>`
+or `--capture-id <capture-id>`, with the current source/run and stable action ID.
+No replacement text or files are accepted when either retained selector is supplied. Authorship of the retained
+words stays separate from the contributing agent. This is a saved operation, not an
+answer request; no reply is owed. The normal active ask contract is unchanged.
+History, retained-source copying and provider context share the checked original
+material resolver. Full captures use verified retained text bytes, and copies keep
+original authorship distinct from the current contributor. Peer hops normalize each
+actual source record and nested author session rather than substituting the sender.
+
 ### Session names
 
 The canonical name is `sessions.native_metadata_json.title`, exposed unchanged as
