@@ -9,8 +9,8 @@ async function child() {
   const workspace = join(root, 'workspace');
   await mkdir(join(workspace, 'slack-inbox', '.git'), {recursive: true});
   await writeFile(join(workspace, 'slack-inbox', 'AGENTS.md'), 'Disposable Inbox fixture.');
-  const [{SessionOwner}, {db}, {startForegroundGateway}] = await Promise.all([
-    import('../src/session-owner'), import('../src/state'), import('../src/foreground-gateway')]);
+  const [{SessionOwner}, {db}, {startForegroundGateway}, {topicOfRoot}] = await Promise.all([
+    import('../src/session-owner'), import('../src/state'), import('../src/foreground-gateway'), import('../src/session-topics')]);
   const owner = new SessionOwner({available: () => true, wake: () => {}, steer: () => false,
     stop: async () => false}, workspace);
   owner.inbox();
@@ -44,8 +44,12 @@ async function child() {
     const duplicate = await fetch(`http://127.0.0.1:${port}${path}`, authenticated);
     assert.equal((await duplicate.json()).status, 'duplicate');
     assert.equal(db.query("SELECT count(*) AS n FROM session_inputs WHERE id='service:service-notice:mac-disk-low:1'").get().n, 1);
-    const inbox = db.query("SELECT native_metadata_json FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1").get();
-    assert.equal(JSON.parse(inbox.native_metadata_json).needs.filter(need => need.eventId === 'service-notice:mac-disk-low:1').length, 1);
+    assert.ok(topicOfRoot('service:service-notice:mac-disk-low:1'), 'warning is already filed in a real Inbox thread');
+    const filed = db.query("SELECT payload_json FROM session_owner_events WHERE event_id='topic-service-notice:service-notice:mac-disk-low:1:filed'").get();
+    const questions = JSON.parse(filed.payload_json).questions;
+    assert.equal(questions.length, 1);
+    assert.equal(questions[0].kind, 'reading');
+    assert.equal(questions[0].state, 'open');
     console.log(JSON.stringify({fixture: 'mac-disk-warning-ingress', status: 'passed',
       proof: 'real gateway+owner rejects forged peer headers, requires token and records one server Inbox warning'}));
   } finally {
