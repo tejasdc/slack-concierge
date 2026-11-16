@@ -204,6 +204,7 @@ export function inboxMessage(row:any) {
       ...(displayedRoot!==row.event_id?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:displayedRoot}}:{})}:{}),
     ...(result&&typeof payload.messageThreadRootId==='string'&&row.input_id?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:row.input_id}}:{}),
     ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:displayedRoot}:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const,
+      ...(eventPayload.postSource??{}),
       ...(typeof eventPayload.requestId==='string'?{requestId:eventPayload.requestId}:{}),
       // An agent's reply posted into the thread it was asked from is that agent's, named as such; the router's posts stay the router's.
       ...(typeof eventPayload.postedBySession==='string'?{fromSession:eventPayload.postedBySession}:{})},...(eventPayload.relayed?{relayed:true}:{})}:{}),
