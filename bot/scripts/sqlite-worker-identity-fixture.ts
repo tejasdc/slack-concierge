@@ -4,6 +4,7 @@ import {mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Database} from 'bun:sqlite';
+import {ledgerWriteResults} from '../src/ledger-write-results';
 import {nativeIdentity,sqliteWorkerIdentity} from '../src/sqlite-worker-identity';
 
 if (workerData?.identityFixture) {
@@ -53,7 +54,7 @@ if (workerData?.identityFixture) {
     const watch=await start(join(import.meta.dir,'../src/watch-observation-worker.ts'),{stateDir:dir});
     assert.equal(watch.record.role,'watch-observation-worker');
     const bad=join(dir,'ledger.db');
-    const db=new Database(bad);db.exec('PRAGMA journal_mode=WAL; CREATE TABLE fixture(value)');db.close();
+    const db=ledgerWriteResults(new Database(bad));db.exec('PRAGMA journal_mode=WAL; CREATE TABLE fixture(value)');db.close();
     const checkpoint=await start(join(import.meta.dir,'../src/ledger-durability-worker.ts'),{
       role:'checkpoint',databasePath:bad,intervalMs:60000});
     assert.equal(checkpoint.record.role,'ledger-durability-worker:checkpoint');
