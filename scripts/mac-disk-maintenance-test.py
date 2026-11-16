@@ -273,6 +273,61 @@ class Maintenance(unittest.TestCase):
         m.run(['git', '-C', wt, 'update-ref', 'refs/remotes/origin/main', 'HEAD'])
         self.assertFalse(m.eligible(wt, future, []))
 
+    def test_retirement_deadline_keeps_partial_receipts_and_never_repeats_unknown_effect(self):
+        for mode in ('predicate', 'trash'):
+            with self.subTest(mode=mode):
+                workspace = self.root / mode / 'workspace'
+                state = self.root / mode / 'state'
+                state.mkdir(parents=True)
+                repo = workspace / 'project'
+                first, second = repo / '.wt/a', repo / '.wt/b'
+                first.mkdir(parents=True)
+                second.mkdir()
+                trash = state / 'owned-fixture-trash'
+                trash.mkdir()
+                calls = []
+                def probe(path, *args):
+                    if path == second and mode == 'predicate':
+                        raise TimeoutError('budget exhausted in read')
+                    return True
+                def command(args, **kwargs):
+                    args = [str(value) for value in args]
+                    calls.append(args)
+                    if args[0] == 'fixture-bun':
+                        return b'{"token":"fixture-owned-gate"}' if 'claim' in args else b'{}'
+                    if args[0] == '/usr/bin/trash':
+                        path = Path(args[-1])
+                        path.rename(trash / path.name)
+                        if path == second:
+                            raise subprocess.TimeoutExpired(args, 30)
+                        return b''
+                    if '--git-common-dir' in args:
+                        return str(repo / '.git').encode()
+                    if args[-1] == 'HEAD':
+                        return b'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+                    return b''
+                with patch.object(m, 'run', side_effect=command), patch.object(m, 'eligible', side_effect=probe), \
+                        patch.object(m, 'pending_cwds', return_value=[]), patch.object(m, 'cwd_paths', return_value=['/']):
+                    result = m.retire_worktrees(workspace, state, repo, 'fixture-bun', time.time())
+                    self.assertEqual([row['path'] for row in result['retired']], [str(first)])
+                    self.assertTrue(result['retired'][0]['registration_removed'])
+                    self.assertTrue(result['gate_released'])
+                    self.assertEqual(result['held'], 'thirty-second upkeep budget')
+                    if mode == 'trash':
+                        uncertain = result['retirement_unconfirmed'][0]
+                        self.assertEqual((uncertain['path'], uncertain['head'], uncertain['step']),
+                            (str(second), 'a' * 40, 'trash'))
+                        m.write_state(state / 'mac-disk-maintenance.json', result)
+                        before = len([call for call in calls if call[0] == '/usr/bin/trash'])
+                        retry = m.retire_worktrees(workspace, state, repo, 'fixture-bun', time.time())
+                        self.assertEqual(retry['retirement_unconfirmed'], [uncertain])
+                        self.assertEqual(len([call for call in calls if call[0] == '/usr/bin/trash']), before)
+                        with patch.object(m, 'run', side_effect=subprocess.CalledProcessError(10, 'recover')):
+                            held = m.retire_worktrees(workspace, state, repo, 'fixture-bun', time.time())
+                        self.assertEqual(held['retirement_unconfirmed'], [uncertain], 'a live update gate must not erase unknown custody')
+                    else:
+                        self.assertEqual(result['retirement_unconfirmed'], [])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
