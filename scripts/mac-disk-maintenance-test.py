@@ -196,7 +196,7 @@ class Maintenance(unittest.TestCase):
             db.execute("INSERT INTO turns VALUES ('running',1)")
         self.assertEqual(m.pending_cwds(self.root), [str(self.root / 'busy')])
         with sqlite3.connect(self.root / 'state.db') as db:
-            db.execute("UPDATE turns SET status='parked'")
+            db.execute("UPDATE turns SET status='parked' WHERE status='running'")
             db.execute('UPDATE sessions SET native_metadata_json=?', (json.dumps({'cwd':str(self.root / 'busy'),
                 'additionalDirs':[str(self.root / 'extra')]}),))
         self.assertEqual(m.pending_cwds(self.root), [str(self.root / 'busy'), str(self.root / 'extra')])
