@@ -16,6 +16,19 @@ export function topicRootIn(database:Database,threadRoot:string|null|undefined,s
   const topicOf=(root:string|null|undefined)=>root
     ?(database.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(root) as {topic_id:string}|null)?.topic_id??null:null;
   if(topicOf(threadRoot))return threadRoot!;
+  // Work inherits the thread of the nearest request that set it going. A chain the Inbox's own
+  // upkeep or a repair notice started has no human at its end, but the request it sent carries
+  // its thread, and every wake, report-back and request downstream of it serves that thread.
+  const seen=new Set<string>();
+  for(let id=sourceInputId??null;id&&!seen.has(id)&&seen.size<32;){
+    seen.add(id);
+    if(id.startsWith('request:')){
+      const request=database.query(`SELECT coalesce(nullif(topic_root_input_id,''),thread_root_input_id) AS root
+        FROM session_communication_requests WHERE request_id=?`).get(id.slice('request:'.length)) as {root:string|null}|null;
+      if(topicOf(request?.root))return request!.root;
+    }
+    id=(database.query('SELECT source_input_id FROM session_inputs WHERE id=?').get(id) as {source_input_id:string|null}|null)?.source_input_id??null;
+  }
   const source=sourceInputId?database.query('SELECT * FROM session_inputs WHERE id=?').get(sourceInputId) as ProvenanceInput|null:null;
   // A read-only caller never names a run; the walk only needs the run for its own receipt.
   const runIdForTurn=(turnId:number)=>(database.query('SELECT native_run_id FROM turns WHERE id=?').get(turnId) as {native_run_id:string|null}|null)?.native_run_id??'';
