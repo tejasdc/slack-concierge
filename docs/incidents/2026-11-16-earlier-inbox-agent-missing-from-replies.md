@@ -25,4 +25,5 @@ An earlier Inbox role holder still counts as the router, so exposing its posts d
 - **Seed:** A thread contains an agent post written under an earlier Inbox session; that agent's request is closed and a newer Inbox session holds the role.
 - **Action:** Open the thread, then reply under the old agent post.
 - **Expected:** The reply box names and offers that agent, the accepted reply is addressed to it, and its answer appears under the same message. An ordinary main-thread message still uses the latest speaker as its initial recipient and offers the Inbox agent.
+- **Earlier Inbox post:** Selecting a post written by an earlier Inbox role holder still selects the current Inbox agent, even when another agent spoke later.
 - **Replayable offline:** yes (retained message and session lineage are sufficient).
