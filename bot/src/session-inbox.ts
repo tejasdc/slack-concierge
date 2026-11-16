@@ -369,17 +369,39 @@ export const turnMixesThreads=(sessionId:number,turnId:number,ownInputId:string|
  * two hours: "either none of the protocols that we have built is working, or you've been
  * bushing me."
  */
+const NO_REPLY_SERVICE_PREFIXES = [
+  'thread-upkeep:', 'unfiled-wake:', 'request-reminder:', 'question-reminder:',
+  'question-todo-done:', 'direct-todo-done:', 'question-returned:', 'handoff-notice:',
+  'background-job:', 'update-wait:', 'area-theme:',
+] as const;
+
+/** Retained notices predate the explicit mark; prove their contract from owner identity,
+ * never from their words. Follow only the exact original of an owner-made handoff copy. */
+function serviceNoticeNeedsNoThreadReply(opening:AcceptedSessionInput):boolean {
+  const seen=new Set<string>();
+  let input:AcceptedSessionInput|null=opening;
+  while(input?.origin==='service'&&!seen.has(input.id)){
+    seen.add(input.id);
+    const payload=JSON.parse(input.payload_json);
+    if(payload.alreadyPostedInThread===true||payload.threadReplyNotRequired===true
+      ||NO_REPLY_SERVICE_PREFIXES.some(prefix=>input!.id.startsWith(prefix)))return true;
+    if(input.id.startsWith('return:')){
+      const eventId=input.id.slice('return:'.length);
+      for(const table of ['session_communication_events','session_peer_events']){
+        const event=db.query(`SELECT kind FROM ${table} WHERE event_id=? AND request_id=?`).get(eventId,input.request_id) as {kind:string}|null;
+        if(event?.kind==='overdue')return true;
+      }
+    }
+    input=input.scope.startsWith('handoff:')&&input.id.startsWith('handoff-input:')
+      ?getAcceptedSessionInput(input.action_id):null;
+  }
+  return false;
+}
 export function threadOwedByTurn(session:SessionRow,openingInputId:string|null):string|null {
   if(!openingInputId||!sessionMetadata(session).inbox)return null;
   const opening=getAcceptedSessionInput(openingInputId);
   if(!opening||opening.origin==='human')return null;
-  if(opening.origin==='service'){
-    const payload=JSON.parse(opening.payload_json);
-    // Older upkeep inputs were admitted before the explicit mark existed. Their
-    // service identity and owner-generated prefix still prove the no-reply contract.
-    if(payload.alreadyPostedInThread===true||payload.threadReplyNotRequired===true
-      ||opening.id.startsWith('thread-upkeep:'))return null;
-  }
+  if(serviceNoticeNeedsNoThreadReply(opening))return null;
   return inboxThreadRoot(session.id,openingInputId);
 }
 export function turnPostedInto(sessionId:number,turnId:number,root:string):boolean {
