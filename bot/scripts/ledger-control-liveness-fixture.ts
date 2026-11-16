@@ -34,7 +34,7 @@ const socketPath=join(root,'host.sock');let hostPeer:any;let silent=false;
 const host=createNetServer(socket=>{hostPeer=socket;let buffer='';socket.on('data',chunk=>{buffer+=chunk;let i;while((i=buffer.indexOf('\n'))>=0){const request=JSON.parse(buffer.slice(0,i));buffer=buffer.slice(i+1);if(request.op==='status'&&!silent)socket.write(JSON.stringify({op:'status',protocol:1,executionId:'fixture',lastSeq:0,exit:null})+'\n');else if(request.id)socket.write(JSON.stringify({op:'accepted',id:request.id,original:true})+'\n');}});});await new Promise<void>(r=>host.listen(socketPath,r));
 const wsServer=createServer(),ws=new WebSocketServer({server:wsServer}),wsPath=join(root,'codex.sock');let peer:WebSocket|undefined;
 ws.on('connection',socket=>{peer=socket;socket.on('message',data=>{const request=JSON.parse(String(data));if(!request.id||request.method==='fixture/silence')return;socket.send(JSON.stringify({id:request.id,result:request.method==='fixture/probe'?{original:true}:{}}));});});await new Promise<void>(r=>wsServer.listen(wsPath,r));
-const client=new CodexAppServerClient(wsPath,'/usr/bin/node',{relayRunner:'disposable-fixture',bridgePath:join(import.meta.dir,'../src/codex-app-server-bridge.mjs'),shutdownGraceMs:40});
+const client=new CodexAppServerClient(wsPath,(Bun.which('node')??'/usr/bin/node'),{relayRunner:'disposable-fixture',bridgePath:join(import.meta.dir,'../src/codex-app-server-bridge.mjs'),shutdownGraceMs:40});
 let connection:InstanceType<typeof HostConnection>|undefined,maintenance:Promise<void>|undefined,transport:Promise<unknown>|undefined;
 try {
  gate.enableLedgerAdmission();

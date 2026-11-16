@@ -30,9 +30,12 @@ if(mode==='--leaf') {
 } else {
  const root=mkdtempSync('/tmp/release-check-lifetime-'),owned:number[]=[];
  try {
-  const {runCheckSuite,selectReleaseCheckGroup,releaseCheckMatrix}=await import(process.env.CHECK_RUNNER_MODULE??'./run-release-checks');
+  const {runCheckSuite,selectReleaseCheckGroup,releaseCheckMatrix,HOST_ONLY_GROUPS}=await import(process.env.CHECK_RUNNER_MODULE??'./run-release-checks');
   const inventory=JSON.parse(readFileSync(join(import.meta.dir,'release-checks.json'),'utf8'));
-  assert.deepEqual(releaseCheckMatrix().include.map((row:{group:string})=>row.group),Object.keys(inventory));
+  // The hosted matrix is every declared group except the host-only ones, which the AX41
+  // candidate gate runs; the inventory still declares them exactly once.
+  assert.deepEqual(releaseCheckMatrix().include.map((row:{group:string})=>row.group),Object.keys(inventory).filter(group=>!(HOST_ONLY_GROUPS??new Set()).has(group)));
+  assert.ok(Object.keys(inventory).includes('native')&&HOST_ONLY_GROUPS.has('native'),'native checks stay declared and host-only');
   const {default:sharedInventory}=await import('./release-checks.json');
   const mutableInventory=sharedInventory as Record<string,string[][]>;
   try {
