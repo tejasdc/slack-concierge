@@ -1,4 +1,5 @@
-import {mkdtempSync,mkdirSync,openSync,writeSync,closeSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,openSync,writeSync,closeSync,writeFileSync,existsSync} from 'node:fs';
+import {homedir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {runFixtureChild} from './fixture-child';
@@ -8,10 +9,25 @@ import CHECKS from './release-checks.json';
 
 type CheckResult={command:string[];status:'passed'|'failed';elapsedMs:number;error?:string};
 type CheckGroup=keyof typeof CHECKS;
+/** One inventory assigns every check exactly once. Host-only groups need the AX41's live-ledger
+ * isolation and run inside the candidate's own presentation check before a release is sealed;
+ * the hosted Release check runs every other group. Neither environment may skip its share. */
+export const HOST_ONLY_GROUPS=new Set<string>(POLICY.hostOnlyGroups);
 export function releaseCheckMatrix(){
  const groups=Object.keys(CHECKS) as CheckGroup[];
  if(!groups.length||groups.some(group=>!Array.isArray(CHECKS[group])||!CHECKS[group].length))throw Error('Release check groups must contain commands.');
- return {include:groups.map(group=>({group}))};
+ if([...HOST_ONLY_GROUPS].some(group=>!groups.includes(group as CheckGroup)))throw Error('A host-only release-check group is not declared.');
+ const seen=new Set<string>();
+ for(const group of groups)for(const command of CHECKS[group]){
+  const key=JSON.stringify(command);
+  if(seen.has(key))throw Error(`Release check assigned twice: ${command.join(' ')}`);
+  seen.add(key);
+ }
+ return {include:groups.filter(group=>!HOST_ONLY_GROUPS.has(group)).map(group=>({group}))};
+}
+/** A physical fact, never an environment string: the canonical live ledger exists here. */
+export function liveLedgerPresent():boolean {
+ return existsSync(join(homedir(),'.local/state/concierge'));
 }
 export function selectReleaseCheckGroup(args:string[]):CheckGroup {
  const group=args.length===0?'build':args.length===1&&args[0]==='--history-cache'?'historyCache':
@@ -68,7 +84,11 @@ if(import.meta.main) {
  if(args.length===1&&args[0]==='--matrix'){process.stdout.write(JSON.stringify(releaseCheckMatrix())+'\n');process.exit(0);}
  const group=selectReleaseCheckGroup(args.filter(arg=>arg!=='--suite-child'));
  if(process.argv.includes('--suite-child')) {
-  if(process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED!=='1')throw Error('Release checks require the verified private-code entrance.');
+  // Isolation protects the live ledger. Host-only groups always require it; a portable group
+  // may run without it only where no live ledger exists to protect (the hosted runner).
+  if(process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED!=='1'&&(HOST_ONLY_GROUPS.has(group)||liveLedgerPresent()))
+   throw Error('Release checks require the verified private-code entrance.');
+  process.env.CONCIERGE_RELEASE_CHECK_GROUP=group;
   const root=mkdtempSync(join(tmpdir(),'concierge-release-checks-'));
   process.stderr.write(JSON.stringify({fixture:'release-checks',phase:'started',logs:root})+'\n');
   const deadlineAt=Number(process.env.CONCIERGE_CHECK_DEADLINE_AT);
@@ -80,8 +100,10 @@ if(import.meta.main) {
   console.log(JSON.stringify({fixture:'release-checks',group,status:'passed',checks:first.completed+compiled.completed,elapsedMs:first.elapsedMs+compiled.elapsedMs,logs:root}));
  } else {
   const deadlineAt=Date.now()+POLICY.deadlineMs-POLICY.cleanupMs;
-  const isolated=privateCodeCommand([process.execPath,import.meta.path,'--suite-child','--group',group],
-   {...process.env,CONCIERGE_CHECK_DEADLINE_AT:String(deadlineAt)});
+  const child=[process.execPath,import.meta.path,'--suite-child','--group',group];
+  const environment={...process.env,CONCIERGE_CHECK_DEADLINE_AT:String(deadlineAt)};
+  const isolated=HOST_ONLY_GROUPS.has(group)||liveLedgerPresent()?privateCodeCommand(child,environment)
+   :{command:child,environment,cleanup:()=>{}};
   try{await runFixtureChild({command:isolated.command[0]!,args:isolated.command.slice(1),
    env:isolated.environment,deadlineMs:POLICY.deadlineMs-POLICY.cleanupMs,
    fixture:'release-checks',requireCheckpoint:false,requireOwnedGroup:true,onOutput:(stream,chunk)=>process[stream].write(chunk)});

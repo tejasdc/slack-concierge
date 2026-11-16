@@ -8,7 +8,11 @@ import {currentProcessIdentity,processNativeLifetimeEnded} from '../src/runtime-
 // A package-only check would not protect the first activation of these workers.
 
 async function checkPresentation(){
-if(process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED!=='1')throw Error('Candidate checks require the verified private-code entrance.');
+const {liveLedgerPresent}=await import('./run-release-checks');
+// The native inventory models this Linux server's isolation; a Mac peer has no such gate.
+const hostGate=process.platform==='linux'&&liveLedgerPresent();
+// Isolation protects the live ledger; only a machine without one may run this unisolated.
+if(process.env.CONCIERGE_PRIVATE_CODE_BOUNDARY_VERIFIED!=='1'&&hostGate)throw Error('Candidate checks require the verified private-code entrance.');
 const {PRESENTATION_READERS}=await import('../src/presentation-reader-contracts');
 const {checkReaderRefusals}=await import('./presentation-contract-fixture');
 const {checkTopicProjectionLifecycle,checkNativeOwnerProjectionLifecycle}=await import('./topic-projection-fixture');
@@ -22,6 +26,27 @@ const root=resolve(import.meta.dir,'..');
 // candidate. Keep the last completed step visible within the shared release-check budget.
 const phase=(name:string)=>process.stderr.write(`presentation-check: ${name}\n`);
 phase('started');
+// Every controller, including older installed ones, runs this candidate-owned check before it
+// seals a release, so the host-only inventory runs here against the exact candidate source.
+// On a host with a live ledger it is mandatory: a failure, timeout or missing result refuses
+// the release. Inside the release-check suite the same group runs as its own declared group.
+let nativeChecks:unknown='not-host';
+if(hostGate&&process.env.CONCIERGE_RELEASE_CHECK_GROUP===undefined){
+ phase('native-release-checks');
+ // First, while this private boundary is still unused (its hidden Codex home empty), and
+ // inside this check's process group so the controller's deadline and cleanup cover it.
+ const deadlineAt=Math.floor(performance.timeOrigin)+CHECK_POLICY.deadlineMs-2*CHECK_POLICY.cleanupMs;
+ const output:string[]=[];
+ const native={command:[process.execPath,join(import.meta.dir,'run-release-checks.ts'),'--suite-child','--group','native'],
+  environment:{...process.env,CONCIERGE_CHECK_DEADLINE_AT:String(deadlineAt)},cleanup:()=>{}};
+ try{await runFixtureChild({command:native.command[0]!,args:native.command.slice(1),env:native.environment,
+  deadlineMs:Math.max(1,deadlineAt-Date.now()),fixture:'native-release-checks',requireCheckpoint:false,requireOwnedGroup:false,
+  onOutput:(stream,chunk)=>{if(stream==='stdout')output.push(String(chunk));else process.stderr.write(chunk);}});
+ }finally{native.cleanup();}
+ nativeChecks=JSON.parse(output.join('').trim().split('\n').at(-1)!);
+ if((nativeChecks as {status?:string;group?:string}).status!=='passed'||(nativeChecks as {group?:string}).group!=='native')
+  throw Error(`Native release checks did not report a pass: ${JSON.stringify(nativeChecks)}`);
+}
 if(process.platform==='linux'){
  if(await processNativeLifetimeEnded(currentProcessIdentity()))throw Error('The current native process was incorrectly reported exited.');
  phase('native-process-lifetime');
@@ -125,7 +150,7 @@ for(const failure of failures)process.stderr.write(`presentation-check: lifecycl
 if(failures.length)throw new AggregateError(failures.map(result=>result.reason),'Candidate lifecycle checks failed.');
 phase('passed');
 const [topicProjection,nativeOwnerProjection,foreground,inboxLineage,askedAnswer]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
-console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,sessionLocation,providerContract,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,inboxLineage,askedAnswer,readers:results}));
+console.log(JSON.stringify({check:'presentation-release',status:'passed',nativeChecks,workerModules:visited.size,ledgerConstructors,sessionLocation,providerContract,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,inboxLineage,askedAnswer,readers:results}));
 
 }
 if(process.argv.includes('--bounded-child'))await checkPresentation();
