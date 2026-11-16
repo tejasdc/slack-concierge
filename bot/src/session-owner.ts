@@ -594,8 +594,20 @@ function validateCanvasContext(input:Record<string,any>) {
  * The one definition of "another author wrote into this test session". The bound browser
  * entrance refuses on it and the metadata diagnostic explains it from the same text, so the
  * two cannot drift. Parameters: source input, source run (each bound once, in this order).
+ *
+ * A session's own steered owner notices are not another author. Only the owner writes a
+ * service input, and one that names itself as its source and is pinned to a run of this same
+ * session (the account budget brief, background-job notices) carries no other session's words.
+ * That provenance is read from the ledger's own records: service origin, kind input, source and
+ * request both equal to the input's own id, and a source run that is a turn of this session. It
+ * does not read the text or the id's spelling. Every other service input, such as a returned
+ * request or thnkr.ing feature text, still counts as other authorship. A new producer of this
+ * exact shape must not put another session's content in it.
  */
-const FOREIGN_AUTHORSHIP_PREDICATE=`(candidate.origin<>'agent' OR ((candidate.source_input_id IS NOT ? OR candidate.source_run_id IS NOT ?)
+const FOREIGN_AUTHORSHIP_PREDICATE=`((candidate.origin<>'agent' AND NOT (candidate.origin='service' AND candidate.kind='input'
+        AND candidate.source_input_id IS candidate.id AND candidate.request_id IS candidate.id
+        AND EXISTS (SELECT 1 FROM turns AS own_run WHERE own_run.native_run_id=candidate.source_run_id AND own_run.session_id=candidate.session_id)))
+      OR (candidate.origin='agent' AND (candidate.source_input_id IS NOT ? OR candidate.source_run_id IS NOT ?)
         AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source
           WHERE own_source.id=candidate.source_input_id AND own_source.session_id=candidate.session_id)))`;
 

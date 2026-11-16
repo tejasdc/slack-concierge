@@ -15,6 +15,12 @@ and `sourceRelation` (`same_target|other|missing`). The scan uses the same predi
 bound content guard, so coverage is complete. No payload, receipt, file, history or provider
 output is read; there is no clean/allowed result and the content refusal is unchanged.
 
+The bound content entrance's authorship check treats a session's own steered owner notice as
+the session's own: a service-origin input of kind `input` whose source and request equal its own
+id and whose source run is a turn of that same session (for example the account budget brief and background-job
+notices; a missing source or request never qualifies). Spelling of the id and the text are not read. Any other service or human input, and
+any agent input from another source, still closes the entrance with AGENT_TEST_SCOPE_CHANGED.
+
 ## Current mutation admission
 
 `router-actions.sh sessions mutation-admission --source-input <input-id> --source-run <run-id>`
