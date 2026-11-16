@@ -1,21 +1,36 @@
 /**
- * The "What came before" lead a first reply carries when its request arrived with earlier work
- * (request-history.ts). The reply shown to the asker and in his thread includes it; a reader that
- * needs only the replying agent's own words (an organizer's placement JSON) removes it here, so
- * the wording has one home. The 2026-11-05 `project new` refusal (request 18be9df9) came from the
- * placement gate reading the lead as part of the organizer's decision.
+ * The "What came before" note a first reply carries when its request arrived with earlier work
+ * (request-history.ts). It is agent context: the requester and the Inbox router read it to see
+ * that the agent started from earlier work. It closes the reply, after the agent's own words, so
+ * the TL;DR leads what Tejas reads in his thread and the note is there below for whoever wants it.
+ * Until 2026-11-16 it led the reply, above the TL;DR; Tejas, that day: "Isn't 'what came before'
+ * context, for the agents? Why is it required for me? ... What's the point of having a TL;DR if I
+ * can't see it at the top?" A reader that needs only the agent's own words (an organizer's
+ * placement JSON) removes it with replyOwnWords, so the wording has one home. The 2026-11-05
+ * `project new` refusal (request 18be9df9) came from the placement gate reading the note as part
+ * of the organizer's decision.
  */
 export function withBefore(before:string,text:string){
-  return `What came before: ${before}${text.trim()?`\n\n${text}`:''}`;
+  return `${text.trim()?`${text}\n\n`:''}${beforeNote(before)}`;
 }
 
-/** The replying agent's own words in a recorded reply: its body without the required lead. */
+function beforeNote(before:string){
+  return `---\nWhat came before: ${before}`;
+}
+
+/** Replies recorded before 2026-11-16 carried the note as their lead instead of their close. */
+function legacyLead(before:string){
+  return `What came before: ${before}`;
+}
+
+/** The replying agent's own words in a recorded reply: its body without the required note. */
 export function replyOwnWords(payload:{replyBody?:unknown;before?:unknown}):string|null {
   if(typeof payload.replyBody!=='string')return null;
   if(typeof payload.before!=='string'||!payload.before)return payload.replyBody;
-  const lead=withBefore(payload.before,'');
-  if(!payload.replyBody.startsWith(lead))return payload.replyBody;
-  return payload.replyBody.slice(lead.length).replace(/^\n\n/,'');
+  const body=payload.replyBody,note=beforeNote(payload.before),lead=legacyLead(payload.before);
+  if(body.endsWith(note))return body.slice(0,body.length-note.length).replace(/\n\n$/,'');
+  if(body.startsWith(lead))return body.slice(lead.length).replace(/^\n\n/,'');
+  return body;
 }
 
 /**
