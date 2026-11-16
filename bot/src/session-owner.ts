@@ -119,7 +119,7 @@ import {PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION,type Projec
 import type {PeerLinks} from './peer-links';
 import {appendTodoFile,captureMarker} from './todo-file';
 import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,savedStartAt,updateSavedTurn} from './saved-work';
-import {usageBreakdown,usageAllowanceLookup,validUsageAllowanceLookup} from './usage-breakdown';
+import {usageBreakdownForPage,usageAllowanceLookup,validUsageAllowanceLookup} from './usage-breakdown';
 import {chooseProviderForNewWork,newWorkCapacity,type AutomaticProvider} from './provider-start-choice';
 import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
@@ -5041,7 +5041,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='usage'&&parts[1]==='breakdown'&&parts.length===2){
         const period=url.searchParams.get('period')??'today';
         if(period!=='today'&&period!=='week')throw new SessionOwnerError('Use period=today or period=week.');
-        result=await usageBreakdown(period);
+        result=await usageBreakdownForPage(period);
       }
       else if(request.method==='GET'&&parts[0]==='usage'&&parts[1]==='allowance'&&parts.length===2){
         const sessions=url.searchParams.getAll('session'),topics=url.searchParams.getAll('topic');

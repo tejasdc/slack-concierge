@@ -3,6 +3,7 @@ import {join} from 'node:path';
 import {existsSync,readFileSync,renameSync,statSync,writeFileSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {log} from './log';
+import {usageBreakdownPage} from './usage-breakdown-page';
 
 export type UsagePeriod='today'|'week';
 
@@ -82,6 +83,11 @@ export function refreshUsageBreakdownIfStale():void{
   const latest=current();
   if(latest&&Date.now()-Date.parse(latest.computedAt)<REFRESH_EVERY_MS)return;
   void scan().catch(()=>{});
+}
+
+/** The Accounts page's read: the same report shaped to what the page draws (usage-breakdown-page.ts). */
+export async function usageBreakdownForPage(period:UsagePeriod):Promise<unknown>{
+  return usageBreakdownPage(await usageBreakdown(period) as Record<string,any>);
 }
 
 export async function usageBreakdown(period:UsagePeriod):Promise<unknown>{

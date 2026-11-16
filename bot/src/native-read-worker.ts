@@ -56,13 +56,18 @@ const peerAnswers=new PeerAccountAnswers();
 const requests={completed:0,failed:0,slow:0,totalDurationMs:0,maxDurationMs:0,logSampledOut:0};
 
 function failure(status:number,code:string,message:string){return Response.json({error:{code,message}},{status});}
-async function capped(response:Response,max:number):Promise<Response>{
+/** A page over its declared size is refused, and said so in the log: on 2026-11-16 the usage breakdown was refused for both periods with nothing logged. */
+function overBudget(route:string,bytes:number,max:number){
+  log('warn','owner_read_budget_refused',{route,bytes,max_bytes:max});
+  return failure(503,'READ_BUDGET_EXCEEDED','This page exceeded its declared read size.');
+}
+async function capped(response:Response,max:number,route:string):Promise<Response>{
   if(max<=0)return response;
   const header=Number(response.headers.get('content-length'));
-  if(header>max)return failure(503,'READ_BUDGET_EXCEEDED','This page exceeded its declared read size.');
+  if(header>max)return overBudget(route,header,max);
   if(response.headers.has('content-length'))return response;
   const body=await response.arrayBuffer();
-  if(body.byteLength>max)return failure(503,'READ_BUDGET_EXCEEDED','This page exceeded its declared read size.');
+  if(body.byteLength>max)return overBudget(route,body.byteLength,max);
   const headers=new Headers(response.headers);headers.set('content-length',String(body.byteLength));
   return new Response(body,{status:response.status,statusText:response.statusText,headers});
 }
@@ -216,7 +221,7 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
       response=failure(error.status,error.code,error.message);
     else response=failure(503,'READ_WORKER_UNAVAILABLE',error instanceof Error?error.message:'Read unavailable.');
   }
-  response=await capped(response,route.maxResponseBytes);
+  response=await capped(response,route.maxResponseBytes,route.pattern);
   const durationMs=Math.round(performance.now()-started);
   response.headers.set('x-concierge-read-duration-ms',String(durationMs));
   response.headers.set('x-concierge-read-worker-pid',String(process.pid));

@@ -1168,8 +1168,14 @@ complete week breakdown carries every session's token detail and is several
 megabytes, past the route's 1 MiB limit, so Accounts does not use it for the
 weekly allowance.
 
-The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents get the
-same read through `router-actions.sh sessions usage --by-session --period today|week`.
+The owner serves `GET /sessions/v1/usage/breakdown?period=today|week` for the Accounts page
+shaped to what that page draws (`bot/src/usage-breakdown-page.ts`): the 200 largest conversations
+in full, the rest summed into one "N smaller sessions" row per account and project (so project,
+model and account totals stay exact), each allowance estimate reduced to its meter shares, and
+`sessionCount` for the whole period. On 2026-11-16 the full report reached 4.6 MB for a week and
+1.3 MB for a day, and the route's 1 MiB read refused both; a refusal over a route's declared size
+is now logged as `owner_read_budget_refused` with the route and size. Agents get the full report
+through `router-actions.sh sessions usage --by-session --period today|week`.
 The response also reports `implementation` handoffs, held turns and recorded
 reasons per session and in total; `researchRoutes` for declared research and
 design review by ChatGPT Pro versus alternate route and reason; direct top-model
