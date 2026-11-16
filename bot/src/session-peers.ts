@@ -980,7 +980,7 @@ export class SessionPeers {
   }
   inspect(requestId:string){return this.receipt(this.row(requestId));}
   get(actor:PeerActor,requestId:string) {
-    if(this.owns(requestId)){const row=this.row(requestId);if(row.source_session_id!==actor.session)throw new Error('Request is outside this session.');return this.receipt(row);}
+    if(this.owns(requestId)){const row=this.row(requestId);if(!holdsRequesterPlace(actor.session,row.source_session_id))throw new Error('Request is outside this session.');return this.receipt(row);}
     const delivery=this.delivery(requestId);
     if(delivery.target_session_id!==actor.session)throw new Error('Request is outside this session.');
     return this.deliveryReceipt(delivery);
