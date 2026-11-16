@@ -1890,7 +1890,7 @@ export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult>
     recordUsageSuccess(attempt);
     return result;
   } catch (error) {
-    if (error instanceof Error && /^you(?:'|’)ve hit your usage limit\b/i.test(error.message)) {
+    if (error instanceof Error && isCodexUsageLimitMessage(error.message)) {
       if (resetAt === null && !input.executable) {
         try {
           const report = await (input.appServerClient ?? sharedCodexAppServerClient())
@@ -1900,23 +1900,36 @@ export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult>
           log("warn", "provider_usage_reset_unavailable", { provider: "codex" });
         }
       }
-      // The stored reading's spent window, when Codex's own report named no reset. Never the
-      // human-facing "try again at" text, which is a date without a zone.
-      if (resetAt === null) resetAt = await storedCodexSpentReset(attempt.label);
-      recordUsageExhaustion(attempt, resetAt);
-      // A refusal that did nothing (accepted, then ended with no output and no tools) is a wait, not a
-      // failure: carrying the reset keeps the input queued and held for usage, and lets the next turn
-      // on this account be refused before sending. Until 2026-11-16 these ended "error" and their
-      // requests were settled failed while Claude had room.
-      if (error instanceof ProviderDispatchError && error.terminalConfirmed && !error.assistantOutput
-        && error.toolsUsed.length === 0 && error.clearsAtMs === null) {
-        const retained = cachedUsageLimit(attempt)?.resetAt ?? null;
-        if (retained !== null) throw withUsageClearance(error, retained);
-      }
+      throw await codexUsageRefusalWait(error, attempt, resetAt);
     }
     throw error;
   }
 }
+
+/**
+ * One rule for every way a Codex turn runs (the shared App Server and the outside command line):
+ * a usage-limit refusal is recorded against its account with its reset, and a refusal that did
+ * nothing (accepted, then ended with no output and no tools) is a wait, not a failure. Carrying the
+ * reset keeps the input queued and held for usage, so held-work failover can move it, and the next
+ * turn on that account is refused before sending. Until 2026-11-16 these ended "error" and their
+ * requests were settled failed while Claude had room; outside runs kept doing so after the App
+ * Server path was fixed, because they built their failure separately.
+ */
+export async function codexUsageRefusalWait(error: unknown, attempt: ReturnType<typeof usageAttempt>,
+  reportedReset: number | null): Promise<unknown> {
+  // The stored reading's spent window, when Codex's own report named no reset. Never the
+  // human-facing "try again at" text, which is a date without a zone.
+  const resetAt = reportedReset ?? await storedCodexSpentReset(attempt.label);
+  recordUsageExhaustion(attempt, resetAt);
+  if (error instanceof ProviderDispatchError && error.terminalConfirmed && !error.assistantOutput
+    && error.toolsUsed.length === 0 && error.clearsAtMs === null) {
+    const retained = cachedUsageLimit(attempt)?.resetAt ?? null;
+    if (retained !== null) return withUsageClearance(error, retained);
+  }
+  return error;
+}
+
+export const isCodexUsageLimitMessage = (message: string) => /^you(?:'|’)ve hit your usage limit\b/i.test(message);
 
 export async function forkCodexSession(input: {
   sessionUUID: string;

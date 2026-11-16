@@ -302,7 +302,10 @@ A Codex turn that is accepted and then ended with the provider's usage-limit mes
 assistant output and no tools, did nothing. The Codex runner re-throws it with the account's reset
 (from Codex's own rate-limit report, else the spent window of the stored usage reading; the
 "try again at" text is never parsed), so the existing hold keeps the input queued for usage and its
-request open, and the next turn on that account is refused before sending. Held work then moves to
+request open, and the next turn on that account is refused before sending. Outside Codex runs (the
+command line in its own unit) follow the same rule through the same function (`codexUsageRefusalWait`)
+and are refused before launch while the account's limit is recorded; on 2026-11-16 they still failed
+their requests after the App Server path was fixed. Held work then moves to
 a provider with room through the provider-change handoff
 ([automatic failover](SESSION-OWNER.md#automatic-failover-of-held-work)) unless Tejas himself chose
 the session's provider or model; the successor keeps the predecessor's model tier and effort.
