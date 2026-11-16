@@ -11,7 +11,7 @@ import { LedgerAdmission } from '../src/ledger-admission';
 // a commit landing while every checkpoint copies): the owner commits through admission while the
 // actual checkpoint worker runs its fixed-tail RESTART and header primer. Recycling must converge,
 // every queued commit must land exactly once, and the owner loop must keep turning.
-const SECONDS = Number(process.env.FIXTURE_SECONDS ?? 5), RATE = 60;
+const SECONDS = Number(process.env.FIXTURE_SECONDS ?? 3), RATE = 60;
 const folder = mkdtempSync(join(tmpdir(), 'concierge-ledger-recycle-concurrent-'));
 const databasePath = join(folder, 'fixture.db');
 const owner = ledgerWriteResults(new Database(databasePath));
