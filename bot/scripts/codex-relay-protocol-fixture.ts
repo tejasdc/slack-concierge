@@ -50,7 +50,7 @@ try{
         else if(protectedMode)socket.send(JSON.stringify({conciergeRelay:'association-v1',association:initial}));},
       message(socket,data){const frame=JSON.parse(String(data));if(frame.method==='initialize')socket.send(JSON.stringify({id:frame.id,result:{userAgent:'native-response-substitute'}}));}
     }});
-    const client=new CodexAppServerClient(path,process.env.CONCIERGE_NODE_BIN||'/usr/bin/node',{relayRunner:'fixture',protectedRelay:protectedMode,manageDaemon:false,bridgePath:resolve(import.meta.dir,'../src/codex-app-server-bridge.mjs')});clients.push(client);
+    const client=new CodexAppServerClient(path,process.env.CONCIERGE_NODE_BIN||Bun.which('node')||'/usr/bin/node',{relayRunner:'fixture',protectedRelay:protectedMode,manageDaemon:false,bridgePath:resolve(import.meta.dir,'../src/codex-app-server-bridge.mjs')});clients.push(client);
     try{
       if(mode==='protected-missing-first'){await assert.rejects(client.connect(),/association mismatch/i);continue;}
       await client.connect();const retained=client.nativeEndpoint.relayAssociation;

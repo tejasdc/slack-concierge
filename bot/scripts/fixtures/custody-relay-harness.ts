@@ -23,7 +23,7 @@ export async function createCustodyRelayFixture(root:string,nativeSocket:string,
   const runnerState=join(root,'runner');mkdirSync(runnerState,{recursive:true});
   const environment={...process.env,HOME:join(root,'home'),CODEX_HOME:join(root,'codex'),CONCIERGE_OWNER_URL:`http://127.0.0.1:${port}`,
     CONCIERGE_RUNNER_TOKEN_FILE:tokenFile,CONCIERGE_RUNNER_NAME:'ax41',CONCIERGE_RUNNER_STATE:runnerState,
-    CONCIERGE_RUNNER_KINDS:'codex',CONCIERGE_CODEX_APP_SERVER_SOCKET:nativeSocket,...options.runnerEnvironment};
+    CONCIERGE_RUNNER_KINDS:'codex',CONCIERGE_NODE_BIN:process.env.CONCIERGE_NODE_BIN||Bun.which('node')||'/usr/bin/node',CONCIERGE_CODEX_APP_SERVER_SOCKET:nativeSocket,...options.runnerEnvironment};
   const runners:ReturnType<typeof Bun.spawn>[]=[];
   const spawnRunner=()=>{
     const runner=Bun.spawn([process.execPath,'run',options.runnerEntry??resolve(import.meta.dir,'../runner.ts')],{stdout:'pipe',stderr:'pipe',env:environment});

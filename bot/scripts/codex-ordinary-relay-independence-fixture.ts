@@ -26,7 +26,7 @@ try{
     }}});
     let harness:Awaited<ReturnType<typeof createCustodyRelayFixture>>|undefined;
     try{
-      harness=await createCustodyRelayFixture(state,socket,{runnerEntry,runnerEnvironment:{PATH:bin,CONCIERGE_NODE_BIN:'/usr/bin/node'}});
+      harness=await createCustodyRelayFixture(state,socket,{runnerEntry,runnerEnvironment:{PATH:bin,CONCIERGE_NODE_BIN:process.env.CONCIERGE_NODE_BIN||Bun.which('node')||'/usr/bin/node'}});
       const ordinary=harness.client(false);await ordinary.connect();
       assert.deepEqual(await ordinary.request('thread/read',{threadId:'ordinary-survives'}),{echo:{threadId:'ordinary-survives'}});
       assert.equal(ordinary.nativeEndpoint.relayAssociation,undefined);

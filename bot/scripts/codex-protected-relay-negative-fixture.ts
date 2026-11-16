@@ -92,7 +92,7 @@ try {
   let closed!:()=>void;const didClose=new Promise<void>(resolve=>{closed=resolve;});
   const remote={readyState:1,binaryType:'',send(){},close(){closed();}} as unknown as WebSocket;
   const pair=serveCodexRelayPair({id:'absent',challenge:'absent-challenge',protected:true,remote,socketPath:join(root,'absent.sock'),
-    machine:machineForAbsent,identity:loadedRunnerIdentity(machineForAbsent),nodeExecutable:process.env.CONCIERGE_NODE_BIN||'/usr/bin/node',
+    machine:machineForAbsent,identity:loadedRunnerIdentity(machineForAbsent),nodeExecutable:process.env.CONCIERGE_NODE_BIN||Bun.which('node')||'/usr/bin/node',
     pinThread(){throw new Error('not expected');}});
   await didClose;await pair.exited;
 
@@ -106,7 +106,7 @@ try {
   const legacy=new WebSocket(`ws+unix://${legacySocket}:/runner/v1/relay/listen`);
   await new Promise<void>((resolve,reject)=>{legacy.onopen=()=>resolve();legacy.onerror=reject;});
   legacy.onmessage=event=>{const frame=JSON.parse(String(event.data));if(frame.op==='open')managingOpens++;received(frame);};
-  const legacyClient=new CodexAppServerClient(legacySocket,process.env.CONCIERGE_NODE_BIN||'/usr/bin/node',{
+  const legacyClient=new CodexAppServerClient(legacySocket,process.env.CONCIERGE_NODE_BIN||Bun.which('node')||'/usr/bin/node',{
     relayRunner:'legacy',protectedRelay:true,manageDaemon:false,bridgePath:resolve(import.meta.dir,'../src/codex-app-server-bridge.mjs')});
   const connecting=legacyClient.connect();const rejected=assert.rejects(connecting);
   assert.equal((await command).op,'protected-open-v1');assert.equal(managingOpens,0);

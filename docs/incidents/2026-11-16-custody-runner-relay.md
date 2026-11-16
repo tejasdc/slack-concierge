@@ -54,6 +54,14 @@ The gateway parses only the first protected control frame and rejects later
 canonical control prefixes without parsing native output. The bridge rejects any
 later association receipt rather than replacing connection evidence.
 
+GitHub Release then exposed a fixture-only portability failure: Node was available
+on PATH but absent at the server-specific /usr/bin/node location. Fixture clients
+and spawned runner environments now use the existing selection order: explicit
+CONCIERGE_NODE_BIN, PATH discovery, then the legacy fallback. The independence
+fixture resolves Node before replacing the runner PATH to test unavailable Python.
+Production defaults are unchanged. The same regression fixtures and GitHub Release
+check exercise this correction; a local server pass alone does not establish CI.
+
 ## Acceptance scenario
 
 - **Seed:** Isolated HOME/CODEX_HOME, an already-running stock native socket, co-located
