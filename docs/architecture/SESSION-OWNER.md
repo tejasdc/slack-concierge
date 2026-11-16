@@ -151,6 +151,21 @@ second naming store, backfill or transcript-title rewrite is involved.
 
 Every work request carries the earlier work on its problem, and its first reply says what came before; handed-off, archived and paused sessions still answer questions. See [What came before](EARLIER-WORK-IN-REQUESTS.md).
 
+### Quiet clock
+
+An open request that works for an Inbox thread (it names a thread root) and whose
+[standing](../contracts/native-inbox.md) is `waiting` or `quiet` wakes its holder after an hour of
+silence, without any agent or the router remembering to. The latest of the request's creation, its
+last progress or final reply, the holder's last turn end and the last wake starts the hour. The owner
+admits one service input to the holder under `request-quiet:<requestId>:<n>` (n counts up; an
+identity is never re-admitted) through the same carrier that follows handoffs for request
+reminders, and records `quiet_reminded_at_ms` on the request so the thread shows when the holder
+was woken. A request that is working or held is looked at again later; one stalled is left to the
+existing stalled path; a holder that cannot receive input is marked stalled so the Inbox router
+reassigns it. Wakes that bring no word do not go on for ever: after the third wake with no progress or final reply on the request since the first of them, the request is stalled with the reason "no word after three hourly reminders", so the Inbox router reassigns it; the count starts again only when the request is seen working or held for real (the wake's own turn does not count) or a request the holder was waiting on settles; a progress reply does not reset it, and the count sits on the request row so restarts and handoffs keep it (`quiet_streak_since_ms`, `quiet_streak_count`). A wait on something itself stuck (every request the holder sent is quiet or stalled, or its watch is gone) is woken at once and then every 15 minutes; only a wait on working or held work keeps the hour. Nothing is posted into the thread and no phone notice is sent. The hour is
+`QUIET_WAKE_MS`; the sweep runs inside the request reconciliation and re-arms its own timer.
+Design: [request standing](../plans/2026-11-16-request-standing.md).
+
 ### Provider-change handoff
 
 Native custody mutation clients use the existing communication owner's

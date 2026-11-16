@@ -1,17 +1,28 @@
 import type {Database} from 'bun:sqlite';
 import {latestWorkerProgress} from './worker-progress';
+import type {RequestStanding} from './request-standing';
 
 type Dispatch={sessionId:string|null;title:string;requestId:string};
 
-/** One current contributor per destination, with the newest progress across its open requests. */
-export function topicCurrentWorkers(source:Database,dispatches:Dispatch[]){
- const workers=new Map<string,{sessionId:string|null;title:string;progress:{text:string;at:string}|null}>();
+export type CurrentWorker={sessionId:string|null;title:string;progress:{text:string;at:string}|null;requestId:string;standing:RequestStanding|null};
+
+/**
+ * One current contributor per destination, with the newest progress across its open requests.
+ * `requestId` and `standing` name the request that destination holds for the thread (the one with
+ * a standing, else the first), so the web app can say where that request stands.
+ */
+export function topicCurrentWorkers(source:Database,dispatches:Dispatch[],standingOf:(requestId:string)=>RequestStanding|null=()=>null):CurrentWorker[]{
+ const workers=new Map<string,CurrentWorker>();
  for(const item of dispatches){
   const key=item.sessionId??`request:${item.requestId}`;
   const progress=latestWorkerProgress(source,item.requestId);
+  const standing=standingOf(item.requestId);
   const previous=workers.get(key);
-  if(!previous)workers.set(key,{sessionId:item.sessionId,title:item.title,progress});
-  else if(progress&&(!previous.progress||progress.at>previous.progress.at))previous.progress=progress;
+  if(!previous)workers.set(key,{sessionId:item.sessionId,title:item.title,progress,requestId:item.requestId,standing});
+  else{
+   if(progress&&(!previous.progress||progress.at>previous.progress.at))previous.progress=progress;
+   if(!previous.standing&&standing){previous.standing=standing;previous.requestId=item.requestId;}
+  }
  }
  return [...workers.values()];
 }

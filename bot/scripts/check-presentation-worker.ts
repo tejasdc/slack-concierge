@@ -17,13 +17,13 @@ source.exec(`CREATE TABLE channels(slack_channel_id TEXT PRIMARY KEY,name TEXT,c
   CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,event_id TEXT,input_id TEXT,kind TEXT,payload_json TEXT,created_at TEXT,turn_id INTEGER);
   CREATE TABLE inbox_topic_roots(root_input_id TEXT PRIMARY KEY,topic_id TEXT);
   CREATE TABLE session_communication_requests(request_id TEXT,source_session_id INTEGER,source_turn_id INTEGER,source_input_id TEXT,thread_root_input_id TEXT,target_input_id TEXT,target_session_id INTEGER,payload_json TEXT,
-    action_id TEXT,created_at_ms INTEGER);
+    action_id TEXT,created_at_ms INTEGER,outcome TEXT);
   CREATE TABLE session_peer_requests(request_id TEXT,source_session_id INTEGER,source_turn_id INTEGER,source_input_id TEXT,thread_root_input_id TEXT);
   CREATE TABLE session_external_requests(target_input_id TEXT,agent_name TEXT,text TEXT,request_id TEXT);
   CREATE TABLE session_input_author_corrections(input_id TEXT,author_session_id INTEGER,reason TEXT,created_at TEXT);
   CREATE TABLE session_communication_events(accepted_input_id TEXT,request_id TEXT,payload_json TEXT);
   CREATE TABLE session_peer_events(accepted_input_id TEXT,request_id TEXT,payload_json TEXT);
-  CREATE TABLE session_peer_deliveries(target_input_id TEXT,target_session_id INTEGER);
+  CREATE TABLE session_peer_deliveries(target_input_id TEXT,target_session_id INTEGER,closed_at_ms INTEGER,created_at_ms INTEGER);
   CREATE TABLE session_attachments(id TEXT PRIMARY KEY,name TEXT,content_type TEXT);
   CREATE TABLE presentation_change_log(sequence INTEGER PRIMARY KEY,source_table TEXT,row_key TEXT,session_id INTEGER,target_session_id INTEGER);
   INSERT INTO sessions(id,native_metadata_json,slack_channel_id,slack_thread_ts) VALUES(1,'{"inbox":true,"title":"Inbox"}',NULL,NULL);

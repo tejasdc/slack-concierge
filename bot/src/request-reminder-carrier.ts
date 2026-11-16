@@ -38,9 +38,10 @@ function observed(input: AcceptedSessionInput): ReminderDelivery {
   return { inputId: input.id, status: received ? 'received' : input.turn_id ? 'admitted' : 'held', error: null };
 }
 
-export function deliverRequestReminder(o: { eventId: string; acceptedInputId: string | null; sourceSessionId: number;
+export function deliverRequestReminder(o: { eventId: string; identity?: string; acceptedInputId: string | null; sourceSessionId: number;
   sourceInputId: string; sourceRunId: string; requestId: string; text: string; owner: Owner }): ReminderDelivery {
-  const original = `request-reminder:${o.eventId}`;
+  // `identity` lets another service wake (the quiet clock's `request-quiet:<request>:<n>`) follow handoffs the same way.
+  const original = o.identity ?? `request-reminder:${o.eventId}`;
   const admit = (inputId: string) => observed(o.owner.admit({ sessionId: o.sourceSessionId, inputId, origin: 'service', threadReplyNotRequired: true,
     sourceInputId: o.sourceInputId, sourceRunId: o.sourceRunId, requestId: o.requestId, text: o.text }));
   const carrier = (o.acceptedInputId ? reminderCarrier(o.acceptedInputId) : null) ?? reminderCarrier(original);

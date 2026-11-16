@@ -30,6 +30,7 @@ import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {codexAccountSwitchReply} from './codex-account-switch-receipt';
 import { log } from './log';
 import { deliverRequestReminder } from './request-reminder-carrier';
+import { QUIET_WAKE_MS, QUIET_WAKES_BEFORE_STALL, dependencySettledSince, dependencyStuck, quietWakeText, requestLastWordMs, requestStanding } from './request-standing';
 import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
@@ -105,6 +106,9 @@ type RequestRow = {
     reminded_at_ms: number | null;
     reminded_via: string | null;
     stalled_at_ms: number | null;
+    quiet_reminded_at_ms: number | null;
+    quiet_streak_since_ms: number | null;
+    quiet_streak_count: number;
     created_at_ms: number;
 };
 type EventRow = {
@@ -232,6 +236,8 @@ export class SessionCommunicationCoordinator {
     private disarm: (() => void) | null = null;
     private detach: (() => void) | null = null;
     private readonly healthyRechecks = new Map<string, { storedDue: number; nextCheck: number }>();
+    /** When the quiet clock next looks at a request; a restart simply looks at every open thread request again. */
+    private readonly quietChecks = new Map<string, number>();
     private pendingLabConversations=false;
     private nextRequestInspectionAt = 0;
     private readonly now: () => number;
@@ -3697,6 +3703,91 @@ export class SessionCommunicationCoordinator {
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
     }
+    /**
+     * The quiet clock (docs/plans/2026-11-16-request-standing.md). An open request that works for
+     * an Inbox thread, whose holder is only waiting or has said nothing, wakes its holder once an
+     * hour with one service input. Nothing posts into his thread: its standing line shows the wake.
+     */
+    private async scanQuietRequests() {
+        const now = this.now();
+        for (const [id, at] of this.quietChecks) if (at <= now) this.quietChecks.delete(id);
+        await this.scanRows<RequestRow>('session_communication_requests', `SELECT rowid AS reconciliation_rowid,* FROM session_communication_requests
+            WHERE outcome IS NULL AND stalled_at_ms IS NULL AND thread_root_input_id IS NOT NULL AND source_input_id IS NOT NULL
+              AND target_input_id IS NOT NULL AND created_at_ms>=? AND request_id NOT IN (SELECT value FROM json_each(?))
+              AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+            request => this.inspectQuietRequest(request), REMINDERS_SINCE_MS, JSON.stringify([...this.quietChecks.keys()]));
+    }
+    private inspectQuietRequest(request: RequestRow) {
+        const now = this.now();
+        const recheck = (at: number) => { this.quietChecks.set(request.request_id, at); };
+        const holder = getSessionById(request.target_session_id);
+        // ChatGPT is not an agent that can be woken; its answer arrives by itself.
+        if (holder?.provider_id === 'chatgpt') return recheck(now + QUIET_WAKE_MS);
+        const standing = requestStanding(db, request.request_id, now);
+        if (!standing) return;
+        if (standing.state !== 'waiting' && standing.state !== 'quiet') {
+            // Real work or a real hold is a continuation and starts the count again. The wake's own turn is not: otherwise every wake
+            // would reset the bound it is counted against. A progress reply is not either ("still waiting" proves nothing).
+            if (request.quiet_streak_count > 0 && !this.onlyQuietWakeLive(request))
+                db.query('UPDATE session_communication_requests SET quiet_streak_since_ms=NULL,quiet_streak_count=0 WHERE request_id=?').run(request.request_id);
+            return recheck(now + STILL_WAITING_AFTER_MS);
+        }
+        // A wait on something itself stuck is actionable at once; only a wait on live or held work keeps the hour.
+        const stuck = dependencyStuck(db, request.request_id, standing, now);
+        const due = stuck ? 0 : requestLastWordMs(db, request) + QUIET_WAKE_MS;
+        if (now < due) return recheck(due);
+        if (!holder || !this.dependencies.owner.canSend(holder)) {
+            this.stallRequest(request, 'the holder session is paused, archived or no longer available', `stalled:concierge:${request.target_session_id}:quiet`);
+            return;
+        }
+        // Wakes that brought no word do not go on for ever: after the third, the Inbox router reassigns the request.
+        // The count lives on the request row, so a restart or a handoff keeps it. It starts again only when the request is seen
+        // working or held, or when a request the holder was waiting on settled since the streak began.
+        if (request.quiet_streak_since_ms !== null && request.quiet_streak_count > 0 && dependencySettledSince(db, request.target_session_id, request.quiet_streak_since_ms)) {
+            db.query('UPDATE session_communication_requests SET quiet_streak_since_ms=NULL,quiet_streak_count=0 WHERE request_id=?').run(request.request_id);
+            request = { ...request, quiet_streak_since_ms: null, quiet_streak_count: 0 };
+        }
+        const streak = request.quiet_streak_since_ms !== null ? request.quiet_streak_count : 0;
+        if (streak >= QUIET_WAKES_BEFORE_STALL) {
+            this.stallRequest(request, 'no word after three hourly reminders', `stalled:concierge:${request.target_session_id}:quiet`);
+            return;
+        }
+        const accepted = getAcceptedSessionInput(request.target_input_id!);
+        if (!accepted?.turn_id) return recheck(now + STILL_WAITING_AFTER_MS);
+        const turn = db.query('SELECT native_run_id FROM turns WHERE id=?').get(accepted.turn_id) as { native_run_id: string | null } | null;
+        // The wake's identity is its number; a copy a handoff scoped to one session does not count again.
+        const sent = (db.query("SELECT count(*) AS n FROM session_inputs WHERE id LIKE ? AND id NOT LIKE '%:session:%'").get(`request-quiet:${request.request_id}:%`) as { n: number }).n;
+        try {
+            deliverRequestReminder({ eventId: '', identity: `request-quiet:${request.request_id}:${sent + 1}`, acceptedInputId: null, sourceSessionId: request.target_session_id,
+                sourceInputId: request.target_input_id!, sourceRunId: turn?.native_run_id ?? nativeRunId(accepted.turn_id), requestId: request.request_id,
+                text: quietWakeText(standing, requestLabel(request.payload_json), Math.round((now - requestLastWordMs(db, request) + QUIET_WAKE_MS) / 60_000)), owner: this.dependencies.owner! });
+            db.query('UPDATE session_communication_requests SET quiet_reminded_at_ms=?,quiet_streak_since_ms=?,quiet_streak_count=? WHERE request_id=? AND outcome IS NULL')
+                .run(now, streak === 0 ? now : request.quiet_streak_since_ms, streak + 1, request.request_id);
+            log('info', 'session_request_quiet_wake', { request_id: request.request_id, holder_session_id: `concierge:${request.target_session_id}`, number: sent + 1, standing: standing.state });
+            recheck(now + (stuck ? STILL_WAITING_AFTER_MS : QUIET_WAKE_MS));
+        } catch (error) {
+            log('warn', 'session_request_quiet_wake_failed', { request_id: request.request_id, error: String(error) });
+            recheck(now + STILL_WAITING_AFTER_MS);
+        }
+    }
+    /** True when everything the holder has running or queued is a quiet wake: the wake's own turn is not a continuation. */
+    private onlyQuietWakeLive(request: RequestRow): boolean {
+        const live = db.query(`SELECT input.id FROM turns turn LEFT JOIN session_inputs input ON input.turn_id=turn.id
+            WHERE turn.session_id=? AND turn.status IN ('running','delivering','queued')`).all(request.target_session_id) as { id: string | null }[];
+        return live.length > 0 && live.every(row => row.id?.startsWith('request-quiet:'));
+    }
+    /** Marks a request stalled so the Inbox router reassigns it; the same record chaseStranded writes. */
+    private stallRequest(request: RequestRow, reason: string, noticeGroup: string) {
+        db.transaction(() => {
+            const current = this.row(request.request_id);
+            if (current.outcome || current.stalled_at_ms !== null) return;
+            const partial = db.query("SELECT payload_json FROM session_communication_events WHERE request_id=? AND kind='progress' ORDER BY rowid DESC LIMIT 1").get(request.request_id) as { payload_json: string } | null;
+            this.event(request, 'overdue', { text: stalledNotice(reason, partial ? JSON.parse(partial.payload_json).text : null), stalled: true, reason, noticeGroup });
+            db.query('UPDATE session_communication_requests SET stalled_at_ms=? WHERE request_id=?').run(this.now(), request.request_id);
+        })();
+        log('warn', 'session_request_stalled', { request_id: request.request_id, worker_session_id: `concierge:${request.target_session_id}`, reason });
+        this.wake();
+    }
     private incidentScanTraceRemaining = 200;
     /** One durable record is the fairness boundary; a Promise microtask does not yield to I/O. */
     private async scanRows<T>(table: string, sql: string, visit: (row: T) => void|Promise<void>, ...args: (number | string)[]) {
@@ -3918,6 +4009,7 @@ export class SessionCommunicationCoordinator {
                         this.inspectOverdueRequest(request);
                     }, this.deferredRequestIds(this.now()), this.now());
             if (this.stopped) break;
+            await this.scanQuietRequests();
             await auditUndeliveredReturns(this.now(), () => this.stopped);
             await this.scanExternalRequests();
             await this.scanRows<ChatGptObligationRow>('session_chatgpt_obligations',`SELECT rowid AS reconciliation_rowid,* FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
@@ -3974,6 +4066,7 @@ export class SessionCommunicationCoordinator {
         let requestDue = storedDue.due ?? Infinity;
         for (const recheck of this.healthyRechecks.values()) requestDue = Math.min(requestDue, recheck.nextCheck);
         this.nextRequestInspectionAt = requestDue;
+        for (const at of this.quietChecks.values()) requestDue = Math.min(requestDue, at);
         const chatGptNext=db.query(`SELECT min(due_at_ms) AS due FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
             WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL`).get() as {due:number|null};
         if (requestDue === Infinity && chatGptNext.due===null && !this.pendingAcceptedRecovery&&!this.pendingLabConversations)
@@ -3998,5 +4091,5 @@ export class SessionCommunicationCoordinator {
         await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
-    async stop() { this.stopped = true; this.dependencies.owner.labConversations.stop(); this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.nextRequestInspectionAt = 0; }
+    async stop() { this.stopped = true; this.dependencies.owner.labConversations.stop(); this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.quietChecks.clear(); this.nextRequestInspectionAt = 0; }
 }

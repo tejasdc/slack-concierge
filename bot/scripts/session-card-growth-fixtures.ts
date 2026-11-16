@@ -26,7 +26,8 @@ function fixture(count:number){
     CREATE INDEX presentation_changes_session ON presentation_change_log(session_id,sequence);
     CREATE TABLE session_input_author_corrections(input_id TEXT PRIMARY KEY);
     CREATE TABLE session_communication_requests(request_id TEXT PRIMARY KEY,target_session_id INTEGER,
-      source_input_id TEXT,action_id TEXT,created_at_ms INTEGER);
+      source_input_id TEXT,action_id TEXT,created_at_ms INTEGER,outcome TEXT);
+    CREATE TABLE session_peer_deliveries(request_id TEXT PRIMARY KEY,target_session_id INTEGER,closed_at_ms INTEGER,created_at_ms INTEGER);
     CREATE INDEX session_communication_lab_target ON session_communication_requests(target_session_id,request_id);
     CREATE INDEX turns_session_latest ON turns(session_id,id DESC);
     CREATE INDEX turns_session_active ON turns(session_id,id DESC) WHERE status IN ('running','delivering');
