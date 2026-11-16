@@ -37,7 +37,7 @@ try {
   const event = db.query("SELECT kind FROM session_owner_events WHERE event_id='service-notice:mac-disk-low:1'").get();
   assert.equal(event.kind, 'requested_mac_disk_warning');
   const warning = db.query("SELECT payload_json FROM session_inputs WHERE id='service:service-notice:mac-disk-low:1'").get();
-  assert.match(JSON.parse(warning.payload_json).text, /Free space has recovered/);
+  assert.match(JSON.parse(warning.payload_json).text, /This earlier low-space episode ended/);
   assert.match(JSON.parse(warning.payload_json).text, /26.0 GiB/);
   const session = db.query('SELECT native_metadata_json FROM sessions WHERE id=1').get();
   const needs = JSON.parse(session.native_metadata_json).needs;

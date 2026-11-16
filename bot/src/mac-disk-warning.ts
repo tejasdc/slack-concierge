@@ -11,8 +11,8 @@ export function receiveMacDiskWarning(db: Database, value: unknown, verifiedPeer
       || !Number.isSafeInteger(input.freeBytes) || (input.freeBytes as number) < 0 || typeof input.recovered !== 'boolean')
     throw new Error('Mac disk warnings require a positive episode and nonnegative freeBytes.');
   const key = `mac-disk-low:${input.episode}`;
-  const text = `Mac disk space ${input.recovered ? 'recovered after running low' : 'ran low'}\n\n`
-    + (input.recovered ? 'Free space has recovered. This notice records the earlier low-space episode. ' : 'There is less room for swap, builds and downloads. ')
+  const text = `${input.recovered ? 'Earlier Mac disk warning' : 'Mac disk space ran low'}\n\n`
+    + (input.recovered ? 'This earlier low-space episode ended. ' : 'There is less room for swap, builds and downloads. ')
     + `The latest reading is ${((input.freeBytes as number) / 1024 ** 3).toFixed(1)} GiB free. `
     + 'Concierge is checking its own logs and finished work automatically; '
     + 'your personal libraries, Downloads and unrelated caches stay yours. This warning appears once for this low-space episode.';
