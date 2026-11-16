@@ -3,6 +3,7 @@ import type {Database} from 'bun:sqlite';
 import {spaceForCwd,type SessionSpace} from './session-space';
 import {savedStartAt} from './saved-start-time';
 import {sessionAddress} from './session-address';
+import {heldRequests} from './request-standing';
 import {sessionPresence,type SessionTiming} from './session-presence';
 
 type SourceSession={id:number;provider_id:string;status:string;native_metadata_json:string|null;
@@ -21,6 +22,7 @@ export type SessionCard=Readonly<{id:string;title:string;titleTruncated:boolean;
   savedWork:{turnId:number;kind:'scheduled'|'banked';status:string;quietOnly:boolean;startsAt:string|null;savedAt:string|null;
     expiresAt:string|null;account:string|null;window:string|null;repeatEveryMs:number|null;
     dailyLocal:{time:string;timeZone:string|null}|null;sequence:number|null}|null;
+  heldRequests:{count:number;oldestAt:string}|null;
   turnOutcome:{outcome:string;question:string|null;questionTruncated:boolean;inputId:string|null;at:string}|null;
   touch:SessionTouch;revision?:number}>;
 /**
@@ -178,6 +180,7 @@ export class PreparedSessionCards {
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
         account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,
         dailyLocal:saved.saved_daily_time?{time:saved.saved_daily_time,timeZone:saved.saved_time_zone}:null,sequence:saved.saved_sequence}:null,
+      heldRequests:heldRequests(this.source,sessionId),
       model:presence.model?preview(presence.model,120).text:null,
       reasoningEffort:presence.reasoningEffort?preview(presence.reasoningEffort,80).text:null,
       turnOutcome:meta.turnOutcome&&typeof meta.turnOutcome.at==='string'

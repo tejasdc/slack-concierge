@@ -779,6 +779,22 @@ another agent's build is still working on the thread (bug report ce2b8b10, 2026-
 threads showed green while agents still worked). The prepared topic depends on every session
 in that chain, so a turn starting or ending anywhere down it rebuilds the thread's work.
 
+Every open request in a thread has one displayed holder and one standing, computed once by
+`requestStanding` (`bot/src/request-standing.ts`) and used by both the live topic list and the
+prepared worker, so the two copies cannot disagree. A standing is `{requestId, holder, movedFrom,
+state, text, since, until, progress, remindedAt}`: `state` is `working` (something down the
+holder's chain is running), `held` (its next turn is held by usage, a snooze, a schedule, a chosen
+time or a sign-in; `until` is when it clears), `waiting` (on a request the holder sent, or a watch its
+partial reply named), `stalled` (the request carries its stalled mark) or `quiet` (none of those:
+nothing will wake it). `movedFrom` lists the predecessors an accepted provider handoff moved the
+request from, oldest first. `text` is plain words with no ids and no clock times; times travel in
+`since`, `until` and `remindedAt` and the web app composes them. A topic's `work` is `worker_working`
+while any open request's standing is `working`, else the new `worker_waiting` (text: the first
+holder's title and its state words), and `idle` only when no request is open. Each `workers[]` entry
+keeps `sessionId`, `title` and `progress` for older builds and adds `requestId` and `standing`. A
+session view (live and prepared card) adds `heldRequests: {count, oldestAt} | null`: open requests
+whose current target is that session.
+
 **In the Inbox, the only thing that can wait on him is a question record in its topic**
 (design: `docs/plans/2026-09-23-attention-that-ends.md`). A question has a `kind`:
 `decision` (he must answer; `needs_you`) or `reading` (an agent wants him to read it;

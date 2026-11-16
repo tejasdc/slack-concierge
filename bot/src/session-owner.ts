@@ -95,6 +95,7 @@ import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
 import {handoffView,supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {sessionExecution,sessionPresence} from './session-presence';
+import {heldRequests} from './request-standing';
 import {inboxAttribution} from './inbox-attribution-read';
 import {openInboxObligationCount,openInboxObligations} from './session-topics';
 import {workThread} from './session-fit';
@@ -1406,6 +1407,7 @@ export class SessionOwner {
           nextCursor:preparedAttention.nextCursor,coverage:preparedAttention.coverage}:{} )},
       needsAttention:meta.inbox?preparedAttention!.needsAttention??true:needsAttention(meta),turnOutcome:meta.turnOutcome??null,
       withdrawnNeeds:meta.withdrawnNeeds??[],unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
+      heldRequests:heldRequests(db,session.id),
       savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,quietOnly:saved.saved_quiet_only===1,
         startsAt:savedStartAt(saved),
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,

@@ -89,6 +89,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
       add('session_communication_requests','prompt_reminded_at_ms','prompt_reminded_at_ms INTEGER');
       add('session_communication_requests','prompt_answered_at_ms','prompt_answered_at_ms INTEGER');
       add('session_communication_requests','stalled_at_ms','stalled_at_ms INTEGER');
+      // The hourly quiet clock's last wake of this request's holder (request-standing.ts); shown on the thread.
+      add('session_communication_requests','quiet_reminded_at_ms','quiet_reminded_at_ms INTEGER');
       // A reopened Inbox obligation must not be settled by attempts already linked before reopening.
       if(db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='inbox_requests'").get()) {
         add('inbox_requests','completion_floor','completion_floor INTEGER NOT NULL DEFAULT 0');
