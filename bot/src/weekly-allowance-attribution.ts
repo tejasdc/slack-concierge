@@ -6,7 +6,9 @@ type Bucket={provider:string;account:string;window:string;atMs:number;sessionId:
 type Reading={provider:string;account:string;window_name:string;observed_at_ms:number;used_percent:number;resets_at_ms:number|null};
 /** One allowance period: the readings that share a reset instant. Its rise is shared only among work inside it. */
 type Period={from:number;through:number;delta:number;denominator:number};
-type Meter={provider:string;account:string;window:string;usedPercent:number;resetsAt:string|null;observedAt:string;periods:Period[]};
+type Meter={provider:string;account:string;window:string;usedPercent:number;resetsAt:string|null;observedAt:string;periods:Period[];
+  /** The period the provider's latest reading belongs to, when it is fresh and measured; the share the bar in Accounts divides. */
+  currentIndex:number|null};
 const QUARTER_HOUR=900_000;
 const MAX_READING_AGE_MS=60*60_000;
 const SAME_RESET_MS=10*60_000;
@@ -49,6 +51,7 @@ function meters(readings:Reading[],sinceMs:number,nowMs:number,buckets:Bucket[])
     const fresh=nowMs-latest.observed_at_ms<=MAX_READING_AGE_MS;
     const all=resetPeriods(group);
     const periods:Period[]=[];
+    let currentIndex:number|null=null;
     all.forEach((period,index)=>{
       // The current period is only trusted while its readings are fresh; a closed one ended at its reset.
       if(index===all.length-1&&!fresh)return;
@@ -64,16 +67,17 @@ function meters(readings:Reading[],sinceMs:number,nowMs:number,buckets:Bucket[])
       if(through<=from)return;
       const denominator=buckets.filter(bucket=>key(bucket.provider,bucket.account,bucket.window)===id
         &&bucket.atMs>=from&&bucket.atMs<through).reduce((sum,bucket)=>sum+bucket.weighted,0);
+      if(index===all.length-1)currentIndex=periods.length;
       periods.push({from,through,delta:Math.max(0,terminal.used_percent-earliest.used_percent),denominator});
     });
     result.set(id,{provider:latest.provider,account:latest.account,window:latest.window_name,
       usedPercent:latest.used_percent,resetsAt:latest.resets_at_ms===null?null:iso(latest.resets_at_ms),
-      observedAt:iso(latest.observed_at_ms),periods});
+      observedAt:iso(latest.observed_at_ms),periods,currentIndex});
   }
   return result;
 }
 
-type Component={provider:string;account:string;window:string;usedPercent:number|null;basis:'estimated'|'unavailable';
+type Component={provider:string;account:string;window:string;usedPercent:number|null;currentPeriodPercent:number|null;basis:'estimated'|'unavailable';
   coverage:{from:string|null;through:string|null;observedDeltaPercent:number|null;transcriptWeighted:number;
     totalTranscriptWeighted:number;uncoveredTranscriptWeighted:number;complete:boolean;periods:number;
     otherProviderUseUnknown:true;bucketMinutes:15}};
@@ -93,8 +97,13 @@ function projection(value:Accumulator,allMeters:Map<string,Meter>):Projection{
       from=from===null?period.from:Math.min(from,period.from);through=through===null?period.through:Math.max(through,period.through);
     }
     if(covered<=0)estimate=null;
+    // The share of the current reset period alone, so it divides the provider's current reading
+    // rather than a week that may span the previous reset.
+    const current=meter?.currentIndex===null||meter?.currentIndex===undefined?null:meter.periods[meter.currentIndex];
+    const currentWeighted=meter?.currentIndex===null||meter?.currentIndex===undefined?0:share.covered.get(meter.currentIndex)??0;
+    const currentPeriodPercent=current&&current.denominator>0?current.delta*currentWeighted/current.denominator:null;
     const [provider,account,window]=JSON.parse(id) as string[];
-    return {provider,account,window,usedPercent:estimate,basis:estimate===null?'unavailable':'estimated',
+    return {provider,account,window,usedPercent:estimate,currentPeriodPercent,basis:estimate===null?'unavailable':'estimated',
       coverage:{from:from===null?null:iso(from),through:through===null?null:iso(through),
         observedDeltaPercent:estimate===null?null:delta,transcriptWeighted:covered,totalTranscriptWeighted:total,
         uncoveredTranscriptWeighted:share.uncovered,complete:share.uncovered<=0,periods:share.covered.size,
