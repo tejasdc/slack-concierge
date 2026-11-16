@@ -29,7 +29,7 @@ const AGENT_MARKS_MINUTES = [STILL_WAITING_AFTER_MS / 60_000, 60];
 const TICK_MS = 60_000;
 
 type Admission = {
-  sessionId: number; inputId: string; origin: "service"; sourceInputId: string;
+  sessionId: number; inputId: string; origin: "service"; threadReplyNotRequired: true; sourceInputId: string;
   sourceRunId: string; requestId: string; text: string; delivery: "steer";
 };
 type UpdateWait = { key: string; since: number };
@@ -77,7 +77,7 @@ export function startUpdateWaitWatch(options: UpdateWaitWatchOptions): () => voi
         if (told.has(id)) continue;
         told.add(id);
         try {
-          options.admit({ sessionId: run.sessionId, inputId: id, origin: "service", sourceInputId: id,
+          options.admit({ sessionId: run.sessionId, inputId: id, origin: "service", threadReplyNotRequired: true, sourceInputId: id,
             sourceRunId: nativeRunId(run.turnId), requestId: id, delivery: "steer",
             text: `A Concierge update has been waiting ${Math.floor(waited / 60_000)} minutes for this run to finish. It installs on its own once nothing running would be cut off by the restart; nothing will interrupt you, so carry on with real work. If this turn is only waiting (a sleep, a poll, a job you no longer need), end the turn instead and register a watch with router-actions.sh sessions watch, which wakes you when the thing happens and never holds an update. You do not need to reply to this.` });
           log("info", "update_wait_agent_notice_sent", { wait: wait.key, turn_id: run.turnId, mark });

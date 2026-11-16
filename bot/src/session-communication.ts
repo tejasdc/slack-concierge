@@ -3447,7 +3447,7 @@ export class SessionCommunicationCoordinator {
                 && typeof declared.responding_session_id==='string'
                 && /^concierge:\d+$/.test(declared.responding_session_id)
                 ? Number(declared.responding_session_id.slice('concierge:'.length)):request.target_session_id;
-            const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
+            const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',...(event.kind==='overdue'?{threadReplyNotRequired:true}:{}),sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
                 text:answerNotice({responder:sessionLabel(coveredResponder),labels:[request,...group.joining.map(joined=>this.row(joined.request_id))].map(row=>requestLabel(row.payload_json)),
                     kind:event.kind,stalled:!!declared.stalled,body:answerView(request,payload),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
@@ -3560,7 +3560,7 @@ export class SessionCommunicationCoordinator {
                         // One reminder joins the recipient's current run. The retained input ID
                         // makes a restart or reconciliation harmless.
                         this.dependencies.owner!.admit({sessionId:current.target_session_id,inputId:`question-reminder:${current.request_id}`,
-                            origin:'service',sourceInputId:current.source_input_id!,sourceRunId:nativeRunId(current.source_turn_id),requestId:current.request_id,
+                            origin:'service',threadReplyNotRequired:true,sourceInputId:current.source_input_id!,sourceRunId:nativeRunId(current.source_turn_id),requestId:current.request_id,
                             text:`${asker} is still waiting for an answer to the question in request ${current.request_id}. Answer in the Inbox thread now with sessions reply ${current.request_id} --partial --answers-question, even if the rest of the work continues. A progress-only reply does not answer it.`});
                         db.query('UPDATE session_communication_requests SET prompt_reminded_at_ms=?,due_at_ms=? WHERE request_id=?')
                             .run(now,current.created_at_ms+PROMPT_ANSWER_OVERDUE_MS,current.request_id);

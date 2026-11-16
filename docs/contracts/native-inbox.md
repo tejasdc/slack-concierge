@@ -1112,6 +1112,28 @@ usage watch checks open work in short, yielding owner turns; its per-thread tran
 recovery identities remain the same. A recovery admission rechecks current work and his
 answers after any yield, and a new reading joins an already running pass.
 
+## Quiet service notices
+
+Owner-generated reminders and reconciliation notices carry `threadReplyNotRequired:true`
+at admission. This covers unanswered-request and prompt reminders, overdue/stalled returns
+on either machine, still-open upkeep, handoff notices, background-job and update-wait
+notices, theme-area filing prompts, and question to-do/defer reconciliation. The mark
+waives only the notice's own thread reply: it neither closes the underlying request nor
+suppresses a later genuine answer or question.
+
+Retained inputs admitted before that mark existed use the same owner-generated identity
+contract: dedicated maintenance prefixes, or an exact `return:<event>` whose request and
+recorded local/peer event identify an `overdue` notice. Owner-made handoff copies follow
+their exact original input. No wording, including “You do not need to reply,” grants an
+exemption. An ordinary service return, genuine worker final answer, or agent question
+keeps its owed-post rule; a human message keeps its explicit quiet-reason requirement.
+
+Both `sessions outcome done` and automatic closing-text relay use this classification.
+The disposable `bot/scripts/inbox-quiet-service-notices-fixture.ts` exercises quiet
+outcome/no relay, retained local and peer overdue notices, handoff copies, genuine final
+answers, agent questions and the human silence guard. See the
+[failure record](../incidents/2026-11-16-no-reply-notice-forced-thread-post.md).
+
 ## Journal processing dispositions
 
 Observation requests with additive `processingVersion:1` carry a versioned processing obligation bound to their source root. Unversioned requests retain legacy tracker filing; unsupported versions refuse. Install Concierge support before the Thinkering change that sends version 1 together with reader provenance. An old owner rejects the new field, leaving Thinkering’s existing queue pending. Queued jobs freeze their original protocol version: a legacy job with no version retries without a version, even after the caller upgrades. The exact owner retry returns the old admission without adding a processing claim; changing that same job to version 1 remains a refused body conflict. Older admissions remain unchanged. Tracker filing and delivery receipts do not satisfy it. The authenticated command is `sessions journal-review --review-file <JSON-path> --source-input <id> --source-run <id> --action-id <stable-id>`. It uses the existing private capability transport to read `/journal/entry?objectId=...`; missing root or line revision/actor proof refuses processing. Both review dispositions must match the canonical complete-entry version, so a new child command invalidates an older review even when the root revision is unchanged. The active source/fence is rechecked after this read. It never changes journal access, saving, friction policy or journal meaning.
