@@ -42,7 +42,25 @@ While the prepared list is not ready and no Inbox session exists, both list entr
 `presentation_indexing` coverage. Once the Inbox exists, an initial prepared-list rebuild
 uses the ledger list until the prepared generation is ready, so existing threads stay visible.
 The change feed carries both sides of each update and a null after-value for deletion.
-It retains seven days of revisions and explicitly resets an older cursor. Garbage collection
+Prepared message placement follows the same Inbox lineage as canonical thread reads: a
+successor router can place an input accepted by a predecessor, the latest placement or
+detach for that exact input wins, and replies can follow retained targets across the
+lineage. Human-message routing attribution and compact operation receipts use that same
+latest placement through a shared read-only helper. New messages
+and incremental placement changes use these rules immediately.
+
+Existing prepared messages receive the versioned Inbox-lineage upgrade once. The worker
+walks at most 100 messages per transaction, refreshes message placement and display, and
+drains affected thread summaries in batches of 20 before continuing. Empty former roots
+are removed from the sorting pile; genuinely unfiled human roots remain. The version is
+marked complete only after every page finishes, so interrupted work safely resumes by
+rechecking derived rows. The canonical ledger is opened read-only; no filing operation,
+provider action, or accepted input is replayed. One completion log records generation,
+version, examined/moved counts, pages, and elapsed time without message text or identities.
+Existing compact receipts refresh through the worker's existing bounded revision rebuild.
+`bot/scripts/inbox-prepared-lineage-fixture.ts` exercises the real worker's initial build,
+existing-row upgrade, latest detach/relink, and recursive replies across router sessions.
+The change feed retains seven days of revisions and explicitly resets an older cursor. Garbage collection
 walks finite batches, removes superseded generations and unreferenced chunks, and never
 deletes canonical records. A removed detail reference requires refreshing its owning item.
 

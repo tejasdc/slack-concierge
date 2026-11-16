@@ -121,6 +121,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [native Inbox](docs/contracts/native-inbox.md),
   [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping),
   and [requested phone delivery](docs/contracts/requested-phone-notifications.md).
+- Cross-router filing displays and bounded repair follow [prepared topics](docs/architecture/PREPARED-TOPICS.md);
+  the existing [filing upkeep](docs/contracts/native-inbox.md#filing-before-stopping)
+  retains a thirty-minute inspection for a busy Inbox without replaying captures.
 
 ## Find the authority
 

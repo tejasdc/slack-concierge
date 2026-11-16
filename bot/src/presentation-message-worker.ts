@@ -124,6 +124,9 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
     .some(column=>column.name==='thread_time_version');
   if(!hadThreadTime)
     prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN thread_time_version INTEGER NOT NULL DEFAULT 0');
+  if(!(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='inbox_lineage_roots_version'))
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN inbox_lineage_roots_version INTEGER NOT NULL DEFAULT 0');
   // A lineage upgrade builds into the next generation. Keep the complete active generation readable
   // until that shadow generation is atomically activated, including after an interrupted upgrade.
   const markedReplyState=prepared.query(`SELECT generation,ready,marked_reply_roots_version AS version
@@ -410,6 +413,45 @@ async function reassignLinkedInput(generation:number,inputId:string,resolveRoot:
   }
   return changedRoots;
 }
+/** Existing rows may predate a successor router filing their input. Re-resolve in bounded
+ * pages rather than replaying any filing command or rebuilding unrelated prepared indexes. */
+async function upgradeInboxLineageRoots(generation:number){
+  const version=(prepared.query('SELECT inbox_lineage_roots_version AS version FROM presentation_message_meta WHERE singleton=1')
+    .get() as {version:number}).version;
+  if(version>=1)return;
+  const started=performance.now();
+  let after=0,examined=0,moved=0,pages=0;
+  while(true){
+    const rows=prepared.query(`SELECT event_sequence AS sequence,session_id AS sessionId,message_id AS messageId,
+      root_input_id AS root FROM presentation_messages WHERE generation=? AND event_sequence>?
+      ORDER BY event_sequence LIMIT 100`).all(generation,after) as
+      {sequence:number;sessionId:number;messageId:string;root:string}[];
+    if(!rows.length)break;
+    const resolveRoot=inboxRootResolver(source),changedRoots=new Set<string>();
+    prepared.transaction(()=>{
+      keepLease();
+      for(const row of rows){
+        const root=resolveRoot(row.sessionId,row.messageId);
+        changedRoots.add(row.root);
+        if(root&&root!==row.root){
+          moved++;changedRoots.add(root);
+          prepared.query(`UPDATE presentation_messages SET root_input_id=?,topic_id=?
+            WHERE generation=? AND event_sequence=?`).run(root,topicOf(root),generation,row.sequence);
+        }
+        // The routed-by/reply display had the same session-scoped lookup even where a
+        // different path had already repaired the prepared message root.
+        writeDisplay(generation,row.sequence,row.sessionId,row.messageId);
+      }
+      topics.apply(generation,[],changedRoots);
+    })();
+    while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+    examined+=rows.length;pages++;after=rows.at(-1)!.sequence;
+    await yieldProgress();
+  }
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET inbox_lineage_roots_version=1 WHERE singleton=1').run();})();
+  writeLogLine('info',JSON.stringify({event:'presentation_inbox_lineage_upgrade',generation,version:1,
+    examined,moved,pages,duration_ms:Math.round(performance.now()-started)}));
+}
 /** Reproject only marked surface replies and their descendants after their trusted lineage rule changes. */
 function upgradeMarkedReplyRoots(generation:number){
   const version=(prepared.query('SELECT marked_reply_roots_version AS version FROM presentation_message_meta WHERE singleton=1')
@@ -604,7 +646,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2,duplicate_visibility_version=1 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2,duplicate_visibility_version=1,inbox_lineage_roots_version=1 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(receiptGeneration,startHead,receiptProjectionRevision);
@@ -694,6 +736,7 @@ async function catchUp() {
   await upgradeRequestRoots(current.generation);
   await upgradeAnswerClosures(current.generation);
   await upgradeThreadTime(current.generation);
+  await upgradeInboxLineageRoots(current.generation);
   const changes=source.query(`SELECT sequence,source_table,row_key,session_id,input_id,turn_id,request_id,topic_id,target_session_id,target_input_id FROM presentation_change_log
     WHERE sequence>? ORDER BY sequence LIMIT 500`).all(current.source_head) as
       {sequence:number;source_table:string;row_key:string;session_id:number|null;input_id:string|null;

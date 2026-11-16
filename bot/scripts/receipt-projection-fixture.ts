@@ -22,7 +22,8 @@ db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,provider_id TE
   CREATE TABLE provider_retry_incarnation(singleton INTEGER PRIMARY KEY,incarnation TEXT);
   CREATE TABLE provider_retry_observations(turn_id INTEGER PRIMARY KEY,incarnation TEXT,since_ms INTEGER,
     attempt INTEGER,max_retries INTEGER,status INTEGER,retry_at_ms INTEGER);
-  CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,kind TEXT,input_id TEXT,payload_json TEXT);
+  CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,kind TEXT,input_id TEXT,payload_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE deployment_drain(singleton INTEGER PRIMARY KEY);
   CREATE TABLE focus_hold(singleton INTEGER PRIMARY KEY,until_ms INTEGER,label TEXT,since_ms INTEGER,action_id TEXT);
   CREATE TABLE turn_dependencies(turn_id INTEGER,satisfied_at TEXT);`);
@@ -50,6 +51,16 @@ db.query('INSERT INTO provider_retry_observations VALUES(1,?,?,?,?,?,?)')
   .run('owner-a',Date.now(),2,4,529,Date.now()+10000);
 const receipt=()=>readCompactReceipt(db,'input-1')!;
 const expect=(condition:unknown,description:string)=>{if(!condition)throw new Error(description);};
+db.query('INSERT INTO sessions VALUES(2,?,?,?)').run('active','codex','{}');
+const placement=(sequence:number,sessionId:number,attached:boolean,thread:string)=>db.query(`INSERT INTO session_owner_events
+  (sequence,session_id,kind,input_id,payload_json) VALUES(?,?,'thread_link','input-1',?)`)
+  .run(sequence,sessionId,JSON.stringify({root:thread,thread,attached,routedBy:{sessionId:`concierge:${sessionId}`}}));
+placement(1,2,true,'successor-thread');
+expect((receipt().replyToMessage as any)?.messageId==='successor-thread','successor routing reaches the predecessor input receipt');
+placement(2,1,false,'successor-thread');
+expect(receipt().replyToMessage===null&&receipt().routedBy===null,'latest detach clears receipt routing');
+placement(3,2,true,'new-thread');
+expect((receipt().replyToMessage as any)?.messageId==='new-thread','latest successor relink replaces old receipt routing');
 expect(receipt().statusDetail?.code==='PROVIDER_RETRYING','live retry remains visible');
 expect(receipt().statusDetail?.automaticRetry===true,'retry tells the truth about automatic retry');
 expect(JSON.stringify(receipt().attachments)===JSON.stringify([

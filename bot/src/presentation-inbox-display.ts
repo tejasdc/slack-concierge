@@ -6,6 +6,7 @@ import {messageDeliveryReceipts} from './message-route-receipts';
 import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
 import {answerClosingLine} from './answer-closing-line';
+import {readInboxThreadLink} from './inbox-thread-link-read';
 
 const CONTENT_BYTES=8192;
 const bounded=(value:string,max=CONTENT_BYTES)=>{
@@ -66,9 +67,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const outsideAgent=payload.capture?.source?.kind==='outside-agent'?payload.capture.source.metadata?.outsideAgent:undefined;
   let link:{thread:string;routedBy:unknown;attached:boolean}|null=null;
   if(!agent&&row.input_id){
-    const found=database.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='thread_link'
-      AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(sessionId,row.input_id) as {payload_json:string}|null;
-    if(found){const value=JSON.parse(found.payload_json);link={thread:value.thread,routedBy:value.routedBy??null,attached:value.attached!==false};}
+    link=readInboxThreadLink(database,row.input_id);
   }
   let mixedThreads=false,answeredByPost=false;
   if(result&&row.turn_id!==null){
