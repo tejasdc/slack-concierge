@@ -1,3 +1,4 @@
+import {pendingJournalProcessing} from "./journal-processing";
 import { readFileSync } from 'node:fs';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
 import { createHash, randomUUID } from 'node:crypto';
@@ -912,6 +913,11 @@ export class SessionCommunicationCoordinator {
             inputId:accepted.id,turnId:turn.id,kind:'model_escalation',payload:{model:input.model,reason,sourceInputId:accepted.id,continuation:true}});
         return {known:true,allowed:!refusal,message:refusal?.replaceAll('cx-sol','gpt-6.1-sol')??undefined};
     }
+    async journalReview(input:any) {
+        this.fenced(this.actor(input.source));
+        if(!this.dependencies.owner)throw new Error("Journal owner unavailable.");
+        return this.dependencies.owner.reviewJournal(input,()=>{this.fenced(this.actor(input.source));});
+    }
     editReason(input:{source:CommunicationSource;action_id:string;reason:string}) {
         const actor=this.fenced(this.actor(input.source));
         action(input.action_id);
@@ -961,7 +967,9 @@ export class SessionCommunicationCoordinator {
             owed.push({request_id:request.request_id,requester:`Outside agent · ${request.agent_name}`,
                 requested_effect:request.requested_effect,command:replyCommand(request.request_id,request.requested_effect)});
         }
-        return {owed,unfiled,waiting:false,source};
+        const failed=db.query("SELECT 1 FROM session_inputs WHERE source_input_id=? AND source_run_id=? AND json_extract(payload_json,'$.kind')='turn-outcome' AND json_extract(payload_json,'$.outcome')='failed' AND receipt_json IS NOT NULL LIMIT 1").get(running.accepted_input_id,runId);
+        const journalProcessing=failed?null:pendingJournalProcessing(running.accepted_input_id,runId);
+        return {owed,unfiled,waiting:false,source,journalProcessing};
     }
     /** Resolve the live run on the owner, move only the readonly Inbox projection to a read executor,
      * then revalidate that exact run before evaluating obligations or recording offer/reminder effects. */
@@ -1200,6 +1208,8 @@ export class SessionCommunicationCoordinator {
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
         if(!['done','response','needs_you','failed'].includes(input.outcome))throw new Error('Invalid turn outcome.');
+        const journalPending=pendingJournalProcessing(actor.inputId,nativeRunId(actor.turn));
+        if(journalPending&&input.outcome!=="failed")throw new Error(journalPending);
         const stated=typeof input.text==='string'?input.text.trim():'';
         if(input.outcome==='done'&&input.text!==undefined)throw new Error('done takes no text.');
         if(input.outcome!=='done'&&!stated)throw new Error(`${input.outcome} requires text.`);
@@ -1245,9 +1255,15 @@ export class SessionCommunicationCoordinator {
             if(saved.duplicate)return {...JSON.parse(saved.input.receipt_json??'{}'),duplicate:true};
             if(turnDeclaredByAction(actor.turn,actor.session,actor.inputId))
                 throw new Error('This turn already declared the outcome for this input by action.');
+            let journalFailure:unknown;
+            if(journalPending&&input.outcome==='failed'){
+                this.fenced(this.actor(input.source));
+                if(!this.dependencies.owner)throw new Error('Journal recovery Inbox is unavailable; failure has not been handed off.');
+                journalFailure=this.dependencies.owner.failJournalProcessing({inputId:actor.inputId,runId:nativeRunId(actor.turn)},content);
+            }
             recordTurnOutcome({eventId:`turn_outcome:action:${saved.input.id}`,sessionId:actor.session,turnId:actor.turn,
                 inputId:actor.inputId,outcome:input.outcome,text:content||null,todoId,refuseUnreadable:true,quiet:quiet||null});
-            const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId};
+            const receipt={state:'completed',outcome:input.outcome,inputId:actor.inputId,...(journalFailure?{journalFailure}:{})};
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(receipt),saved.input.id);
             // A worker on an Inbox thread waiting on him reaches him through that thread; its own
             // needs_you is left to the Inbox by thnkr.ing, which would otherwise never hear of it.

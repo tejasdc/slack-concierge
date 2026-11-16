@@ -160,6 +160,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'edit-gate') return Response.json(sessions.editGate(input));
         if (operation === 'model-start-gate') return Response.json(sessions.modelStartGate(input));
         if (operation === 'edit-reason') return Response.json(sessions.editReason(input));
+        if (operation === 'journal-review') return Response.json(await sessions.journalReview(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
         if (operation === 'move') return Response.json(await sessions.move(input));
