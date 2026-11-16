@@ -2,7 +2,7 @@ import {withContentReader,trustedContentReader,verifiedContentSource,contentRead
 import {comparisonContext} from './lab-invocation-facts';
 import {requirementsFor} from './request-history';
 import {parseAgentPrincipalHeader} from './agent-token-verify';
-import {LabConversations,LabConversationError,type LabParticipantChoice,type LabPreparedParticipant,type LabActor} from './lab-conversations';
+import {LabConversations,LabConversationError,type LabParticipantChoice,type LabPreparedParticipant,type LabMaterial,type LabMaterialRequest,type LabActor} from './lab-conversations';
 import {labConversationCapability} from './lab-conversation-capability';
 import {threadOnlyReturnInputSql} from "./inbox-request-root";
 import {ownerRequestLabel} from './owner-request-label';
@@ -590,6 +590,15 @@ function validateCanvasContext(input:Record<string,any>) {
   }
 }
 /**
+ * The one definition of "another author wrote into this test session". The bound browser
+ * entrance refuses on it and the metadata diagnostic explains it from the same text, so the
+ * two cannot drift. Parameters: source input, source run (each bound once, in this order).
+ */
+const FOREIGN_AUTHORSHIP_PREDICATE=`(candidate.origin<>'agent' OR ((candidate.source_input_id IS NOT ? OR candidate.source_run_id IS NOT ?)
+        AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source
+          WHERE own_source.id=candidate.source_input_id AND own_source.session_id=candidate.session_id)))`;
+
+/**
  * The agent a delivery came from, when it names one of that agent's own runs: the accepted
  * input its run started from and the run id, exactly as agent commands name their source. Agents
  * report issues and test delivery paths with this so the result is recorded as theirs, never as his
@@ -612,6 +621,15 @@ export function readInputExecution(input:AcceptedSessionInput) {
 }
 
 /** One surface facade over the existing session and turn ledger; never a provider writer. */
+/** agent-ecology keeps each selected expertise offer as an immutable snapshot outside any project
+ * (its expertise-offers.py MATERIAL_ROOT/snapshots). Lab materials may come from there or from a
+ * registered project; nowhere else, so an agent cannot push arbitrary private files into a prompt
+ * sent to an outside provider. The digest check, not the folder, guarantees the exact bytes. */
+const LAB_OFFER_SNAPSHOTS=process.env.CONCIERGE_LAB_OFFER_SNAPSHOTS??'/root/.local/state/agent-ecology/offer-material/snapshots';
+function insideOfferSnapshots(real:string):boolean {
+  let root:string;try{root=realpathSync(LAB_OFFER_SNAPSHOTS);}catch{return false;}
+  return real.startsWith(`${root}/`);
+}
 export class SessionOwner {
   private readonly historyDetails=new HistoryDetailCache();
   projectSetup?:ProjectSetup;
@@ -642,7 +660,35 @@ export class SessionOwner {
       return {reference,text:evidence.text,sha256:evidence.textHash};
     }));
   }
+  /** Freeze exact file bytes once, at selection: the Lab keeps the text, so later invocations never re-read the repository. */
+  materializeLabMaterials(requests:LabMaterialRequest[]):LabMaterial[] {
+    const unavailable=(message:string)=>new LabConversationError(message,409,'LAB_MATERIAL_UNAVAILABLE');
+    const decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
+    let total=0;
+    return requests.map(({path,sha256})=>{
+      let real:string,bytes:Buffer;
+      try{real=realpathSync(path);}catch{throw unavailable(`The material ${path} does not exist or cannot be read.`);}
+      const project=containingProject(this.defaultCwd,real);
+      if(!(project&&real.startsWith(`${project.cwd}/`))&&!insideOfferSnapshots(real))throw unavailable(`The material ${path} is outside every registered project and the expertise offer snapshots.`);
+      try{
+        const size=statSync(real);
+        if(!size.isFile())throw unavailable(`The material ${path} is not a regular file.`);
+        if(total+size.size>1_048_576)throw unavailable('Selected materials may total at most 1 MiB per participant.');
+        bytes=readFileSync(real);
+      }catch(error){if(error instanceof LabConversationError)throw error;throw unavailable(`The material ${path} cannot be read.`);}
+      total+=bytes.length;
+      if(total>1_048_576)throw unavailable('Selected materials may total at most 1 MiB per participant.');
+      if(createHash('sha256').update(bytes).digest('hex')!==sha256)throw new LabConversationError(`The material ${path} does not match its selected sha256.`,409,'LAB_MATERIAL_MISMATCH');
+      let text:string;
+      try{text=decoder.decode(bytes);}catch{throw unavailable(`The material ${path} is not valid UTF-8 text.`);}
+      return {path,sha256,text};
+    });
+  }
   private async prepareLabParticipant(choice:LabParticipantChoice,actor?:LabActor):Promise<LabPreparedParticipant> {
+    const prepared=await this.prepareLabParticipantBase(choice,actor);
+    return choice.materials?.length?{...prepared,materials:this.materializeLabMaterials(choice.materials)}:prepared;
+  }
+  private async prepareLabParticipantBase(choice:LabParticipantChoice,actor?:LabActor):Promise<LabPreparedParticipant> {
     if(choice.sessionId){
       const session=this.session(choice.sessionId),metadata=sessionMetadata(session);
       if(metadata.inbox||metadata.canvasObservation||metadata.outside||metadata.interactionPolicy==='consultation-only'||metadata.origin==='imported'&&!metadata.nativeBinding||supersededBy(session.id))throw new LabConversationError('Choose a native participant that can continue this conversation; the Inbox does not coordinate Lab threads.',409,'LAB_PARTICIPANT_UNAVAILABLE');
@@ -1183,6 +1229,40 @@ export class SessionOwner {
   }
   private session(id:string) {const row=getSessionById(parseSessionId(id));if(!row)throw new SessionOwnerError('Unknown session.',404);return row;}
   private input(id:string) {const row=getAcceptedSessionInput(id);if(!row)throw new SessionOwnerError('Unknown operation.',404);return row;}
+  /**
+   * Metadata-only explanation of AGENT_TEST_SCOPE_CHANGED for the session that created the
+   * test session. The caller has already been proven a current, fenced run of `creatorSessionId`
+   * by session communication; this checks the creation lineage (exact create request, its
+   * recorded source and target) and then reports the first input the content guard would reject,
+   * judged against the creation's own source pair. It reads no payload, receipt, file or event
+   * and has no success branch that opens content. The scan is the guard's own predicate over the
+   * target's inputs, so coverage is complete; no examined/hasMore paging is needed.
+   */
+  diagnoseAgentTestScope(creatorSessionId:number,createInputId:string,targetAddress:string) {
+    if(!/^request:[0-9a-f-]{36}$/i.test(createInputId))
+      throw new SessionOwnerError('Name the exact creation request.',400,'AGENT_TEST_SCOPE_REQUIRED');
+    const created=getAcceptedSessionInput(createInputId);
+    const creatorSource=created?.source_input_id?getAcceptedSessionInput(created.source_input_id):null;
+    if(!created||created.kind!=='create'||created.origin!=='agent'||created.request_id!==createInputId.slice('request:'.length)
+      ||!created.source_input_id||!created.source_run_id||!creatorSource||creatorSource.session_id!==creatorSessionId
+      ||`concierge:${created.session_id}`!==targetAddress)
+      throw new SessionOwnerError('This session did not create the exact test session.',403,'AGENT_TEST_SCOPE_REFUSED');
+    const rows=db.query(`SELECT candidate.id AS inputId,candidate.kind AS kind,candidate.origin AS origin,candidate.source_input_id AS sourceInputId,
+        candidate.source_run_id AS sourceRunId,candidate.request_id AS requestId,
+        CASE WHEN candidate.origin<>'agent' THEN 'origin_not_agent' ELSE 'source_pair_not_creator_and_not_own_session' END AS predicateReason,
+        CASE WHEN candidate.source_input_id IS NULL THEN 'missing'
+          WHEN (SELECT session_id FROM session_inputs WHERE id=candidate.source_input_id) IS NULL THEN 'missing'
+          WHEN (SELECT session_id FROM session_inputs WHERE id=candidate.source_input_id)=candidate.session_id THEN 'same_target'
+          ELSE 'other' END AS sourceRelation
+      FROM session_inputs AS candidate WHERE candidate.session_id=? AND ${FOREIGN_AUTHORSHIP_PREDICATE} ORDER BY candidate.rowid LIMIT 1`)
+      .all(created.session_id,created.source_input_id,created.source_run_id) as Record<string,string|null>[];
+    const total=(db.query(`SELECT COUNT(*) AS n FROM session_inputs AS candidate WHERE candidate.session_id=? AND ${FOREIGN_AUTHORSHIP_PREDICATE}`)
+      .get(created.session_id,created.source_input_id,created.source_run_id) as {n:number}).n;
+    return {kind:'agent_test_scope_diagnostic' as const,targetSessionId:targetAddress,createInputId,
+      creationSource:{inputId:created.source_input_id,runId:created.source_run_id},
+      coverage:{complete:true as const,rejectingInputs:total},
+      witness:rows[0]??null};
+  }
   private agentBrowserBinding(request:Request,sessionId?:string,body?:Record<string,any>,requireCodexTestOptIn=false) {
     const marked=request.headers.get('x-concierge-verified-agent-source')
       ??(body?.agentSource&&typeof body.agentSource.inputId==='string'&&typeof body.agentSource.runId==='string'
@@ -1205,10 +1285,7 @@ export class SessionOwner {
     }
     // The session's own replies and requests use its current input as their source.
     // A human or another agent may also write here; their words close this entrance.
-    const foreign=db.query(`SELECT 1 FROM session_inputs AS candidate WHERE candidate.session_id=? AND
-      (candidate.origin<>'agent' OR ((candidate.source_input_id IS NOT ? OR candidate.source_run_id IS NOT ?)
-        AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source
-          WHERE own_source.id=candidate.source_input_id AND own_source.session_id=candidate.session_id))) LIMIT 1`)
+    const foreign=db.query(`SELECT 1 FROM session_inputs AS candidate WHERE candidate.session_id=? AND ${FOREIGN_AUTHORSHIP_PREDICATE} LIMIT 1`)
       .get(created.session_id,source.inputId,source.runId);
     if(foreign)throw new SessionOwnerError('This session now contains other authorship.',403,'AGENT_TEST_SCOPE_CHANGED');
     return {source,sessionId:`concierge:${created.session_id}`};

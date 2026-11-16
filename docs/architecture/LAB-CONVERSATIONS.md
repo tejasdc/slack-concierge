@@ -86,7 +86,26 @@ Selected participant instructions are retained verbatim before the question. Ret
 source references use the existing verified source/version/branch/event capability;
 the exact bytes and their digest enter the frozen prompt. A source label alone cannot
 admit execution. Existing expertise folders and private history are disclosed separately
-from those loaded references. ChatGPT has no tools; the prompt requires an explicit
+from those loaded references.
+
+A participant may also carry `materials`: up to 32 `{path, sha256}` files (at most 1 MiB in
+total). They exist because an agent-ecology expertise offer is an immutable snapshot of plain
+files, and Thinkering's source import refuses plain files, so they cannot be retained source
+references. When the participant is prepared for create or a roster add, the owner checks that
+each file's real path lies inside a project registered on that owner or inside agent-ecology's
+immutable offer snapshots (`/root/.local/state/agent-ecology/offer-material/snapshots`, where its
+offer ledger keeps selected material outside any project; not its unselected `candidates`), so an
+agent cannot push arbitrary private files into a prompt sent to an outside provider. It must be a
+regular file, hash to
+the supplied digest and is valid UTF-8; it then keeps `{path, sha256, text}` in the participant's
+retained binding. Refusals are `LAB_MATERIAL_UNAVAILABLE` or `LAB_MATERIAL_MISMATCH` and retain
+nothing. Every invocation prompt inlines the frozen text after the instructions, re-verifying its
+digest and never reading the file again, so a changed or deleted expertise repository cannot alter
+a comparison. The caller supplies only path and digest, which are part of the retried request, so an
+identical retry is a duplicate and a different digest under one action conflicts. The public view
+shows paths and digests, never the bytes, and each voice's prompt carries only its own materials.
+The `sessions board participants` command already takes a JSON file, so it accepts `materials`
+unchanged. ChatGPT has no tools; the prompt requires an explicit
 inability when a freeform instruction needs an inaccessible resource. Freeform text is
 not presented as a deterministic tool-capability classifier. Unsupported provider IDs
 are refused rather than simulated. Native peer-owned sessions are currently refused
