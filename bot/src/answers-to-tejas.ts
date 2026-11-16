@@ -45,6 +45,24 @@ function normalized(text: string) {
   return text.toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
+/**
+ * Whether a required field says anything: at least two different letters or digits. A required
+ * field filled with a placeholder is still missing. On 2026-11-16 an agent closed work with "x" as
+ * its answer and "x" as its live check, and gave "x" as why his words did not settle a question;
+ * all three were accepted and his thread showed an empty answer marked done. Two distinct
+ * characters refuse "x", "xxx", "-", "..." and "1" while "No", "OK", "42" and every real sentence
+ * pass; a list of banned filler words was rejected because it would never be complete.
+ */
+export function saysSomething(text: string | undefined): boolean {
+  return new Set(normalized(text ?? '').replace(/ /g, '')).size >= 2;
+}
+
+/** Empty is left to each field's own rule; a non-empty placeholder is refused as missing. */
+function refusePlaceholder(field: string, text: string | undefined) {
+  if (text?.trim() && !saysSomething(text))
+    throw new Error(`${field} has no words: "${text.trim().slice(0, 40)}" is a placeholder. Write what you mean in a sentence, or leave it out.`);
+}
+
 function wordsOf(input: AcceptedSessionInput): string {
   let payload: any = {};
   try { payload = JSON.parse(input.payload_json); } catch {}
@@ -129,6 +147,7 @@ function quoteVerdict(actorInputId: string, quote: string, wholeMessageOnly = fa
  */
 export function questionForTejas(input: { actorInputId: string; question: string; lead?: string; hisWords?: string; whyNotAnswered?: string; onlyHeCan?: string; decisionId?: string; approvalAction?: string }): string {
   const kind = requireOnlyHeCan(input.onlyHeCan);
+  refusePlaceholder('The question', input.question);
   if(kind==='device'&&!deviceQuestionNamesPhysicalPrerequisite(input.question))
     throw new Error('Only-he-can device questions ask for one action on a physical device in their first sentence, such as "Please unlock your iPhone.", "Can you unlock your Mac so I can continue?" or one tap, press, click, drag or plug-in that names his device ("Please drag the screenshot thumbnail onto the Desktop on your Mac."); later sentences may only state what you saw or will do, never ask him for more. Try the available agent route first, then explain in --why-not-answered why only Tejas can take this step.');
   if (kind !== 'approval' && (input.decisionId !== undefined || input.approvalAction !== undefined))
@@ -162,7 +181,7 @@ export function requireOnlyHeCan(kind: unknown, message = ONLY_HE_CAN_REQUIRED):
 /** The two fields every question to him carries, checked; throws what is missing or wrong. */
 export function requireHisWords(input: { actorInputId: string; hisWords?: string; whyNotAnswered?: string }, fieldNames = QUESTION_FIELDS_REQUIRED, decisionId?: string) {
   const hisWords = input.hisWords?.trim() ?? '', why = input.whyNotAnswered?.trim() ?? '';
-  if (!hisWords || !why) throw new Error(fieldNames);
+  if (!hisWords || !why || !saysSomething(why)) throw new Error(fieldNames);
   const singleWord = !normalized(hisWords).includes(' ');
   const verdict=quoteVerdict(input.actorInputId, hisWords, singleWord);
   if (singleWord && verdict !== 'his')
@@ -199,13 +218,14 @@ function onlyCheck(input: CompletionCheck): string {
   const given = ([['Checked on the real system: ', input.checked], [NOT_CHECKED_LIVE, input.notChecked], [NOTHING_CHANGED, input.nothingChanged]] as const)
     .map(([label, value]) => [label, value?.trim() ?? ''] as const).filter(([, value]) => value);
   if (given.length > 1) throw new Error('Give one of --checked, --not-checked or --nothing-changed, not several.');
-  if (!given.length) throw new Error(CHECK_REQUIRED);
+  if (!given.length || !saysSomething(given[0][1])) throw new Error(CHECK_REQUIRED);
   return `${given[0][0]}${given[0][1]}`;
 }
 
 /** Completed work as it will be read: the answer, then what was checked live (or why nothing was). */
 export function completionWithCheck(input: CompletionCheck & { text: string; allDone?: boolean }): string {
   if (input.allDone !== true) throw new Error(NOT_ALL_DONE);
+  refusePlaceholder('The answer', input.text);
   return `${input.text.trim()}\n\n${onlyCheck(input)}`;
 }
 
