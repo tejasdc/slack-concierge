@@ -70,7 +70,7 @@ async function child(){
  assert.deepEqual(db.query('SELECT state FROM session_handoffs WHERE id=?').get(refused.proposed.handoffId),{state:'proposed'});
  assert.equal(source(settled.requestId),settled.asker.id,'the settled request stays with its predecessor');
 
- // A request another session took over is refused inside the transaction even with an unchanged digest.
+ // A request another session took over changes the predecessor's inventory, so acceptance is refused and nothing moves.
  const stolen=askerWithChatGptRequest();
  const other=createNativeSession('codex',{title:'Handoff answer fixture other owner'});
  const takeover=await propose(stolen);
