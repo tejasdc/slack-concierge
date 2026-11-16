@@ -249,6 +249,15 @@ as an explicit cancel-or-ask-again decision.
 `sessions cancel --reason provider-change` refuses with the handoff command. See
 [the router procedure](../runbooks/ROUTER-ACTIONS.md#provider-change-handoff).
 
+The requester's rights over a sent request (cancel it, propose a handoff for its worker)
+belong to whoever holds the requester's place now: the requester itself; a session that is
+not itself superseded, for every session in its accepted handoff predecessor chain; and the
+current Inbox router, for requests any earlier Inbox session sent. Binding a new router with
+`sessions agents bind inbox` moves the role but not those requests, so before 2026-11-16 a
+request from a retired router could not be withdrawn by anyone
+([decision: agents-are-never-handcuffed]; `bot/src/requester-place.ts`). The request keeps
+its original requester; the cancellation notice names the session that withdrew it.
+
 A queued input is safe to move when its accepted identity and provider receipt are valid, it has
 no unresolved dependency, steering, artifact, peer-delivery or continuation veto, and either no
 provider admission evidence or an owner-recorded replay-safe usage hold for that exact turn. The

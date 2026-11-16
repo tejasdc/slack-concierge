@@ -15,6 +15,7 @@ import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress
 import { retainedInboxCapture, inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
+import { holdsRequesterPlace } from './requester-place';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
@@ -1661,7 +1662,7 @@ export class SessionCommunicationCoordinator {
         if (this.dependencies.peers && !this.local(input.request_id) && (this.dependencies.peers.owns(input.request_id) || this.dependencies.peers.hasDelivery(input.request_id)))
             return this.dependencies.peers.get(this.peerActor(actor), input.request_id);
         const row = this.row(input.request_id);
-        if (actor.session !== row.source_session_id && actor.session !== row.target_session_id)
+        if (!holdsRequesterPlace(actor.session,row.source_session_id) && actor.session !== row.target_session_id)
             throw new Error('Request is outside this session.');
         const receipt=this.receipt(row);
         const obligation=db.query(`SELECT * FROM session_chatgpt_obligations WHERE active_request_id=? AND asker_session_id=?
@@ -1718,7 +1719,8 @@ export class SessionCommunicationCoordinator {
         if (this.dependencies.peers && !this.local(input.request_id) && this.dependencies.peers.owns(input.request_id))
             return this.dependencies.peers.cancel(this.peerActor(actor), input.request_id, input.action_id,input.reason);
         const row=this.row(input.request_id);
-        if(row.source_session_id!==actor.session)throw new Error('Only the requesting session can cancel this request.');
+        if(!holdsRequesterPlace(actor.session,row.source_session_id))
+            throw new Error('Only the requesting session, its accepted handoff successor or (for an earlier Inbox router’s request) the current Inbox router can cancel this request.');
         let stoppedQueuedTarget=false;
         db.transaction(()=>{
             if(actor.inputId) {
@@ -1728,7 +1730,8 @@ export class SessionCommunicationCoordinator {
                 if(retained.duplicate)return;
                 db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),retained.input.id);
             }
-            if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker is told to stop.');
+            if(!row.outcome)this.settle(row,'canceled',row.source_session_id===actor.session?'The requesting session canceled this request. The worker is told to stop.'
+                :`${sessionLabel(actor.session)}, which now holds the requester's place, canceled this request. The worker is told to stop.`);
             withdrawCanceledChatGptAttempt(row.request_id,this.now());
             // A paused or usage-held worker can already have a queued turn. Withdrawing its
             // request revokes that turn before a later account reset or Continue can claim it.

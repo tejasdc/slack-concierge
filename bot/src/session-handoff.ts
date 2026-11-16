@@ -14,6 +14,7 @@ import {humanChoseTopModel} from './model-escalation-custody';
 import {sessionAddress} from './session-address';
 import {transferChatGptAnswerOwnership} from './chatgpt-obligations';
 import {takeInboxRouterRole} from './standing-agents';
+import {requesterPlacesHeldBy} from './requester-place';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
 import {runnerMachineCall,RunnerMachineCallError,RunnerUnreachableError,type RunnerMachineAnswerIdentity} from './runner-machine-calls';
 import {resolveRunnerProjectLocation,type RunnerProjectLocation} from './runner-project-location';
@@ -358,8 +359,10 @@ export async function proposeHandoff(input:{actorSession:number;inputId:string;r
   if(selected.provider==='chatgpt')throw new Error('ChatGPT cannot acknowledge a handoff.');
   const effort=input.effort?normalizeReasoningEffort(input.effort):selector.effort;
   if(input.effort&&!effort)throw new Error('Invalid reasoning effort.');
-  if(input.actorSession!==source.id&&!db.query('SELECT 1 FROM session_communication_requests WHERE source_session_id=? AND target_session_id=? AND outcome IS NULL LIMIT 1').get(input.actorSession,source.id))
-    throw new Error('Only the predecessor or an open requester to it may propose this handoff.');
+  const places=requesterPlacesHeldBy(input.actorSession);
+  if(input.actorSession!==source.id&&!db.query(`SELECT 1 FROM session_communication_requests WHERE source_session_id IN (${places.map(()=>'?').join(',')})
+      AND target_session_id=? AND outcome IS NULL LIMIT 1`).get(...places,source.id))
+    throw new Error('Only the predecessor or the holder of an open requester’s place (the requester, its accepted handoff successor or the current Inbox router for an earlier router’s request) may propose this handoff.');
   if(!input.reason?.trim()||!input.actionId)throw new Error('A reason and stable action ID are required.');
   const snapshot=await inventory(source.id,{inputId:input.inputId,runId:input.runId});
   return db.transaction(()=>{
