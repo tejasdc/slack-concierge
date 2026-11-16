@@ -4552,7 +4552,13 @@ export class SessionOwner {
       }
       if(request.method==='GET'&&parts[0]==='presentation'&&['topics','questions'].includes(parts[1]??''))
         closeQuestionsAnsweredByTodosSoon(admission=>this.admit(admission),'inbox');
-      if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='chain'&&parts.length===3)
+      if(request.method==='POST'&&this.communication&&((parts[0]==='inbox'&&parts[1]==='posts')||(parts[0]==='peers'&&parts[1]==='inbox-post-source'))&&parts.length===2){
+        // The private service socket and authenticated peer listener may carry Lab publication.
+        // A run/runner token cannot choose another actor by supplying source IDs.
+        if(request.headers.has('x-concierge-agent-principal'))throw new SessionOwnerError('Inbox publication requires a trusted service or peer.',403,'SERVICE_ONLY');
+        result=parts[0]==='inbox'?await this.communication.publishInbox(body):this.communication.publicationSource(body);
+      }
+      else if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='chain'&&parts.length===3)
         result=reportSourceChain(db,parts[2]!);
       else if(request.method==='GET'&&parts[0]==='reports'&&parts[1]==='window'&&parts.length===2)
         result=reportWindow(db,url.searchParams.get('since'),url.searchParams.get('until'));
