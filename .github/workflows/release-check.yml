@@ -92,7 +92,11 @@ jobs:
           CHECK_GROUP: ${{ matrix.group }}
         # As root, like the server the native checks model: a nested private namespace may map
         # its parent's UID 0 only with capabilities an ordinary runner user does not hold.
-        run: sudo --preserve-env=CONCIERGE_STATE_DIR,CHECK_GROUP,CONCIERGE_CHECK_BUN_VERSION env "PATH=$PATH" "HOME=$HOME" bun run scripts/run-release-checks.ts --group "$CHECK_GROUP"
+        # The checkout and Bun live under the runner user's 0750 home, which the sandbox's root
+        # (mapping only UID 0) cannot traverse; open traversal on this disposable runner only.
+        run: |
+          sudo chmod o+rx "$HOME"
+          sudo --preserve-env=CONCIERGE_STATE_DIR,CHECK_GROUP,CONCIERGE_CHECK_BUN_VERSION env "PATH=$PATH" bun run scripts/run-release-checks.ts --group "$CHECK_GROUP"
       - name: Release check cancellation and owned descendant cleanup
         run: |
           bun bot/scripts/release-check-lifetime-fixture.ts
