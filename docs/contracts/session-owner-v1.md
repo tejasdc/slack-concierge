@@ -10,8 +10,8 @@ not credentials, so any run of that creator qualifies and no other session does 
 the message "This session did not create the exact test session."; the route drops the owner error code). It returns `{kind:"agent_test_scope_diagnostic",targetSessionId,
 createInputId,creationSource,coverage:{complete:true,rejectingInputs},witness}`. `witness` is null
 or the first rejecting input by acceptance order with only `inputId,kind,origin,sourceInputId,
-sourceRunId,requestId,predicateReason` (`origin_not_agent|source_pair_not_creator_and_not_own_session`)
-and `sourceRelation` (`same_target|other|missing`). The scan uses the same predicate text as the
+sourceRunId,requestId,predicateReason` (`origin_not_agent|source_not_creator_session_or_target`)
+and `sourceRelation` (`same_target|same_creator|other|missing`). The scan uses the same predicate text as the
 bound content guard, so coverage is complete. No payload, receipt, file, history or provider
 output is read; there is no clean/allowed result and the content refusal is unchanged.
 

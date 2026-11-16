@@ -595,7 +595,7 @@ function validateCanvasContext(input:Record<string,any>) {
 /**
  * The one definition of "another author wrote into this test session". The bound browser
  * entrance refuses on it and the metadata diagnostic explains it from the same text, so the
- * two cannot drift. Parameters: source input, source run (each bound once, in this order).
+ * two cannot drift. One parameter: the creator session id. An agent input is the creator's own when its recorded source input belongs to the creator session (any of its runs) or to the test session itself.
  *
  * A session's own steered owner notices are not another author. Only the owner writes a
  * service input, and one that names itself as its source and is pinned to a run of this same
@@ -609,9 +609,8 @@ function validateCanvasContext(input:Record<string,any>) {
 const FOREIGN_AUTHORSHIP_PREDICATE=`((candidate.origin<>'agent' AND NOT (candidate.origin='service' AND candidate.kind='input'
         AND candidate.source_input_id IS candidate.id AND candidate.request_id IS candidate.id
         AND EXISTS (SELECT 1 FROM turns AS own_run WHERE own_run.native_run_id=candidate.source_run_id AND own_run.session_id=candidate.session_id)))
-      OR (candidate.origin='agent' AND (candidate.source_input_id IS NOT ? OR candidate.source_run_id IS NOT ?)
-        AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source
-          WHERE own_source.id=candidate.source_input_id AND own_source.session_id=candidate.session_id)))`;
+      OR (candidate.origin='agent' AND NOT EXISTS (SELECT 1 FROM session_inputs AS own_source
+          WHERE own_source.id=candidate.source_input_id AND own_source.session_id IN (candidate.session_id, ?))))`;
 
 /**
  * The agent a delivery came from, when it names one of that agent's own runs: the accepted
@@ -1264,32 +1263,64 @@ export class SessionOwner {
       throw new SessionOwnerError('This session did not create the exact test session.',403,'AGENT_TEST_SCOPE_REFUSED');
     const rows=db.query(`SELECT candidate.id AS inputId,candidate.kind AS kind,candidate.origin AS origin,candidate.source_input_id AS sourceInputId,
         candidate.source_run_id AS sourceRunId,candidate.request_id AS requestId,
-        CASE WHEN candidate.origin<>'agent' THEN 'origin_not_agent' ELSE 'source_pair_not_creator_and_not_own_session' END AS predicateReason,
+        CASE WHEN candidate.origin<>'agent' THEN 'origin_not_agent' ELSE 'source_not_creator_session_or_target' END AS predicateReason,
         CASE WHEN candidate.source_input_id IS NULL THEN 'missing'
           WHEN (SELECT session_id FROM session_inputs WHERE id=candidate.source_input_id) IS NULL THEN 'missing'
           WHEN (SELECT session_id FROM session_inputs WHERE id=candidate.source_input_id)=candidate.session_id THEN 'same_target'
+          WHEN (SELECT session_id FROM session_inputs WHERE id=candidate.source_input_id)=? THEN 'same_creator'
           ELSE 'other' END AS sourceRelation
       FROM session_inputs AS candidate WHERE candidate.session_id=? AND ${FOREIGN_AUTHORSHIP_PREDICATE} ORDER BY candidate.rowid LIMIT 1`)
-      .all(created.session_id,created.source_input_id,created.source_run_id) as Record<string,string|null>[];
+      .all(creatorSessionId,created.session_id,creatorSessionId) as Record<string,string|null>[];
     const total=(db.query(`SELECT COUNT(*) AS n FROM session_inputs AS candidate WHERE candidate.session_id=? AND ${FOREIGN_AUTHORSHIP_PREDICATE}`)
-      .get(created.session_id,created.source_input_id,created.source_run_id) as {n:number}).n;
+      .get(created.session_id,creatorSessionId) as {n:number}).n;
     return {kind:'agent_test_scope_diagnostic' as const,targetSessionId:targetAddress,createInputId,
       creationSource:{inputId:created.source_input_id,runId:created.source_run_id},
       coverage:{complete:true as const,rejectingInputs:total},
       witness:rows[0]??null};
   }
-  private agentBrowserBinding(request:Request,sessionId?:string,body?:Record<string,any>,requireCodexTestOptIn=false) {
-    const marked=request.headers.get('x-concierge-verified-agent-source')
-      ??(body?.agentSource&&typeof body.agentSource.inputId==='string'&&typeof body.agentSource.runId==='string'
-        ?`${body.agentSource.inputId} ${body.agentSource.runId}`:null);
-    const createId=request.headers.get('x-concierge-agent-test-create')??body?.createInputId;
+  /**
+   * An attachment is part of a bound test session when its recorded uploader belongs to the creator
+   * session AND either an input of the target already names it or it was uploaded by the caller's own
+   * current run (a fresh upload awaiting its input). The table has no target column, so uploader
+   * alone would open every attachment the creator session ever stored.
+   */
+  private testAttachmentAllowed(attachmentId:string,targetSessionNumber:number,creatorSessionId:number,source:{inputId:string;runId:string},uploadOnly=false):boolean {
+    const row=db.query('SELECT source_input_id,source_run_id FROM session_attachments WHERE id=?').get(attachmentId) as {source_input_id:string|null;source_run_id:string|null}|null;
+    if(!row?.source_input_id)return false;
+    const uploader=getAcceptedSessionInput(row.source_input_id);
+    if(!uploader||uploader.session_id!==creatorSessionId)return false;
+    if(row.source_input_id===source.inputId&&row.source_run_id===source.runId)return true;
+    if(uploadOnly)return false;
+    return !!db.query(`SELECT 1 FROM session_inputs AS target WHERE target.session_id=? AND EXISTS
+      (SELECT 1 FROM json_each(target.payload_json,'$.attachments') WHERE json_each.value=?) LIMIT 1`).get(targetSessionNumber,attachmentId);
+  }
+  /**
+   * Admits one bound test-session request. The source pair is the caller's CURRENT admitted live
+   * run (the same check the Lab content guard makes of every agent read), the create request is the
+   * immutable lineage, and the two meet only by session: the run that created the test session may
+   * have ended, so the caller must belong to the session that created it, not be that run. A write
+   * (`fenced`) also needs a session that has not handed its work off.
+   */
+  private agentBrowserBinding(request:Request,sessionId?:string,body?:Record<string,any>,requireCodexTestOptIn=false,fenced=false) {
+    const header=request.headers.get('x-concierge-verified-agent-source');
+    const fromBody=body?.agentSource&&typeof body.agentSource.inputId==='string'&&typeof body.agentSource.runId==='string'
+      ?`${body.agentSource.inputId} ${body.agentSource.runId}`:null;
+    const marked=header??fromBody;
+    const headerCreate=request.headers.get('x-concierge-agent-test-create'),bodyCreate=body?.createInputId;
+    const createId=headerCreate??bodyCreate;
     if(!marked||typeof createId!=='string'||!/^request:[0-9a-f-]{36}$/i.test(createId))
       throw new SessionOwnerError('A verified agent source and exact creation request are required.',403,'AGENT_TEST_SCOPE_REQUIRED');
+    // One declaration, however it was sent: a disagreement could validate one create request and act under another.
+    if(header!==null&&fromBody!==null&&header!==fromBody||headerCreate!==null&&bodyCreate!==undefined&&headerCreate!==bodyCreate)
+      throw new SessionOwnerError('The marked request names two different sources or creation requests.',403,'AGENT_TEST_SCOPE_REFUSED');
     const pair=/^(\S+) (\S+)$/.exec(marked);
     if(!pair)throw new SessionOwnerError('A verified agent source pair is required.',403,'AGENT_TEST_SCOPE_REQUIRED');
-    const source=agentTestSource({inputId:pair[1],runId:pair[2]})!;
+    const source=verifiedContentSource({inputId:pair[1]!,runId:pair[2]!});
+    if(fenced&&(supersededAddress(source.sessionId)||withdrawnSuccessor(source.sessionId)))
+      throw new SessionOwnerError('This session handed its work off; it can no longer change this test session.',403,'AGENT_TEST_SCOPE_REFUSED');
     const created=getAcceptedSessionInput(createId);
-    if(!created||created.kind!=='create'||created.origin!=='agent'||created.source_input_id!==source.inputId||created.source_run_id!==source.runId
+    const creatorSource=created?.source_input_id?getAcceptedSessionInput(created.source_input_id):null;
+    if(!created||created.kind!=='create'||created.origin!=='agent'||!creatorSource||creatorSource.session_id!==source.sessionId
       ||created.request_id!==createId.slice('request:'.length)||sessionId&&`concierge:${created.session_id}`!==sessionId)
       throw new SessionOwnerError('This agent did not create the exact test session.',403,'AGENT_TEST_SCOPE_REFUSED');
     if(requireCodexTestOptIn){
@@ -1298,12 +1329,12 @@ export class SessionOwner {
         ||!Number.isSafeInteger(payload.codexNativeTestFaultDeadlineMs))
         throw new SessionOwnerError('This session was not explicitly selected as disposable native Codex test work.',403,'AGENT_TEST_OPT_IN_REQUIRED');
     }
-    // The session's own replies and requests use its current input as their source.
+    // The creator's own replies and requests, and the test session's own, belong here.
     // A human or another agent may also write here; their words close this entrance.
     const foreign=db.query(`SELECT 1 FROM session_inputs AS candidate WHERE candidate.session_id=? AND ${FOREIGN_AUTHORSHIP_PREDICATE} LIMIT 1`)
-      .get(created.session_id,source.inputId,source.runId);
+      .get(created.session_id,source.sessionId);
     if(foreign)throw new SessionOwnerError('This session now contains other authorship.',403,'AGENT_TEST_SCOPE_CHANGED');
-    return {source,sessionId:`concierge:${created.session_id}`};
+    return {source:{inputId:source.inputId,runId:source.runId},sessionId:`concierge:${created.session_id}`,createInputId:createId,creatorSessionId:source.sessionId};
   }
   private existingAction(sessionId:number,kind:string,body:Record<string,any>) {
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(body)) as AcceptedSessionInput|null;
@@ -4797,14 +4828,14 @@ export class SessionOwner {
         if(request.method==='POST'&&parts.length===4&&['stop','connection-loss'].includes(parts[3]!)){
           const input=object(body);
           only(input,['clientActionId','runId','agentSource','createInputId']);
-          const {source,sessionId}=this.agentBrowserBinding(request,parts[2],input,true);
+          const {source,sessionId,createInputId}=this.agentBrowserBinding(request,parts[2],input,true,true);
           const control={clientActionId:input.clientActionId,runId:input.runId};
           if(parts[3]==='stop')return ownerJson(await this.stopExact(sessionId,control,{inputId:source.inputId,runId:source.runId,
-            targetAddress:sessionId,authorityInputId:String(input.createInputId??request.headers.get('x-concierge-agent-test-create'))}));
-          return ownerJson(await this.agentTestConnectionLoss(sessionId,control,source,String(input.createInputId??request.headers.get('x-concierge-agent-test-create'))));
+            targetAddress:sessionId,authorityInputId:createInputId}));
+          return ownerJson(await this.agentTestConnectionLoss(sessionId,control,source,createInputId));
         }
         if(request.method!=='GET'||parts.length<4)throw new SessionOwnerError('Unknown agent browser read.',404);
-        const {source,sessionId}=this.agentBrowserBinding(request,parts[2]);
+        const {source,sessionId,creatorSessionId}=this.agentBrowserBinding(request,parts[2]);
         const tail=parts.slice(3),child=tail[1];
         let target:string|null=null;
         if(tail.length===1&&['view','capabilities','history','receipts','events'].includes(tail[0]!)){
@@ -4829,15 +4860,13 @@ export class SessionOwner {
           target=`/sessions/${encodeURIComponent(sessionId)}/history/messages/${encodeURIComponent(tail[2]!)}/detail`;
         else if(tail.length===2&&tail[0]==='operations'){
           const operation=getAcceptedSessionInput(child!);
-          const ownAction=operation?.source_input_id&&db.query('SELECT 1 FROM session_inputs WHERE id=? AND session_id=?')
-            .get(operation.source_input_id,operation.session_id);
-          if(!operation||operation.session_id!==Number(sessionId.slice('concierge:'.length))||operation.origin!=='agent'
-            ||!(operation.source_input_id===source.inputId&&operation.source_run_id===source.runId||ownAction))
+          const ownAction=operation?.source_input_id&&db.query('SELECT 1 FROM session_inputs WHERE id=? AND session_id IN (?,?)')
+            .get(operation.source_input_id,operation.session_id,creatorSessionId);
+          if(!operation||operation.session_id!==Number(sessionId.slice('concierge:'.length))||operation.origin!=='agent'||!ownAction)
             throw new SessionOwnerError('This operation is outside the test session.',403,'AGENT_TEST_CHILD_REFUSED');
           return ownerJson(this.receipt(operation));
         } else if(tail.length===2&&tail[0]==='attachments'){
-          const attachment=db.query('SELECT source_input_id,source_run_id FROM session_attachments WHERE id=?').get(child!) as {source_input_id:string|null;source_run_id:string|null}|null;
-          if(!attachment||attachment.source_input_id!==source.inputId||attachment.source_run_id!==source.runId)
+          if(!this.testAttachmentAllowed(child!,Number(sessionId.slice('concierge:'.length)),creatorSessionId,source))
             throw new SessionOwnerError('This attachment is outside the test session.',403,'AGENT_TEST_CHILD_REFUSED');
           return ownerJson(this.attachment(child!));
         } else if(tail.length===2&&tail[0]==='runs'){
@@ -4855,15 +4884,14 @@ export class SessionOwner {
         if(request.method!=='POST'||!((parts[0]==='attachments'&&parts.length===1)
           ||(parts[0]==='sessions'&&parts[2]==='inputs'&&parts.length===3)))
           throw new SessionOwnerError('This marked browser route is not available.',403,'AGENT_TEST_SCOPE_REFUSED');
-        const {source,sessionId}=this.agentBrowserBinding(request,parts[0]==='sessions'?parts[1]:undefined);
+        const {source,sessionId,creatorSessionId}=this.agentBrowserBinding(request,parts[0]==='sessions'?parts[1]:undefined,undefined,false,true);
         if(parts[0]==='sessions'&&parts[1]!==sessionId)throw new SessionOwnerError('The target session changed.',403,'AGENT_TEST_SCOPE_REFUSED');
         if(parts[0]==='attachments'&&body?.sessionId!==sessionId)
           throw new SessionOwnerError('The attachment target session changed.',403,'AGENT_TEST_SCOPE_REFUSED');
         if(body?.agentSource?.inputId!==source.inputId||body?.agentSource?.runId!==source.runId)
           throw new SessionOwnerError('The marked write source changed.',403,'AGENT_TEST_SCOPE_REFUSED');
         if(parts[0]==='sessions'&&Array.isArray(body.attachments))for(const id of body.attachments){
-          const attachment=db.query('SELECT source_input_id,source_run_id FROM session_attachments WHERE id=?').get(id) as {source_input_id:string|null;source_run_id:string|null}|null;
-          if(!attachment||attachment.source_input_id!==source.inputId||attachment.source_run_id!==source.runId)
+          if(!this.testAttachmentAllowed(id,Number(sessionId.slice('concierge:'.length)),creatorSessionId,source,true))
             throw new SessionOwnerError('The marked input names another attachment.',403,'AGENT_TEST_CHILD_REFUSED');
         }
       }
