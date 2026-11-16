@@ -1,3 +1,4 @@
+import './sqlite-worker-identity';
 import { parentPort, workerData } from 'node:worker_threads';
 import { fdatasyncSync, fstatSync, openSync, readFileSync, statSync } from 'node:fs';
 import { Database } from 'bun:sqlite';

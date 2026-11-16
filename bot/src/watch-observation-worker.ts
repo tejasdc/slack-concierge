@@ -1,3 +1,4 @@
+import './sqlite-worker-identity';
 import { parentPort, workerData } from 'node:worker_threads';
 import { Database } from 'bun:sqlite';
 import { join } from 'node:path';

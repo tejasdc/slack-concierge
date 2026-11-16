@@ -354,3 +354,40 @@ ages and coverage. It is distinct from sync-worker timing and external response 
 - `ledger_durability_slow_sync` (warn, sync ≥ 1 s), `ledger_checkpoint` (each checkpoint, with
   bytes, pressure and SQLite's result), `ledger_durability_started`, `ledger_durability_lost`, `ledger_durability_thread_failed`, `ledger_durability_sync_stalled`. A slow sync includes the same
   queue, syscall and delivery fields alongside its established total and worker time.
+
+## Native worker attribution
+
+The first dependency of each SQLite-owning Bun Worker emits one
+`sqlite_worker_identity` record through the existing bounded stderr log sink.
+Coverage is the ledger sync and checkpoint roles, watch observation, and provider
+history page worker (whose dependencies open the ledger). The task watchdog does
+not own SQLite. Presentation, history import/sync, foreground gateway and native
+read executors are separate processes, not worker threads sharing the owner's
+Bun SQLite registry lock.
+
+The record contains PID, Bun thread ID, entry script basename, role, random UUID
+generation, Linux native TID, process and thread start ticks and boot ID. Linux
+reads `/proc/thread-self/stat` on the emitting thread, never the symlink as file
+contents and never Bun's logical thread ID as a native TID. Field 22 holds start
+ticks; parsing begins after the final closing parenthesis because the command
+name may contain spaces or parentheses. See the [Linux stat contract](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html).
+
+For a retained host trace, match boot ID, PID/process start ticks, and TID/thread
+start ticks, then read role and generation. A later startup with reused IDs does
+not identify an earlier lock holder. A record proves identity, not lock ownership:
+paired native lock evidence remains necessary. Missing records are an evidence
+gap, never proof that a worker did not exist. Records use the bounded log sink's
+existing drop/failure policy; no worker work-protocol message, owner callback,
+periodic logging, retry or shutdown change is added.
+
+On macOS native fields are null with `nativeStatus: unsupported`; no Linux paths
+are read. Failed Linux reads produce null native fields and `unavailable` without
+stopping startup. UUID generations and script/role remain available on both.
+
+Focused check: `cd bot && bun run scripts/sqlite-worker-identity-fixture.ts`.
+It independently reads live Linux task records, checks distinct concurrent worker
+generations and native IDs, exercises ledger roles and the watch worker, guards
+first-import ordering on all three entry scripts, and checks unsupported/missing
+native evidence. It does not establish an installed release attribution or prove
+physical Mac behavior; the next ordinary release and retained host capture must
+provide that evidence. No diagnostic release or restart is authorized here.
