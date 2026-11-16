@@ -4877,7 +4877,7 @@ export class SessionOwner {
       // The selectable models, so a client picker never keeps its own list. Derived from
       // the alias table, so it cannot disagree with what a session can actually run.
       else if(request.method==='GET'&&parts[0]==='models'&&parts.length===1)
-        result={models:modelCatalogue(),efforts:[...REASONING_EFFORTS],chatgptThinkingLevels:[...CHATGPT_THINKING_LEVELS],selectors:[...providerSelectorCatalogue(),{key:'chatgpt',provider:'chatgpt',model:chatgptSessionModel(undefined),label:providerDisplayName('chatgpt')}]};
+        result={models:modelCatalogue(),efforts:[...REASONING_EFFORTS],chatgptThinkingLevels:[...CHATGPT_THINKING_LEVELS],chatgptProvider:{key:'chatgpt',provider:'chatgpt',model:chatgptSessionModel(undefined),label:providerDisplayName('chatgpt')},selectors:providerSelectorCatalogue()};
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2)
         result=await this.authProviders(url.searchParams.get('machine')??undefined,url.searchParams.get('fresh')==='1');
       else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='claude-launch-choice'&&parts.length===2){

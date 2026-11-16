@@ -116,8 +116,10 @@ the pair's session and turn; omitting provenance cannot become a human action. O
 answer verification is reserved for the trusted publication service entrance and is
 refused to authenticated agent or marked browser callers, including through the native
 read worker. Public journal reads retain their separate participant-aware projection.
-The owner model catalogue publishes ChatGPT thinking levels from its existing validator
-source; clients do not import the browser adapter or maintain a second option list.
+The owner model catalogue publishes `chatgptThinkingLevels` from its existing validator
+and a separate `chatgptProvider` descriptor from the canonical model/naming helpers.
+Its existing `selectors` remain valid project-default aliases. Clients do not import
+the browser adapter or maintain a second option list.
 
 Original admitted answers remain publishable when the human later changes a session's
 model. A new invocation refuses provider/model/effort/project/generation drift before

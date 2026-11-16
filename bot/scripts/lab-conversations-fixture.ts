@@ -151,8 +151,14 @@ async function child(){
   }
   const markedRead=await owner.handle(new Request(`http://owner/sessions/v1${outputPath}`,{headers:{'x-concierge-verified-agent-source':`${source.id} ${runId}`}}));assert.equal(markedRead?.status,403);
   const catalogue=await (await network('/models',runToken)).json() as any;
-  assert.deepEqual(catalogue.chatgptThinkingLevels,(await import('../src/aliases')).CHATGPT_THINKING_LEVELS);
-  assert.ok(catalogue.selectors.some((selector:any)=>selector.provider==='chatgpt'&&typeof selector.model==='string'&&typeof selector.label==='string'));
+  const aliases=await import('../src/aliases');
+  assert.deepEqual(catalogue.chatgptThinkingLevels,aliases.CHATGPT_THINKING_LEVELS);
+  assert.equal(catalogue.chatgptProvider.provider,'chatgpt');assert.equal(catalogue.chatgptProvider.model,aliases.chatgptSessionModel(undefined));assert.equal(catalogue.chatgptProvider.label,aliases.providerDisplayName('chatgpt'));
+  for(const selector of catalogue.selectors){
+   const parsed=aliases.parseProviderSelector(selector.key);assert.ok(parsed,`Every project-default option remains a valid alias: ${selector.key}`);
+   const resolved=aliases.resolveProviderSelector(parsed);assert.equal(resolved.provider,selector.provider);assert.equal(resolved.model,selector.model);
+  }
+  assert.ok(!catalogue.selectors.some((selector:any)=>selector.provider==='chatgpt'),'Lab capability metadata cannot add unsupported choices to project defaults');
  }finally{await gateway.stop(true);await privateOwner.stop(true);}
  const oldLocate=(owner as any).locateProject;(owner as any).locateProject=async()=>({name:'fixture',path:'.',cwd:process.env.CONCIERGE_STATE_DIR!,runner:null});
  const topChoice={key:'astra',label:'Explicit human top model',provider:'codex',model:'gpt-6-astra',reasoningEffort:'medium',project:'fixture'};
