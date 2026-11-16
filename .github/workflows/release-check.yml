@@ -85,9 +85,6 @@ jobs:
           # bubblewrap sandbox; unload AppArmor profiles on this disposable runner only.
           sudo aa-teardown >/dev/null 2>&1 || sudo systemctl stop apparmor || true
           bwrap --die-with-parent --bind / / --dev /dev --unshare-user --uid 0 --gid 0 -- true
-          # The checks' exact shape: a private user namespace nested inside another.
-          bwrap --die-with-parent --bind / / --dev /dev --unshare-user --uid 0 --gid 0 -- \
-            bwrap --die-with-parent --bind / / --dev /dev --unshare-user --uid 0 --gid 0 -- true
       - name: Run the complete bounded check group
         working-directory: bot
         env:
