@@ -48,8 +48,9 @@ function receiver(session:SessionRow):{target:NonNullable<ReturnType<typeof newW
   const startable=automatic.filter(provider=>provider!==session.provider_id&&(provider!=='antigravity'||small))
     .map(provider=>newWorkCapacity(provider))
     .filter((room):room is NonNullable<typeof room>=>!!room&&capacityCanStart(room));
+  // The receiver with the most room across its accounts, not merely the roomiest single account.
   const target=startable.filter(room=>room.used<RECEIVER_STOP_PERCENT)
-    .sort((a,b)=>Number(a.provider==='antigravity')-Number(b.provider==='antigravity')||a.used-b.used)[0]??null;
+    .sort((a,b)=>Number(a.provider==='antigravity')-Number(b.provider==='antigravity')||b.providerRoom-a.providerRoom||a.used-b.used)[0]??null;
   return {target,reason:target?null:startable.length?'receiver_above_stop':'no_receiver'};
 }
 

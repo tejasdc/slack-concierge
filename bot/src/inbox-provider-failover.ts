@@ -23,7 +23,7 @@ export function maybeStartInboxProviderFailover(session:SessionRow|null=inboxSes
   // neither has room, because automatic choice keeps Gemini for small tasks and the Inbox is long-running.
   const alternatives=automatic.filter(provider=>provider!==sourceProvider)
     .map(provider=>newWorkCapacity(provider)).filter((candidate):candidate is NonNullable<typeof candidate>=>!!candidate&&capacityCanStart(candidate))
-    .sort((a,b)=>Number(a.provider==='antigravity')-Number(b.provider==='antigravity')||a.used-b.used);
+    .sort((a,b)=>Number(a.provider==='antigravity')-Number(b.provider==='antigravity')||b.providerRoom-a.providerRoom||a.used-b.used);
   const alternative=alternatives[0]??null;
   const targetProvider=alternative?.provider;
   const last=db.query(`SELECT status,dispatch_failure_class,accepted_input_id,
