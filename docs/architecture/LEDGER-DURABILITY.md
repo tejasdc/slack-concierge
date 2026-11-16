@@ -76,7 +76,8 @@ Linux only) changes where the disk is waited for, not what is written or when it
   `PRAGMA wal_checkpoint(PASSIVE)`, which never takes the writer lock. It reads how much log is
   uncopied through `PRAGMA wal_checkpoint(NOOP)` (frames written minus frames copied) and
   `PRAGMA page_size`, and copies once 64 MB is waiting while `/proc/pressure/io` "some avg10" is at most 10%,
-  or at 256 MB regardless. It never copies a small log. It is the ledger's only checkpointer on
+  or at 256 MB regardless. It copies a small log only to finish a partly copied one (see
+  [log recycling](#log-recycling)). It is the ledger's only checkpointer on
   Linux: every ledger writer wrapped by `ledgerWriteResults`, including deployment controls,
   sets `wal_autocheckpoint=0` before preparing statements; the owner's connection also sets it
   explicitly. On 2026-10-12 the pressure gate rarely opened, the log reached 285 MB (the old
@@ -87,6 +88,49 @@ Linux only) changes where the disk is waited for, not what is written or when it
   not which process held the writer lock. SQLite invokes the auto-checkpoint hook
   [after releasing the write lock](https://www.sqlite.org/c3ref/wal_hook.html), and its
   [PASSIVE mode does not wait for writers](https://www.sqlite.org/c3ref/wal_checkpoint_v2.html).
+
+### Log recycling
+
+SQLite rewinds the log only when a writer begins with every committed frame already copied
+([WAL format](https://www.sqlite.org/walformat.html)). PASSIVE copies up to the frame it saw
+when it began, so owner commits made during the copy remain as an uncopied tail, even though the
+checkpoint reports `log == checkpointed` for its own snapshot. Until 2026-11-16 the thread then
+waited for another 64 MB before copying again, so the log rewound only when a copy happened to
+overlap no commit: on 2026-11-15 it ran from 04:56 to 20:41 UTC without rewinding and reached
+3,457,925 frames (about 14 GB), filling the root disk (AX41 rapid disk loss notice; diagnosis by
+concierge:9747 from 16,215 shared-memory header samples).
+
+The thread now finishes a generation already partly copied (`checkpointed > 0` with fewer than
+64 MB still uncopied) on its next tick, under the same pressure gate and on its
+`synchronous=FULL` connection. It first uses PASSIVE, which takes no writer lock. Under steady
+commits that copy keeps losing the race: on a disposable ledger at 60 commits/s, PASSIVE alone
+never rewound in 191 attempts. So after three consecutive tail attempts that each copied
+something in at most 250 ms and still left a tail, the thread finishes the tail once in FULL
+mode with no lock wait of its own. FULL holds the writer lock while it copies and syncs, so no
+commit can extend the tail and the owner's next commit rewinds the log. With no lock wait, FULL
+gives up at once if the owner is mid-commit and never waits for a reader while holding the lock;
+in both cases it continues as PASSIVE.
+
+The cost is that the owner's commits wait while FULL copies a small tail and syncs the
+database, on the owner's event loop. If those syncs took longer than the owner's five-second
+lock wait, the waiting commit would fail as "database is locked", which PASSIVE never caused;
+the quiet-disk gate and the three fast attempts first make that unlikely, and it would show as a
+FULL `ms` above 5000 in `ledger_checkpoint` with owner loop-lag events. This was judged
+acceptable against the alternative below because it happens at most once per partly copied
+generation and only on a quiet disk, while the alternative has not been made to work. Disposable runs on this host
+(40 s each, worker thresholds scaled to 1 MB/4 MB, pressure gate off): at 60 commits/s the old
+thread never rewound and the log reached 35 MB, while the new one rewound 18 times and stayed
+under 2.7 MB, with the same longest commit (189 ms against 187 ms); at 15 commits/s one FULL
+copy took 684 ms and held a commit for 745 ms (old thread's longest commit: 272 ms). Every row
+written was read back. The alternative that avoids this wait, a fixed tail with RESTART behind
+asynchronous writer admission, was drafted (held in the `wal9747-source` worktree) but never
+passed as a whole. Doing nothing let the log grow without bound.
+
+Each tail attempt is logged in `ledger_checkpoint` with `tail: true` and `mode` (`passive` or
+`full`); a tail attempt that copies nothing (an older reader holds it) is not logged. The live
+check is that series: `log` must fall back to a small value within minutes of each 64 MB copy,
+and FULL's `ms` is the longest a commit waited for it. Rewinding reuses the log file; it does
+not shrink a file that already grew.
 
 On 2026-10-13 the owner accumulated 102 seconds of loop lag around an update, with one dispatch
 write reaching SQLite's five-second busy timeout. The first long stalls and slow WAL syncs started
