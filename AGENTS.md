@@ -96,6 +96,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   carry the live syntax and enforcement. The [request and return contract](docs/architecture/SESSION-OWNER.md#requests-and-returns)
   and [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md)
   own return position, partial answers and final disposition.
+- Asked-question clocks, exact retained-answer recovery and owner-derived delay status follow
+  [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md); historical questions stay in the
+  one Inbox's [prepared global views](docs/architecture/PREPARED-TOPICS.md).
 - Preserve exact accepted input, run, action, source-message and target
   identity; do not replay ambiguous or acknowledged effects. Keep human
   authorship distinct from agent and service inputs. See the
