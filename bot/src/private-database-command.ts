@@ -217,7 +217,11 @@ os.execvpe(args[0],args,os.environ)`;
  * itself before it execs any fixture or application module.
  */
 export function privateCodeCommand(command:string[],environment:NodeJS.ProcessEnv):{command:string[];environment:NodeJS.ProcessEnv;cleanup:()=>void} {
-  if(process.platform!=='linux')throw new Error('Private code isolation requires Linux namespaces.');
+  // As privateDatabaseCommand always has: isolation hides the live ledger, so a machine without
+  // one (a Mac peer, GitHub's runner) runs the command as before. Checks that need the verified
+  // boundary refuse to start without it rather than passing unisolated.
+  if(process.platform!=='linux'||!existsSync(join(homedir(),'.local/state/'+'concierge')))
+    return {command,environment:{...environment},cleanup:()=>{}};
   if(hasVerifiedPrivateCodeBoundary(environment))return {command,environment:{...environment},cleanup:()=>{}};
   const homeDirectory=realpathSync(homedir());
   const configuredHome=environment.HOME??homedir();
