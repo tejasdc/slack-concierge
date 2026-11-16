@@ -75,6 +75,20 @@ export async function runOutsideCodexTurn(input: OutsideRun): Promise<RunResult>
   if (!input.transport)
     throw new ProviderCapabilityUnavailableError("execution", "An outside run needs an execution host on this machine.");
 
+  // The same account limit as App Server turns: while it is recorded, a new run is refused before the
+  // CLI is launched, carrying the reset, so its input waits instead of being sent and refused.
+  const usage = await import("./provider-usage");
+  const attempt = usage.usageAttempt("codex", undefined, input.accountLabel);
+  if (!input.adopted) usage.assertUsageAvailable(attempt);
+  try { return await runLaunchedOutsideCodexTurn(input); }
+  catch (error) {
+    if (error instanceof ProviderDispatchError && (await import("./codex")).isCodexUsageLimitMessage(error.message))
+      throw await (await import("./codex")).codexUsageRefusalWait(error, attempt, null);
+    throw error;
+  }
+}
+
+async function runLaunchedOutsideCodexTurn(input: OutsideRun): Promise<RunResult> {
   const content = outsideCodexPromptContent(input);
   if (!input.adopted && !input.runnerPromptFile) {
     mkdirSync(dirname(input.promptFile), { recursive: true, mode: 0o700 });
