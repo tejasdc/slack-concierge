@@ -10,7 +10,7 @@ import {createSessionPeerServices} from './session-peer-services';
 import { withRetry } from './retry';
 import { RETRY_POLICIES } from './retry-policies';
 import { SessionCommunicationCoordinator } from './session-communication';
-import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
+import { db, getTurnDependencies, recoverRoutedInputClaim, failUnacknowledgedClaudeParkedTurns } from "./state";
 import { prepareSavedWorkForClaims } from "./saved-work";
 import { createBankedUpkeep } from "./banked-upkeep";
 import toml from "@iarna/toml";
@@ -4388,6 +4388,9 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         void runStartupPhase('provider_readiness', () => verifySharedCodexAppServerReady());
       },
       startQueue: () => {
+        // Turns parked because Claude never acknowledged their input fail now, so their requests return for a new owner.
+        try { const failed = failUnacknowledgedClaudeParkedTurns(); if (failed.length) log("warn", "unacknowledged_claude_parks_failed", { turn_ids: failed }); }
+        catch (error) { log("error", "unacknowledged_claude_park_repair_failed", errorFields(error)); }
         startSessionTurnQueue();
         sessionCommunication?.start();
         codexRemoteObserver?.start();

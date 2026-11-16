@@ -3,6 +3,7 @@ import {spawn} from 'node:child_process';
 import {chmodSync,mkdirSync,mkdtempSync,readFileSync,rmSync,symlinkSync,truncateSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {launchRefusalReason} from '../src/claude-launch-refusal';
 
 const root=mkdtempSync(join(tmpdir(),'claude-exact-resume-'));
 const home=join(root,'.claude'), accountHome=join(root,'.claude-accounts','original');
@@ -27,6 +28,9 @@ async function run(args:string[]){
 }
 const count=()=>readFileSync(log,'utf8').trim().split('\n').length;
 try{
+  assert.equal(launchRefusalReason('noise\nCONCIERGE_CLAUDE_LAUNCH_REFUSED: no working home.\n',78),'no working home.');
+  assert.equal(launchRefusalReason('CONCIERGE_CLAUDE_LAUNCH_REFUSED: x',1),null);
+  assert.equal(launchRefusalReason('Claude crashed',78),null);
   const fresh=await run(['-p','fresh']); assert.equal(fresh.code,0,fresh.error);
   const resume=await run(['--resume',id,'-p','follow up']); assert.equal(resume.code,0,resume.error);
   const calls=readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line));
@@ -41,30 +45,32 @@ try{
   let result=await run([`-r${id}`,'-p','large transcript']); assert.equal(result.code,0,result.error);
   assert.equal(JSON.parse(readFileSync(log,'utf8').trim().split('\n').at(-1)!).home,accountHome);
   writeFileSync(transcript,JSON.stringify({type:'user'})+'\n');
-  result=await run(['--resume',id,'-p','blocked']); assert.notEqual(result.code,0); assert.match(result.error,/binding is missing or malformed/); assert.equal(count(),5);
-  result=await run([`--resume=${id}`,'-p','blocked']); assert.notEqual(result.code,0); assert.match(result.error,/binding is missing or malformed/); assert.equal(count(),5);
+  // A transcript from before Claude wrote owner headers resumes on Concierge's verified choice.
+  result=await run(['--resume',id,'-p','legacy']); assert.equal(result.code,0,result.error);
+  assert.equal(JSON.parse(readFileSync(log,'utf8').trim().split('\n').at(-1)!).home,accountHome);
+  result=await run([`--resume=${id}`,'-p','legacy']); assert.equal(result.code,0,result.error); assert.equal(count(),7);
   for(const header of ['{broken\n',JSON.stringify({type:'session-owner',sessionId:id,accountUuid:'original',organizationUuid:'org'}), 'x'.repeat(65536)]){
     writeFileSync(transcript,header);
-    result=await run([`-r${id}`,'-p','blocked']); assert.notEqual(result.code,0); assert.match(result.error,/header/); assert.equal(count(),5);
+    result=await run([`-r${id}`,'-p','blocked']); assert.equal(result.code,78); assert.match(result.error,/CONCIERGE_CLAUDE_LAUNCH_REFUSED: /); assert.match(result.error,/header/); assert.equal(count(),7);
   }
   writeFileSync(transcript,JSON.stringify({type:'session-owner',sessionId:id,accountUuid:'other',organizationUuid:'org'})+'\n');
-  result=await run(['--resume',id,'-p','blocked']); assert.notEqual(result.code,0); assert.match(result.error,/no working home/); assert.equal(count(),5);
+  result=await run(['--resume',id,'-p','blocked']); assert.equal(result.code,78); assert.match(result.error,/CONCIERGE_CLAUDE_LAUNCH_REFUSED: /); assert.match(result.error,/no working home/); assert.equal(count(),7);
   writeFileSync(transcript,JSON.stringify({type:'session-owner',sessionId:id,accountUuid:'original',organizationUuid:'org'})+'\n');
   env.FIXTURE_ACCOUNT=home;
-  result=await run(['--resume',id,'-p','blocked']); assert.notEqual(result.code,0); assert.match(result.error,/no working home/); assert.equal(count(),5);
+  result=await run(['--resume',id,'-p','blocked']); assert.equal(result.code,78); assert.match(result.error,/CONCIERGE_CLAUDE_LAUNCH_REFUSED: /); assert.match(result.error,/no working home/); assert.equal(count(),7);
   env.FIXTURE_ACCOUNT=accountHome;
   const duplicate=join(root,'.claude-accounts','duplicate'); mkdirSync(duplicate);
   symlinkSync(join(home,'projects'),join(duplicate,'projects'));
   writeFileSync(join(duplicate,'.claude.json'),readFileSync(join(accountHome,'.claude.json')));
   env.FIXTURE_ACCOUNT=`${accountHome}:${duplicate}`;
-  result=await run(['--resume',id,'-p','blocked']); assert.notEqual(result.code,0); assert.match(result.error,/ambiguous working homes/); assert.equal(count(),5);
+  result=await run(['--resume',id,'-p','blocked']); assert.equal(result.code,78); assert.match(result.error,/CONCIERGE_CLAUDE_LAUNCH_REFUSED: /); assert.match(result.error,/ambiguous working homes/); assert.equal(count(),7);
   env.FIXTURE_ACCOUNT=accountHome;
-  result=await run(['--resume',id,`-r${id}`,'-p','blocked']); assert.notEqual(result.code,0); assert.match(result.error,/multiple resume arguments/); assert.equal(count(),5);
+  result=await run(['--resume',id,`-r${id}`,'-p','blocked']); assert.equal(result.code,78); assert.match(result.error,/CONCIERGE_CLAUDE_LAUNCH_REFUSED: /); assert.match(result.error,/multiple resume arguments/); assert.equal(count(),7);
   env.CONCIERGE_CLAUDE_ACCOUNT_PIN='1';
   result=await run(['--resume',id,'-p','pinned']); assert.equal(result.code,0,result.error);
   const pinned=JSON.parse(readFileSync(log,'utf8').trim().split('\n').at(-1)!); assert.equal(pinned.home,home);
   delete env.CONCIERGE_CLAUDE_ACCOUNT_PIN;
   result=await run(['--continue','-p','continued']); assert.equal(result.code,0,result.error);
   const continued=JSON.parse(readFileSync(log,'utf8').trim().split('\n').at(-1)!); assert.equal(continued.home,home);
-  console.log('Exact resume spellings use the original verified home; malformed headers and unavailable or ambiguous homes refuse before a prompt. Large transcript tails are ignored.');
+  console.log('Exact resume spellings use the original verified home; pre-header transcripts use Concierge verified choice; malformed headers and unavailable or ambiguous homes refuse before a prompt with the launch-refused marker. Large transcript tails are ignored.');
 }finally{server.stop(true);rmSync(root,{recursive:true,force:true});}

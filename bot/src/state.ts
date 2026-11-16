@@ -4500,6 +4500,32 @@ export function settleSupersededParkedTurn(turnId: number): boolean {
   })();
 }
 
+/**
+ * Turns parked because Claude ended before acknowledging their input never reached Claude, so
+ * failing them replays nothing; it lets their requests settle failed with this reason and return
+ * to their requester for a new owner. From 2026-11-13 to 11-16 Concierge's launcher refused every
+ * resume of a Claude conversation older than Claude's owner header, and 29 such turns in 9
+ * sessions sat parked with their requests counted as live. New refusals fail at once
+ * (claude-launch-refusal.ts); this releases the ones parked before that. Idempotent.
+ */
+export const CLAUDE_UNACKNOWLEDGED_PARK_TEXT = "Claude Code ended before acknowledging the initial user message.";
+export function failUnacknowledgedClaudeParkedTurns(): number[] {
+  return db.transaction(() => {
+    const rows = db.query(`SELECT turn.id FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='parked' AND turn.dispatch_failure_class='parked_ambiguous' AND session.provider_id='claude-code'
+        AND turn.agent_text=? AND turn.provider_input_acknowledged_at IS NULL`).all(CLAUDE_UNACKNOWLEDGED_PARK_TEXT) as { id: number }[];
+    const failed: number[] = [];
+    for (const row of rows) {
+      if (db.query(`UPDATE turns SET status='error', dispatch_failure_class=NULL,
+          agent_text='Claude could not start this turn: it ended before acknowledging its input, so nothing was sent. Its work needs a new attempt.',
+          ended_at=COALESCE(ended_at,CURRENT_TIMESTAMP) WHERE id=? AND status='parked'`).run(row.id).changes !== 1) continue;
+      turnFactChanged(row.id, 'terminal');
+      failed.push(row.id);
+    }
+    return failed;
+  })();
+}
+
 export type ResumeParkedTurnResult = "resumed" | "already_queued" | "not_parked" | "unsafe";
 
 export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult {
