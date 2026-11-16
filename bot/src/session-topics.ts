@@ -4747,6 +4747,12 @@ export function rejoinThreadsSplitAtHandoff() {
     const from=topicRow(topicId);
     const roots=topicRoots(topicId);
     if(!roots.length)continue;
+    // Only what the conversion made and nobody has touched since: every root still where the
+    // conversion put it and the conversion's title unchanged. A thread someone renamed or
+    // re-placed may have been kept on purpose, and stays.
+    const untouched=(db.query("SELECT count(*) AS n FROM inbox_topic_roots WHERE topic_id=? AND reason IS NOT 'migration'").get(topicId) as {n:number}).n===0
+      &&!lastRenameBy(from);
+    if(!untouched)continue;
     const homes=roots.map(root=>sentFromThread(from.sessionId,root,topicId));
     if(homes.every(home=>home===null))continue;
     const distinct=[...new Set(homes)];
