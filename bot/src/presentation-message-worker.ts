@@ -442,23 +442,32 @@ async function reassignLinkedInput(generation:number,inputId:string,resolveRoot:
 type InboxLineageWork={generation:number;phase:'messages'|'roots'|'drain'|'complete';message_after:number;root_after:string;
   examined:number;moved:number;topics_updated:number;pages:number;root_summaries_examined:number;
   orphan_roots_removed:number;root_pages:number;started_at_ms:number};
+/**
+ * The upgrade shares each catch-up pass with live changes instead of running to completion first.
+ * On 2026-11-15 the full pass (21k messages, 7k thread summaries) took over 23 minutes each time
+ * three releases restarted it, and thnkr.ing showed no new message for more than an hour. Its cursor
+ * commits with every page, so stopping at the budget and resuming on the next pass loses nothing;
+ * live changes already use the corrected lineage, so they need not wait for old rows to be repaired.
+ */
+const INBOX_LINEAGE_PASS_BUDGET_MS=2_000;
+let inboxLineageLastProgress=-Infinity,inboxLineageReported=false;
 async function upgradeInboxLineageRoots(generation:number){
   const version=(prepared.query('SELECT inbox_lineage_roots_version AS version FROM presentation_message_meta WHERE singleton=1')
     .get() as {version:number}).version;
   if(version>=2)return;
+  const deadline=performance.now()+INBOX_LINEAGE_PASS_BUDGET_MS;
   const readWork=()=>prepared.query('SELECT * FROM presentation_inbox_lineage_work WHERE generation=?').get(generation) as InboxLineageWork;
   const resumed=!!readWork();
   prepared.transaction(()=>{keepLease();prepared.query(`INSERT OR IGNORE INTO presentation_inbox_lineage_work(generation,started_at_ms)
     VALUES(?,?)`).run(generation,Date.now());})();
-  let lastProgress=-Infinity;
   const reportProgress=(force=false)=>{
-    if(!force&&Date.now()-lastProgress<10_000)return;
-    lastProgress=Date.now();
+    if(!force&&Date.now()-inboxLineageLastProgress<10_000)return;
+    inboxLineageLastProgress=Date.now();
     const work=readWork();
     writeLogLine('info',JSON.stringify({event:'presentation_inbox_lineage_progress',version:2,resumed,...work,
       elapsed_wall_ms:Date.now()-work.started_at_ms}));
   };
-  reportProgress(true);
+  reportProgress(!inboxLineageReported);inboxLineageReported=true;
   // A page cursor commits with its mappings, root maintenance and dirty dependencies.
   // Finish those durable dependencies before continuing from that cursor after a restart.
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
@@ -496,6 +505,7 @@ async function upgradeInboxLineageRoots(generation:number){
     reportProgress();
     while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
     await yieldProgress();
+    if(performance.now()>deadline)return;
   }
   // Empty old summaries cannot be discovered from current message mappings. This sweep
   // has its own durable keyset, including when the last visited row was deleted.
@@ -519,6 +529,7 @@ async function upgradeInboxLineageRoots(generation:number){
       writeLogLine('info',JSON.stringify({event:'presentation_inbox_empty_root_removed',
         generation,version:2,root:row.root,resolved_root:inboxRootResolver(source)(row.sessionId,row.root)}));
     reportProgress();await yieldProgress();
+    if(performance.now()>deadline)return;
   }
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
   prepared.transaction(()=>{
