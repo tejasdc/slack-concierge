@@ -89,6 +89,15 @@ intact; retry the same publication, never a replacement or human-input route. In
 on source and destination before the corrected Thinkering caller. Generic communication routes
 remain private to their existing entrances.
 
+The incident-specific canonical replay is `bun bot/scripts/lab-publication-acceptance.ts
+--output /tmp/<owned-result>.json`. It sets only `LAB_PUBLICATION_TEST_AUTHORIZATION`
+(`lab-publication-85ee7a4e`), creates two exclusively owned temporary ledgers, and keeps the
+existing canonical-home/symlink production guards. General test entry points remain disabled.
+Its synthetic inputs, inert provider runtime and authenticated loopback listener are explicit
+substitutes; real owner HTTP responses, peer source proof and both Inbox projections are exercised.
+It is not an installed-app, gateway-authentication, browser, or physical-Mac acceptance claim.
+The independent tester and pre-opened application observer supply those separate evidence layers.
+
 ### Direct messages to the Inbox router
 
 A human-surface message addressed to the Inbox router joins its running turn through the

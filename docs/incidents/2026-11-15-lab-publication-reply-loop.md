@@ -38,3 +38,12 @@ agent tokens cannot invoke this adapter. No foreign actor number is interpreted 
 
 Local compilation only. Parent owns review, installation and source-to-visible acceptance.
 No installed, physical Mac or visible-page pass is claimed.
+
+The parent's independent native Sol tester then found a candidate-only dispatch fall-through:
+the new branches committed before a separate route chain returned404. It also identified local
+typed publication trimming that hid a whitespace-only change. Those source defects were corrected
+before delivery: typed handlers share the canonical dispatch chain, and typed posts retain exact
+intent/text while ordinary CLI normalization is unchanged. The Lab-scoped canonical replayer
+exercises HTTP status beside effects, true separate-ledger peer proof, exact-byte conflicts,
+request/turn/duty counts and human/marked reply preservation. Its authorization is specific to
+this incident; default test commands and production path guards remain unchanged.

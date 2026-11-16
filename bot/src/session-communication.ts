@@ -20,7 +20,7 @@ import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedInput} from './inbox-routing-result';
 import {acceptedInputAuthor,sessionAuthor} from './session-message-author';
-import {inboxPublication,postPromisesAnswer,type PublicationProof} from './inbox-publication';
+import {inboxPublication,postPromisesAnswer,type InboxPublication,type PublicationProof} from './inbox-publication';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
@@ -1147,12 +1147,12 @@ export class SessionCommunicationCoordinator {
      * accepted there and then never seen, and it would sit inside the window a history
      * delta fingerprints.
      */
-    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;targetSessionId?:string;topic?:string;promise_request?:string;keep_working?:boolean;notify?:boolean;attachments?:string[];files?:AttachedFile[]}) {
+    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;targetSessionId?:string;topic?:string;promise_request?:string;keep_working?:boolean;notify?:boolean;attachments?:string[];files?:AttachedFile[]},publication?:InboxPublication) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));action(input.action_id);
         const carried=files(input.files);
         // A post carrying files is a message even without words: the mockups are the answer.
-        const text=message(typeof input.text==='string'?input.text.trim():input.text,!!(carried.length||input.attachments?.length));
+        const text=message(typeof input.text==='string'&&!publication?input.text.trim():input.text,!!(carried.length||input.attachments?.length));
         if(input.notify&&!text.trim())throw new Error('--notify requires words in the message being posted.');
         if(typeof input.thread!=='string'||!input.thread.trim())throw new Error('A post needs the exact --thread message ID.');
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
@@ -1185,7 +1185,7 @@ export class SessionCommunicationCoordinator {
                 ?this.retainAttachments(sourceInputId,input.action_id,'post-file',input)
                 :[];
             const saved=retainSessionInput({sessionId:own.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,
-                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,...(input.targetSessionId?{targetSessionId:input.targetSessionId}:{}),
+                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,...(input.targetSessionId?{targetSessionId:input.targetSessionId}:{}),...(publication?{publication}:{}),
                     ...(input.topic?{topic:input.topic}:{}),...(input.promise_request?{promiseRequest:input.promise_request}:{}),
                     ...(input.keep_working?{keepWorking:true}:{}),...(input.notify?{notify:true}:{}),...(attachments.length?{attachments}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             const messageId=`post:${saved.input.id}`;
@@ -1242,13 +1242,13 @@ export class SessionCommunicationCoordinator {
             const prior=db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?')
                 .get(`communication:${input.source.input_id}`,input.action_id) as AcceptedSessionInput|null;
             if(prior){
-                const expected={kind:'thread-post',thread:input.thread,text:input.text.trim(),targetSessionId:input.targetSessionId};
+                const expected={kind:'thread-post',thread:input.thread,text:input.text,targetSessionId:input.targetSessionId,publication:input};
                 if(prior.origin!=='agent'||prior.kind!=='action'||prior.source_input_id!==input.source.input_id
                     ||prior.source_run_id!==input.source.run_id||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(expected))
                     throw new Error('Idempotency conflict: publication changed.');
                 return {post:JSON.parse(prior.receipt_json!).post,duplicate:true};
             }
-            return this.post({...input});
+            return this.post({...input},input);
         }
         if(!peers)throw new Error('The publication source owner is unavailable.');
         const scope=`inbox-publication:${input.sourceOwner}:${input.source.input_id}`;
