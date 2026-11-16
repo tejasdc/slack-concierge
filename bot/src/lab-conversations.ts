@@ -10,14 +10,16 @@ import {restrictedLabThread} from './lab-content-disclosure';
 export class LabConversationError extends Error {
   constructor(message:string,readonly status=400,readonly code='LAB_CONVERSATION_REFUSED'){super(message);}
 }
-export type LabParticipantChoice={key:string;label:string;sessionId?:string;provider?:string;model?:string;reasoningEffort?:string;project?:string;sources?:unknown[];escalationReason?:string;instructions?:string};
-export type LabParticipant={key:string;label:string;agentName:string|null;sessionId:string;provider:string;model:string|null;reasoningEffort:string|null;project:string|null;projectPath:string|null;generation:number;existing:boolean;sources:unknown[];instructions:string|null;tools:'none'|'native'};
+export type LabMaterialRequest={path:string;sha256:string};
+export type LabMaterial=LabMaterialRequest&{text:string};
+export type LabParticipantChoice={key:string;label:string;sessionId?:string;provider?:string;model?:string;reasoningEffort?:string;project?:string;sources?:unknown[];materials?:LabMaterialRequest[];escalationReason?:string;instructions?:string};
+export type LabParticipant={key:string;label:string;agentName:string|null;sessionId:string;provider:string;model:string|null;reasoningEffort:string|null;project:string|null;projectPath:string|null;generation:number;existing:boolean;sources:unknown[];materials?:LabMaterial[];instructions:string|null;tools:'none'|'native'};
 export type LabContext={version:1;thread:string;entryId:string;sessionId:string;membershipRevision:number;entries:Array<{id:string;revision?:string;address?:string;author?:unknown;text:string}>;responseTargets?:string[];[key:string]:unknown};
 type Invocation={key:string;requestId:string;inputId:string;state:'context_pending'|'accepted'|'published'|'failed'|'refused';context?:LabContext;eventId?:string;publication?:unknown;error?:string};
 type ActionReceipt={state:'pending'|'completed';invocations:Invocation[];entries?:LabContext['entries']};
 type Conversation={thread:string;questionEntryId:string;coordinatorSessionId:string;membershipRevision:number;participants:LabParticipant[];opening:LabContext['entries'][number];presentation?:unknown};
 export type LabActor={inputId:string;runId:string;sessionId:number};
-export type LabPreparedParticipant={choice:LabParticipantChoice;sessionId?:number;provider?:ProviderId;metadata?:NativeSessionMetadata};
+export type LabPreparedParticipant={choice:LabParticipantChoice;materials?:LabMaterial[];sessionId?:number;provider?:ProviderId;metadata?:NativeSessionMetadata};
 export type LabConversationPorts={
   bootstrap(thread:string):Promise<{version:1;state:{owner:string;[key:string]:unknown};entries:LabContext['entries'];presentation?:unknown}>;
   prepare(choice:LabParticipantChoice,actor?:LabActor):Promise<LabPreparedParticipant>;
@@ -40,7 +42,7 @@ const readAction=(scope:string,actionId:string)=>db.query('SELECT * FROM session
 function participantChoices(value:unknown,min=1):LabParticipantChoice[]{
   if(!Array.isArray(value)||value.length<min||value.length>16)throw new LabConversationError('Choose at most sixteen participant voices.');
   const choices=value.map((value:unknown)=>{
-    const choice=object(value);only(choice,['key','label','sessionId','provider','model','reasoningEffort','project','sources','escalationReason','instructions']);
+    const choice=object(value);only(choice,['key','label','sessionId','provider','model','reasoningEffort','project','sources','materials','escalationReason','instructions']);
     if(choice.instructions!==undefined&&(typeof choice.instructions!=='string'||choice.instructions.length>20_000))throw new LabConversationError('Participant instructions must be text of at most 20,000 characters.');
     identifier(choice.key,'Participant key');identifier(choice.label,'Participant label');
     if(choice.key==='coordinator'||!/^[-a-zA-Z0-9_]+$/.test(choice.key))throw new LabConversationError('Choose a unique participant key; coordinator is reserved.');
@@ -48,6 +50,13 @@ function participantChoices(value:unknown,min=1):LabParticipantChoice[]{
     if(choice.sessionId&&['provider','model','reasoningEffort','project'].some(key=>choice[key]!==undefined))throw new LabConversationError('An existing participant keeps its provider, model, effort and project.');
     if(choice.sources!==undefined&&(!Array.isArray(choice.sources)||choice.sources.length>32))throw new LabConversationError('Sources must be a bounded list of exact references.');
     for(const source of choice.sources??[]){const ref=object(source);only(ref,['sourceId','sourceVersion','branch','eventId']);for(const key of ['sourceId','sourceVersion','branch','eventId'])identifier(ref[key],`Source ${key}`);if(!/^[a-f0-9]{64}$/.test(ref.sourceVersion))throw new LabConversationError('A selected source needs its exact retained version digest.');}
+    if(choice.materials!==undefined){
+      if(!Array.isArray(choice.materials)||choice.materials.length>32)throw new LabConversationError('Materials must be a bounded list of at most 32 exact files.');
+      for(const material of choice.materials){const entry=object(material);only(entry,['path','sha256']);
+        if(typeof entry.path!=='string'||!entry.path.startsWith('/')||entry.path.length>4096)throw new LabConversationError('A material needs an absolute file path.',400,'LAB_MATERIAL_UNAVAILABLE');
+        if(typeof entry.sha256!=='string'||!/^[a-f0-9]{64}$/.test(entry.sha256))throw new LabConversationError('A material needs its exact lowercase SHA-256 digest.',400,'LAB_MATERIAL_MISMATCH');}
+      if(new Set(choice.materials.map((material:any)=>material.path)).size!==choice.materials.length)throw new LabConversationError('A material path may be listed only once per participant.');
+    }
     return choice as LabParticipantChoice;
   });
   if(new Set(choices.map(choice=>choice.key)).size!==choices.length)throw new LabConversationError('Participant keys must be unique.');
@@ -101,7 +110,7 @@ export class LabConversations {
     if(!row)throw new LabConversationError('The selected participant no longer exists.',404);
     const metadata=sessionMetadata(row);
     return {key:member.choice.key,label:member.choice.label,agentName:agentIdentity(row,metadata).agentName,sessionId:`concierge:${row.id}`,provider:row.provider_id,model:metadata.model??null,reasoningEffort:metadata.reasoningEffort??null,
-      project:metadata.project??null,projectPath:metadata.projectPath??null,generation:row.binding_generation??1,existing:!!member.sessionId,sources:member.choice.sources??[],instructions:member.choice.instructions??null,tools:row.provider_id==='chatgpt'?'none':'native'};
+      project:metadata.project??null,projectPath:metadata.projectPath??null,generation:row.binding_generation??1,existing:!!member.sessionId,sources:member.choice.sources??[],materials:member.materials??[],instructions:member.choice.instructions??null,tools:row.provider_id==='chatgpt'?'none':'native'};
   }
   private recordChoices(saved:AcceptedSessionInput,members:LabParticipant[],choices:LabParticipantChoice[],actor?:LabActor){
     for(const member of members)recordSessionEvent({eventId:`lab-model-choice:${saved.id}:${member.key}`,sessionId:sessionNumber(member.sessionId),inputId:saved.id,kind:'lab_model_choice',
@@ -257,6 +266,7 @@ export class LabConversations {
     const actions=db.query("SELECT rowid AS position,* FROM session_inputs INDEXED BY session_inputs_lab_history WHERE kind='lab-activation' AND scope=? AND rowid<? ORDER BY rowid DESC LIMIT 21").all(`lab:activation:${thread}`,before??Number.MAX_SAFE_INTEGER) as (AcceptedSessionInput&{position:number})[];
     const {opening,...publicBinding}=binding;
     const restricted=restrictedLabThread(thread);
+    publicBinding.participants=publicBinding.participants.map(member=>({...member,materials:(member.materials??[]).map(({path,sha256})=>({path,sha256}))}) as LabParticipant);
     if(restricted){publicBinding.participants=publicBinding.participants.map(structuralParticipant) as LabParticipant[];delete publicBinding.presentation;}
     const journalBinding=JSON.parse(membership.receipt_json??'{}');
     return {version:1,...publicBinding,journalBinding:{state:journalBinding.state,error:restricted?null:journalBinding.error??null},activations:actions.slice(0,20).map(action=>{
@@ -337,8 +347,11 @@ export class LabConversations {
               ...(member.key==='coordinator'&&context.presentation?[`Group presentation from the canonical preferences service (pass unchanged): ${JSON.stringify(context.presentation)}. To adjust presentation, first read /app/account/preferences using the existing thinkering curl-compatible command. Then write only this supplied preference key and a value supported by the current service. Send X-Concierge-Agent-Source with this actual input and run, and X-Agent-Why with the reason on both requests. Do not invent preference keys, options, defaults, or tool results.`]:[]),
               'This is a shared group conversation. Address the selected contribution directly and keep your reply concise by default. Give a fuller answer when the human asks for depth or detail. The runtime preserves your full original answer without trimming it.',
               'The runtime retains your original final answer and publishes it under your own participant identity. Answer directly; no sessions reply is required for this typed invocation.',
-              `Your binding and source differences: ${JSON.stringify(member)}`,
+              `Your binding and source differences: ${JSON.stringify({...member,materials:(member.materials??[]).map(({path,sha256})=>({path,sha256}))})}`,
               ...(member.instructions!==null?[`Selected participant instructions, verbatim:\n${member.instructions}`]:[]),
+              ...(member.materials??[]).map(material=>{
+                if(createHash('sha256').update(material.text).digest('hex')!==material.sha256)throw new LabConversationError('The frozen selected material no longer matches its retained digest.',409,'LAB_MATERIAL_MISMATCH');
+                return `Selected material, frozen at selection (path ${material.path}, sha256 ${material.sha256}), verbatim:\n${material.text}`;}),
               member.tools==='none'?'This ChatGPT session has no outbound tools. If the selected instructions require tools or private resources you cannot access, say exactly what cannot be performed. Do not simulate retrieval, NotebookLM, or source-constrained results.':'Use your existing native tools when the selected instructions call for them. Disclose unavailable resources and the actual sources used; do not simulate another provider.',
               `Visible Lab discussion:\n${JSON.stringify(context)}`].join('\n\n');
             db.transaction(()=>{

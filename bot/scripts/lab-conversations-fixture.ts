@@ -19,7 +19,10 @@ async function child(){
  let lab:any;
  const ports:any={
   bootstrap:async()=>({version:1,state:{owner:`concierge:${coordinator.id}`},entries:[opening]}),
-  prepare:async(choice:any)=>choice.sessionId?{choice,sessionId:Number(choice.sessionId.slice(10))}:{choice,provider:'codex',metadata:{summary:undefined,title:choice.label,purpose:'chat',model:choice.model,reasoningEffort:choice.reasoningEffort,cwd:process.env.CONCIERGE_STATE_DIR!,project:process.env.CONCIERGE_STATE_DIR!,origin:'native'}},
+  prepare:async(choice:any)=>{
+   const base=choice.sessionId?{choice,sessionId:Number(choice.sessionId.slice(10))}:{choice,provider:'codex',metadata:{summary:undefined,title:choice.label,purpose:'chat',model:choice.model,reasoningEffort:choice.reasoningEffort,cwd:process.env.CONCIERGE_STATE_DIR!,project:process.env.CONCIERGE_STATE_DIR!,origin:'native'}};
+   return choice.materials?.length?{...base,materials:owner.materializeLabMaterials(choice.materials)}:base;
+  },
   sources:async(refs:any[])=>refs.map(reference=>({reference,text:'Actual selected source material.',sha256:hash('Actual selected source material.')})),
   bind:async(thread:string,membershipRevision:number)=>({version:1,thread,membershipRevision,bound:true}),
   context:async({thread,entryId,sessionId,requestId,independent,signal}:any)=>{
@@ -221,6 +224,77 @@ async function child(){
  const oldUpdateRetry=await lab.participants('roster',rosterChange);assert.equal(oldUpdateRetry.membershipRevision,3);assert.equal(oldUpdateRetry.change.revision,2,'duplicate action returns its original applied revision before checking a stale precondition');
  await assert.rejects(()=>lab.participants('roster',{clientActionId:'remove-coordinator',expectedRevision:3,add:[],remove:[`concierge:${coordinator.id}`]}),/coordinator remains stable/i);
 
+ // Materials: exact file bytes frozen into each participant's binding at selection.
+ {
+  const {mkdirSync,writeFileSync,rmSync,symlinkSync}=await import('node:fs');
+  const stateDir=process.env.CONCIERGE_STATE_DIR!,project=join(stateDir,'materials-project');
+  mkdirSync(join(project,'.git'),{recursive:true});writeFileSync(join(project,'AGENTS.md'),'fixture project');
+  const skillText='# Skill\nExact bytes ✓ kept verbatim.\n',refText='Reference line one\nline two\n';
+  const skillPath=join(project,'SKILL.md'),refPath=join(project,'reference.md');writeFileSync(skillPath,skillText);writeFileSync(refPath,refText);
+  const matSkill={path:skillPath,sha256:hash(skillText)},matRef={path:refPath,sha256:hash(refText)};
+  const matCoding=make('codex','material coding voice'),matChat=make('chatgpt','material tool-free ChatGPT voice');
+  const codingId=`concierge:${matCoding.id}`,chatId=`concierge:${matChat.id}`;
+  const matCreate={clientActionId:'create-materials',thread:'materials',questionEntryId:'opening',participants:[{key:'coding',label:'Coding voice',sessionId:codingId,materials:[matSkill,matRef]},{key:'chat',label:'ChatGPT voice',sessionId:chatId,materials:[matSkill]}]};
+  const refusal=async(participants:any[],code:string,status:number,action:string)=>{
+   const before=db.query("SELECT count(*) AS n FROM session_inputs WHERE scope LIKE 'lab:%'").get()?.n;
+   await assert.rejects(()=>lab.create({...matCreate,clientActionId:action,thread:action,participants}),(error:any)=>error.code===code&&error.status===status,action);
+   assert.equal(db.query("SELECT count(*) AS n FROM session_inputs WHERE scope LIKE 'lab:%'").get()?.n,before,`${action}: nothing retained`);
+  };
+  const member={key:'coding',label:'Coding voice',sessionId:codingId};
+  await refusal([{...member,materials:[{path:skillPath,sha256:'0'.repeat(64)}]}],'LAB_MATERIAL_MISMATCH',409,'bad-hash');
+  const outside=join(stateDir,'outside-project.md');writeFileSync(outside,'private');
+  await refusal([{...member,materials:[{path:outside,sha256:hash('private')}]}],'LAB_MATERIAL_UNAVAILABLE',409,'outside-project');
+  symlinkSync(outside,join(project,'escape.md'));
+  await refusal([{...member,materials:[{path:join(project,'escape.md'),sha256:hash('private')}]}],'LAB_MATERIAL_UNAVAILABLE',409,'symlink-escape');
+  await refusal([{...member,materials:[{path:join(project,'missing.md'),sha256:'1'.repeat(64)}]}],'LAB_MATERIAL_UNAVAILABLE',409,'missing-file');
+  const big=Buffer.alloc(1_048_577,97);writeFileSync(join(project,'big.md'),big);
+  await refusal([{...member,materials:[{path:join(project,'big.md'),sha256:createHash('sha256').update(big).digest('hex')}]}],'LAB_MATERIAL_UNAVAILABLE',409,'too-large');
+  const binary=Buffer.from([0xff,0xfe,0x00]);writeFileSync(join(project,'binary.bin'),binary);
+  await refusal([{...member,materials:[{path:join(project,'binary.bin'),sha256:createHash('sha256').update(binary).digest('hex')}]}],'LAB_MATERIAL_UNAVAILABLE',409,'not-utf8');
+  await refusal([{...member,materials:[{path:'relative.md',sha256:matSkill.sha256}]}],'LAB_MATERIAL_UNAVAILABLE',400,'relative-path');
+  await refusal([{...member,materials:[{...matSkill,extra:true}]}],'LAB_CONVERSATION_REFUSED',400,'extra-field');
+  await refusal([{...member,materials:Array.from({length:33},(_,index)=>({path:join(project,`n${index}.md`),sha256:matSkill.sha256}))}],'LAB_CONVERSATION_REFUSED',400,'too-many');
+  assert.equal((await (owner as any).prepareLabParticipant({key:'wired',label:'Wired',sessionId:codingId,materials:[matSkill]})).materials[0].text,skillText,'the owner preparation path freezes the exact text');
+
+  await lab.create(matCreate);await lab.create(matCreate);
+  assert.equal(db.query("SELECT count(*) AS n FROM session_inputs WHERE kind='lab-conversation' AND action_id='materials'").get()?.n,1,'same materials retry is a duplicate');
+  await assert.rejects(()=>lab.create({...matCreate,participants:[{...matCreate.participants[0],materials:[{path:skillPath,sha256:hash('another version')},matRef]},matCreate.participants[1]]}),/conflict/i);
+  assert.ok(!JSON.stringify(lab.view('materials')).includes('kept verbatim'),'the public view carries paths and digests, never the bytes');
+  await lab.reconcile();
+  const promptOf=(thread:string,actionId:string,sessionId:string)=>{
+   const invocation=lab.view(thread).activations.find((value:any)=>value.actionId===actionId).invocations.find((value:any)=>value.sessionId===sessionId);
+   return JSON.parse(getAcceptedSessionInput(invocation.inputId)!.payload_json).text as string;
+  };
+  const firstActivation=lab.view('materials').activations[0].actionId;
+  for(const [sessionId,texts] of [[codingId,[skillText,refText]],[chatId,[skillText]]] as const){
+   const prompt=promptOf('materials',firstActivation,sessionId);
+   for(const text of texts)assert.ok(prompt.includes(`sha256 ${hash(text)}), verbatim:\n${text}`),'exact bytes and hash in the invocation prompt');
+   assert.ok(prompt.indexOf(skillText)<prompt.indexOf('Visible Lab discussion:'));
+  }
+  assert.ok(!promptOf('materials',firstActivation,chatId).includes(refText),'a participant receives only its own materials');
+
+  writeFileSync(skillPath,'Overwritten after selection.');rmSync(refPath);
+  lab.respond('materials',{clientActionId:'materials-follow-up',entryId:'materials-follow-up-entry',targets:[codingId,chatId]});await lab.reconcile();
+  for(const [sessionId,texts] of [[codingId,[skillText,refText]],[chatId,[skillText]]] as const){
+   const prompt=promptOf('materials','materials-follow-up',sessionId);
+   for(const text of texts)assert.ok(prompt.includes(`verbatim:\n${text}`),'a later invocation still carries the frozen bytes');
+   assert.ok(!prompt.includes('Overwritten after selection.'));
+  }
+
+  const lateText='Added later, frozen when added.\n',latePath=join(project,'late.md');writeFileSync(latePath,lateText);
+  const lateRequest={path:latePath,sha256:hash(lateText)};
+  const add=(clientActionId:string,materials:any[])=>({clientActionId,expectedRevision:1,add:[{key:'late',label:'Late voice',provider:'codex',model:'gpt-6-luna',reasoningEffort:'low',project:'fixture',materials}],remove:[]});
+  await assert.rejects(()=>lab.participants('materials',add('late-bad',[{path:latePath,sha256:'2'.repeat(64)}])),(error:any)=>error.code==='LAB_MATERIAL_MISMATCH');
+  const lateAdd=add('late-add',[lateRequest]);
+  const added=await lab.participants('materials',lateAdd);
+  assert.equal((await lab.participants('materials',lateAdd)).change.duplicate,true);
+  await assert.rejects(()=>lab.participants('materials',add('late-add',[{path:latePath,sha256:hash('different')}])),/conflict/i);
+  writeFileSync(latePath,'Changed after the voice was added.');
+  lab.respond('materials',{clientActionId:'late-ask',entryId:'late-ask-entry',targets:[added.change.add[0]]});await lab.reconcile();
+  const latePrompt=promptOf('materials','late-ask',added.change.add[0]);
+  assert.ok(latePrompt.includes(`verbatim:\n${lateText}`)&&!latePrompt.includes('Changed after the voice was added.'),'a roster add freezes at add time');
+ }
+
  // An unresolved context for one voice cannot hold its ready sibling or the ordinary
  // communication loop. Stop aborts observation and never starts the blocked voice.
  blockSession=`concierge:${first.id}`;lab.respond('comparison',{clientActionId:'blocked-context',entryId:'blocked-entry',targets:[`concierge:${first.id}`,`concierge:${second.id}`]});
@@ -235,7 +309,7 @@ async function child(){
  const last=lab.view('comparison').activations[0].invocations[0];assert.equal(lab.requestFacts('comparison',last.requestId).requestId,last.requestId,'an exact descriptor beyond 64 pending activations remains addressable');
  const plan=db.query("EXPLAIN QUERY PLAN SELECT rowid FROM session_inputs INDEXED BY session_inputs_lab_history WHERE kind='lab-activation' AND scope=? AND rowid<? ORDER BY rowid DESC LIMIT 21").all('lab:activation:comparison',Number.MAX_SAFE_INTEGER) as any[];
  assert.ok(plan.some(row=>row.detail.includes('session_inputs_lab_history')));assert.ok(!plan.some(row=>row.detail.includes('TEMP B-TREE')));
- console.log(JSON.stringify({fixture:'lab-conversations',idempotentCreate:true,sourceCorrectMarkers:true,authenticatedGatewayActorCustody:true,agentOutputVerifierRefused:true,providerRestartNoReplay:true,exactOriginalOutput:true,realChatGptHostAdapter:true,perReaderContext:true,passiveNoWake:true,bindingDriftRefused:true,noUnboundTerminalContinuation:true,nonblockingAndStop:true,revisionedRoster:true,removeRunningRetainsOriginal:true,addVoicePassiveUntilSelected:true,newVoiceSharedContext:true}));
+ console.log(JSON.stringify({fixture:'lab-conversations',idempotentCreate:true,sourceCorrectMarkers:true,authenticatedGatewayActorCustody:true,agentOutputVerifierRefused:true,providerRestartNoReplay:true,exactOriginalOutput:true,realChatGptHostAdapter:true,perReaderContext:true,passiveNoWake:true,bindingDriftRefused:true,noUnboundTerminalContinuation:true,nonblockingAndStop:true,revisionedRoster:true,removeRunningRetainsOriginal:true,addVoicePassiveUntilSelected:true,newVoiceSharedContext:true,frozenMaterials:true}));
 }
 
 if(process.argv.includes('--child')){await child();process.exit(0);}
