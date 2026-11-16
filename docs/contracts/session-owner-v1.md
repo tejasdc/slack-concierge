@@ -312,10 +312,13 @@ authority, events and the `sessions topics` agent commands are specified in
 A request's `dispatches` are projected live from the request rows, not from the snapshot taken when the router linked them: each carries the current `outcome` and `state`, `sourceInputId` (the Inbox message the router was answering when it sent it, where a thread places its card), `at` and the first 240 characters of its `text`; a dispatch whose row the owner no longer holds keeps the linked snapshot.
 
 `GET /sessions/v1/inbox/topics/:id` also returns `replyTargets:{router, default, choices:[{sessionId,title,why,owns:[id…]}]}`:
-who a reply inside the thread goes to. `choices` are the sessions this owner runs that hold a
-still-open, unstalled request in the thread, asked an open question there, or returned the answer
-being replied to; `default` is the one owning the item replied to, else the single choice, else the
-router. The questions read carries the same per group. A human input to the Inbox with
+who a reply inside the thread goes to. `choices` include agents that wrote posts in the thread,
+even when their requests have closed or the Inbox role has moved to another session; the post's
+author is read across the same Inbox lineage as the visible thread. Open work and questions also
+remain choices. Earlier Inbox role holders count as the router rather than separate agent choices.
+`default` is the author of an item he explicitly replies to, else the latest
+speaker in the thread, else its single working agent, else the router. The questions read carries
+the same per group. A human input to the Inbox with
 `replyToMessage` may carry `deliverTo` (a choice's session id, or `router`); absent, the owner
 applies its default. A reply addressed to an agent is retained in the Inbox as his message
 (`accepted` event `forwarded:<input>`, receipt `{state:'waiting', forwardedTo}`, a `topic`
