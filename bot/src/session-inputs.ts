@@ -50,6 +50,8 @@ export type NativeSessionMetadata = {
   /** Automatic picked this provider, not him: a zero-work refused first turn, and queued work its provider
    * cannot start (held-work-failover.ts), may move to another provider. His model choice clears it. */
   automaticProviderChoice?:boolean;
+  /** Tejas himself chose this session's provider or model, verified by the owner; held-work failover never moves it. */
+  providerChosenBy?:'tejas';
   automaticSmallTask?:boolean;
   /** The selected thinking model was verified against Tejas's own words or peer-retained choice. */
   explicitThinkingModelChoice?:string;

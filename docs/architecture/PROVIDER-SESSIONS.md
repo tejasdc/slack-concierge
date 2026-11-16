@@ -292,6 +292,21 @@ conversation.
 The owner scans held sessions in bounded pages and yields between pages. An ineligible
 session cannot keep later sessions out of recovery indefinitely.
 
+The owner's transfer successor takes the Codex model of the Claude tier it leaves (Opus or Fable to
+Sol, Sonnet to Luna, Haiku to Terra) and keeps its reasoning effort; the mapping lives beside the
+alias tables (`aliasKeepingTier`).
+
+#### Automatic moves of held work
+
+A Codex turn that is accepted and then ended with the provider's usage-limit message, with no
+assistant output and no tools, did nothing. The Codex runner re-throws it with the account's reset
+(from Codex's own rate-limit report, else the spent window of the stored usage reading; the
+"try again at" text is never parsed), so the existing hold keeps the input queued for usage and its
+request open, and the next turn on that account is refused before sending. Held work then moves to
+a provider with room through the provider-change handoff
+([automatic failover](SESSION-OWNER.md#automatic-failover-of-held-work)) unless Tejas himself chose
+the session's provider or model; the successor keeps the predecessor's model tier and effort.
+
 Eligibility is deliberately narrower than a usage hold. The source session must be active
 and unsuspended, with no running or unresolved execution, outgoing helper, dependency,
 artifact delivery, or earlier open request. All its queued turns must be ordinary,
