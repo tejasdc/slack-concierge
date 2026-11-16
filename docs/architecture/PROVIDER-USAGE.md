@@ -1125,7 +1125,10 @@ counted under those sessions and threads. The full breakdown carries `byThread`,
 per-id maps `sessionAllowanceById` (keyed by `concierge:<id>`) and
 `threadAllowanceById` (keyed by stable topic ID) stay in the cached report for
 the visible-row lookup and are left off the breakdown response to keep it under
-its size limit. A call is assigned to a topic only when its exact turn input
+its size limit. Each estimated component also carries `currentPeriodPercent`, its share of the
+provider's current reset period alone (null when that period has no fresh measurement), which
+is what the Accounts bar divides: the account's reading restarts at each reset, so a seven-day
+estimate would describe the previous week's work. A call is assigned to a topic only when its exact turn input
 has a recorded request topic, attached thread link, or topic root; work without
 that evidence stays unassigned. Topic and routine rows carry optional display
 titles read from the existing owner ledger after runner merge. Existing token
