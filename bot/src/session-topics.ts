@@ -774,7 +774,7 @@ function workIndex(sessionId:number):WorkIndex {
       title:(target&&sessionMetadata(target).title)||'Agent session',requestId:row.request_id});
   }
   for(const row of db.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS source_input_id,peer,remote_session_id FROM session_peer_requests
-      WHERE source_session_id IN (${inboxLineageSql}) AND outcome IS NULL`).all(sessionId) as any[]) {
+      WHERE source_session_id IN (${inboxLineageSql}) AND outcome IS NULL AND json_extract(payload_json,'$.responseMode') IS NOT 'context'`).all(sessionId) as any[]) {
     const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
     dispatches.push({root:rootOf(row.source_session_id,row.source_input_id),sessionId:receiveSessionFromPeer(row.remote_session_id,row.peer),
       title:(catalogue?JSON.parse(catalogue.view_json)?.title:null)||`${row.peer} session`,requestId:row.request_id});
@@ -3627,7 +3627,7 @@ function workRunningIn(topicId:string):boolean {
   const roots=new Set(topicRoots(topicId));
   if(!roots.size)return false;
   const pending=[...(db.query('SELECT thread_root_input_id AS root FROM session_communication_requests WHERE outcome IS NULL').all() as {root:string|null}[]),
-    ...(db.query('SELECT thread_root_input_id AS root FROM session_peer_requests WHERE outcome IS NULL').all() as {root:string|null}[])];
+    ...(db.query("SELECT thread_root_input_id AS root FROM session_peer_requests WHERE outcome IS NULL AND json_extract(payload_json,'$.responseMode') IS NOT 'context'").all() as {root:string|null}[])];
   return pending.some(row=>!!row.root&&roots.has(row.root));
 }
 function recordOwnerTopicChange(sessionId:number,eventId:string,kind:string,payload:any):boolean {
@@ -4892,7 +4892,7 @@ function migrationDispatches(sessionId:number,root:string) {
       targetTitle:(target&&sessionMetadata(target).title)??null,outcome:row.outcome??null,state:row.status??null});
   }
   for(const row of db.query(`SELECT request_id,source_input_id,peer,remote_session_id,outcome,status FROM session_peer_requests
-      WHERE source_session_id=?`).all(sessionId) as any[]) {
+      WHERE source_session_id=? AND json_extract(payload_json,'$.responseMode') IS NOT 'context'`).all(sessionId) as any[]) {
     if(rootOf(sessionId,row.source_input_id)!==root)continue;
     dispatches.push({requestId:row.request_id,targetSessionId:receiveSessionFromPeer(row.remote_session_id,row.peer),targetTitle:null,
       outcome:row.outcome??null,state:row.status??null});

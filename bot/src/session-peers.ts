@@ -251,7 +251,7 @@ export class PeerClient {
   }
 }
 
-type PeerRequestRow={request_id:string;peer:string;source_session_id:number;source_turn_id:number;source_input_id:string;action_id:string;payload_json:string;payload_hash:string;
+type PeerRequestRow={request_id:string;peer:string;source_session_id:number;source_turn_id:number|null;source_input_id:string;action_id:string;payload_json:string;payload_hash:string;
   remote_session_id:string;remote_address:string;remote_operation_id:string;remote_status_json:string|null;delivery_json:string|null;status:string;outcome:string|null;result_json:string|null;due_at_ms:number;overdue_at_ms:number|null;prompt_reminded_at_ms:number|null;prompt_answered_at_ms:number|null;stalled_at_ms:number|null;created_at_ms:number;thread_root_input_id:string|null};
 type CatalogueRow={peer:string;remote_session_id:string;address:string;runtime_thread_id:string|null;view_json:string;updated_at_ms:number};
 const OFFLINE_MS=60_000;
@@ -261,6 +261,7 @@ type PeerEventRow={event_id:string;request_id:string;kind:'progress'|'final'|'ov
 type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;reminded_at_ms:number|null;reminded_via:string|null;prompt_reminded_at_ms:number|null;stalled_at_ms:number|null;stalled_reason:string|null;created_at_ms:number};
 type ReplyRow={event_id:string;request_id:string;action_key:string|null;kind:'progress'|'final';payload_json:string;status:string;error:string|null;created_at_ms:number};
 export type PeerActor={session:number;turn:number;inputId:string};
+type ContextPeerActor={session:number;turn:null;inputId:string};
 const WORK_DISPOSITIONS=['completed','failed','needs_decision'] as const;
 type WorkDisposition=typeof WORK_DISPOSITIONS[number];
 type PeerRequestStatus=Record<string,any>&{requestId:string;sessionId:string;address:string;inputState:string;
@@ -405,6 +406,27 @@ export class SessionPeers {
   client(name:unknown):PeerClient {
     if(typeof name!=='string'||!this.dependencies.clients.has(name))throw new SessionOwnerError(`Unknown peer instance${typeof name==='string'?` ${name}`:''}; see sessions peers.`,404,'PEER_UNKNOWN');
     return this.dependencies.clients.get(name)!;
+  }
+  async assertContextCapability(peer:string) {
+    const status=await this.client(peer).request<any>('GET','/sessions/v1/status',undefined,5_000);
+    if(status?.capabilities?.passiveContext!==1)
+      throw new SessionOwnerError(`The ${peer} Concierge release cannot safely receive saved context yet.`,409,'PEER_CONTEXT_UNSUPPORTED');
+  }
+  private settleContextDelivery(row:PeerRequestRow,state:'saved'|'failed'|'uncertain',code:string,message:string,
+    target?:{sessionId:string;address:string;operationId:string}) {
+    db.transaction(()=>{
+      if(this.row(row.request_id).outcome!==null)return;
+      db.query("UPDATE session_peer_requests SET status='settled',outcome=?,delivery_json=CASE WHEN ?='uncertain' THEN delivery_json ELSE NULL END,result_json=?,remote_session_id=coalesce(?,remote_session_id),remote_address=coalesce(?,remote_address),remote_operation_id=coalesce(?,remote_operation_id) WHERE request_id=? AND outcome IS NULL")
+        .run(state==='saved'?'completed':state,state,JSON.stringify({state:state==='saved'?'completed':state,responseMode:'context',contextSaved:state==='saved',code,message}),
+          target?.sessionId??null,target?.address??null,target?.operationId??null,row.request_id);
+      const operationId=JSON.parse(row.payload_json).contextOperationId??row.source_input_id;
+      db.query("UPDATE session_inputs SET receipt_json=json_remove(json_set(coalesce(receipt_json,'{}'),'$.contextDelivery',json(?)),'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(JSON.stringify({requestId:row.request_id,peer:row.peer,state,...(state==='saved'?{}:{error:message})}),operationId);
+      if(target)db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.contextTarget',?) WHERE id=?")
+        .run(this.presentedSession(row.peer,target.sessionId),operationId);
+      recordSessionEvent({eventId:`context-delivery-${state}:${row.request_id}`,sessionId:row.source_session_id,inputId:operationId,
+        kind:'receipt',payload:{change:`context_${state}`,requestId:row.request_id,peer:row.peer,...(target?{targetSessionId:this.presentedSession(row.peer,target.sessionId)}:{})}});
+    })();
   }
   private note(peer:string,error:unknown) {
     if(error instanceof PeerError&&error.kind==='unreachable'){this.unreachable.set(peer,this.now());return;}
@@ -721,7 +743,8 @@ export class SessionPeers {
   hasDelivery(requestId:string){return !!db.query('SELECT 1 FROM session_peer_deliveries WHERE request_id=?').get(requestId);}
   private presentedSession(peer:string,remote:string){return receiveSessionFromPeer(remote,peer,this.self);}
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
-  async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;escalationReason?:string;purpose?:'research'|'design-critique'|'design-review';providerReason?:string;project?:string;title?:string;summary?:string;text:string;
+  async ask(actor:PeerActor|ContextPeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;escalationReason?:string;purpose?:'research'|'design-critique'|'design-review';providerReason?:string;project?:string;title?:string;summary?:string;text:string;
+    responseMode?:'context';contextPayload?:Record<string,any>;contextOperationPayload?:Record<string,any>;
     forTask?:string;recoveryOf?:string;correctionOf?:string;
     machineNeed?:MachineNeed;
     requestedEffect?:'informational'|'work';authorityInputId?:string;files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
@@ -729,14 +752,19 @@ export class SessionPeers {
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
     framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent';messageThreadRootId?:string;messageThreadRequestId?:string}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
+    if(actor.turn===null&&input.responseMode!=='context')throw new Error('An active peer request needs its actual provider turn.');
     const client=this.client(input.peer);
     const effect=input.requestedEffect??'informational';
     const prior=()=>db.query('SELECT * FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as PeerRequestRow|null;
-    const encode=(taskRef:ChatGptTask|null)=>JSON.stringify({peer:input.peer,answerGuaranteeVersion:1,...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
+    const encode=(taskRef:ChatGptTask|null)=>JSON.stringify({peer:input.peer,...(input.responseMode==='context'?{responseMode:'context',contextPayload:input.contextPayload,...(input.contextOperationPayload?{contextOperationPayload:input.contextOperationPayload,contextOperationId:`context-operation:${requestIdFor(actor.inputId,input.action_id)}`}:{})}: {answerGuaranteeVersion:1}),...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
       ...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(input.purpose===undefined?{}:{purpose:input.purpose}),...(input.providerReason===undefined?{}:{providerReason:input.providerReason}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
       ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),requestedEffect:effect,...(input.authorityInputId?{authorityInputId:input.authorityInputId}:{}),...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
       ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(input.routedFrom?{routedMessage:{sourceInputId:input.routedFrom.messageId},routedFrom:input.routedFrom}:{}),
       ...(taskRef?{taskRef}:{}),...(input.recoveryOf?{recoveryOf:input.recoveryOf}:{}),...(input.correctionOf?{correctionOf:input.correctionOf}:{})});
+    if(input.responseMode==='context') {
+      const existing=prior(),encoded=encode(null),digest=hash(encoded);
+      if(existing){if(existing.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names different saved context.');return this.receipt(existing);}
+    }
     const existingCorrection=input.correctionOf?prior():null;
     if(existingCorrection){
       const taskRef=input.forTask?parseChatGptTask(input.forTask):null;
@@ -752,7 +780,7 @@ export class SessionPeers {
         WHERE peer=? AND remote_session_id=? AND json_extract(payload_json,'$.provider') IS NOT NULL ORDER BY created_at_ms DESC LIMIT 1`)
         .get(input.peer,addressedRemote) as {provider:string}|null:null;
       addressedProvider=addressedRemote?this.cachedView(input.peer,addressedRemote)?.provider??admitted?.provider??null:null;
-      if(addressedRemote&&!addressedProvider){
+      if(addressedRemote&&!addressedProvider&&input.responseMode!=='context'){
         try{
           const exact=await client.request<any>('GET',`/sessions/v1/sessions/${encodeURIComponent(addressedRemote)}/view`,undefined,8_000);
           const view=exact?.session;
@@ -764,13 +792,14 @@ export class SessionPeers {
       }
       // An unknown addressed target could be ChatGPT. Before retaining the ask we need
       // its exact provider, but a missing catalogue cache alone is not a refusal.
-      if(!addressedRemote||!addressedProvider)throw new Error('The addressed peer session needs a current discovered provider identity before this ask.');
+      if(!addressedRemote||(!addressedProvider&&input.responseMode!=='context'))
+        throw new Error('The addressed peer session needs a current discovered provider identity before this ask.');
     }
-    const toChatGpt=input.provider==='chatgpt'||addressedProvider==='chatgpt';
+    const toChatGpt=input.responseMode!=='context'&&(input.provider==='chatgpt'||addressedProvider==='chatgpt');
     if((input.forTask||input.recoveryOf||input.correctionOf)&&!toChatGpt)throw new Error('--for-task, --recovery-of and --correction-of belong to a ChatGPT question.');
     if(toChatGpt&&input.threadRoot&&!input.returnToRequester)
       throw new Error('A ChatGPT question for a named thread must also return to its asking agent; add --return-to-requester.');
-    const task:ChatGptTask|null=toChatGpt?resolveChatGptTask(actor.session,actor.inputId,input.forTask):null;
+    const task:ChatGptTask|null=toChatGpt&&input.responseMode!=='context'?resolveChatGptTask(actor.session,actor.inputId,input.forTask):null;
     if(input.correctionOf){
       if(input.recoveryOf||input.provider||!input.address||!input.forTask||!input.files?.length||input.attachments?.length||input.captureId)
         throw new Error('Peer attachment correction needs the original ChatGPT address, exact task and corrected --file.');
@@ -798,11 +827,13 @@ export class SessionPeers {
     const files=[...(input.files??[]),...[...(input.attachments??[]),...captured].map(attachmentId=>owner.attachment(attachmentId))]
       .map(({name,contentType,base64})=>({name,contentType,base64}));
     const sourceInput=getAcceptedSessionInput(actor.inputId)!;
+    if(actor.turn===null&&(!sourceInput||sourceInput.session_id!==actor.session||sourceInput.turn_id!==null))
+      throw new Error('Saved context without a provider run must name its actual unexecuted source input.');
     const authorityInput=input.authorityInputId?getAcceptedSessionInput(input.authorityInputId)!:sourceInput;
     const provenance=sessionInputProvenance(authorityInput);
-    const runId=nativeRunId(actor.turn);
-    const continuedGrant=continuedWebAppAuthorization(actor,sourceInput,provenance,input);
-    const focusCustody=focusCustodyClaim(actor,input);
+    const runId=actor.turn===null?null:nativeRunId(actor.turn);
+    const continuedGrant=actor.turn===null?null:continuedWebAppAuthorization(actor as PeerActor,sourceInput,provenance,input);
+    const focusCustody=actor.turn===null?null:focusCustodyClaim(actor as PeerActor,input);
     // A human message asking directly is its own originating human; a local walk would find it as the parent.
     const routedOriginal=input.routedFrom?.authorKind==='human'?getAcceptedSessionInput(input.routedFrom.messageId):null;
     const known=routedOriginal&&humanAuthored(routedOriginal)
@@ -825,9 +856,9 @@ export class SessionPeers {
     const selectedModel=providerSelector?resolveProviderSelector(providerSelector).model:undefined;
     const humanModelChoice=!!selectedModel&&humanModelChoices.includes(selectedModel as any);
     const text=input.framing?input.framing(id):`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. ${input.routedFrom?`This carries the exact Inbox message ${input.routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.`:'This is agent-authored input within the originating human task, not a new human message.'} Requested effect: ${effect}. Close it with sessions reply ${id}${effect==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`;
-    const delivery={requestId:id,answerGuaranteeVersion:1,
+    const delivery={requestId:id,...(input.responseMode==='context'?{responseMode:'context',contextPayload:input.contextPayload}: {answerGuaranteeVersion:1}),
       ...(task?{answerObligation:{id:input.correctionOf??input.recoveryOf??id,task,attemptId:id}}:{}),
-      origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:input.authorityInputId?'work':provenance?.effectScope??null,...(focusCustody?{focusCustody}:{})},
+      origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,actionId:sourceInput.action_id,origin:sourceInput.origin,originatingHuman,effectScope:input.authorityInputId?'work':provenance?.effectScope??null,...(focusCustody?{focusCustody}:{})},
       ...(humanModelChoices.length?{humanModelChoices}:{}),
       ...(humanProviderChoices.length?{humanProviderChoices}:{}),
       ...(humanChatGptEfforts.length?{humanChatGptEfforts}:{}),
@@ -838,8 +869,17 @@ export class SessionPeers {
       const raced=prior();
       if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return;}
       const now=this.now();
+      const contextOperation=input.responseMode==='context'&&input.contextOperationPayload?retainSessionInput({id:`context-operation:${id}`,
+        sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'input',origin:'agent',
+        sourceInputId:actor.inputId,sourceRunId:runId??undefined,payload:input.contextOperationPayload}):null;
+      if(contextOperation&&!contextOperation.duplicate)this.dependencies.owner.recordContextMessage(contextOperation.input);
       db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,delivery_json,status,due_at_ms,created_at_ms,thread_root_input_id,topic_root_input_id)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+(input.forwardedReply?PROMPT_ANSWER_REMINDER_MS:STILL_WAITING_AFTER_MS),now,input.threadRoot??null,input.routedFrom?.root??topicRootFor(input.threadRoot,actor.inputId)??'');
+      if(input.responseMode==='context')db.query("UPDATE session_inputs SET receipt_json=json_remove(json_set(coalesce(receipt_json,'{}'),'$.contextDelivery',json(?)),'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(JSON.stringify({requestId:id,peer:input.peer,state:'pending'}),contextOperation?.input.id??actor.inputId);
+      if(contextOperation)db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.contextTarget',?) WHERE id=?")
+        .run(this.presentedSession(input.peer,accepted.sessionId),contextOperation.input.id);
+      if(input.responseMode==='context')return;
       if(task){
         bindDirectChatGptTaskSource(task,actor.inputId,actor.session);
         const targetSessionId=addressedRemote?`${input.peer}/${addressedRemote}`:`${input.peer}/request:${id}`;
@@ -876,6 +916,12 @@ export class SessionPeers {
     return this.receipt(this.row(id));
   }
   receipt(row:PeerRequestRow) {
+    const passive=JSON.parse(row.payload_json);
+    if(passive.responseMode==='context'&&passive.contextOperationId){
+      const operation=getAcceptedSessionInput(passive.contextOperationId);
+      if(!operation)throw new Error('The saved context operation is missing.');
+      return {operation:this.dependencies.owner.receipt(operation)};
+    }
     const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
     const remoteCheck=remote?peerRequestStatus(remote,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address,requestedEffect:JSON.parse(row.payload_json).requestedEffect}):null;
     const execution=remote?.execution;
@@ -1303,20 +1349,42 @@ export class SessionPeers {
               health:'peer correction admission uncertain',agentReminder:true},eventId);
           return;
         }
-        db.query("UPDATE session_peer_requests SET remote_status_json=coalesce(remote_status_json,?) WHERE request_id=? AND status='queued_offline'")
+        if(queuedDelivery.responseMode!=='context')db.query("UPDATE session_peer_requests SET remote_status_json=coalesce(remote_status_json,?) WHERE request_id=? AND status='queued_offline'")
           .run(JSON.stringify({admissionAttemptedAtMs:this.now()}),row.request_id);
         row=this.row(row.request_id);
       }
       let accepted:any;
       let adoptedPeerCopy=false;
+      if(queuedDelivery.responseMode==='context') {
+        try{await this.assertContextCapability(row.peer);}
+        catch(error){
+          this.note(row.peer,error);
+          if(error instanceof SessionOwnerError&&error.code==='PEER_CONTEXT_UNSUPPORTED'){
+            const attempted=JSON.parse(row.remote_status_json??'{}');
+            this.settleContextDelivery(row,attempted.contextPostAttemptedAtMs||attempted.admissionAttemptedAtMs?'uncertain':'failed','PEER_CONTEXT_UNSUPPORTED',error.message);
+          }
+          return;
+        }
+      }
       try{
         const delivery=queuedDelivery;
+        if(delivery.responseMode==='context')db.query("UPDATE session_peer_requests SET remote_status_json=json_set(coalesce(remote_status_json,'{}'),'$.contextPostAttemptedAtMs',?) WHERE request_id=?").run(this.now(),row.request_id);
         accepted=await client.request('POST',delivery.correctionOf?'/sessions/v1/peers/requests/corrected-attachment':'/sessions/v1/peers/requests',delivery);
         if(delivery.correctionOf)this.activatePeerAttachmentCorrection(row,accepted);
         this.unreachable.delete(row.peer);
       }
       catch(error){
         this.note(row.peer,error);
+        if(JSON.parse(row.payload_json).responseMode==='context'&&error instanceof PeerError&&error.kind==='refused'
+          &&error.status!==null&&error.status>=400&&error.status<500){
+          const uncertain=error.status===409;
+          const definitiveRefusal=error.status===400||error.status===422;
+          if(uncertain||definitiveRefusal){
+            this.settleContextDelivery(row,uncertain?'uncertain':'failed',uncertain?'PEER_CONTEXT_IDEMPOTENCY_CONFLICT':'PEER_CONTEXT_REFUSED',error.message);
+            return;
+          }
+        }
+        if(JSON.parse(row.payload_json).responseMode==='context')return;
         // An idempotency conflict proves the peer already holds this request ID. Re-sending the
         // same body can only be refused again: on 2026-11-11 seven Mac requests were re-sent
         // about five times a second for days, enough owner log lines to blind the outside
@@ -1350,6 +1418,12 @@ export class SessionPeers {
       if(!adoptedPeerCopy){
       if(typeof accepted?.sessionId!=='string'||typeof accepted.address!=='string'||typeof accepted.operationId!=='string')
         throw new Error('The peer did not return the exact accepted session and operation.');
+      if(JSON.parse(row.payload_json).responseMode==='context') {
+        if(accepted.responseMode!=='context'||accepted.contextSaved!==true)
+          throw new Error('The peer did not confirm that it retained this input as saved context.');
+        this.settleContextDelivery(row,'saved','CONTEXT_SAVED','Saved for the next conversation.',accepted);
+        return;
+      }
       if(accepted.answerGuaranteeVersion!==1){
         db.transaction(()=>{
           db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=?,status='version_hold' WHERE request_id=? AND status='queued_offline'")
@@ -1753,7 +1827,37 @@ export class SessionPeers {
     if(typeof requestId!=='string'||!/^[0-9a-f-]{36}$/.test(requestId))throw new SessionOwnerError('A peer request needs its UUID.');
     const origin=object(input.origin);
     if(typeof origin.peer!=='string'||!this.dependencies.clients.has(origin.peer))throw new SessionOwnerError('Unknown peer instance.',403,'PEER_UNKNOWN');
-    if(typeof origin.sessionId!=='string'||typeof origin.inputId!=='string'||typeof origin.runId!=='string')throw new SessionOwnerError('A peer request names its origin session, input and run.');
+    if(typeof origin.sessionId!=='string'||typeof origin.inputId!=='string'
+      ||(typeof origin.runId!=='string'&&!(input.responseMode==='context'&&origin.runId===null&&typeof origin.actionId==='string')))
+      throw new SessionOwnerError('A peer request names its exact origin session, input and run, or a saved context action without a run.');
+    if(input.responseMode!==undefined&&input.responseMode!=='context')
+      throw new SessionOwnerError('Unknown peer response mode.',400,'PEER_RESPONSE_MODE_INVALID');
+    if(input.responseMode==='context') {
+      if(typeof input.address!=='string'||input.provider!==undefined||!input.contextPayload||typeof input.contextPayload!=='object'
+        ||Array.isArray(input.contextPayload)||typeof input.contextPayload.text!=='string'
+        ||(!input.contextPayload.text.trim()&&!Array.isArray(input.contextPayload.attachments)))
+        throw new SessionOwnerError('Saved peer context needs an exact existing session and retained message data.',400,'PEER_CONTEXT_INVALID');
+      const target=resolveSessionAddress(input.address),owner=this.dependencies.owner;
+      const files=(Array.isArray(input.files)?input.files:[]) as {name:string;contentType:string;base64:string}[];
+      const attachments=files.map((file,index)=>owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,
+        clientActionId:`peer-context-file:${requestId}:${index}`}).attachment.id);
+      const material=input.contextPayload;
+      const fullTextId=material.capture?.originalTextAttachmentId;
+      const fullTextIndex=typeof fullTextId==='string'&&Array.isArray(material.attachmentSourceIds)
+        ?material.attachmentSourceIds.indexOf(fullTextId):-1;
+      const payload={...material,attachments,
+        ...(fullTextIndex>=0?{capture:{...material.capture,sourceOriginalTextAttachmentId:fullTextId,
+          originalTextAttachmentId:attachments[fullTextIndex]}}:{}),
+        ...(material.routedFrom?{routedFrom:receivedRoutedFrom(material.routedFrom,origin.peer)}:{}),
+        ...(material.contributedFrom?{contributedFrom:receivedRoutedFrom(material.contributedFrom,origin.peer)}:{}),
+        ...(material.contributedBy?{contributedBy:receivedRoutedFrom(material.contributedBy,origin.peer)}:{}),
+        ...(material.retainedFrom?{retainedFrom:{...material.retainedFrom,
+          sessionId:receiveSessionFromPeer(material.retainedFrom.sessionId,origin.peer)}}:{})};
+      const receipt=owner.retainPeerContext({sessionId:target.id,peer:origin.peer,requestId,sourceInputId:origin.inputId,
+        sourceRunId:origin.runId,sourceActionId:origin.actionId,payload});
+      return {sessionId:`concierge:${target.id}`,address:sessionAddress(target),operationId:receipt.operationId,
+        responseMode:'context',contextSaved:true};
+    }
     if(origin.originatingHuman!==undefined&&origin.originatingHuman!==null
       &&(typeof origin.originatingHuman?.inputId!=='string'||typeof origin.originatingHuman?.runId!=='string'||typeof origin.originatingHuman?.sessionId!=='string'))
       throw new SessionOwnerError('A peer human source needs its exact session, input and run.',400,'PEER_HUMAN_SOURCE_INVALID');
@@ -2210,7 +2314,7 @@ export class SessionPeers {
 
   // ---- scheduling, shared with the coordinator's wake ----
   private incidentScanTraceRemaining=200;
-  private async scanRows<T>(table:string,sql:string,visit:(row:T)=>void,...args:(number|string)[]) {
+    private async scanRows<T>(table:string,sql:string,visit:(row:T)=>void|Promise<void>,...args:(number|string)[]) {
     if(this.incidentScanTraceRemaining-- > 0)
       log('warn','incident_reconciliation_scan',{table,sql:sql.replace(/\s+/g,' ').slice(0,400)});
     const query=db.query(sql);
@@ -2220,7 +2324,7 @@ export class SessionPeers {
       const row=query.get(...args,highWater,cursor) as (T&{reconciliation_rowid:number})|null;
       if(!row)return;
       cursor=row.reconciliation_rowid;
-      visit(row);
+            await visit(row);
       await new Promise<void>(resolve=>setImmediate(resolve));
     }
   }
@@ -2238,7 +2342,7 @@ export class SessionPeers {
         row=>this.schedule(`cancel:${row.request_id}`,()=>this.revokeCanceledRemote(row.request_id)));
       await this.scanRows<PeerRequestRow>('session_peer_requests',"SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_open_reconcile WHERE outcome IS NULL AND overdue_at_ms IS NULL AND json_extract(remote_status_json,'$.hold.code') IS NOT NULL AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1",
         row=>this.inspectHold(row));
-      await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_open_reconcile WHERE ${AWAITING_INSPECTION} AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+      await this.scanRows<PeerRequestRow>('session_peer_requests',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_requests INDEXED BY session_peer_open_reconcile WHERE ${AWAITING_INSPECTION} AND json_extract(payload_json,'$.responseMode') IS NOT 'context' AND due_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
         row=>this.inspectOverdueRequest(row),this.now());
       if(this.unrecovered.size)this.schedule('recover-discarded-replies',()=>this.recoverDiscardedReplies());
       // A cancellation could have been admitted by an older release without revoking its
@@ -2294,7 +2398,7 @@ export class SessionPeers {
       ||db.query("SELECT 1 FROM session_peer_requests WHERE outcome IS NULL LIMIT 1").get()
       ||db.query("SELECT 1 FROM session_peer_replies WHERE status='pending' LIMIT 1").get()
       ||db.query('SELECT 1 FROM session_peer_deliveries WHERE closed_at_ms IS NULL LIMIT 1').get())!==null;
-    const due=(db.query(`SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE ${AWAITING_INSPECTION}`).get() as {due:number|null}).due;
+    const due=(db.query(`SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE ${AWAITING_INSPECTION} AND json_extract(payload_json,'$.responseMode') IS NOT 'context'`).get() as {due:number|null}).due;
     const reminder=(db.query(`SELECT min(coalesce(json_extract(origin_provenance_json,'$.askedAnswer.createdAtMs'),created_at_ms))+? AS due FROM session_peer_deliveries WHERE closed_at_ms IS NULL AND prompt_reminded_at_ms IS NULL
       AND (json_extract(origin_provenance_json,'$.forwardedIntent.promptAnswer')=1 OR json_extract(origin_provenance_json,'$.askedAnswer') IS NOT NULL)`).get(PROMPT_ANSWER_REMINDER_MS) as {due:number|null}).due;
     const delays=[...(owed?[retryDelayMs(RETRY_POLICIES.peerRequest,RETRY_POLICIES.peerRequest.maxAttempts)]:[]),...(due===null?[]:[Math.max(0,due-this.now())]),...(reminder===null?[]:[Math.max(0,reminder-this.now())])];

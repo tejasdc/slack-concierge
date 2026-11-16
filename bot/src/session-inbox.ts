@@ -4,7 +4,8 @@ import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type Accepted
 import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {inboxRequestRoot,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
-import {firstInboxAcceptanceSql} from './inbox-message-identity';
+import {firstInboxAcceptanceSql,savedContextMessageSql} from './inbox-message-identity';
+import {inboxContextMessage} from './inbox-context-message';
 import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
@@ -99,12 +100,16 @@ const inboxRowsFrom=`SELECT event.*,input.payload_json AS input_json,input.origi
     JOIN sessions owner ON owner.id=event.session_id AND json_extract(owner.native_metadata_json,'$.inbox')=1
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id`;
-const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(event.kind='message' AND json_extract(event.payload_json,'$.message.role')='tool') OR ":''}event.kind='result' OR event.kind='inbox_capture' OR (event.kind='request' AND NOT EXISTS (
+const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE ((${savedContextMessageSql}) OR ${activity?"(event.kind='message' AND json_extract(event.payload_json,'$.message.role')='tool') OR ":''}event.kind='result' OR event.kind='inbox_capture' OR (event.kind='request' AND NOT EXISTS (
           SELECT 1 FROM session_communication_requests request WHERE request.request_id=json_extract(event.payload_json,'$.requestId')
             AND json_extract(request.payload_json,'$.routedMessage') IS NOT NULL
           UNION ALL SELECT 1 FROM session_peer_requests request WHERE request.request_id=json_extract(event.payload_json,'$.requestId')
             AND json_extract(request.payload_json,'$.routedMessage') IS NOT NULL)) OR event.kind='post' OR event.kind='topic_route'
-        ${closures?"OR event.kind='answer_closure'":''}
+        ${closures?`OR event.kind='answer_closure' OR (event.kind='receipt'
+          AND json_extract(event.payload_json,'$.change') GLOB 'context_*'
+          AND json_extract(input.payload_json,'$.responseMode')='context'
+          AND EXISTS(SELECT 1 FROM session_owner_events context WHERE context.event_id='context:'||input.id
+            AND context.session_id=input.session_id AND context.input_id=input.id AND context.kind='message'))`:''}
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL
             AND json_extract(input.payload_json,'$.alreadyPostedInThread') IS NOT 1))
     AND ${firstInboxAcceptanceSql}
@@ -136,6 +141,10 @@ export function messageRouteForSource(sourceMessageId:string):{topicId?:string;s
 export function inboxMessage(row:any) {
   if(row.kind==='message'){
     const message=JSON.parse(row.payload_json).message as ProviderHistoryMessage;
+    if(message.responseMode==='context'&&row.input_id){
+      const context=inboxContextMessage(db,row.session_id,row.input_id,message);
+      if(context)return context;
+    }
     return {...message,sourceSessionId:row.session_id,...(row.input_id?{inputId:row.input_id}:{}),
       ...(message.createdAt?{}:{createdAt:row.created_at.replace(' ','T')+'Z',timestampSource:'received' as const})};
   }
@@ -242,6 +251,7 @@ export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|
   const scope=sessionId===null?'':` AND event.session_id IN (${INBOX_LINEAGE_SQL})`;
   const bind=sessionId===null?[messageId]:[sessionId,messageId];
   return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post','request','topic_route') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
+    ??db.query(`${inboxRows}${scope} AND (${savedContextMessageSql}) AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post','request','topic_route') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     // A hidden closing result remains a valid historical reply target and thread anchor.
     ??db.query(`${inboxRowsFrom} WHERE event.kind='result'${scope} AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
@@ -339,7 +349,7 @@ export function turnThreadActions(sessionId:number,turnId:number,ownInputId:stri
   const named=new Set<string>();
   for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_communication_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
-  for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
+  for(const row of db.query("SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND source_session_id=? AND json_extract(payload_json,'$.responseMode') IS NOT 'context'").all(turnId,sessionId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
   let answeredByPost=false;
   for(const row of db.query("SELECT event_id,input_id FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post'").all(sessionId,turnId) as {event_id:string;input_id:string|null}[]){
@@ -630,13 +640,15 @@ export function inboxHistoryAfter(session:SessionRow,after:number,limit:number,a
   const rows=db.query(`${activity?inboxActivityRows(true):inboxDeltaRows}${notForwardedPastRouterSql} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(after,limit+1) as any[];
   if(rows.length>limit)return null;
   const projected=rows.map(row=>{
+    if(row.kind==='receipt')return inboxMessageById(row.session_id,`context:${row.input_id}`);
     if(row.kind!=='answer_closure')return inboxMessage(row);
     const postId=JSON.parse(row.payload_json).postId;
     const post=db.query(`${inboxRows} AND event.event_id=?`).get(postId) as any;
     if(!post)throw new Error('The answer closure refers to a missing post.');
     return inboxMessage(post);
   });
-  return [...new Map(projected.map(message=>[message.id,message])).values()];
+  return [...new Map(projected.filter((message):message is NonNullable<typeof message>=>message!==null)
+    .map(message=>[message.id,message])).values()];
 }
 
 const MAC_ROUTING_INSTRUCTION = `Website and verification browsers run on the always-on server first. An emailed approval or text code for a server sign-in stays with that server browser. If a website truly fails there, a Mac request may use --machine-need browser-fallback:specific reason with --server-attempt-url and --server-attempt-failure naming the observed failed attempt; the Mac then provides an isolated headless browser without asking Tejas. Other Mac needs are ios-native, mac-app, mac-file, mac-screen, messages or human-mac. Agent work never drives his signed-in Chrome or takes desktop focus. sessions open is only for Tejas's current direct request to open a link for him.`;

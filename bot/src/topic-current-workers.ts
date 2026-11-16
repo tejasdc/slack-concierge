@@ -32,7 +32,7 @@ export function workingThrough(source:Database,sessionId:number,seen:Set<number>
   const chain=workingThrough(source,row.target,seen);
   if(chain)return [sessionId,...chain];
  }
- if(source.query('SELECT 1 FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL').get(sessionId))return [sessionId];
+ if(source.query("SELECT 1 FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL AND json_extract(payload_json,'$.responseMode') IS NOT 'context'").get(sessionId))return [sessionId];
  return null;
 }
 

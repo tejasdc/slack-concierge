@@ -66,6 +66,7 @@ import type {ProviderHistoryMessage,ProviderHistoryPage} from './provider-histor
 import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,sessionMessageInputProjection} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {acceptedInputAuthor,authorSession,sessionAuthor,withCurrentAuthors} from './session-message-author';
+import {routedMaterialSource} from './session-routed-material';
 import {commitSessionIdentity,localSessionNumber} from './peer-identity';
 import {humanAuthored,sessionInputProvenance} from './session-inputs';
 import {withdrawChatGptTasksForStoppedTurnByTejas} from './chatgpt-obligations';
@@ -79,7 +80,7 @@ import {standingAgentView} from './standing-agent-view';
 import {hostTimerView} from './host-timer-view';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {legacyNotificationRequest} from './session-notification-request';
-import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
+import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxRowByMessageId,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
 import {capturesEnterRouter,isInboxProducerKind,readerCaptureAuthor,readerCaptureRefusal,type ReaderCaptureOrigin} from './inbox-producer-sources';
 import {inboxCapturesPage} from './inbox-captures-page';
 import {inboxQueuePage} from './inbox-queue';
@@ -1347,12 +1348,17 @@ export class SessionOwner {
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,
       error:errorView(stopState?stopError:unacknowledgedSteering?steeringError:retainedError),
       statusDetail,
+      ...(parsed.responseMode==='context'?{contextDelivery:{targetSessionId:saved.contextTarget??`concierge:${input.session_id}`,
+        state:saved.contextDelivery?.state??(saved.contextForward?'pending':'saved'),
+        ...(saved.contextDelivery?.requestId?{requestId:saved.contextDelivery.requestId}:{}),
+        ...(saved.contextDelivery?.peer?{peer:saved.contextDelivery.peer}:{}),
+        ...(saved.contextDelivery?.error?{error:saved.contextDelivery.error}:{})}}:{}),
       providerOutage:observed.turn?outageView(outageOfferForTurn(observed.turn.id),observed.turn.status):null,
       // A delivered request or return carries its routing preamble and envelope to the provider;
       // people read the retained message itself, the same text its history row shows.
       text:control?null:(['input','create'].includes(input.kind)&&input.origin!=='human'&&input.request_id?acceptedInputAuthor(input).text:undefined)??parsed.text??parsed.firstInput?.text??null,request,
       attachments,
-      notificationRequest:input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind)
+      notificationRequest:parsed.responseMode!=='context'&&input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind)
         ?(Object.hasOwn(parsed,'notificationRequest')?parsed.notificationRequest:legacyNotificationRequest(String(parsed.text??parsed.firstInput?.text??''))):null,
       // Where this input sits: his own reply carries its own link, a routed capture the one recorded for it.
       ...(parsed.routedFrom?{routedFrom:parsed.routedFrom}:{}),
@@ -1798,7 +1804,7 @@ export class SessionOwner {
   }
   async status() {
     const projects=await this.projects();
-    return {owner:{available:true},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:projects.projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
+    return {owner:{available:true},capabilities:{passiveContext:1},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:projects.projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
       executionsOnPreviousVersion:this.executionsOnPreviousVersion()};
   }
   /**
@@ -2346,6 +2352,39 @@ export class SessionOwner {
     const from=entry.author?.kind==='human'?'Your message':entry.author?.kind==='service'?'A Concierge notice':'An agent’s message';
     return {noteId:`inbox-message-${messageId}`,...link(messageId,inbox),text:entry.content as string,title:`${from} in an Inbox thread`,capturedAt:typeof entry.createdAt==='string'?at(entry.createdAt):new Date().toISOString()};
   }
+  retainedContextSource(input:{captureId?:string;messageId?:string}):{payload:Record<string,any>;source:{inputId?:string;messageId?:string;sessionId:string;origin:string;author:import('./provider-history').MessageAuthor;sourceInputId?:string|null;sourceRunId?:string|null;actionId?:string;createdAt:string}} {
+    // A displayed saved-context message is `context:<input-id>`; it resolves to its accepted input only
+    // through the checked event/input relationship, never by stripping the prefix.
+    const savedContext=input.messageId?.startsWith('context:')&&inboxSession()
+      ?inboxRowByMessageId(inboxSession()!.id,input.messageId) as {kind:string;session_id:number;input_id:string|null}|null:null;
+    const savedInput=savedContext?.kind==='message'&&savedContext.input_id&&input.messageId===`context:${savedContext.input_id}`
+      ?getAcceptedSessionInput(savedContext.input_id):null;
+    const accepted=input.captureId?retainedInboxCapture(input.captureId):savedInput&&savedInput.session_id===savedContext!.session_id
+      ?savedInput:input.messageId?getAcceptedSessionInput(input.messageId):null;
+    if(accepted){
+      const body=JSON.parse(accepted.payload_json),payload=body.firstInput??body;
+      const {contextOperationOnly:_operationOnly,...materialPayload}=payload;
+      const material=routedMaterialSource(db,accepted),original=material.record;
+      const reference=material.reference,author=acceptedInputAuthor(accepted).author;
+      const text=body.capture?.originalTextAttachmentId
+        ?Buffer.from(this.attachment(body.capture.originalTextAttachmentId).base64,'base64').toString('utf8'):material.text;
+      return {payload:{...materialPayload,text,retainedFrom:{inputId:accepted.id,sessionId:`concierge:${accepted.session_id}`}},
+        source:original?{inputId:original.id,sessionId:`concierge:${original.session_id}`,
+          origin:original.origin,author,sourceInputId:original.source_input_id,sourceRunId:original.source_run_id,
+          actionId:original.action_id,createdAt:original.created_at}
+          :{...payload.contributedFrom,inputId:reference?.messageId,sessionId:reference?.sessionId??`concierge:${accepted.session_id}`,
+            origin:author.kind,author,createdAt:reference?.originalCreatedAt??accepted.created_at}};
+    }
+    const inbox=inboxSession(),message=inbox&&input.messageId?inboxMessageById(inbox.id,input.messageId) as any:null;
+    if(!message||typeof message.content!=='string'||!message.content.trim()&&!message.attachments?.length)
+      throw new SessionOwnerError('No retained message has that ID.',404,'NOTE_MESSAGE_NOT_FOUND');
+    const original=message.content.trim()?this.noteSource(input):{text:message.content,capturedAt:message.createdAt??''};
+    return {payload:{text:original.text,attachments:(message.attachments??[]).map((attachment:any)=>attachment.id),
+      ...(message.replyToMessage?{replyToMessage:message.replyToMessage}:{}),
+      ...(message.messageThreadRootId?{messageThreadRootId:message.messageThreadRootId}:{})},
+      source:{messageId:input.messageId,sessionId:`concierge:${message.sourceSessionId??inbox!.id}`,origin:message.author?.kind??'unknown',
+        author:message.author??{kind:'unknown'},createdAt:original.capturedAt}};
+  }
   /** A follow-up joins the note an earlier capture or message made, under the same key. */
   private noteKey(id:string) {
     const raw=id.startsWith('capture:')?id.slice('capture:'.length):id;
@@ -2561,7 +2600,8 @@ export class SessionOwner {
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
     if(sessionMetadata(session).canvasObservation)throw new SessionOwnerError('This canvas record receives only observed speech and action results.',409,'CANVAS_OBSERVATION_ONLY');
-    only(input,['clientActionId','text','canvasContext','attachments','evidence','selection','intent','procedure','replyToMessage','messageThreadRootId','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo','holdForReview']);sessionInputText(input);validateContext(input);validateCanvasContext(input)
+    only(input,['clientActionId','text','canvasContext','attachments','evidence','selection','intent','procedure','replyToMessage','messageThreadRootId','promptRevision','workflowId','delivery','expectedRunId','queueChosen','steerChosen','context','review','door','agentSource','deliverTo','holdForReview','responseMode']);sessionInputText(input);validateContext(input);validateCanvasContext(input)
+    if(input.responseMode!==undefined&&input.responseMode!=='context')throw new SessionOwnerError('Unknown response mode.');
     if(input.canvasContext&&session.provider_id!=='codex')throw new SessionOwnerError('Argument-map think-aloud requires an ordinary Codex session.',409,'CAPABILITY_UNAVAILABLE');
     if(input.canvasContext&&input.attachments?.length)throw new SessionOwnerError('Argument-map speech carries transcript text only; canvas metadata uses application context.',400,'CANVAS_CONTEXT_CONFLICT');
     if(input.deliverTo!==undefined&&(typeof input.deliverTo!=='string'||!input.deliverTo.trim()||input.deliverTo.length>200))throw new SessionOwnerError('deliverTo names the session a thread reply goes to, or "router".');;validateMessageReference(input,id);
@@ -2580,6 +2620,36 @@ export class SessionOwner {
     // topic it replies in, retains them on the input, and shows them to the router.
     validateReviewSelection(session.id,input);
     this.attachments(input.attachments);
+    if(input.responseMode==='context') {
+      const prior=db.query("SELECT id FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(input)) as {id:string}|null;
+      if(prior){
+        const retained=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:agent?'agent':'human',
+          ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),payload:input});
+        return {operation:this.receipt(retained.input)};
+      }
+      const recipient=this.threadReplyTarget(session,input);
+      if(recipient?.peer)return this.submitPeerContext(session,input,agent,recipient as typeof recipient&{peer:NonNullable<typeof recipient.peer>});
+      const saved=db.transaction(()=>{
+        const retained=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:agent?'agent':'human',
+          ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),payload:input});
+        const saved=retained.input;
+        if(retained.duplicate)return saved;
+        const forward=recipient;
+        this.recordContextMessage(saved);
+        if(forward?.local){
+          const author=acceptedInputAuthor(saved).author;
+          const carried=retainSessionInput({sessionId:forward.local,scope:`context-forward:${saved.id}`,actionId:'context',kind:'input',origin:'agent',
+            sourceInputId:saved.id,payload:{...input,contributedFrom:{inputId:saved.id,sessionId:`concierge:${session.id}`,author},
+              routedFrom:{sessionId:`concierge:${session.id}`,messageId:saved.id,originalText:input.text,
+                originalCreatedAt:saved.created_at,authorKind:author.kind,author}}}).input;
+          this.recordContextMessage(carried);
+          db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.contextTarget',?),updated_at=CURRENT_TIMESTAMP WHERE id=?")
+            .run(forward.sessionId,saved.id);
+        }
+        return getAcceptedSessionInput(saved.id)!;
+      })();
+      return {operation:this.receipt(saved)};
+    }
     if(input.delivery!==undefined&&!['queue','steer'].includes(input.delivery))throw new SessionOwnerError('Unknown input delivery mode.');
     if(input.queueChosen!==undefined&&(input.queueChosen!==true||input.delivery!=='queue'))throw new SessionOwnerError('Queue choice must name Queue delivery.');
     if(input.steerChosen!==undefined&&(input.steerChosen!==true||input.delivery!=='steer'||!input.expectedRunId))throw new SessionOwnerError('Exact-run choice must name a live run.');
@@ -2681,6 +2751,47 @@ export class SessionOwner {
     return {operation:this.receipt(this.dispatch(current))};
   }
   /** Complete a retained admission without changing its input or request identity. */
+  private async submitPeerContext(session:SessionRow,input:Record<string,any>,agent:ReturnType<typeof agentTestSource>,target:{sessionId:string;peer:{peer:string;address:string}}) {
+    if(!this.peers||!this.communication)throw new SessionOwnerError('Session communication is unavailable.',503);
+    const saved=db.transaction(()=>{
+      const retained=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:agent?'agent':'human',
+        ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),payload:input});
+      if(!retained.duplicate){
+        this.recordContextMessage(retained.input);
+        const author=acceptedInputAuthor(retained.input).author;
+        const payload={...input,contributedFrom:{inputId:retained.input.id,sessionId:`concierge:${session.id}`,author},
+          routedFrom:{sessionId:`concierge:${session.id}`,messageId:retained.input.id,originalText:input.text,
+            originalCreatedAt:retained.input.created_at,authorKind:author.kind,author}};
+        db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.contextTarget',?,'$.contextForward',json(?)) WHERE id=?")
+          .run(target.sessionId,JSON.stringify({target,payload}),retained.input.id);
+      }
+      return getAcceptedSessionInput(retained.input.id)!;
+    })();
+    const intent=JSON.parse(saved.receipt_json!).contextForward;
+    if(intent){
+      try{await this.communication.forwardContext({inbox:session,inputId:saved.id,...intent});}
+      catch(error){
+        log('warn','peer_context_forward_waiting',{input_id:saved.id,target:target.sessionId,error:String(error).slice(0,300)});
+        this.communication.wake();
+      }
+    }
+    return {operation:this.receipt(getAcceptedSessionInput(saved.id)!)};
+  }
+  recordContextMessage(input:AcceptedSessionInput) {
+    const payload=JSON.parse(input.payload_json);
+    const message=projectAcceptedInput({id:`context:${input.id}`,role:'user',content:payload.text,tool:null,phase:null,
+      inputId:input.id,responseMode:'context',createdAt:iso(input.created_at)!,timestampSource:'submitted'},input);
+    recordSessionEvent({eventId:`context:${input.id}`,sessionId:input.session_id,inputId:input.id,kind:'message',payload:{message}});
+  }
+  retainPeerContext(input:{sessionId:number;peer:string;requestId:string;sourceInputId:string;sourceRunId:string|null;sourceActionId?:string;payload:Record<string,any>}) {
+    return db.transaction(()=>{
+      const saved=retainSessionInput({sessionId:input.sessionId,scope:`peer:${input.peer}:context`,actionId:input.requestId,
+        kind:'input',origin:'agent',payload:{...input.payload,responseMode:'context',peerSource:{peer:input.peer,
+          inputId:input.sourceInputId,runId:input.sourceRunId,...(input.sourceActionId?{actionId:input.sourceActionId}:{})}}});
+      if(!saved.duplicate)this.recordContextMessage(saved.input);
+      return this.receipt(saved.input);
+    })();
+  }
   recoverAcceptedInput(input:AcceptedSessionInput) {
     if(input.kind!=='input'||input.turn_id!==null||input.steering_id!==null||input.request_id!==null)return;
     const receipt=input.receipt_json?JSON.parse(input.receipt_json):null;
@@ -4819,7 +4930,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='canvas-observations'&&parts.length===1) result=this.createCanvasObservation(body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='canvas-observations') result=this.appendCanvasObservation(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='journal'&&parts[1]==='observations'&&parts.length===2) result=this.submitJournalObservation(body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='inputs') result=this.submit(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='inputs') result=await this.submit(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='feature-requests') result=this.submitFeatureRequest(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===5&&parts[2]==='actions'&&parts[4]==='cancel') result=this.cancelAction(parts[1]!,parts[3]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='actions') result=this.action(parts[1]!,body);

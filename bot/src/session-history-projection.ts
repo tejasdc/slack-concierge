@@ -8,19 +8,21 @@ import {acceptedInputAuthor,authorSession,historicalInputAuthor} from './session
 export function projectAcceptedInput(message:ProviderHistoryMessage,input:AcceptedSessionInput) {
   const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
   if(typeof payload?.text!=='string')return {...message,author:{kind:'unknown' as const}};
+  if(payload.responseMode==='context') {
+    const saved=JSON.parse(input.receipt_json??'{}');
+    message={...message,responseMode:'context',contextDelivery:{
+      targetSessionId:saved.contextTarget??`concierge:${input.session_id}`,
+      state:saved.contextDelivery?.state??(saved.contextForward?'pending':'saved'),
+      ...(saved.contextDelivery?.requestId?{requestId:saved.contextDelivery.requestId}:{}),
+      ...(saved.contextDelivery?.peer?{peer:saved.contextDelivery.peer}:{}),
+      ...(saved.contextDelivery?.error?{error:saved.contextDelivery.error}:{})}};
+  }
   const {author,text}=acceptedInputAuthor(input);
   const attachments=(payload.attachments??[]).flatMap((id:string)=>{
     const attachment=db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id);
     return attachment?[attachment]:[];
   }) as NonNullable<ProviderHistoryMessage['attachments']>;
   if(payload.routedFrom&&typeof payload.routedFrom.originalText==='string'){
-    const original=getAcceptedSessionInput(payload.routedFrom.messageId);
-    const currentAuthor=original&&payload.routedFrom.sessionId===`concierge:${original.session_id}`
-      ?acceptedInputAuthor(original).author:null;
-    const routedAuthor=payload.routedFrom.authorKind;
-    const kind=routedAuthor==='human'||routedAuthor==='agent'||routedAuthor==='service'?routedAuthor:'unknown';
-    const carried=payload.routedFrom.author;
-    const author=currentAuthor??(carried?.kind===kind?carried:{kind});
     return {...message,role:'user',author,createdAt:payload.routedFrom.originalCreatedAt,timestampSource:'submitted',
       content:payload.routedFrom.originalText,submissionId:input.id,routedFrom:payload.routedFrom,
       ...(attachments.length?{attachments}:{})};
@@ -79,6 +81,11 @@ export function projectSessionHistoryMessage(sessionId:number,message:ProviderHi
 function projectMessageOrigin(sessionId:number,message:ProviderHistoryMessage,metadata:SessionMessageMetadataProjection,identity:SessionMessageInputProjection):{inputId?:string;message:ProviderHistoryMessage} {
   const source=identity(sessionId,message);
   message=metadata(sessionId,message);
+  if(message.role==='user'&&source&&message.id===`context:${source}`) {
+    const accepted=getAcceptedSessionInput(source);
+    if(accepted?.session_id===sessionId&&JSON.parse(accepted.payload_json).responseMode==='context')
+      return {inputId:source,message:projectAcceptedInput({...message,responseMode:'context'},accepted)};
+  }
   if(message.role!=='user')return {inputId:source,message:{...message,author:{kind:'agent' as const,session:authorSession(sessionId)}}};
   message={...message,author:{kind:'unknown'}};
   const chatInputs=db.query(`SELECT DISTINCT input.* FROM session_owner_events event

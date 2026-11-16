@@ -80,6 +80,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 
 ## Session and Inbox obligations
 
+- Saved context is a settled input, never queued work. Preserve its exact attribution,
+  attachments and chosen recipient; only a later active message brings it to the provider.
+  See [passive session context](docs/contracts/session-owner-v1.md#passive-session-context).
+
 - New journal keeper processing requires a source-validated structured disposition and durable Inbox handoff for actionable portions; delivery and tracker observations alone cannot complete it. See [journal processing dispositions](docs/contracts/native-inbox.md#journal-processing-dispositions).
 
 - Source-verified cross-owner Lab publication uses the typed service post and immutable peer

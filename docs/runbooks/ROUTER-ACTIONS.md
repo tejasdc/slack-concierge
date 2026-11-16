@@ -1,5 +1,18 @@
 # Router action helper
 
+## Save exact retained context in an existing session
+
+Use `sessions ask <exact-address> --response-mode context -- <text>` to save your own
+agent-authored context, optionally with existing `--file` or `--attachment` custody.
+No summary is required. For exact retained words, use
+`sessions ask <exact-address> --response-mode context --route-message <message-id>`
+or replace `--route-message` with `--capture-id <capture-id>`. Supply the current
+`--source-input`, `--source-run` and stable `--action-id`. The owner reads the original
+retained words and files in that selector form; omit replacement text and files. This returns a completed
+saved-context operation and creates no work or reply obligation. A later active
+message uses the saved material as attributed data. See the
+[wire contract](../contracts/session-owner-v1.md#passive-session-context).
+
 ## Per-session Pause and Continue
 
 An admitted native agent run with work authority can control one exact native session

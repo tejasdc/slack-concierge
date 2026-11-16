@@ -61,7 +61,8 @@ export function topicContext(source:Database,prepared:Database,generation:number
    title:sessionTitle(source,row.target_session_id)||'Agent session',requestId:row.request_id,through:chain.map(id=>`concierge:${id}`)});
  }
  for(const row of source.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,peer,remote_session_id
-   FROM session_peer_requests WHERE source_session_id IN (${INBOX_LINEAGE_SQL}) AND outcome IS NULL`).all(sessionId) as any[]){
+   FROM session_peer_requests WHERE source_session_id IN (${INBOX_LINEAGE_SQL}) AND outcome IS NULL
+     AND json_extract(payload_json,'$.responseMode') IS NOT 'context'`).all(sessionId) as any[]){
   const peer=source.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
   dispatches.push({root:row.input_id?root(row.source_session_id,row.input_id):null,sessionId:peerAddress(row.peer,row.remote_session_id),
    title:parse(peer?.view_json,{})?.title||`${row.peer} session`,requestId:row.request_id});

@@ -20,6 +20,13 @@ const pebbleWait=(source:{kind?:unknown;recordedAt?:unknown}|undefined,acceptedA
 const captureDevices:Record<string,string>={'ios-share-extension':'iPhone share','ios-action-button':'iPhone Action Button',
   'apple-watch':'Watch','mac-capture':'Mac quick capture'};
 
+/** An agent's own saved words keep the contributing agent's retained identity; shared by every attribution reader. */
+export function passiveContributorAuthor(input:{origin:string;payload_json:string}):Record<string,any>&{kind:'agent'}|null {
+  if(input.origin!=='agent')return null;
+  const payload=JSON.parse(input.payload_json);
+  return payload.responseMode==='context'&&payload.contributedBy?.author?.kind==='agent'?payload.contributedBy.author:null;
+}
+
 /** Storage-neutral attribution used by both the owner and the prepared Inbox display worker. */
 export function inboxAttribution(db:Database){
   const authorSession=(id:number)=>authorSessionOf(db,`concierge:${id}`);
@@ -143,6 +150,8 @@ export function inboxAttribution(db:Database){
     return input.scope==='surface:thinkering'?'thnkr.ing':null;
   };
   const acceptedAuthor=(input:Input):{author:Author;text?:string}=>{
+    const contributor=passiveContributorAuthor(input);
+    if(contributor)return withProvenance(input,{author:contributor});
     const external=db.query('SELECT agent_name,text,request_id FROM session_external_requests WHERE target_input_id=?')
       .get(input.id) as {agent_name:string;text:string;request_id:string}|null;
     if(external)return withProvenance(input,{author:{kind:'agent',outsideAgent:{name:external.agent_name,label:`Outside agent · ${external.agent_name}`},

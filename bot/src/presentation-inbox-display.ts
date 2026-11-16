@@ -7,6 +7,7 @@ import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
 import {answerClosingLine} from './answer-closing-line';
 import {readInboxThreadLink} from './inbox-thread-link-read';
+import {inboxContextMessage} from './inbox-context-message';
 
 const CONTENT_BYTES=8192;
 const bounded=(value:string,max=CONTENT_BYTES)=>{
@@ -109,7 +110,8 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     ...(agent?(attachments.length?{attachments}:{}):{submissionId:row.input_id,attachments}),
     createdAt:stamp(row.created_at),timestampSource:agent?'received':'submitted',
   };
-  const full=inboxAttribution(database)(raw as typeof raw&{id:string});
+  const context=row.kind==='message'&&row.input_id?inboxContextMessage(database,sessionId,row.input_id,event.message):null;
+  const full=context??inboxAttribution(database)(raw as typeof raw&{id:string});
   const text=bounded(full.content);
   // A caption, filename or routing note can itself be large. Bound the entire prepared row,
   // not only its principal text; the exact retained item remains available by detailRef.
@@ -120,6 +122,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     content:bounded(full.content,1024).text,tool:null,phase:null,...(full.inputId?{inputId:full.inputId}:{}),
     ...(full.mixedThreads?{mixedThreads:true}:{}),...(full.answeredByPost?{answeredByPost:true}:{}),
     ...(full.answersQuestion?{answersQuestion:true}:{}),
+    ...(full.responseMode==='context'?{responseMode:'context',contextDelivery:full.contextDelivery}:{}),
     ...(typeof full.closingLine==='string'?{closingLine:bounded(full.closingLine,512).text}:{}),
     ...(full.communicationKind==='suggestion'?{communicationKind:'suggestion'}:{}),
     ...(full.replyToMessage?{replyToMessage:full.replyToMessage}:{}),

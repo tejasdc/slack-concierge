@@ -343,7 +343,8 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
   const words=value?.firstInput?.text??value?.text;
   const ownWords=!(value?.capture?.importOnly&&
     (value.capture.source?.metadata?.quoted?.kind!=='human'||value.capture.source?.metadata?.intent!=='action'));
-  const classifiable=input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind);
+  const passive=value?.responseMode==='context';
+  const classifiable=!passive&&input.origin==='human'&&['input','create','inbox-capture'].includes(input.kind);
   const mark=classifiable&&ownWords
     ?notificationRequest(typeof words==='string'?words:''):null;
   const payload=timed('serializeMs',()=>stablePayload(classifiable&&value&&typeof value==='object'?{...value,notificationRequest:mark}:value));
@@ -360,7 +361,9 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
     throw new Error('Idempotency conflict: canceled action identity belongs to a different input.');
   timed('insertMs',()=>db.query(`INSERT INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,source_input_id,source_run_id,request_id)
     VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id,input.sessionId,input.scope,input.actionId,input.kind,input.origin,payload,input.sourceInputId??null,input.sourceRunId??null,input.requestId??null));
-  armThreadNotification({id,sessionId:input.sessionId,kind:input.kind,origin:input.origin,payload:value,mark});
+  if(!passive)armThreadNotification({id,sessionId:input.sessionId,kind:input.kind,origin:input.origin,payload:value,mark});
+  if(passive)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?')
+    .run(JSON.stringify({state:'completed',responseMode:'context'}),id);
   if(cancellation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?')
     .run(JSON.stringify({state:'canceled',canceledBy:cancellation.canceled_by_input_id}),id);
   return {input:timed('readbackMs',()=>getAcceptedSessionInput(id))!,duplicate:false};
@@ -606,6 +609,7 @@ export function attachSessionSteering(inputId:string,turnId:number) {
   return db.transaction(() => {
     const input=getAcceptedSessionInput(inputId);
     if (!input) throw new Error('Unknown accepted input.');
+    if(JSON.parse(input.payload_json).responseMode==='context')throw new Error('Saved context cannot be steered into a provider turn.');
     if (input.steering_id!==null) return input;
     // Every attempt keeps its row as history; one that may have reached the provider is never repeated.
     if(steeringMayHaveReachedProvider(input.id))return input;
