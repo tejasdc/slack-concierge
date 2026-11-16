@@ -34,7 +34,11 @@ The warm stay yields when another account's lapse pressure exceeds the warm acco
 than a hysteresis band (`WARM_STAY_BAND`, twice): the warm account keeps the conversation while
 its own pressure is at least half the best account's, so near-equal accounts do not ping-pong and
 one prefix rewrite is not paid for nothing, but a week with room and a near end is spent even by
-active conversations. `chooseAccountForTurn` in `provider-account-choice.ts`.
+active conversations. `chooseAccountForTurn` in `provider-account-choice.ts`. The dispatch wiring
+(`chooseClaudeDispatch` in `provider-account-dispatch.ts`) also had its own unconditional warm
+stay that returned before the rule ran; the first install (release b8b9e8d4, 04:01 UTC Nov 16)
+still kept a warm chann.app conversation at 04:02 because of it. It now keeps a warm account on
+its own only when that account's reading has gone stale and nothing fresh can be compared.
 
 ## Acceptance scenario
 
