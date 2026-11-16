@@ -223,20 +223,23 @@ export const INPUT_REFUSAL_THRESHOLD=3;
 const STREAK_SCAN_LIMIT=200;
 
 /**
- * Derived, never stored: set while the session's most recent finished turns all ended without the
- * provider taking their input (parked as CODEX_INPUT_NOT_ACKNOWLEDGED, or the historical done turn
- * with an empty result and no acknowledgement). One acknowledged turn breaks the streak, so the state
- * clears by itself the moment the session takes an input. Reads turns_session_latest (session_id, id DESC).
+ * Derived, never stored: set while the session's most recent turns that reached the provider all ended
+ * without it taking their input. Keyed on columns closing a turn never rewrites: closing overwrites
+ * agent_text and a cancelled request retires its turns, so the CODEX_INPUT_NOT_ACKNOWLEDGED text alone
+ * is erased (concierge:8245, 2026-11-16). A turn breaks the streak when its input was acknowledged; it
+ * counts as refused when unacknowledged and either a provider turn exists or the text still says so,
+ * unless Stop was requested. Turns that never reached the provider, and a Stop before acknowledgement,
+ * neither count nor break. Reads turns_session_latest (session_id, id DESC).
  */
 export function inputRefusalStreak(source:Database,sessionId:number):InputRefusal|null{
- // Runs for every session view, so a healthy session reads only its latest three turns; the wider scan
- // that counts the streak runs only once all three are refused.
+ // Runs for every session view, so a healthy session reads only its latest three relevant turns; the
+ // wider scan that counts the streak runs only once all three are refused.
  const latest=(limit:number)=>source.query(`SELECT id,COALESCE(ended_at,started_at) AS at,
-   (provider_input_acknowledged_at IS NULL AND (
-     (status='parked' AND agent_text LIKE 'CODEX_INPUT_NOT_ACKNOWLEDGED:%')
-     OR (status='done' AND json_valid(outbound_text) AND json_extract(outbound_text,'$.result.text')=''
-       AND json_array_length(json_extract(outbound_text,'$.result.toolsUsed'))=0))) AS refused
-  FROM turns INDEXED BY turns_session_latest WHERE session_id=? AND status IN ('done','parked','error') ORDER BY id DESC LIMIT ?`)
+   provider_input_acknowledged_at IS NULL AS refused
+  FROM turns INDEXED BY turns_session_latest WHERE session_id=? AND status IN ('done','parked','error','cancelled')
+   AND (provider_input_acknowledged_at IS NOT NULL
+    OR ((provider_turn_id IS NOT NULL OR agent_text LIKE 'CODEX_INPUT_NOT_ACKNOWLEDGED:%') AND stop_requested_at IS NULL))
+  ORDER BY id DESC LIMIT ?`)
   .all(sessionId,limit) as {id:number;at:string;refused:number}[];
  const head=latest(INPUT_REFUSAL_THRESHOLD);
  if(head.length<INPUT_REFUSAL_THRESHOLD||head.some(row=>row.refused!==1))return null;
