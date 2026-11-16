@@ -4506,14 +4506,15 @@ export function settleSupersededParkedTurn(turnId: number): boolean {
  * to their requester for a new owner. From 2026-11-13 to 11-16 Concierge's launcher refused every
  * resume of a Claude conversation older than Claude's owner header, and 29 such turns in 9
  * sessions sat parked with their requests counted as live. New refusals fail at once
- * (claude-launch-refusal.ts); this releases the ones parked before that. Idempotent.
+ * (claude-launch-refusal.ts); this releases the ones parked before that release, bounded to parks
+ * that ended before 2026-11-17 so a later unmarked Claude end keeps its ambiguous park. Idempotent.
  */
 export const CLAUDE_UNACKNOWLEDGED_PARK_TEXT = "Claude Code ended before acknowledging the initial user message.";
 export function failUnacknowledgedClaudeParkedTurns(): number[] {
   return db.transaction(() => {
     const rows = db.query(`SELECT turn.id FROM turns turn JOIN sessions session ON session.id=turn.session_id
       WHERE turn.status='parked' AND turn.dispatch_failure_class='parked_ambiguous' AND session.provider_id='claude-code'
-        AND turn.agent_text=? AND turn.provider_input_acknowledged_at IS NULL`).all(CLAUDE_UNACKNOWLEDGED_PARK_TEXT) as { id: number }[];
+        AND turn.agent_text=? AND turn.provider_input_acknowledged_at IS NULL AND turn.ended_at<'2026-11-17'`).all(CLAUDE_UNACKNOWLEDGED_PARK_TEXT) as { id: number }[];
     const failed: number[] = [];
     for (const row of rows) {
       if (db.query(`UPDATE turns SET status='error', dispatch_failure_class=NULL,
