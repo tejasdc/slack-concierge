@@ -66,6 +66,14 @@ try{
  assert.equal(askedDispatch(db,legacy),dispatched.request_id,'A legacy question may use one exact source-to-obligation-to-dispatch link');
  assert.equal(askedAnswerPostIds(db,legacy,[inboxId]).length,1);
  assert.equal(askedAnswerStatus(db,questionRecord,true)?.text,'Answered');
+ // Before asked declarations armed clocks, an answering partial could already exist.
+ // Replay that retained state: its original answer time must win over recognition time.
+ db.query("UPDATE session_communication_requests SET payload_json=json_remove(payload_json,'$.promptAnswer'),prompt_answered_at_ms=NULL WHERE request_id=?")
+  .run(dispatched.request_id);
+ now+=60_000;
+ assert.equal(requireAskedAnswer(db,questionRecord),true);
+ assert.equal(row().prompt_answered_at_ms,now-60_000,'Late recognition preserves the existing answering partial timestamp');
+ assert.equal(row().outcome,null,'Recognizing an existing answer does not finish the remaining work');
  const restarted=new SessionCommunicationCoordinator({owner,now:()=>now,arm:()=>()=>{},isOwnerAlive:()=>true,onError:error=>errors.push(error)});
  communication.stop();owner.communication=restarted;restarted.start();await restarted.idle();
  assert.equal((db.query('SELECT count(*) AS n FROM session_inputs WHERE id=?').get(`question-reminder:${dispatched.request_id}`) as any).n,1);
