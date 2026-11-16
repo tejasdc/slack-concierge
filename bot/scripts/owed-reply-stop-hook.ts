@@ -26,6 +26,7 @@ import { join } from 'node:path';
 import { readFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { requestApiResponse } from './router-request-client';
+import { hisLocalTimeOfLedgerUtc } from "../src/agent-local-time";
 import { RETRY_POLICIES } from '../src/retry-policies';
 
 const provider = process.argv[2];
@@ -117,7 +118,7 @@ try {
     const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
     const identity = `--source-input ${quote(source.input_id)} --source-run ${quote(source.run_id)}`;
     const filing = unfiled.flatMap(input => [
-      `- Unfiled input ${input.input_id} (${input.at}): ${JSON.stringify(input.text)}`,
+      `- Unfiled input ${input.input_id} (${input.at} UTC, ${hisLocalTimeOfLedgerUtc(input.at)}): ${JSON.stringify(input.text)}`,
       ...(input.bug_report
         ? [`  This new bug report first gets independent Inbox intake in its own thread (add --from '<related-topic-id>' to the create command below to link a related thread). After filing, same-issue bug-report topics can be consolidated with topics merge <duplicate> --into <survivor> --correction-source '<retained-human-correction-in-survivor>' --reason '<why>'; a scoped secondary topics route <destination> --message '<original-capture>' --reason '<why>' --side-scope '<only-the-related-concern>' keeps its primary root intact.`]
         : [`  File in an existing topic: ${tool} sessions topics place '<topic-id>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`file-${input.root_id}`)}`]),
