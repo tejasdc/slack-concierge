@@ -222,11 +222,16 @@ def retire_worktrees(workspace, state, repo, bun, now):
     # Reuse the updater's own gate, rather than racing its queue with an unrelated lock.
     env = dict(os.environ, CONCIERGE_STATE_DIR=str(state))
     command = [bun, repo / 'bot/scripts/drain-status.ts']
-    run(command + ['recover'], env=env)
     previous_path = state / 'mac-disk-maintenance.json'
     previous = json.loads(previous_path.read_text()) if previous_path.exists() else {}
     unconfirmed = previous.get('retirement_unconfirmed', [])
     result = {'retired': [], 'retirement_unconfirmed': unconfirmed, 'held': None, 'gate_released': True}
+    try:
+        run(command + ['recover'], env=env)
+    except (subprocess.SubprocessError, TimeoutError) as error:
+        result['held'] = 'retirement admission recovery unavailable'
+        result['gate_error'] = str(error)
+        return result
     if unconfirmed:
         result['held'] = 'prior worktree effect needs reconciliation'
         return result

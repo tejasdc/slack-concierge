@@ -322,6 +322,9 @@ class Maintenance(unittest.TestCase):
                         retry = m.retire_worktrees(workspace, state, repo, 'fixture-bun', time.time())
                         self.assertEqual(retry['retirement_unconfirmed'], [uncertain])
                         self.assertEqual(len([call for call in calls if call[0] == '/usr/bin/trash']), before)
+                        with patch.object(m, 'run', side_effect=subprocess.CalledProcessError(10, 'recover')):
+                            held = m.retire_worktrees(workspace, state, repo, 'fixture-bun', time.time())
+                        self.assertEqual(held['retirement_unconfirmed'], [uncertain], 'a live update gate must not erase unknown custody')
                     else:
                         self.assertEqual(result['retirement_unconfirmed'], [])
 
