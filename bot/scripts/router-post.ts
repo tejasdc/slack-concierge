@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import {agentJson} from "../src/agent-local-time";
 // All router posts, uploads, audit replies, and receipt recovery share this path.
 import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
@@ -496,18 +497,18 @@ if (import.meta.main) {
     if (args[0] === "--help") {
       console.log(usage);
     } else if (args[0] === "--action" && args[1] === "trigger") {
-      console.log(JSON.stringify(triggerIdentity(args.slice(2))));
+      console.log(agentJson(triggerIdentity(args.slice(2))));
     } else {
       // Retired direct and wrapper ingress refuse before reading credentials or files.
       const actionArgs = args[0] === "--action" ? args.slice(1) : ["post", ...args];
       if (["post", "resume", "upload"].includes(actionArgs[0]!))
         throw new RouterActionError('Agent Slack publication is retired. Use router-actions.sh sessions with the common native owner.',1,undefined,'slack_routing_retired');
       const action = parseRouterAction(actionArgs);
-      console.log(JSON.stringify(await runRouterAction(action)));
+      console.log(agentJson(await runRouterAction(action)));
     }
   } catch (error) {
     const failure = error instanceof RouterActionError ? error : new RouterActionError(error instanceof Error ? error.message : "router configuration or input failed");
-    console.error(JSON.stringify({ ok: false, code: failure.code, error: failure.message, ...failure.context }));
+    console.error(agentJson({ ok: false, code: failure.code, error: failure.message, ...failure.context }));
     process.exitCode = failure.exitCode;
   }
 }

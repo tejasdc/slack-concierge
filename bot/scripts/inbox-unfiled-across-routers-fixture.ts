@@ -26,7 +26,7 @@ try {
   capture(former.id,'capture:left-behind','Book the dentist','2026-11-05 17:59:00');
   // The role moves (failover or stand-in bind); the former router keeps its Inbox marker.
   const current=createNativeSession('claude-code',{title:'Inbox',summary:'Current router',inbox:true,inboxRole:'project-router'});
-  updateSessionMetadata(former.id,{standingRole:undefined});
+  db.query("UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole') WHERE id=?").run(former.id);
   updateSessionMetadata(current.id,{standingRole:'inbox'});
 
   const pile=topics.unfiledInboxRoots();
@@ -78,7 +78,7 @@ try {
   db.query("UPDATE turns SET status='queued' WHERE id=?").run(turn.id);
   assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+61*60_000),{woken:false,alarmed:1});
   const successor=createNativeSession('codex',{title:'Inbox successor',summary:'Next router',inbox:true,inboxRole:'project-router'});
-  updateSessionMetadata(current.id,{standingRole:undefined});
+  db.query("UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole') WHERE id=?").run(current.id);
   updateSessionMetadata(successor.id,{standingRole:'inbox'});
   assert.deepEqual(topics.wakeRouterForUnfiled(successor,admit,at+62*60_000),{woken:true,alarmed:0});
   assert.equal(admitted.at(-1).sessionId,successor.id);

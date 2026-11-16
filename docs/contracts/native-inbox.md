@@ -711,9 +711,22 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   reads all explicit replies to open questions, including older replies beyond the bounded
   thread-list read. A thread he set aside holds recovery until he resumes it.
 - When the router itself completes a human request without dispatching another agent, it
-  names the later answer in that same thread as evidence. A bare completion claim with no
-  linked work or answer is refused. Verification-only agent test reports remain distinct
+  names a later direct answer to that request's exact source message as evidence. A later
+  answer to a sibling source, a forwarded answer from an unlinked dispatch, or a service
+  notice in the same thread cannot close it. The same source boundary applies to a new
+  direct answer used after reopening. An already accepted latest dispatch may also return
+  a new checked completed final after reopening: its unsuperseded retained final identity
+  (or its exact forwarded final post in this topic) supplies evidence without resending
+  accepted work. A generic post merely naming that dispatch does not qualify.
+  A bare completion claim with no linked work or answer
+  is refused. Verification-only agent test reports remain distinct
   from human requests.
+- Open requests without a dispatch remain explicitly `unsent` in the router's obligations
+  and thread prompt. Thread summaries count them separately; when no worker or current
+  router activity takes precedence, the existing Waiting to start status says the request
+  was recorded but not sent. A sibling worker's status also retains that unsent warning.
+  Existing prepared threads are recomputed once on upgrade. This is custody evidence,
+  not a semantic judgment that an answer fulfills every requirement in the original words.
 - His Close action names the requests still open in that thread. It withdraws those requests
   in the same durable topic event; Undo restores those exact requests. Upkeep recognizes
   older human Close events that left their named requests open and records the same

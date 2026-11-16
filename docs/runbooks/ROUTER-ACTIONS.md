@@ -428,6 +428,40 @@ are returned as bounded diagnostic facts. A final receipt proves recorded return
 consumption, push delivery or physical-device display. Untyped historical posts retain their
 unknown classification; inspect their exact words with `topics message` before judging coverage.
 
+## Requirement records
+
+Tejas, 2026-11-16 [decision: every-feature-requirement-is-recorded-and-verified]: every requirement
+for a feature is recorded in a requirement bucket, and the agent shipping it must verify each one
+before closing. thnkr.ing owns the record (its `docs/architecture/requirement-records.md`);
+Concierge carries it and enforces closing. Why: on Nov 15 five long group-chat captures were
+compressed into one-line titles, built to the titles, and closed on the builder's own checks.
+
+- `router-actions.sh requirements new|find|show|keep|file|reconcile|judge|link` are thin commands
+  over thnkr.ing's `/requirements` routes (local capability socket on the server, `ssh remote-box`
+  from the Mac), usable by any agent; a write is recorded as the calling agent's session. `keep
+  <record> --from <capture or input id>` fetches the exact retained words itself (the text
+  `reports capture` prints), so a kept capture cannot be a paraphrase. `file` takes repeated
+  `--words "<his exact words>" [--reading …]` with one `--source`, or `--json-file`.
+- `sessions ask --requirements <record>` (repeatable, work requests) stores the record ids in the
+  request. A work request made from an Inbox thread also carries every record tied to that thread
+  (`GET /requirements?topic=`), so a router that forgets the flag still attaches it.
+- At ask time the target's first input gets a block after WHAT CAME BEFORE: each record's title and
+  link, every requirement verbatim with id, state and source, each kept capture with the command
+  that prints it whole, and the closing obligations. A named record that cannot be read refuses the
+  ask; a thread's own records that cannot be read are skipped there and checked at close.
+- A `completed` reply on a request carrying records is refused until every record is closable
+  (nothing open or not-delivered; every kept capture reconciled by a second reader), naming each
+  open or not-delivered requirement and each unreconciled capture with the commands. The records
+  are read fresh from thnkr.ing by the request route (a caller cannot supply them); when thnkr.ing
+  cannot be read the completed reply is refused (fail closed). Failed, needs_decision and
+  `--partial` replies are never refused. An accepted completed reply adds one line per record to
+  the thread: `Requirements: N delivered, M withdrawn · <link>`.
+- Inbox router: when he states requirements for a feature or project, find or create its record,
+  `keep` each capture whole, `file` each requirement as his exact words (one independently
+  checkable outcome per item; conditions and exceptions stay with their requirement; a repeated
+  point is one item), `link` the record to the Inbox thread and pass `--requirements` on the work
+  request. Source: `bot/src/requirement-records.ts`, `bot/src/requirement-command.ts`.
+
 ## Waiting for a local process
 
 Use `router-actions.sh wait --pid <pid> [--pid <pid> ...] [--timeout 30m]` when
@@ -516,7 +550,10 @@ name for creation. `sessions agents bind <role> <session-address> <source-flags>
 moves a role's binding to an existing non-archived session in its exact declared folder. The
 source and action ID make retries idempotent. Moving a bound session to another folder clears its
 binding. The role table in `bot/src/standing-agents.ts` is the sole home for these folders and wake facts.
-Binding `inbox` makes that session the Inbox router, exactly as an accepted provider handoff does:
+Binding `inbox` requires retained human words explicitly authorizing that destination; agents
+cannot change the pinned Inbox conversation. Account exhaustion changes Claude accounts within
+the same conversation or holds its queue. See [Inbox conversation pin](../architecture/PROVIDER-STATE-FLOW.md#inbox-conversation-pin).
+An authorized binding makes that session the Inbox router, exactly as an authorized provider handoff does:
 new captures, his thread replies, thread-named requests (`sessions ask --thread`), topic commands
 and Inbox reads go through it, and it carries the former router's open attention. Every session
 ever marked as the Inbox stays part of the one Inbox, so their threads and topics remain usable
@@ -758,6 +795,18 @@ same request ID via `sessions get` or read-only `work request`. Do not create a
 replacement action or invoke `work recover` to bypass uncertain effects.
 
 ## Agent session communication
+
+Every time an agent reads from Concierge also carries Tejas's local clock, written
+the way he says it ("11:25 PM Eastern, Nov 15"), so no agent converts server UTC by
+hand. The router-actions `sessions`, `reports`, `threads`, `external`, `projects`,
+`work`, `report`, posting and `messages` commands keep each machine value exactly and
+add a sibling field (`startedAt` → `startedAtLocal`, `created_at` → `created_at_local`,
+epoch-millisecond moments likewise); an ISO UTC time inside a prose field gains
+`(11:25 PM Eastern, Nov 15)` after it (a field holding embedded JSON is left exact).
+The text of every agent and service input (requests, stall, upkeep and handoff
+notices), the per-turn context and the end-of-turn owed-reply hook get the same
+reading; the input text of his own messages is sent byte-exact. One formatter in
+`bot/src/agent-local-time.ts` does all of it.
 
 An agent carrying a work request can switch the saved Codex account on this server
 or the Mac through `sessions auth switch codex <saved-profile-id> [--machine mac]`

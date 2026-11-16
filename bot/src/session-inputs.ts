@@ -13,6 +13,7 @@ import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowa
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {projectCoordinates} from './session-projects';
+import {currentInboxHolder,holdsInbox,INBOX_PIN_REFUSAL} from './inbox-session-pin';
 
 const eventWriteCounts=new Map<string,{writes:number;rootCommits:number}>();
 setInterval(()=>{
@@ -123,6 +124,9 @@ export function providerAccountForSession(session:SessionRow):{status:'bound';ac
 export function updateSessionMetadata(sessionId:number, change:Partial<NativeSessionMetadata>) {
   const session = getSessionById(sessionId);
   if (!session) throw new Error('Unknown session.');
+  if(change.standingRole==='inbox'&&currentInboxHolder()&&currentInboxHolder()!.id!==sessionId)throw new Error(INBOX_PIN_REFUSAL);
+  if(holdsInbox(session)&&(('standingRole' in change&&change.standingRole!=='inbox')
+    ||('inboxRole' in change&&change.inboxRole!=='project-router')||change.inbox===false))throw new Error(INBOX_PIN_REFUSAL);
   db.query('UPDATE sessions SET native_metadata_json=? WHERE id=?').run(JSON.stringify({...sessionMetadata(session),...change}),sessionId);
   executionChanged();
 }
@@ -170,6 +174,7 @@ export function humanNamedSession(sessionId:number):boolean {
  * continued conversation is its opening words; a session with neither is refused.
  */
 export function createNativeSession(provider:ProviderId, metadata:NativeSessionMetadata&{summary:string|undefined}):SessionRow {
+  if(metadata.standingRole==='inbox'&&currentInboxHolder())throw new Error(INBOX_PIN_REFUSAL);
   if(provider==='claude-code'&&claudeAllowanceHeld())throw new Error(CLAUDE_ALLOWANCE_HOLD_MESSAGE);
   const summary=purposeLine(metadata.summary)??purposeLine(metadata.title);
   if(!summary)throw new Error('A session needs a purpose: say in one line what it is for.');
@@ -189,6 +194,8 @@ export function createNativeSession(provider:ProviderId, metadata:NativeSessionM
 }
 export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:string) {
   if (!uuid) throw new Error('Provider returned an empty native session identity.');
+  const current=getSessionById(sessionId);
+  if(current&&holdsInbox(current)&&current.agent_session_uuid&&current.agent_session_uuid!==uuid)throw new Error(INBOX_PIN_REFUSAL);
   const bound = db.query(`UPDATE sessions SET agent_session_uuid=?,
     binding_generation=binding_generation+CASE WHEN agent_session_uuid IS NOT NULL AND agent_session_uuid<>? THEN 1 ELSE 0 END,
     last_turn_at=CURRENT_TIMESTAMP WHERE id=? AND provider_id=?`).run(uuid,uuid,sessionId,provider);

@@ -5,11 +5,12 @@ import {anyModelRefused} from './provider-model-capacity';
 import {nativeRunId,sessionMetadata} from './session-inputs';
 import {proposeHandoff} from './session-handoff';
 import {log} from './log';
+import {holdsInbox} from './inbox-session-pin';
 
 const preparing=new Set<number>();
 
 /**
- * A standing role (the Inbox router, the repair agent, the journal keeper, every `sessions agents`
+ * A standing role other than the pinned Inbox (the repair agent, the journal keeper, …)
  * role) is one logical job served by one session at a time. When that session's provider cannot
  * start its work and another automatic provider has room, the owner proposes the ordinary
  * provider-change handoff; acceptance moves the role to the successor (session-handoff.ts).
@@ -46,11 +47,10 @@ export function maybeStartStandingRoleFailover(session:SessionRow|null) {
   // over. Until 2026-11-09 only Claude and Codex were handled: the Inbox on Gemini (concierge:9305) had
   // no way out when Gemini ran out while Claude still had room.
   const automatic=Object.keys(AUTOMATIC_PROVIDER_ALIASES) as AutomaticProvider[];
-  if(!session||session.status==='archived'||!automatic.includes(session.provider_id as AutomaticProvider)
+  if(!session||holdsInbox(session)||session.status==='archived'||!automatic.includes(session.provider_id as AutomaticProvider)
     ||sessionMetadata(session).suspended||preparing.has(session.id))return;
   const role=roleOf(session);
-  if(!role)return;
-  const isInbox=role==='inbox';
+  if(!role||role==='inbox')return;
   const sourceProvider=session.provider_id as AutomaticProvider;
   const current=newWorkCapacity(sourceProvider,Date.now(),sourceProvider==='claude-code');
   // Another provider with room takes over: Claude or Codex first (most total room wins), Gemini only
@@ -81,14 +81,9 @@ export function maybeStartStandingRoleFailover(session:SessionRow|null) {
     ||(sourceProvider==='antigravity'&&anyModelRefused(sourceProvider));
   const confirmedUsageWall=!!usageHeld&&(!current||!capacityCanStart(current));
   const waiting=!!db.query(`SELECT 1 FROM turns WHERE session_id=? AND status='queued' LIMIT 1`).get(session.id);
-  // The Inbox moves as soon as its provider is spent, because a capture can arrive at any moment and
-  // must not wait. Every other role moves when work is actually waiting on it, so an idle role is not
-  // churned to another provider each time an allowance runs out.
-  // A brief backoff or sign-in wait moves only the Inbox; another role moves only on allowance evidence,
-  // so it is never bounced between providers (and back) by a passing hiccup.
+  // Move only waiting work on confirmed allowance evidence, not a passing sign-in or busy spell.
   const usageRefused=failedBeforeAdmission&&last?.dispatch_failure_class==='usage_wait';
-  const moves=isInbox?(exhausted||failedBeforeAdmission||confirmedUsageWall)
-    :(confirmedUsageWall||usageRefused||(exhausted&&waiting));
+  const moves=confirmedUsageWall||usageRefused||(exhausted&&waiting);
   if(!moves)return;
   if(db.query("SELECT 1 FROM session_handoffs WHERE predecessor_session_id=? AND state IN ('proposed','accepted') LIMIT 1").get(session.id))return;
   const source=db.query(`SELECT input.id,turn.id AS turn_id,turn.native_run_id
@@ -98,14 +93,12 @@ export function maybeStartStandingRoleFailover(session:SessionRow|null) {
   if(!source)return;
   const meta=sessionMetadata(session);
   const targetProvider=alternative.provider;
-  // Claude keeps the one-million-token Opus the Inbox was built on. Other roles keep their model tier
-  // and reasoning effort, as held-work failover does.
+  // Keep model tier and reasoning effort, as held-work failover does.
   const sourceModel=meta.model??(db.query(`SELECT provider_model FROM turns WHERE session_id=? AND provider_model IS NOT NULL ORDER BY id DESC LIMIT 1`)
     .get(session.id) as {provider_model:string}|null)?.provider_model??null;
-  const provider=isInbox?(targetProvider==='claude-code'?'cc-opus-1m':AUTOMATIC_PROVIDER_ALIASES[targetProvider])
-    :aliasKeepingTier(targetProvider,sourceModel);
-  const effort=!isInbox&&targetProvider!=='antigravity'&&meta.reasoningEffort?normalizeReasoningEffort(meta.reasoningEffort):null;
-  const job=isInbox?'the Inbox':`the ${role} standing role`;
+  const provider=aliasKeepingTier(targetProvider,sourceModel);
+  const effort=targetProvider!=='antigravity'&&meta.reasoningEffort?normalizeReasoningEffort(meta.reasoningEffort):null;
+  const job=`the ${role} standing role`;
   const attempt=(db.query(`SELECT count(*) AS count FROM session_handoffs WHERE predecessor_session_id=? AND action_id LIKE ?`)
     .get(session.id,'automatic-%-failover:%') as {count:number}).count+1;
   preparing.add(session.id);
@@ -113,9 +106,8 @@ export function maybeStartStandingRoleFailover(session:SessionRow|null) {
     predecessorId:session.id,provider,...(effort?{effort}:{}),reason:exhausted||confirmedUsageWall
       ?`${sourceProvider} has exhausted its usable allowance and ${targetProvider} has room; continue ${job} through its exact handoff inventory.`
       :`${sourceProvider} could not start ${job}'s input ${last?.accepted_input_id??'unknown'} before provider admission. Inspect and recover that exact accepted input without replaying any acknowledged effect.`,
-    ...(isInbox?{sessionName:'Inbox'}:meta.title?{sessionName:meta.title}:{}),
-    // The Inbox keeps its original action identity, so an already proposed Inbox move stays one move.
-    actionId:isInbox?`automatic-inbox-failover:${session.id}`:`automatic-role-failover:${session.id}:${attempt}`})
+    ...(meta.title?{sessionName:meta.title}:{}),
+    actionId:`automatic-role-failover:${session.id}:${attempt}`})
     .then(result=>log('warn','standing_role_provider_handoff_proposed',{role,predecessor:session.id,successor:result.successor,
       handoff_id:result.handoffId,from:sourceProvider,to:targetProvider}))
     .catch(error=>log('error','standing_role_provider_handoff_failed',{role,predecessor:session.id,error:String(error)}))
