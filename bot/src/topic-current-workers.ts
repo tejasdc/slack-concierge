@@ -4,6 +4,20 @@ import type {RequestStanding} from './request-standing';
 
 type Dispatch={sessionId:string|null;title:string;requestId:string};
 
+/** Recorded obligations stay visible even while a sibling request has a worker. */
+export function unsentRequestStatus(requests:readonly {state:string;dispatches?:readonly any[]}[]){
+ const count=requests.filter(request=>request.state==='open'&&!request.dispatches?.length).length;
+ return {count,text:count===1?'1 request recorded but not sent to an agent':`${count} requests recorded but not sent to an agent`};
+}
+
+export function workWithUnsentRequests<T extends {kind:string;text:string}>(work:T,unsent:ReturnType<typeof unsentRequestStatus>){
+ if(!unsent.count)return work;
+ // Waiting-worker and returned-answer renderers replace or hide text. Keep their detail
+ // fields, but select the routing status so the separate unsent obligation stays visible.
+ return {...work,kind:['idle','worker_waiting','result_waiting'].includes(work.kind)?'router_queued' as const:work.kind,
+  text:unsent.text+(work.text?`; ${work.text}`:'')};
+}
+
 export type CurrentWorker={sessionId:string|null;title:string;progress:{text:string;at:string}|null;requestId:string;standing:RequestStanding|null};
 
 /**

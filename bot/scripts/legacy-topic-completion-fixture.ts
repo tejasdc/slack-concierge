@@ -4,6 +4,10 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION} from '../src/test-authorizations';
+import {Database} from 'bun:sqlite';
+import {PreparedTopics} from '../src/prepared-topics';
+import {preparedTopicValue} from '../src/prepared-topic-values';
+import {unsentRequestStatus,workWithUnsentRequests} from '../src/topic-current-workers';
 
 const scratch=mkdtempSync(join(tmpdir(),'concierge-legacy-topic-'));
 process.env.CONCIERGE_STATE_DIR=scratch;
@@ -13,7 +17,7 @@ process.env.CONCIERGE_TEST_AUTHORIZATION=LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZAT
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
   {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata,recordSessionEvent,retainSessionInput},
-  {topicsCommand,topicPromptContext,invalidateTopicRoots}]=await Promise.all([
+  {topicsCommand,topicPromptContext,invalidateTopicRoots,readTopic,openInboxObligations}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-communication'),
   import('../src/session-inputs'),import('../src/session-topics')]);
 
@@ -43,6 +47,33 @@ try {
   const added=topicsCommand(current.actor,{verb:'request.add',topic_id:topicId,action_id:'legacy-request',title:'Explain and resolve the queue',
     sources:[rootId],brief:'Check the queue, recover it if needed, and explain the outcome.'});
   const requestId=added.request.requestId;
+  assert.equal(readTopic(topicId).work.kind,'router_queued');
+  assert.match(readTopic(topicId).work.text,/recorded but not sent/);
+  assert.equal(readTopic(topicId).topic.requests.unsent,1);
+  const unsent=openInboxObligations().items.find(item=>item.requestId===requestId)!;
+  assert.equal(unsent.dispatchState,'unsent');assert.match(unsent.nextAction!,/exact request/);
+  const waitingWorkers=[{sessionId:'concierge:42',title:'A waiting worker'}];
+  const mixed=workWithUnsentRequests({kind:'worker_waiting',text:'A waiting worker · waiting for its helper',workers:waitingWorkers},
+    unsentRequestStatus([{state:'open',dispatches:[]}]));
+  assert.equal(mixed.kind,'router_queued');assert.match(mixed.text,/recorded but not sent.*waiting for its helper/);
+  assert.equal(mixed.workers,waitingWorkers);
+  for(const kind of ['router_working','router_queued','worker_working']){
+    const status=workWithUnsentRequests({kind,text:'Existing activity'},unsentRequestStatus([{state:'open',dispatches:[]}]));
+    assert.equal(status.kind,kind);assert.match(status.text,/recorded but not sent.*Existing activity/);
+  }
+  const returned=workWithUnsentRequests({kind:'result_waiting',text:'An answer came back',returnInputId:'return:exact'},
+    unsentRequestStatus([{state:'open',dispatches:[]}]));
+  assert.equal(returned.kind,'router_queued');assert.equal(returned.returnInputId,'return:exact');
+  assert.match(returned.text,/recorded but not sent.*answer came back/);
+  const projection=new Database(':memory:');
+  try{
+    const topics=new PreparedTopics(db,projection);
+    projection.exec('CREATE TABLE presentation_messages(generation INTEGER,root_input_id TEXT,event_sequence INTEGER,created_at TEXT,message_id TEXT,input_id TEXT,entry_kind TEXT)');
+    projection.exec('CREATE TABLE presentation_topic_events(generation INTEGER,topic_id TEXT,event_sequence INTEGER)');
+    const prepared=preparedTopicValue(topics.context(1,inboxId),topicId)!;
+    assert.equal(prepared.summary.requests.unsent,1);
+    assert.equal(prepared.summary.work.kind,'router_queued');assert.match(prepared.summary.work.text,/recorded but not sent/);
+  }finally{projection.close();}
 
   const target=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
   const dispatch=await communication.ask({source:current.source,action_id:'legacy-dispatch',address:target.session.address,
@@ -191,14 +222,31 @@ try {
     turnId:successorTurn.actor.turnId,kind:'post',payload:{text:'An unrelated answer',threadRoot:'other-root'}});
   assert.throws(()=>topicsCommand(successorTurn.actor,{verb:'request.close',request_id:inherited.request.requestId,
     action_id:'successor-wrong-thread',disposition:'completed',evidence:[wrongPost],reason:'Checked the answer.'}),
-    /name the later answer in this thread/);
+    /exact source message/);
+  const siblingSource='human:sibling-source';
+  retainSessionInput({id:siblingSource,sessionId:inboxId,scope:`session:${rootId}`,actionId:siblingSource,
+    kind:'input',origin:'human',payload:{text:'A separate question in this same thread.'}});
+  recordSessionEvent({eventId:'fixture-sibling-accepted',sessionId:inboxId,inputId:siblingSource,kind:'accepted',payload:{}});
+  const siblingPost='post:successor-sibling';
+  recordSessionEvent({eventId:siblingPost,sessionId:successorId,inputId:rootId,turnId:successorTurn.actor.turnId,kind:'post',
+    payload:{text:'A sibling answer.',replyToMessage:{messageId:siblingSource}}});
+  assert.throws(()=>topicsCommand(successorTurn.actor,{verb:'request.close',request_id:inherited.request.requestId,
+    action_id:'successor-sibling-answer',disposition:'completed',evidence:[siblingPost],reason:'It is in the same thread.'}),/exact source message/);
+  const forwardedPost='post:successor-unlinked-dispatch';
+  recordSessionEvent({eventId:forwardedPost,sessionId:successorId,inputId:rootId,kind:'post',
+    payload:{text:'An unlinked worker answer.',requestId:typedDispatch.request_id,postedBy:'owner-forward',replyToMessage:{messageId:rootId}}});
+  assert.throws(()=>topicsCommand(successorTurn.actor,{verb:'request.close',request_id:inherited.request.requestId,
+    action_id:'successor-unlinked-answer',disposition:'completed',evidence:[forwardedPost],reason:'The worker answered here.'}),/exact source message/);
   const answerPost='post:successor-inherited-answer';
   recordSessionEvent({eventId:answerPost,sessionId:successorId,inputId:successorTurn.actor.inputId,
-    turnId:successorTurn.actor.turnId,kind:'post',payload:{text:'The existing request is answered.',threadRoot:rootId}});
+    turnId:successorTurn.actor.turnId,kind:'post',payload:{text:'The existing request is answered.',threadRoot:rootId,replyToMessage:{messageId:rootId}}});
   const inheritedClosed=topicsCommand(successorTurn.actor,{verb:'request.close',request_id:inherited.request.requestId,
     action_id:'successor-inherited-close',disposition:'completed',evidence:[answerPost],reason:'Checked the exact answer in the original thread.'});
   assert.equal(inheritedClosed.request.state,'closed');
   assert.deepEqual(inheritedClosed.request.closure.evidence,[answerPost]);
+  topicsCommand(successorTurn.actor,{verb:'request.reopen',request_id:inherited.request.requestId,action_id:'reopen-exact',reason:'The source obligation still needs work.'});
+  assert.throws(()=>topicsCommand(successorTurn.actor,{verb:'request.close',request_id:inherited.request.requestId,
+    action_id:'reopened-generic-answer',disposition:'completed',evidence:[siblingPost],reason:'An answer exists in this topic.'}),/exact source message/);
   assert.deepEqual(errors,[]);
   console.log('Legacy topic completion fixture passed: uncertain and unrelated evidence stayed open; exact finals and successor thread answer closed without duplicate posts.');
 } finally {
