@@ -49,17 +49,33 @@ lineage. Human-message routing attribution and compact operation receipts use th
 latest placement through a shared read-only helper. New messages
 and incremental placement changes use these rules immediately.
 
-Existing prepared messages receive the versioned Inbox-lineage upgrade once. The worker
+Existing prepared messages receive semantic version 2 of the Inbox-lineage upgrade,
+including stores that already completed version 1. The worker
 walks at most 100 messages per transaction, refreshes message placement and display, and
 drains affected thread summaries in batches of 20 before continuing. Empty former roots
-are removed from the sorting pile; genuinely unfiled human roots remain. The version is
+are removed from the sorting pile; genuinely unfiled human roots remain. It also corrects
+cached topic membership when the resolved root itself has not changed, then sweeps existing
+root summaries in 100-row pages so a zero-member orphan cannot escape the repair. The version is
 marked complete only after every page finishes, so interrupted work safely resumes by
 rechecking derived rows. The canonical ledger is opened read-only; no filing operation,
 provider action, or accepted input is replayed. One completion log records generation,
-version, examined/moved counts, pages, and elapsed time without message text or identities.
+version, examined/moved/topic-correction counts, orphan removals, pages, and elapsed time.
+Each removed empty human sorting root has a separate content-free diagnostic with its
+exact root and current canonical target (which may be null). This is projection evidence,
+not proof that the associated work completed.
 Existing compact receipts refresh through the worker's existing bounded revision rebuild.
+
+Incremental link changes retain original-root work and its page cursor in the derived
+`presentation_message_root_work` table before moving messages. Each 100-row transaction
+commits message mappings, display, old/new root summaries, durable topic invalidation and
+the cursor together. After interruption the worker resumes that original root even if the
+linked input itself has already moved; a retry cannot strand its later descendants. The
+queue is scoped to the prepared generation and cleared with replaced generations. Pending
+root work and topic dirtiness drain even when the source change journal is quiet. No new
+service, timer or canonical operation is involved.
 `bot/scripts/inbox-prepared-lineage-fixture.ts` exercises the real worker's initial build,
-existing-row upgrade, latest detach/relink, and recursive replies across router sessions.
+already-version-1 upgrade, empty orphan cleanup, same-root topic correction, latest
+detach/relink, recursive replies, and a real post-commit interruption followed by two restarts.
 The change feed retains seven days of revisions and explicitly resets an older cursor. Garbage collection
 walks finite batches, removes superseded generations and unreferenced chunks, and never
 deletes canonical records. A removed detail reference requires refreshing its owning item.

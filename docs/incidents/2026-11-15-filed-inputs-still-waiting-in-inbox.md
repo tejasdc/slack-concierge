@@ -26,6 +26,15 @@ while canonical reads follow the retained Inbox lineage.
 These source defects are confirmed by the disposable worker regression. The exact
 event/session pairing behind every reported live row was not inspected by that fixture.
 
+The subsequent source review also demonstrated an interruption window: incremental
+reassignment committed message pages before refreshing the old root summary. A worker
+loss could leave that summary with zero members, or leave descendants under an old root
+that a retry could no longer find after the linked input moved. The first versioned
+repair could not discover zero-member summaries and did not correct a stale cached topic
+when its root stayed the same. These defects are reproduced offline; they do not prove
+which unclassified live rows experienced interruption. An indexing response is still a
+coverage boundary, not evidence that semantic repair has finished.
+
 ## Fix
 
 Prepared roots follow Inbox lineage and the globally latest input placement, including
@@ -34,6 +43,14 @@ follow that same placement through one shared read-only helper. Existing receipt
 through the worker's bounded revision rebuild. A versioned upgrade reprojects existing messages in 100-row pages and drains
 affected summaries in bounded batches. It removes empty false waiting roots while keeping
 genuinely unfiled work. The ledger stays read-only; no accepted operation is replayed.
+
+Semantic version 2 reruns on stores that already completed version 1, corrects cached
+topic membership independently of root changes, and also sweeps existing summaries to
+remove zero-member orphans. Each future incremental page commits its old/new summary
+maintenance and durable original-root continuation with its message changes. A restarted
+worker resumes remaining descendants and drains persistent topic work even without a new
+source change. Completion diagnostics count orphan removals; a separate content-free
+record names each removed empty human root and its current canonical target.
 
 The existing overdue-work upkeep also reminds the current Inbox after thirty minutes,
 including while it is busy or already has queued work. The reminder uses the current
@@ -45,13 +62,22 @@ The earlier idle wake and repair notice retain their separate purposes.
 - **Seed:** One router accepted human messages; a successor placed them in a filed root.
   Preserve 105 old prepared rows at their former unfiled roots, plus one genuinely
   unfiled message and a successor-authored reply to a predecessor message.
+  Include an already-version-1 store with an empty obsolete sorting root and a message
+  whose correct root still carries an obsolete cached topic. A separate parent message
+  has 125 retained replies under its root.
 - **Action:** Start the real presentation worker without adding a source change; then
   detach a predecessor input, relink it from the successor, and add a new reply.
+  Link the 125-reply parent to a placed root, pause the real worker immediately after its
+  first remap transaction commits, kill it, then start a fresh worker twice.
 - **Expected:** The versioned upgrade removes all 105 phantom waiting roots without
   changing canonical events or the active generation. The genuine unfiled root remains;
   initial and incremental replies follow the canonical thread; latest detach and relink
-  update placement and displayed routing. An independently seeded thirty-minute-old
-  unfiled input produces one reminder to a busy current router, with repeated upkeep
+  update placement and displayed routing. The independently seeded root with no members
+  is removed; unchanged-root cached topics are corrected. At the
+  interruption boundary the parent has moved while 26 descendants remain. Restarting
+  finishes those descendants, removes the empty old summary, preserves the generation
+  and canonical events, and a second restart preserves that result. An independently seeded
+  thirty-minute-old unfiled input produces one reminder to a busy current router, with repeated upkeep
   deduplicating for that router, while a successor receives its own reminder; already-filed
   roots produce none.
 - **Replayable offline:** yes; run `bun run scripts/inbox-prepared-lineage-fixture.ts`
