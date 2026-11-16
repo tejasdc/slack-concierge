@@ -84,8 +84,11 @@ export function maybeStartStandingRoleFailover(session:SessionRow|null) {
   // The Inbox moves as soon as its provider is spent, because a capture can arrive at any moment and
   // must not wait. Every other role moves when work is actually waiting on it, so an idle role is not
   // churned to another provider each time an allowance runs out.
+  // A brief backoff or sign-in wait moves only the Inbox; another role moves only on allowance evidence,
+  // so it is never bounced between providers (and back) by a passing hiccup.
+  const usageRefused=failedBeforeAdmission&&last?.dispatch_failure_class==='usage_wait';
   const moves=isInbox?(exhausted||failedBeforeAdmission||confirmedUsageWall)
-    :(confirmedUsageWall||failedBeforeAdmission||(exhausted&&waiting));
+    :(confirmedUsageWall||usageRefused||(exhausted&&waiting));
   if(!moves)return;
   if(db.query("SELECT 1 FROM session_handoffs WHERE predecessor_session_id=? AND state IN ('proposed','accepted') LIMIT 1").get(session.id))return;
   const source=db.query(`SELECT input.id,turn.id AS turn_id,turn.native_run_id
