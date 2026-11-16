@@ -627,6 +627,8 @@ async function acceptHandoffInternal(input:{actorSession:number;inputId:string;r
       db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole') WHERE id=?`).run(from);
       updateSessionMetadata(to,{standingRole:predecessorMeta.standingRole});
     }
+    // The repair agent's marker (its purpose text and repair-notice delivery) follows the role too.
+    if(predecessorMeta.repairAgent)updateSessionMetadata(to,{repairAgent:true});
     // Suspension prevents the next turn. It does not interrupt an already admitted run;
     // that run receives a direct notice after this transaction commits.
     updateSessionMetadata(from,{suspended:true});
