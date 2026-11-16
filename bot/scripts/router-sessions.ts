@@ -69,6 +69,8 @@ router-actions.sh sessions handoff <predecessor-address> --provider <alias> [--m
 router-actions.sh sessions handoff accept <handoff-id> --digest <sha256> <source-flags> --action-id A
 router-actions.sh sessions handoff withdraw <handoff-id> <source-flags> --action-id A
 router-actions.sh sessions obligations [<address>] <source-flags>
+router-actions.sh sessions mutation-admission --source-input <input-id> --source-run <run-id>
+Returns the current actor plus handoff-fence decision and attributed identity only. Check immediately before a mutation; this is not a reusable grant. Ordinary obligations reads remain unchanged.
 Provider changes use handoff between sessions on the same machine. Choose a coding provider alias: ChatGPT cannot acknowledge a handoff. The successor reads the predecessor's context and acknowledges the exact inventory digest before the owner moves obligations. A proposed handoff can be withdrawn while the predecessor keeps working. cancel --reason provider-change is refused with the handoff command.
 router-actions.sh sessions snooze --until <ISO time, at most 6 hours ahead> --reason "<why this can wait>" <source-flags> --action-id A
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
@@ -202,6 +204,7 @@ export type SessionCommunicationRequest =
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
+  | { operation: "mutation-admission"; body: { source: Source } }
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'|'inspect-pair'|'reconcile-pair'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string; old_watch_id?:string; new_watch_id?:string; inspection?:string } }
   | { operation: "snooze"; body: { source: Source; action_id: string; until_ms: number; reason: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'|'daily'; turn_id?:number; action_id?:string;cursor?:string;time?:string;timeZone?:string } }
@@ -537,6 +540,18 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     return {operation:'pause',body:{source:sourceFrom(flags),verb,
       ...(flags.has('--action-id')?{action_id:flags.get('--action-id')}:{}),
       ...(sessionIds.length?{session_ids:sessionIds}:{})}};
+  }
+  if (first === 'mutation-admission') {
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!;
+      if(!['--source-input','--source-run'].includes(flag))invalid(`Unexpected mutation-admission option ${flag}.`);
+      const value=args.shift();
+      if(!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`${flag} needs one nonempty value.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags);
+    return {operation:'mutation-admission',body:{source}};
   }
   if (first === 'handoff' || first === 'obligations') {
     const verb = first === 'handoff' && (args[0] === 'accept' || args[0] === 'withdraw')

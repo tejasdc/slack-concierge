@@ -80,6 +80,10 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 
 ## Session and Inbox obligations
 
+- Native custody mutation admission and its source-bound, inventory-free result use the
+  [current owner port](docs/contracts/session-owner-v1.md#current-mutation-admission);
+  ordinary obligations reads do not confer mutation authority.
+
 - Route agent issue reports through `router-actions.sh report`, which opens the
   Inbox thread and request before routing. See
   [agent issue reports](docs/contracts/native-inbox.md#agent-issue-reports).

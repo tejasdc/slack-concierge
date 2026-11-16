@@ -1,5 +1,34 @@
 # Unified session owner wire contract v1
 
+## Current mutation admission
+
+`router-actions.sh sessions mutation-admission --source-input <input-id> --source-run <run-id>`
+posts `{"source":{"input_id":"…","run_id":"…"}}` to
+`/session-communication/mutation-admission` through the existing private owner socket
+or signed agent network entrance. It accepts native source identity only, with no target,
+role, action ID, inventory request or caller-supplied identity result.
+
+The canonical communication owner runs its existing current `actor()` and `fenced()`
+predicates synchronously. Success is HTTP 200 with
+`{"admitted":true,"sessionId":"concierge:<n>","inputId":"<exact-input>","runId":"<exact-run>","origin":"human|agent|service"}`.
+Origin is the accepted input's author, not an assertion of new human authority. This
+decision neither widens delegated scope nor changes any capability's access checks.
+The existing route returns HTTP 409 / `SESSION_SUPERSEDED` with successor identity for
+a superseded predecessor, or HTTP 409 / `HANDOFF_WITHDRAWN` for a withdrawn successor.
+Other actor/source refusals retain HTTP 400 and their existing error wording, including
+stale, stopped, unadmitted, mixed-source and consultation-only callers. A stopped
+communication coordinator refuses admission too.
+
+This is a point-in-time decision, not a lease, token, reservation or durable operation
+receipt. A native custody client checks it immediately before its mutation, validates the
+exact returned input/run and session identity, and fails closed on a refused, unavailable
+or malformed response. It does not cache it as authority for later mutations. This port
+does not make a remote effect atomic with a later Stop or handoff. Existing obligations
+and other ordinary read semantics stay unchanged; no Lab or worktree inventory is loaded
+by admission. This source change adds no fixture, test authorization or ship gate.
+The originating archive task permits only its existing mandatory normal Thinkering ship
+gates; the coordinated whole-change review and subsequent installed acceptance remain held.
+
 The prepared Threads and Incoming projections attach `filingState` to a human message: `waiting` while its Inbox turn is queued or running, `failed` only after that turn ends without a topic placement, and `filed` once a topic owns the root. This state changes with the turn, not with elapsed time. A consumer must not infer a filing failure from a message's age (November 4 report `38a516a7d3fe96de439228380ce5eb1c00dd5f25056d869a52e1f04c0dc0528a`).
 
 ## Human message delivery choice
