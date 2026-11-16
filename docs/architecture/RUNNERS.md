@@ -287,7 +287,11 @@ keeps its exact-turn association checks without requiring productive quiescence.
 This supports demonstrated co-location, not general remote-runner custody.
 
 Worktree inventory keeps the registered runner project and exact provider/account
-transcript association. It streams that transcript against Git's known worktree
+transcript association. A Codex transcript is found by thread alone: the shared App
+Server writes every thread under the live Codex home whichever account is signed in,
+so after an account switch the retained account's saved home holds only credentials.
+The content-only lookup still refuses a thread found in more than one place. Claude
+keeps its account-scoped home. It streams that transcript against Git's known worktree
 paths rather than allocating the whole transcript or refusing it by file size.
 Failures retain project/query/parse phase, original nonsecret error, selection
 provenance, resolved location and answering implementation identity when available.
