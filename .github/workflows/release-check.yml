@@ -75,28 +75,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y restic bubblewrap
-          # Ubuntu 24.04 runners refuse unprivileged user namespaces through AppArmor, which
-          # bubblewrap's database isolation needs. This changes only the disposable runner.
-          for setting in apparmor_restrict_unprivileged_userns apparmor_restrict_unprivileged_unconfined; do
-            if [ -e "/proc/sys/kernel/$setting" ]; then sudo sysctl -w "kernel.$setting=0"; fi
-          done
-          sysctl user.max_user_namespaces kernel.unprivileged_userns_clone 2>/dev/null || true
-          # Ubuntu's bwrap-userns-restrict profile also forbids a user namespace inside a
-          # bubblewrap sandbox; unload AppArmor profiles on this disposable runner only.
-          sudo aa-teardown >/dev/null 2>&1 || sudo systemctl stop apparmor || true
-          bwrap --die-with-parent --bind / / --dev /dev --unshare-user --uid 0 --gid 0 -- true
       - name: Run the complete bounded check group
         working-directory: bot
         env:
           CONCIERGE_STATE_DIR: ${{ runner.temp }}/concierge-release-check
           CHECK_GROUP: ${{ matrix.group }}
-        # As root, like the server the native checks model: a nested private namespace may map
-        # its parent's UID 0 only with capabilities an ordinary runner user does not hold.
-        # The checkout and Bun live under the runner user's 0750 home, which the sandbox's root
-        # (mapping only UID 0) cannot traverse; open traversal on this disposable runner only.
-        run: |
-          sudo chmod o+rx "$HOME"
-          sudo --preserve-env=CONCIERGE_STATE_DIR,CHECK_GROUP,CONCIERGE_CHECK_BUN_VERSION env "PATH=$PATH" bun run scripts/run-release-checks.ts --group "$CHECK_GROUP"
+        run: bun run scripts/run-release-checks.ts --group "$CHECK_GROUP"
       - name: Release check cancellation and owned descendant cleanup
         run: |
           bun bot/scripts/release-check-lifetime-fixture.ts
