@@ -25,19 +25,22 @@ const communication=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>
 owner.communication=communication;
 
 let tick=0;
-function turn(sessionId:number,kind:'refused'|'acknowledged'|'historical'){
+type Kind='refused'|'acknowledged'|'cancelled'|'never-reached'|'stopped';
+// refused: parked with its text; cancelled: closed after the provider started, text overwritten (8245's
+// real state); never-reached: no provider turn; stopped: provider turn, Stop requested before acknowledgement.
+function turn(sessionId:number,kind:Kind){
   const stamp=`2026-11-1${++tick%10} 10:00:00`;
-  const refused=kind!=='acknowledged';
-  const outbound=kind==='historical'?JSON.stringify({version:1,result:{text:'',toolsUsed:[]}}):null;
+  const text=kind==='refused'?'CODEX_INPUT_NOT_ACKNOWLEDGED: Codex completed native turn t without acknowledging the input.':'closed';
+  const status=kind==='refused'?'parked':kind==='cancelled'?'cancelled':'done';
+  const providerTurn=['cancelled','stopped','acknowledged'].includes(kind)?`provider-turn-${sessionId}-${tick}`:null;
   return Number(db.query(`INSERT INTO turns(session_id,slack_user_msg_ts,user_text,agent_text,status,started_at,ended_at,
-      provider_input_acknowledged_at,dispatch_failure_class,outbound_text) VALUES(?,?,?,?,?,?,?,?,?,?)`)
-    .run(sessionId,`fixture-${sessionId}-${tick}`,'work',
-      kind==='refused'?'CODEX_INPUT_NOT_ACKNOWLEDGED: Codex completed native turn t without acknowledging the input.':kind==='historical'?'':'done',
-      kind==='refused'?'parked':'done',stamp,stamp,refused?null:stamp,kind==='refused'?'parked_terminal':null,outbound).lastInsertRowid);
+      provider_input_acknowledged_at,provider_turn_id,stop_requested_at) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(sessionId,`fixture-${sessionId}-${tick}`,'work',text,status,stamp,stamp,kind==='acknowledged'?stamp:null,providerTurn,
+      kind==='stopped'?stamp:null).lastInsertRowid);
 }
 const make=(title:string)=>createNativeSession('codex',{title,summary:undefined,purpose:'chat',origin:'native'});
 const view=(id:number)=>owner.view(getSessionById(id)!) as any;
-const planFor=(id:number)=>(db.query("EXPLAIN QUERY PLAN SELECT id FROM turns INDEXED BY turns_session_latest WHERE session_id=? AND status IN ('done','parked','error') ORDER BY id DESC LIMIT 200").all(id) as any[]).map(r=>r.detail).join(' | ');
+const planFor=(id:number)=>(db.query("EXPLAIN QUERY PLAN SELECT id FROM turns INDEXED BY turns_session_latest WHERE session_id=? AND status IN ('done','parked','error','cancelled') ORDER BY id DESC LIMIT 200").all(id) as any[]).map(r=>r.detail).join(' | ');
 
 try{
   communication.start();await communication.idle();
@@ -47,7 +50,7 @@ try{
   assert.equal(view(two.id).capabilities.send,true);
   assert.equal(view(two.id).inputRefused,null);assert.equal(view(two.id).messageableForAgents,true);
 
-  const three=make('three refusals');const first=turn(three.id,'refused');turn(three.id,'historical');const last=turn(three.id,'refused');
+  const three=make('three refusals');const first=turn(three.id,'refused');turn(three.id,'cancelled');const last=turn(three.id,'refused');
   const marked=view(three.id);
   assert.equal(marked.capabilities.send,true,'his composer stays usable');assert.equal(marked.messageableForAgents,false);
   assert.doesNotMatch(String(marked.capabilities.reason),/Cannot take messages/,'the composer-visible reason is not overloaded');
@@ -60,6 +63,18 @@ try{
   const mixed=make('acknowledged in the middle');turn(mixed.id,'refused');turn(mixed.id,'acknowledged');turn(mixed.id,'refused');turn(mixed.id,'refused');
   assert.equal(inputRefusalStreak(db,mixed.id),null,'an acknowledged turn among the latest three breaks it');
   assert.equal(view(mixed.id).capabilities.send,true);
+
+  // Text overwritten by closing still counts when the provider started; turns that never reached it, and a Stop, are skipped.
+  const durable=make('durable columns');turn(durable.id,'cancelled');turn(durable.id,'never-reached');turn(durable.id,'stopped');turn(durable.id,'cancelled');
+  assert.equal(inputRefusalStreak(db,durable.id),null,'two counted turns, the skipped ones are not counted');
+  turn(durable.id,'cancelled');
+  assert.equal(inputRefusalStreak(db,durable.id)?.count,3,'skipped turns neither count nor break the streak');
+  assert.equal(view(durable.id).messageableForAgents,false);
+
+  const deep=make('older acknowledged turns');for(let i=0;i<3;i++)turn(deep.id,'acknowledged');for(let i=0;i<3;i++)turn(deep.id,'cancelled');
+  assert.equal(inputRefusalStreak(db,deep.id)?.count,3,'older acknowledged turns do not hide a new streak');
+  turn(deep.id,'acknowledged');
+  assert.equal(inputRefusalStreak(db,deep.id),null,'a newer acknowledged turn clears it');
 
   // An agent's ask is refused before anything is admitted; a human message is still accepted.
   await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Asker'}});
