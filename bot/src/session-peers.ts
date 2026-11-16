@@ -237,21 +237,24 @@ type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_
 type ReplyRow={event_id:string;request_id:string;action_key:string|null;kind:'progress'|'final';payload_json:string;status:string;error:string|null;created_at_ms:number};
 export type PeerActor={session:number;turn:number;inputId:string};
 type WorkDisposition='completed'|'failed'|'needs_decision';
-/** Only an exact status read from the authenticated recipient establishes changed custody. */
+/** Only an exact status read from the authenticated recipient establishes changed custody.
+ * `former` lists the sessions that held the request before the current one, in committed handoff
+ * order: the only authors, besides the current holder, whose already retained events are valid. */
 function currentPeerRecipient(row:PeerRequestRow){
-  const original={sessionId:row.remote_session_id,address:row.remote_address,inputId:row.remote_operation_id,custodyPlacement:false};
+  const original={sessionId:row.remote_session_id,address:row.remote_address,inputId:row.remote_operation_id,custodyPlacement:false,former:[] as string[]};
   const remote=JSON.parse(row.remote_status_json??'{}'),placement=remote.custodyPlacement;
   if(remote.requestId!==row.request_id||placement?.version!==1||placement.placementTurnId!==remote.execution?.turnId
     ||placement.placementInputId!==remote.operationId||!Array.isArray(placement.transfers)||!placement.transfers.length)return original;
   let sessionId=original.sessionId,inputId=original.inputId;
+  const former:string[]=[];
   for(const transfer of placement.transfers){
     if(transfer.requestId!==row.request_id||transfer.fromSessionId!==sessionId||transfer.fromInputId!==inputId
       ||typeof transfer.handoffId!=='string'||!transfer.handoffId||typeof transfer.toSessionId!=='string'||!/^concierge:[1-9][0-9]*$/.test(transfer.toSessionId)
       ||typeof transfer.toInputId!=='string'||!transfer.toInputId)return original;
-    sessionId=transfer.toSessionId;inputId=transfer.toInputId;
+    former.push(sessionId);sessionId=transfer.toSessionId;inputId=transfer.toInputId;
   }
   return sessionId===remote.sessionId&&inputId===remote.operationId&&typeof remote.address==='string'&&remote.address.startsWith('session:')
-    ?{sessionId,address:remote.address,inputId,custodyPlacement:true}:original;
+    ?{sessionId,address:remote.address,inputId,custodyPlacement:true,former}:original;
 }
 type Dependencies={self:string;clients:Map<string,PeerClient>;owner:SessionOwner;now?:()=>number;onError:(error:unknown)=>void;isOwnerAlive:(owner:string)=>boolean;onWake?:()=>void;hasPendingOperations?:()=>boolean};
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
@@ -926,11 +929,23 @@ export class SessionPeers {
   private recordReply(row:PeerRequestRow,input:Record<string,any>):{recorded:'recorded'|'duplicate'|'refused'|'pending';reason?:string} {
     const requestId=row.request_id;
     const recipient=currentPeerRecipient(row);
-    if(!row.outcome&&typeof input.responder?.sessionId==='string'&&input.responder.sessionId!==recipient.sessionId){
-      // A successor's first push is not authority to change custody. Keep the event at
-      // its sender until an authenticated exact-request status read confirms the handoff.
-      this.schedule(`ask:${requestId}`,()=>this.dispatch(this.row(requestId)));
-      return {recorded:'pending',reason:'The current recipient needs exact custody reconciliation.'};
+    // The author of a retained event is not the request's current holder. An earlier holder's
+    // event is valid only when the committed handoff chain names that holder and the current
+    // holder's authenticated status lists this exact event as authored by it; that status read is
+    // what attests the event was retained, so custody never grants a former holder a new reply.
+    let author=recipient.sessionId;
+    const asserted=input.responder?.sessionId;
+    if(!row.outcome&&typeof asserted==='string'&&asserted!==recipient.sessionId){
+      const remoteReplies=JSON.parse(row.remote_status_json??'{}').replies;
+      const retainedBeforeTransfer=recipient.former.includes(asserted)&&Array.isArray(remoteReplies)
+        &&remoteReplies.some((reply:any)=>reply?.eventId===input.eventId&&reply.kind===input.kind&&reply.responderSessionId===asserted);
+      if(!retainedBeforeTransfer){
+        // A successor's first push is not authority to change custody. Keep the event at
+        // its sender until an authenticated exact-request status read confirms the handoff.
+        this.schedule(`ask:${requestId}`,()=>this.dispatch(this.row(requestId)));
+        return {recorded:'pending',reason:'The current recipient needs exact custody reconciliation.'};
+      }
+      author=asserted;
     }
     if(input.turnOutcome==='needs_you'){
       if(typeof input.eventId!=='string'||!input.eventId.startsWith('turn_outcome:action:')||input.kind!=='progress'
@@ -962,7 +977,7 @@ export class SessionPeers {
         &&proof.unresolvedObligations===proof.openObligationIds.length
         &&(disposition==='failed'||disposition==='needs_decision');
       if(!preUpgradeReceipt&&(proof?.version!==1||proof.requestId!==requestId||proof.recipientPeer!==row.peer
-        ||proof.targetSessionId!==recipient.sessionId||input.responder?.sessionId!==recipient.sessionId||!(proof.unresolvedObligations===0||citedOpen)))
+        ||proof.targetSessionId!==author||input.responder?.sessionId!==author||!(proof.unresolvedObligations===0||citedOpen)))
         return {recorded:'refused',reason:'The peer final did not prove its exact task has no unresolved ChatGPT answers.'};
     }
     const requestPayload=JSON.parse(row.payload_json);
@@ -1009,7 +1024,7 @@ export class SessionPeers {
       const attachments=((input.files??[]) as {name:string;contentType:string;base64:string}[])
         .map((file,index)=>this.dependencies.owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,
           clientActionId:`peer-reply-file:${requestId}:${input.eventId}:${index}`}).attachment.id);
-      const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,recipient.sessionId),
+      const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,author),
         ...(final?{settlementProof:input.settlementProof}:{}),
         ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
         ...(input.answersQuestion?{answersQuestion:true}:{}),...(answerMarkDropped?{answerMarkDropped:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
@@ -1042,7 +1057,9 @@ export class SessionPeers {
    * the peer stays in `unrecovered` and the whole reply is fetched on a later attempt.
    */
   private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
-    const responder={peer:row.peer,sessionId:currentPeerRecipient(row).sessionId,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
+    // A retained event keeps its author; only an older peer's status lacks it, and that peer
+    // cannot have transferred custody, so its author is the current recipient.
+    const responder={peer:row.peer,sessionId:typeof reply.responderSessionId==='string'?reply.responderSessionId:currentPeerRecipient(row).sessionId,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
     if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,turnOutcome:reply.turnOutcome,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,settlementProof:reply.settlementProof,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
     let whole:any;
     try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);}
@@ -1787,7 +1804,7 @@ export class SessionPeers {
     const replies=(db.query('SELECT * FROM session_peer_replies WHERE request_id=? ORDER BY rowid').all(requestId) as ReplyRow[]).map(reply=>{
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
-      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,turnOutcome:payload.turnOutcome??null,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,settlementProof:payload.settlementProof??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
+      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,turnOutcome:payload.turnOutcome??null,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,settlementProof:payload.settlementProof??null,responderSessionId:typeof payload.responding_session_id==='string'?payload.responding_session_id:`concierge:${row.target_session_id}`,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
         completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
@@ -1842,7 +1859,7 @@ export class SessionPeers {
     return {eventId:reply.event_id,kind:reply.kind,text:payload.text,turnOutcome:payload.turnOutcome,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
       ...(payload.settlementProof?{settlementProof:payload.settlementProof}:{}),
       ...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),...(files?{files}:{}),
-      responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
+      responder:{peer:this.self,sessionId:typeof payload.responding_session_id==='string'?payload.responding_session_id:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
   }
   /** GET …/requests/:id/replies/:eventId — a reply with its files, for an origin that pulls. */
   fullReply(requestId:string,eventId:string) {

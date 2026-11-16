@@ -190,6 +190,91 @@ export async function releasePublicationAcceptance(input:{source:string;scratch:
     assert.ok(rolledBack.indexOf('probe:offline=0')<rolledBack.indexOf('\nrelease\n'));
     assert.equal(manager.currentArtifactPath(),input.modernRollback);
     console.log(JSON.stringify({case:'active-unhealthy-rollback',trace:rolledBack.trim().split('\n')}));
+
+    // First-install cutover: the actual script's functions and main run with only service, CLI,
+    // health, drain and Git effects substituted. Exit 37 is injected in the first offline activate,
+    // after the owner has been stopped and verified stopped.
+    const cutoverLines=readFileSync(join(source,'bot/scripts/deployment-repair-cutover.sh'),'utf8').trimEnd().split('\n');
+    assert.equal(cutoverLines.at(-1),'main "$@"');
+    const cutoverFunctions=join(root,'cutover-functions.sh');
+    writeFileSync(cutoverFunctions,cutoverLines.slice(0,-1).join('\n')+'\n');
+    const cutoverBin=join(root,'cutover-bin');mkdirSync(cutoverBin);
+    writeFileSync(join(cutoverBin,'id'),'#!/usr/bin/env bash\necho 0\n');chmodSync(join(cutoverBin,'id'),0o755);
+    writeFileSync(join(cutoverBin,'systemctl'),[
+      '#!/usr/bin/env bash','set -eu','printf "systemctl:%s\\n" "$*" >> "$FIXTURE_CALLS"',
+      'case "$1" in',
+      'show) if [[ "$*" == *RefuseManualStop* ]]; then echo no; else cat "$FIXTURE_SERVICE_STATE"; fi ;;',
+      'stop) printf "LoadState=loaded\\nActiveState=inactive\\nSubState=dead\\nMainPID=0\\nControlPID=0\\nJob=\\n" > "$FIXTURE_SERVICE_STATE" ;;',
+      'restart|start) [ "${FIXTURE_FAIL_RESTART:-0}" != 1 ] || exit 1; printf "LoadState=loaded\\nActiveState=active\\nSubState=running\\nMainPID=42\\nControlPID=0\\nJob=\\n" > "$FIXTURE_SERVICE_STATE" ;;',
+      'reset-failed|daemon-reload) ;;','*) exit 1 ;;','esac',
+    ].join('\n'));chmodSync(join(cutoverBin,'systemctl'),0o755);
+    const cutover=async(extra:Record<string,string>)=>{
+      const dir=join(root,'cutover-'+Math.random().toString(16).slice(2));mkdirSync(dir);
+      const unitDir=join(dir,'systemd'),legacyBackups=join(dir,'legacy');mkdirSync(unitDir);
+      writeFileSync(join(unitDir,'concierge-bot.service'),'ORIGINAL-UNIT\n');
+      const cutoverState=join(dir,'service-state'),cutoverCalls=join(dir,'calls');
+      writeFileSync(cutoverState,'LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=42\nControlPID=0\nJob=\n');
+      writeFileSync(cutoverCalls,'');
+      const script=[
+        'source "$1"',
+        'mark() { printf "%s\\n" "$*" >> "$FIXTURE_CALLS"; }',
+        'fixture_bun() { mark "bun:$*"; case "$*" in',
+        '*operator-request*) echo \'{"run_id":"run-1"}\' ;;',
+        '*" prepare "*) echo \'{"artifact_path":"/fixture/artifact","artifact_digest":"digest"}\' ;;',
+        '*require-stopped*) grep -q ActiveState=inactive "$FIXTURE_SERVICE_STATE" || return 1 ;;',
+        '*" activate "*) mark injected-activation-failure; return 37 ;;',
+        'esac; }',
+        'BUN_BIN=fixture_bun',
+        'online_runtime_sha() { echo "$CONCIERGE_EXPECTED_LKG_COMMIT"; }',
+        'git() { mark "git:$*"; }',
+        'app_server_identity() { echo fixture-app-server; }',
+        'claim_deployment_run() { mark claim-run; }',
+        'claim_deployment_gate() { mark claim-turn-gate; }',
+        'hold_capture_gate() { mark hold-capture-gate; }',
+        'record_deployment_phase() { mark "phase:$1"; }',
+        'record_deployment_failure() { mark "record-failure:$1"; }',
+        'release_deployment_gate() { mark release-drains; }',
+        // Only the post-failure recovery probes fail; the pre-flight probes before the stop must pass.
+        'after_failure() { grep -q injected-activation-failure "$FIXTURE_CALLS"; }',
+        'probe_capture_ingress() { mark probe-capture; ! { after_failure && [ "${FIXTURE_FAIL_CAPTURE:-0}" = 1 ]; }; }',
+        'probe_service() { mark "probe-service:$(grep ActiveState "$FIXTURE_SERVICE_STATE")"; grep -q ActiveState=active "$FIXTURE_SERVICE_STATE" && ! { after_failure && [ "${FIXTURE_FAIL_HEALTH:-0}" = 1 ]; }; }',
+        'main',
+      ].join('\n');
+      const child=Bun.spawn({cmd:['bash','-c',script,'fixture',cutoverFunctions],env:{...env,PATH:cutoverBin+':'+process.env.PATH,
+        CONCIERGE_DEPLOYMENT_SOURCE_ROOT:source,CONCIERGE_REPO:source,CONCIERGE_SYSTEMD_DIR:unitDir,CONCIERGE_LEGACY_BACKUP_ROOT:legacyBackups,
+        CONCIERGE_SERVICE:'fixture.service',CONCIERGE_EXPECTED_LKG_COMMIT:'a'.repeat(40),CONCIERGE_CONTROL_COMMIT:'b'.repeat(40),
+        FIXTURE_CALLS:cutoverCalls,FIXTURE_SERVICE_STATE:cutoverState,...extra},stdout:'pipe',stderr:'pipe'});
+      const [stdout,stderr,code]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);
+      return {code,trace:readFileSync(cutoverCalls,'utf8').trim().split('\n'),output:stdout+stderr,
+        unit:readFileSync(join(unitDir,'concierge-bot.service'),'utf8'),serviceState:readFileSync(cutoverState,'utf8')};
+    };
+    const at=(trace:string[],text:string,from=0)=>{const index=trace.findIndex((line,i)=>i>=from&&line.includes(text));assert.ok(index>=0,`missing ${text}: ${trace.join('\n')}`);return index;};
+    // (a) failure after a successful stop: restart the unchanged unit, verify, then release.
+    const recovered=await cutover({});
+    assert.equal(recovered.code,37,recovered.output);
+    const stopped=at(recovered.trace,'systemctl:stop'),required=at(recovered.trace,'require-stopped'),injected=at(recovered.trace,'injected-activation-failure');
+    assert.ok(stopped<required&&required<injected);
+    const restarted=at(recovered.trace,'systemctl:restart',injected),capture=at(recovered.trace,'probe-capture',restarted),
+      health=at(recovered.trace,'probe-service:ActiveState=active',restarted),released=at(recovered.trace,'release-drains',injected);
+    assert.ok(restarted<capture&&restarted<health&&capture<released&&health<released);
+    assert.ok(at(recovered.trace,'record-failure:37')>released);
+    assert.match(recovered.serviceState,/ActiveState=active/);assert.equal(recovered.unit,'ORIGINAL-UNIT\n');
+    // (b) the restart fails: the owner stays down, drains stay held, and the failure is recorded.
+    const failedRestart=await cutover({FIXTURE_FAIL_RESTART:'1'});
+    assert.equal(failedRestart.code,37,failedRestart.output);
+    at(failedRestart.trace,'injected-activation-failure');at(failedRestart.trace,'record-failure:37');
+    assert.ok(!failedRestart.trace.includes('release-drains'),failedRestart.trace.join('\n'));
+    assert.match(failedRestart.output,/admission drains remain held/);
+    // (c) the owner restarts but fails its functional probe: drains likewise stay held.
+    const failedHealth=await cutover({FIXTURE_FAIL_HEALTH:'1'});
+    assert.equal(failedHealth.code,37,failedHealth.output);
+    assert.ok(!failedHealth.trace.includes('release-drains'));at(failedHealth.trace,'record-failure:37');
+    // (d) capture ingress failing its probe also keeps the drains held.
+    const failedCapture=await cutover({FIXTURE_FAIL_CAPTURE:'1'});
+    assert.equal(failedCapture.code,37,failedCapture.output);
+    assert.ok(!failedCapture.trace.includes('release-drains'));at(failedCapture.trace,'record-failure:37');
+    console.log(JSON.stringify({case:'first-cutover-early-failure',restored:recovered.trace,restartFailed:failedRestart.trace,
+      healthFailed:failedHealth.trace,captureFailed:failedCapture.trace}));
   } finally {serving.kill();await serving.exited;}
   manager.activate(input.modernArtifact);
   serving=await start(join(source,'bot/src/routed-request-api.ts'),input.modernArtifact);
@@ -212,5 +297,5 @@ export async function releasePublicationAcceptance(input:{source:string;scratch:
   console.log(JSON.stringify({check:'release-publication-acceptance',status:'passed',actualPreservedOldReceiver:true,
     ordinaryPredeploymentRestore:true,hybridPromotion:true,activeUnhealthyRollback:true,strictStoppedGuard:true,
     capableOwnerSerializedPublication:true,controlRecoveryModes:['success','failed-health','interrupted'],
-    arbitraryRpcFailureRefused:true,systemd:'substituted',state:'disposable'}));
+    arbitraryRpcFailureRefused:true,firstCutoverEarlyFailure:['restored-then-released','restart-failed-held','health-failed-held','capture-failed-held'],systemd:'substituted',state:'disposable'}));
 }

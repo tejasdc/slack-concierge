@@ -131,3 +131,11 @@ tuning/start defaults during a disposable-only acceptance run.
   threads; the same native connection works, but a changed connection or client holds
   protected calls before sending.
 - **Replayable offline:** yes.
+
+Verdict3 found that a peer final retained before a handoff was refused afterwards (its
+proof named the predecessor while status and pull named the successor), and that an early
+first-cutover failure left the owner stopped with both admission drains released. Status,
+push and pull now carry each retained reply's original author, validated against the
+committed handoff chain; the cutover script takes its unit copy before the first stop,
+restarts the original owner on any failure and releases the drains only after the restored
+owner and capture ingress pass their probes.

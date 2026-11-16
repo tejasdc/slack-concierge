@@ -684,7 +684,13 @@ identity check. If a push arrives before authenticated custody reconciliation,
 the reply entrance returns `{eventId,recorded:"pending",outcome}`; the sender
 retains it, and the existing exact-request status reconciliation/pull confirms
 custody and records the event once. An unmatched responder assertion supplies no
-transfer authority and stays pending. Late outgoing child returns keep their
+transfer authority and stays pending. An event's author is distinct from the request's
+current holder: status, push and pull carry each retained reply's original author
+(`responderSessionId`; its absence means the current recipient). A reply retained by an
+earlier holder before a handoff is accepted once when the committed handoff chain names
+that holder and the current holder's authenticated status lists that exact event with
+that author; its original proof is validated against that author and is never
+rewritten. Current custody alone decides who may create a new reply. Late outgoing child returns keep their
 original request/event/input identity and follow the already-transferred source
 holder, remaining held there when it cannot receive them; the child is not resent.
 
