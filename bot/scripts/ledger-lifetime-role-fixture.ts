@@ -14,7 +14,7 @@ mock.module('../src/deployment-launch-authority',()=>({...authority,
  attestedLegacyLaunch:()=>attested,preinstallLegacyLaunch:()=>false}));
 mock.module('node:fs',()=>({...fs,existsSync:()=>true,realpathSync:(path:string)=>path}));
 mock.module('node:child_process',()=>({...childProcess,spawnSync:()=>{
- queries++;return{status:0,stdout:`MainPID=${stopped?0:process.pid}\nControlPID=0\nActiveState=${stopped?'inactive':'active'}`};
+ queries++;return{status:0,stdout:`LoadState=loaded\nMainPID=${stopped?0:process.pid}\nControlPID=0\nActiveState=${stopped?'inactive':'active'}\nSubState=${stopped?'dead':'running'}\nJob=`};
 }}));
 const policy=await import('../src/ledger-access-policy'),{ledgerAccess}=policy;
 const canonical=join(homedir(),'.local/state/concierge'),packageRoot=resolve(import.meta.dir,'..');
@@ -25,11 +25,16 @@ try{
   if(offline===undefined)delete process.env.CONCIERGE_RELEASE_OFFLINE;else process.env.CONCIERGE_RELEASE_OFFLINE=offline;
   for(const name of authority.RELEASE_LEDGER_HELPERS){
    process.argv=[process.execPath,entry(name),name==='release-manager'?'activate':'claim'];
+   // Upstream's offline pointer publication additionally requires the stopped service;
+   // that precondition composes with (never replaces) launch attestation below.
+   const offlinePointer=offline==='1'&&name==='release-manager';
+   if(offlinePointer){stopped=false;attested=true;assert.throws(()=>ledgerAccess(canonical,entry(name),false),/fully stopped/,'offline pointer publication refuses a running service even when attested');}
+   stopped=offlinePointer;
    attested=false;assert.equal(ledgerAccess(canonical,entry(name),false).forbidControllerLedgerOpen,true,name+' refuses an unattested direct live opener');
    attested=true;assert.equal(ledgerAccess(canonical,entry(name),false).forbidControllerLedgerOpen,false,name+' retains attested legacy FULL compatibility');
   }
  }
- attested=false;
+ attested=false;stopped=false;
  for(const name of ['native-read-worker','provider-history-page-worker','provider-history-sync-worker']){
   const access=ledgerAccess(canonical,entry(name),false);assert.equal(access.readonly,true,name+' is physically readonly without inherited env');assert.equal(access.schema,false);
  }

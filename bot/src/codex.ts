@@ -1,4 +1,5 @@
 import { runLedgerSegment, runLedgerSteps } from "./ledger-admission";
+import { storedCodexSpentReset } from "./codex-spent-reset";
 const providerCustody = Symbol("provider callback custody");
 async function drainProviderCallbacks(input: RunCodexTurnInput) { await (input as any)[providerCustody]?.drain(); }
 import { withProviderCallbackCustody, type ProviderCallbackCustody } from "./provider-callback-custody";
@@ -1489,6 +1490,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   // following it cannot end by waiting; a turn this run submitted itself keeps the open search.
   let adoptedSearchesLeft = input.adoptTurn ? 20 : Infinity;
   let adoptedLiveReported = false;
+  const noticesAwaitingTurnId = new Set<Promise<void>>();
   const reconcileAcceptedTurn = async () => {
     stopInactivityTimeout();
     let retryMs = 100;
@@ -1496,6 +1498,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       try {
         if (!activeThreadId) throw new Error("Cannot reconcile a Codex turn without its thread id.");
         connectionGeneration = await client.connect();
+        if (turnSettled || controllerClosed) return;
+        await Promise.all(noticesAwaitingTurnId);
         if (turnSettled || controllerClosed) return;
         if (!input.custodySuccessor) {
           const recoveredInput = { ...input, sessionUUID: activeThreadId };
@@ -1659,8 +1663,15 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   };
 
   const unsubscribeNotifications = client.onNotification(async (event) => {
+    let handled: (() => void) | undefined, waiting: Promise<void> | undefined;
     if (!activeTurnId && turnSubmissionAttempted && event.params?.threadId === activeThreadId
-        && (event.params?.turnId || event.params?.turn?.id)) await Promise.race([turnStarted, turnCompletion]);
+        && (event.params?.turnId || event.params?.turn?.id)) {
+      // Reconciliation started when the turn id arrives must see this notice handled
+      // first; otherwise it reads history for a turn the stream has already finished.
+      waiting = new Promise<void>(resolve => { handled = resolve; });
+      noticesAwaitingTurnId.add(waiting);
+      await Promise.race([turnStarted, turnCompletion]);
+    }
     try {
       handleNotification(event);
     } catch (error) {
@@ -1673,6 +1684,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       stopInactivityTimeout();
       if (turnSubmissionAttempted && activeThreadId) void ensureRecovered(error);
       throw error;
+    } finally {
+      if (waiting) { noticesAwaitingTurnId.delete(waiting); handled!(); }
     }
     await drainProviderCallbacks(input);
   }, {
@@ -1962,20 +1975,6 @@ function withUsageClearance(error: ProviderDispatchError, clearsAtMs: number): P
     accountReadingWait: error.accountReadingWait, threadScoped: error.threadScoped, clearsAtMs });
 }
 
-/** The latest reset among this account's spent windows in its last stored usage reading. */
-async function storedCodexSpentReset(label: string): Promise<number | null> {return runLedgerSteps((function* (): Generator<unknown, any, any> {
-  try {
-    const [{ providerAccountUsage }, { includedAllowanceWindows }] = (yield Promise.all([
-      import("./provider-account-usage"), import("./account-allowance-observation")])) as [typeof import("./provider-account-usage"), typeof import("./account-allowance-observation")];
-    const account = providerAccountUsage("codex")?.accounts.find(value => value.label === label);
-    if (!account) return null;
-    const resets = includedAllowanceWindows("codex", account).filter(window => window.usedPercent >= 100)
-      .map(window => Date.parse(window.resetsAt ?? "")).filter(value => Number.isFinite(value) && value > Date.now());
-    return resets.length ? Math.max(...resets) : null;
-  } catch {
-    return null;
-  }
-})());}
 
 async function runCodexTurnProducer(input: RunCodexTurnInput, custody: ProviderCallbackCustody): Promise<RunResult> {
   return runLedgerSteps((function* () {

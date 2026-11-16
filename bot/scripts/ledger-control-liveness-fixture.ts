@@ -29,7 +29,7 @@ const OldCancellation=new Function('ledgerCallback',ts.transpileModule(heldClass
 const until=async(check:()=>boolean,label:string)=>{const end=Date.now()+5000;while(!check()){assert.ok(Date.now()<end,label);await Bun.sleep(2);}};
 const latch=()=>{let release!:()=>void;return {promise:new Promise<void>(r=>release=r),release:()=>release()};};
 const resume=latch(),registration=latch();const observations:string[]=[];let pid=0,writer:((s:string)=>Promise<void>)|undefined,interrupt:(()=>Promise<void>)|undefined,transportDone=false;
-const child=join(root,'synthetic-provider.ts');writeFileSync(child,`import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(root,'pid'))},String(process.pid));process.on('SIGINT',()=>{});process.on('SIGTERM',()=>{});process.stdin.on('data',chunk=>{if(String(chunk).includes('emit')){console.log('original-output-1');console.log('original-output-2');}});setInterval(()=>{},1000);`);
+const child=join(root,'synthetic-provider.ts');writeFileSync(child,`import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(join(root,'pid'))},String(process.pid));process.on('SIGINT',()=>{});process.on('SIGTERM',()=>{});process.stdin.on('data',chunk=>{if(String(chunk).includes('emit')){console.log('original-output-1');console.log('original-output-2');writeFileSync(${JSON.stringify(join(root,'emitted'))},'1');}});setInterval(()=>{},1000);`);
 const socketPath=join(root,'host.sock');let hostPeer:any;let silent=false;
 const host=createNetServer(socket=>{hostPeer=socket;let buffer='';socket.on('data',chunk=>{buffer+=chunk;let i;while((i=buffer.indexOf('\n'))>=0){const request=JSON.parse(buffer.slice(0,i));buffer=buffer.slice(i+1);if(request.op==='status'&&!silent)socket.write(JSON.stringify({op:'status',protocol:1,executionId:'fixture',lastSeq:0,exit:null})+'\n');else if(request.id)socket.write(JSON.stringify({op:'accepted',id:request.id,original:true})+'\n');}});});await new Promise<void>(r=>host.listen(socketPath,r));
 const wsServer=createServer(),ws=new WebSocketServer({server:wsServer}),wsPath=join(root,'codex.sock');let peer:WebSocket|undefined;
@@ -49,7 +49,7 @@ try {
   custody.enqueue(()=>gate.runLedgerSegment(()=>{sequence.push(event.params.identity);}));
  });
  maintenance=gate.maintainLedger(()=>resume.promise);await Bun.sleep(0);
- await writer!('emit\n');
+ await writer!('emit\n');await until(()=>existsSync(join(root,'emitted')),'child wrote its original output');
  const completion=cancellation.request();await completion;assert.deepEqual(observations,[]);assert.equal(transportDone,false);
  const oldCancellation=new OldCancellation();let oldNativeCalls=0,oldCompletionDone=false;oldCancellation.register(async()=>{oldNativeCalls++;});const oldCompletion=oldCancellation.request().then(()=>oldCompletionDone=true);await Bun.sleep(5);assert.equal(oldNativeCalls,1);assert.equal(oldCompletionDone,false,'actual held114 completion callbacks wait behind admission');
  const hostReply=await connection.command({op:'signal',id:'original-interrupt',signal:'SIGINT'});assert.equal(hostReply.original,true);

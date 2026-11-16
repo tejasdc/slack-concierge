@@ -43,7 +43,7 @@ try {
       beforeAdmission: async () => { consumed = true; } } } as any);
   assert.equal(result.sessionUUID, 'thread-committed');
   assert.equal(result.text, 'useful result');
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 1, JSON.stringify(calls.map(c=>c.method)));
   assert.equal(calls[0]?.method, 'turn/start');
   assert.equal(calls[0]?.params.input[0]?.text, 'exact retained reminder');
   assert.equal(calls[0]?.params.effort, 'medium');
