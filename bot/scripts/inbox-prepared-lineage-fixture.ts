@@ -34,17 +34,22 @@ if(process.argv[2]!=='--child'){
   // More than the upgrade's 100-row page, each independently stranded by the old resolver.
   for(let i=0;i<105;i++){input(former.id,`old-${i}`);link(current.id,`old-${i}`,'placed-root');}
   input(current.id,'successor-reply','old-0');
-  input(former.id,'empty-orphan');link(current.id,'empty-orphan','placed-root');
+  input(former.id,'zzzz-root');
+  input(former.id,'zzzz-orphan');link(current.id,'zzzz-orphan','placed-root');
+  input(former.id,'aaa-killed-orphan');link(current.id,'aaa-killed-orphan','placed-root');
   input(former.id,'restart-parent');
   for(let i=0;i<125;i++)input(current.id,`restart-child-${i}`,'restart-parent');
   db.query('INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)')
     .run('placed-root','topic:placed');
+  db.query('INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)')
+    .run('zzzz-root','topic:placed');
   let worker:ReturnType<typeof Bun.spawn>|null=null,prepared:Database|null=null,errors='',logs='';
   let streams:Promise<void>[]=[];
-  const start=(interrupt=false)=>{
+  const start=(interrupt:boolean|'messages'|'roots'|'drain'=false)=>{
     const preload=interrupt?['--preload',join(import.meta.dir,'inbox-projection-interruption-preload.ts')]:[];
     worker=Bun.spawn([process.execPath,...preload,join(import.meta.dir,'../src/presentation-message-worker.ts')],
-      {env:{...process.env,...(interrupt?{CONCIERGE_FIXTURE_INTERRUPT_ROOT:'restart-parent'}:{})},stdout:'pipe',stderr:'pipe'});
+      {env:{...process.env,...(interrupt===true?{CONCIERGE_FIXTURE_INTERRUPT_ROOT:'restart-parent'}:
+        interrupt?{CONCIERGE_FIXTURE_INTERRUPT_UPGRADE:interrupt}:{})},stdout:'pipe',stderr:'pipe'});
     streams=[new Response(worker.stderr as ReadableStream).text().then(text=>{errors+=text;}),
       new Response(worker.stdout as ReadableStream).text().then(text=>{logs+=text;})];
   };
@@ -107,17 +112,64 @@ if(process.argv[2]!=='--child'){
     const columns=(prepared!.query('PRAGMA table_info(presentation_topic_roots)').all() as {name:string}[]).map(row=>row.name);
     prepared!.query(`INSERT INTO presentation_topic_roots(${columns.join(',')}) SELECT
       ${columns.map(name=>name==='root_id'?'?':name).join(',')} FROM presentation_topic_roots
-      WHERE generation=? AND root_id='old-0'`).run('empty-orphan',generation);
+      WHERE generation=? AND root_id='old-0'`).run('zzzz-orphan',generation);
+    prepared!.query(`INSERT INTO presentation_topic_roots(${columns.join(',')}) SELECT
+      ${columns.map(name=>name==='root_id'?'?':name).join(',')} FROM presentation_topic_roots
+      WHERE generation=? AND root_id='old-0'`).run('aaa-killed-orphan',generation);
+    // Force multiple root-sweep pages. These zero-member derived rows carry no human
+    // content or attention, and have no canonical counterpart to mutate.
+    const extraOrphan=prepared!.query(`INSERT INTO presentation_topic_roots(${columns.join(',')}) SELECT
+      ${columns.map(name=>name==='root_id'?'?':['his','unfiled'].includes(name)?'0':name).join(',')}
+      FROM presentation_topic_roots WHERE generation=? AND root_id='old-0'`);
+    for(let i=0;i<120;i++)extraOrphan.run(`zz-orphan-${i.toString().padStart(3,'0')}`,generation);
+    prepared!.exec(`CREATE TABLE fixture_upgrade_visits(event_sequence INTEGER PRIMARY KEY,visits INTEGER NOT NULL);
+      CREATE TRIGGER fixture_upgrade_visit AFTER UPDATE OF display_json ON presentation_message_display BEGIN
+        INSERT INTO fixture_upgrade_visits VALUES(new.event_sequence,1)
+          ON CONFLICT(event_sequence) DO UPDATE SET visits=visits+1; END;`);
     assert.equal((prepared!.query('SELECT COUNT(*) AS n FROM presentation_messages WHERE root_input_id=?')
-      .get('empty-orphan') as {n:number}).n,0);
+      .get('zzzz-orphan') as {n:number}).n,0);
     assert.equal(waiting().filter(id=>id.startsWith('old-')).length,105);
     const sourceCount=(db.query('SELECT COUNT(*) AS count FROM session_owner_events').get() as {count:number}).count;
-    start();await wait(()=>meta().inbox_lineage_roots_version>=2,'versioned upgrade from already-v1 installation');
+    const resumeWork=()=>prepared!.query('SELECT * FROM presentation_inbox_lineage_work WHERE generation=?').get(generation) as any;
+    const restartUpgrade=async(phase:'messages'|'roots'|'drain')=>{
+      prepared!.exec('UPDATE presentation_worker_lease SET heartbeat_ms=0');
+      start(phase);await wait(()=>existsSync(join(root,`upgrade-${phase}-committed.json`)),`committed semantic ${phase} barrier`);
+      await stop();
+      if(!prepared!.query("SELECT 1 FROM sqlite_master WHERE name='presentation_inbox_lineage_work'").get()){
+        // On the old candidate, exercise its real restart too. Reject the repeated page
+        // by observed writes rather than treating the new table's name as the oracle.
+        prepared!.exec('UPDATE presentation_worker_lease SET heartbeat_ms=0');
+        start();await wait(()=>meta().inbox_lineage_roots_version>=2,'legacy semantic restart');await stop();
+        assert.equal((prepared!.query('SELECT MAX(visits) AS n FROM fixture_upgrade_visits').get() as {n:number}).n,1,
+          'Committed semantic message pages are never revisited after restart');
+        assert.fail('Committed semantic page has no durable continuation');
+      }
+      assert.equal(meta().inbox_lineage_roots_version,1,'Partial semantic work is not marked complete');
+      return resumeWork();
+    };
+    const messageProgress=await restartUpgrade('messages');
+    assert.equal(messageProgress.examined,100);assert.ok(messageProgress.message_after>0);
+    const rootProgress=await restartUpgrade('roots');
+    assert.ok(rootProgress.message_after>messageProgress.message_after);
+    assert.equal(rootProgress.root_pages,1);assert.ok(rootProgress.root_after);
+    const drainProgress=await restartUpgrade('drain');
+    assert.equal(drainProgress.examined,rootProgress.examined,'Root restart does not repeat message scan');
+    assert.ok(drainProgress.root_pages>rootProgress.root_pages,'Root sweep resumes beyond committed first page');
+    assert.ok((prepared!.query('SELECT COUNT(*) AS n FROM presentation_topic_dirty WHERE generation=?').get(generation) as {n:number}).n>0,
+      'Drain phase retains unfinished durable dependencies');
+    prepared!.exec('UPDATE presentation_worker_lease SET heartbeat_ms=0');
+    start();await wait(()=>meta().inbox_lineage_roots_version>=2,'versioned upgrade resumed through dirty drain');
+    assert.equal(resumeWork().phase,'complete');
+    assert.equal(resumeWork().examined,drainProgress.examined);
+    assert.equal(resumeWork().orphan_roots_removed,122,'Orphan counts survive root-page restart');
+    assert.equal((prepared!.query('SELECT MAX(visits) AS n FROM fixture_upgrade_visits').get() as {n:number}).n,1,
+      'Committed semantic message pages are never revisited after restart');
+    prepared!.exec('DROP TRIGGER fixture_upgrade_visit');
     await wait(()=>(prepared!.query('SELECT projection_revision FROM presentation_receipt_meta WHERE singleton=1')
       .get() as {projection_revision:string}).projection_revision!=='pre-lineage-fixture','bounded receipt revision upgrade');
     assert.equal(meta().generation,generation,'Upgrade must retain the active generation');
     assert.equal(waiting().filter(id=>id.startsWith('old-')).length,0,'Upgrade removes phantom waiting roots');
-    assert.ok(!waiting().includes('empty-orphan'),'Upgrade removes a zero-member orphan sorting root');
+    assert.ok(!waiting().includes('zzzz-orphan'),'Upgrade removes a zero-member orphan sorting root');
     assert.deepEqual(row('placed-root'),{root:'placed-root',topic:'topic:placed'},'Upgrade fixes same-root cached topic');
     checkSortingCount();
     assert.ok(waiting().includes('truly-unfiled'));
@@ -163,18 +215,22 @@ if(process.argv[2]!=='--child'){
     assert.equal((db.query('SELECT COUNT(*) AS n FROM session_owner_events').get() as {n:number}).n,beforeRestartCount);
     await stop();prepared!.exec('UPDATE presentation_worker_lease SET heartbeat_ms=0');start();await checkpoint();
     assert.ok(!waiting().includes('restart-parent'),'Ordinary second restart preserves cleanup');
-    assert.ok(!waiting().includes('empty-orphan'));
+    assert.ok(!waiting().includes('zzzz-orphan'));
     assert.ok(waiting().includes('truly-unfiled'));
     checkSortingCount();
     await stop();
     const observations=logs.split('\n').flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
     const upgrade=observations.find(row=>row.event==='presentation_inbox_lineage_upgrade'&&row.version===2);
-    assert.equal(upgrade?.orphan_roots_removed,1,'Completion log counts the orphan sweep');
+    assert.equal(upgrade?.orphan_roots_removed,122,'Completion log preserves cumulative orphan sweep count');
+    assert.equal(upgrade.examined,drainProgress.examined);
+    assert.ok(observations.some(row=>row.event==='presentation_inbox_lineage_progress'&&row.resumed&&row.message_after>0));
     assert.ok(upgrade.root_summaries_examined>0&&upgrade.topics_updated>0);
-    const removed=observations.find(row=>row.event==='presentation_inbox_empty_root_removed'&&row.root==='empty-orphan');
+    const removed=observations.find(row=>row.event==='presentation_inbox_empty_root_removed'&&row.root==='zzzz-orphan');
     assert.equal(removed?.resolved_root,'placed-root','Content-free orphan diagnostic retains exact canonical target');
+    assert.equal(observations.find(row=>row.event==='presentation_inbox_empty_root_removed'&&row.root==='aaa-killed-orphan'),undefined,
+      'Killed post-commit page may lose individual diagnostics while durable counts survive');
     console.log(JSON.stringify({fixture:'inbox-prepared-lineage',status:'passed',upgraded:105,
-      initial:true,existingUpgrade:true,orphanCleanup:true,sameRootTopic:true,interruptionResume:true,
+      initial:true,existingUpgrade:true,orphanCleanup:true,sameRootTopic:true,interruptionResume:true,semanticResume:true,
       detach:true,relink:true,recursiveReply:true,canonicalUntouched:true}));
   }finally{await stop();prepared?.close();db.close();}
 }

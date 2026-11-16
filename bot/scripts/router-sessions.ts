@@ -8,7 +8,8 @@ import {REQUEST_PROTOCOL} from '../src/request-protocol';
 import {nextDailyWallClock,validDailyWallClock} from '../src/daily-wall-clock';
 import {IMPLEMENTATION_ALIASES} from '../src/implementation-models';
 
-const usage = `router-actions.sh sessions projects <source-flags> [--peer <instance>]
+const usage = `router-actions.sh sessions journal-review --review-file <JSON-path> --source-input <id> --source-run <id> --action-id <stable-id>
+router-actions.sh sessions projects <source-flags> [--peer <instance>]
 router-actions.sh sessions agents <source-flags>
 router-actions.sh sessions agents bind <role> <session-address> <source-flags> --action-id A
 router-actions.sh projects new <name> --purpose "<one sentence>" --consultation <completed organizer request id> [--template brainstorm|writing|design] [--here-only] [--source-input <id> --source-run <id>]
@@ -177,6 +178,7 @@ export type SessionCommunicationRequest =
   | {operation: "commit-identity"; body: {source?:never;session?:string;codexThread?:string}}
   | { operation: "open"; body: { source: Source; action_id: string; url: string; on?: string; browser?: string } }
   | { operation: "move"; body: { source: Source; action_id: string; address: string; project: string } }
+  | { operation: "journal-review"; body:any }
   | { operation: "projects"; body: { source: Source; peer?: string } }
   | { operation: "agents"; body: { source: Source } }
   | { operation: "agent-bind"; body: { source: Source; action_id:string; role:string; address:string } }
@@ -434,6 +436,15 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [first, ...args] = argv;
+  if(first==='journal-review'){
+    const flags=new Map<string,string>();
+    for(let i=0;i<args.length;i+=2){
+      if(!["--source-input","--source-run","--action-id","--review-file"].includes(args[i]!)||!args[i+1]||flags.has(args[i]!))invalid("journal-review needs source flags, action ID and review-file.");
+      flags.set(args[i]!,args[i+1]!);
+    }
+    for(const key of ["--source-input","--source-run","--action-id","--review-file"])if(!flags.get(key))invalid(`Missing ${key}`);
+    return {operation:"journal-review",body:{source:{input_id:flags.get("--source-input"),run_id:flags.get("--source-run")},action_id:flags.get("--action-id"),review:JSON.parse(readFileSync(flags.get("--review-file")!,"utf8"))}};
+  }
   if(first==='commit-identity'){
     const [session,codexThread,...extra]=args;
     if(extra.length||!session)invalid('commit-identity needs a session or - and optional Codex thread.');

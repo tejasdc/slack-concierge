@@ -350,6 +350,35 @@ export const AUTOMATIC_PROVIDER_ALIASES = {
   antigravity: 'google',
 } as const satisfies Record<Exclude<ProviderId, 'chatgpt'>, ProviderAliasKey>;
 
+/**
+ * A moved session keeps its model tier: top is Claude Opus/Fable and Codex Sol/Astra, middle is Claude
+ * Sonnet and Codex Luna, small is Claude Haiku and Codex Terra. The tier is read from the model ID, so
+ * the IDs keep their one home in the tables above. A session with no recorded model, an unknown model
+ * or a Google target takes the AUTOMATIC_PROVIDER_ALIASES default, as new work does.
+ */
+export type ModelTier = "top" | "middle" | "small";
+const TIER_ALIASES: Record<"claude-code" | "codex", Record<ModelTier, ProviderAliasKey>> = {
+  "claude-code": { top: "cc-opus", middle: "cc-sonnet", small: "cc-haiku" },
+  codex: { top: "cx-sol", middle: "cx-luna", small: "cx-terra" },
+};
+export function modelTier(model: string | null | undefined): ModelTier | null {
+  const value = (model ?? "").toLowerCase();
+  if (!value) return null;
+  const known = ([CLAUDE_MODELS.opus, CLAUDE_MODELS.opus1m, CLAUDE_MODELS.fable, CODEX_MODELS.sol, CODEX_MODELS.astra] as string[]).includes(model!)
+    ? "top" : ([CLAUDE_MODELS.sonnet, CODEX_MODELS.luna] as string[]).includes(model!) ? "middle"
+    : ([CLAUDE_MODELS.haiku, CODEX_MODELS.terra] as string[]).includes(model!) ? "small" : null;
+  if (known) return known;
+  // Newer or dated spellings of the same families.
+  if (/opus|fable|(?:^|-)sol$|astra/.test(value)) return "top";
+  if (/sonnet|luna/.test(value)) return "middle";
+  if (/haiku|terra/.test(value)) return "small";
+  return null;
+}
+export function aliasKeepingTier(targetProvider: Exclude<ProviderId, "chatgpt">, sourceModel: string | null | undefined): ProviderAliasKey {
+  const tier = modelTier(sourceModel);
+  return targetProvider === "antigravity" || !tier ? AUTOMATIC_PROVIDER_ALIASES[targetProvider] : TIER_ALIASES[targetProvider][tier];
+}
+
 // The provider a session takes when nothing has chosen one. The Codex allowance
 // is account-scoped and has now been exhausted on two accounts, so the default
 // parent is Opus and the cheaper Codex tiers are reached by delegating bounded

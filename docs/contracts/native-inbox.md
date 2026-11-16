@@ -63,6 +63,41 @@ ledger event, and the Inbox page and its `history?after=` delta both include it,
 they share one query. It appears as an assistant message with `author.communication:
 "post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
 
+Lab publications use `POST /sessions/v1/inbox/posts`, a version-1 trusted-service command.
+Network run/runner principals are refused; the root-only service socket and authenticated peer
+listener carry it. Fields are `version:1`, `source:{input_id,run_id}`, `action_id`, `sourceOwner`,
+`destinationOwner`, `targetSessionId`, `thread`, and `text`. Unknown fields are refused.
+Thinkering derives both owners from configured federation and the verified source session,
+and hashes the existing Lab key to the canonical action alphabet.
+
+The destination requires its own machine identity and atomically checks the exact current Inbox
+and message-to-thread binding beside the post. A local source uses canonical `sessions post`.
+A foreign source is proved by a direct authenticated call to its configured peer's
+`POST /sessions/v1/peers/inbox-post-source`, carrying the entire immutable publication.
+That owner validates live exact input/run admission and the handoff fence before retaining
+the new intent in its existing action journal. Identical intent reads remain valid after the run
+ends; different text, run, destination or thread conflicts. No caller-supplied actor is trusted.
+The receiver retains proof and foreign author metadata beside one post event; both live and
+prepared Inbox histories show the source pair and peer author. There is no executable input,
+provider turn, request, attention duty or return obligation.
+
+Existing protected owner receipts and peer-client durability barriers remain in force; no network
+wait occurs inside a transaction. After a lost response, the exact retained post returns before
+contacting the peer; concurrent identical deliveries converge inside the transaction. There is no
+new queue, timer or service. An unavailable/older peer leaves filing unconfirmed and the Lab record
+intact; retry the same publication, never a replacement or human-input route. Install owner support
+on source and destination before the corrected Thinkering caller. Generic communication routes
+remain private to their existing entrances.
+
+The incident-specific canonical replay is `bun bot/scripts/lab-publication-acceptance.ts
+--output /tmp/<owned-result>.json`. It sets only `LAB_PUBLICATION_TEST_AUTHORIZATION`
+(`lab-publication-85ee7a4e`), creates two exclusively owned temporary ledgers, and keeps the
+existing canonical-home/symlink production guards. General test entry points remain disabled.
+Its synthetic inputs, inert provider runtime and authenticated loopback listener are explicit
+substitutes; real owner HTTP responses, peer source proof and both Inbox projections are exercised.
+It is not an installed-app, gateway-authentication, browser, or physical-Mac acceptance claim.
+The independent tester and pre-opened application observer supply those separate evidence layers.
+
 ### Direct messages to the Inbox router
 
 A human-surface message addressed to the Inbox router joins its running turn through the
@@ -1076,3 +1111,13 @@ upkeep leaves no receipt, so the same exact event can finish safely on retry. Th
 usage watch checks open work in short, yielding owner turns; its per-thread transactions and
 recovery identities remain the same. A recovery admission rechecks current work and his
 answers after any yield, and a new reading joins an already running pass.
+
+## Journal processing dispositions
+
+Observation requests with additive `processingVersion:1` carry a versioned processing obligation bound to their source root. Unversioned requests retain legacy tracker filing; unsupported versions refuse. Install Concierge support before the Thinkering change that sends version 1 together with reader provenance. An old owner rejects the new field, leaving Thinkering’s existing queue pending. Queued jobs freeze their original protocol version: a legacy job with no version retries without a version, even after the caller upgrades. The exact owner retry returns the old admission without adding a processing claim; changing that same job to version 1 remains a refused body conflict. Older admissions remain unchanged. Tracker filing and delivery receipts do not satisfy it. The authenticated command is `sessions journal-review --review-file <JSON-path> --source-input <id> --source-run <id> --action-id <stable-id>`. It uses the existing private capability transport to read `/journal/entry?objectId=...`; missing root or line revision/actor proof refuses processing. Both review dispositions must match the canonical complete-entry version, so a new child command invalidates an older review even when the root revision is unchanged. The active source/fence is rechecked after this read. It never changes journal access, saving, friction policy or journal meaning.
+
+Review JSON contains `rootId`, current root `revision`, complete-entry `sourceVersion` from the private reader, `disposition` (`context-only` or `actionable`), nonempty `reason`, and `items`. Context-only has empty items and creates no Inbox topic. Each actionable item has `lineId`, exact nonempty `quote` substring, optional zero-based character `offset` (required when the quote occurs more than once), `classification` (`explicit-request` or `actionable-reason`), `title`, and `reason`. Agent/imported source cannot be classified as a human explicit request. Every report remains agent-authored assessment rather than authority to execute source text. Only the selected quote enters the report; source revision, actor, capture time, arrival time and classification remain retained.
+
+Each portion uses root + stable line identity + exact quote as its durable identity. The first occurrence keeps the original unique-quote identity; later repeated occurrences add their zero-based matching-occurrence ordinal. Current character offsets validate the selected location and remain in the frozen source proof, while prefix edits that shift offsets leave occurrence identities unchanged. Neither whole-entry version nor character offset owns work identity. Identities are independent of reviewer and run. Its original attribution and immutable report intent survive restarts and response loss. Existing admitted or uncertain requests can instead be linked with optional `existingRequestId` and the item reasoning; the exact retained Inbox/communication request and outcome are recorded without another dispatch. Existence alone is insufficient: either retained journal metadata must match root/line/quote, or the existing bounded report-source chain must reach an uncorrected human source containing the exact quote. The receipt preserves the matching source input, payload digest and association path. Missing relation remains explicitly unconfirmed and never authorizes replay. Keeper instructions distinguish saved source event time from unproven spoken time and require existing-work reconciliation before a new handoff. Changed review contents under the same source/action refuse. Multiple portions create separate durable open Inbox requests through agent-report intake before router execution. A completed processing receipt records the source version, disposition and request for every portion. New processing inputs cannot declare success or Stop without this receipt; an explicit failed outcome first creates one durable open Inbox recovery request carrying only the source pointer and failure reason. The failed outcome receipt links that request; processing remains failed rather than completed. If Inbox admission fails, the outcome is refused. A source-stable immutable failure intent preserves attribution and returns the same request after response loss or retry, without replaying uncertain effects. Only then may the failed turn stop. No historical replay or live journal mutation is part of this mechanism.
+
+Disposable acceptance: `cd bot && bun run scripts/journal-processing-fixture.ts` exercises the real owner, retained-input contracts and Inbox admission against scratch storage, including cross-run deduplication and Stop during the canonical read. It does not prove an installed keeper turn or physical product behavior.

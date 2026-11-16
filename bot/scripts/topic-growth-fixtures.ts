@@ -92,7 +92,7 @@ async function readerGrowth(reader:'incoming'|'window'|'search'|'overview'|'item
   const source=new Database(':memory:'),raw=new Database(':memory:');
   new PreparedTopics(source,raw);
   raw.exec('CREATE TABLE presentation_messages(generation INTEGER,session_id INTEGER,message_id TEXT,root_input_id TEXT,topic_id TEXT,event_sequence INTEGER); CREATE INDEX fixture_message ON presentation_messages(generation,message_id,event_sequence);');
-  raw.query('UPDATE presentation_topics_meta SET generation=1,source_head=7,ready=1,inbox_session=1').run();
+  raw.query('UPDATE presentation_topics_meta SET generation=1,source_head=7,ready=1,inbox_session=1,asked_answers_version=1').run();
   const insert=raw.query(`INSERT INTO presentation_topics(generation,topic_id,session_id,state,background,band,recency,closed_recency,summary_json,detail_hash,
    search_text,sort_key,closed_sort_key,reply_targets_json,overview_json,started_sort_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   raw.transaction(()=>{for(let i=0;i<count;i++){
@@ -184,7 +184,7 @@ async function areaGrowth(kind:'window'|'detail'){
     PRIMARY KEY(generation,area_id,topic_id));`);
   new PreparedTopics(source,raw);new PreparedAreas(source,raw);
   if(count===100&&kind==='detail')assert.ok((raw.query('PRAGMA table_info(presentation_area_threads)').all() as {name:string}[]).some(column=>column.name==='reason'));
-  raw.query('UPDATE presentation_topics_meta SET generation=1,source_head=7,ready=1,inbox_session=1').run();
+  raw.query('UPDATE presentation_topics_meta SET generation=1,source_head=7,ready=1,inbox_session=1,asked_answers_version=1').run();
   raw.transaction(()=>{for(let i=0;i<count;i++){
    const id=`area:${String(i).padStart(6,'0')}`,topicId=`topic:${String(i).padStart(6,'0')}`;
    raw.query('INSERT INTO presentation_areas VALUES(?,?,?,?,?,?)').run(1,id,`Area ${i}`,`area ${String(i).padStart(6,'0')}`,'', '2026-10-16T00:00:00Z');

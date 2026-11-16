@@ -35,6 +35,12 @@ when its root stayed the same. These defects are reproduced offline; they do not
 which unclassified live rows experienced interruption. An indexing response is still a
 coverage boundary, not evidence that semantic repair has finished.
 
+Live acceptance on November 16 UTC (November 15 locally) observed the semantic upgrade
+running from 03:41 UTC through 03:58 without a completion record. An ordinary release restart at 04:01 interrupted it. Its
+message and root-sweep positions were local variables, so another worker had to repeat
+the scan. Incremental reassignment already retained its own continuation; the one-time
+semantic upgrade still needed the same durable progress boundary.
+
 ## Fix
 
 Prepared roots follow Inbox lineage and the globally latest input placement, including
@@ -50,7 +56,16 @@ remove zero-member orphans. Each future incremental page commits its old/new sum
 maintenance and durable original-root continuation with its message changes. A restarted
 worker resumes remaining descendants and drains persistent topic work even without a new
 source change. Completion diagnostics count orphan removals; a separate content-free
-record names each removed empty human root and its current canonical target.
+record attempts to name each removed empty human root and its current canonical target.
+That per-root log is best-effort after commit; it can be absent on interruption even
+though the durable orphan count and cursor include the removal.
+
+The semantic upgrade now commits its phase, message/root keysets, cumulative counts and
+original start time with each page. A release restart continues from committed progress
+and drains persistent dependencies before completing. No timeout is lengthened and no
+semantic version bump is needed. Content-free phase/cursor/resume logs let acceptance
+observe continuation before the entire upgrade finishes. Post-commit logs may be lost on
+interruption; stored progress and subsequent source-head advancement remain evidence.
 
 The existing overdue-work upkeep also reminds the current Inbox after thirty minutes,
 including while it is busy or already has queued work. The reminder uses the current
@@ -69,6 +84,9 @@ The earlier idle wake and repair notice retain their separate purposes.
   detach a predecessor input, relink it from the successor, and add a new reply.
   Link the 125-reply parent to a placed root, pause the real worker immediately after its
   first remap transaction commits, kill it, then start a fresh worker twice.
+  Separately interrupt the semantic message scan after its first committed 100 rows,
+  its root sweep after its first committed page, and its persistent dependency-drain
+  phase; use a fixture-owned synchronous post-commit barrier for each restart.
 - **Expected:** The versioned upgrade removes all 105 phantom waiting roots without
   changing canonical events or the active generation. The genuine unfiled root remains;
   initial and incremental replies follow the canonical thread; latest detach and relink
@@ -80,6 +98,9 @@ The earlier idle wake and repair notice retain their separate purposes.
   thirty-minute-old unfiled input produces one reminder to a busy current router, with repeated upkeep
   deduplicating for that router, while a successor receives its own reminder; already-filed
   roots produce none.
+  Semantic restarts visit each prepared message once, continue beyond the committed root
+  keyset, retain cumulative orphan counts and drain pending dependencies before marking
+  completion. The active generation and canonical event count remain unchanged.
 - **Replayable offline:** yes; run `bun run scripts/inbox-prepared-lineage-fixture.ts`
   and `bun run scripts/inbox-unfiled-across-routers-fixture.ts` from `bot/`. Both own
   disposable state. Production installation and a live sorting-list read remain separate

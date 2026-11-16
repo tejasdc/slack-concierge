@@ -147,6 +147,23 @@ function pendingReturnInputs(requestId:string):{inputId:string|null;state:'unadm
   });
 }
 
+/**
+ * Whether a ChatGPT answer's not-yet-acknowledged return input waits in a queued turn this handoff
+ * moves (never started, no dependencies; see movableQueuedTurn). The answer duty can
+ * then move too, and the receipt is recorded when the successor's provider acknowledges that input.
+ * Waiting for the predecessor to acknowledge it deadlocked every handoff whose predecessor could not
+ * run (concierge:9772 → 9874, 2026-11-16: Codex allowance exhausted with a review answer queued).
+ */
+function answerReturnTravels(answerEventId:string,movable:Set<string>):boolean {
+  const event=(db.query(`SELECT accepted_input_id,status FROM session_communication_events WHERE event_id=?`).get(answerEventId)
+    ??db.query(`SELECT accepted_input_id,status FROM session_peer_events WHERE event_id=?`).get(answerEventId)) as
+    {accepted_input_id:string|null;status:string}|null;
+  if(!event?.accepted_input_id||event.status==='received'||event.status==='retained')return false;
+  const input=getAcceptedSessionInput(event.accepted_input_id);
+  if(!input||input.steering_id!==null||(input.receipt_json&&JSON.parse(input.receipt_json).state))return false;
+  return movable.has(input.id);
+}
+
 function movableQueuedTurn(turn:WaitingTurn,input:NonNullable<ReturnType<typeof getAcceptedSessionInput>>):boolean {
   // An unfired or replay-safe held schedule has no provider effects. Keep its turn and firing identity when
   // ownership moves: repeating schedules use that identity to book exactly one successor.
@@ -330,7 +347,9 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
   const observed=await inventory(proposed.predecessor_session_id,{inputId:input.inputId,runId:input.runId});
   const current=inventoryLocalWithExternal(proposed.predecessor_session_id,observed),currentDigest=digest(current);
   if(input.digest!==currentDigest) return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'Inventory changed; acknowledge this exact digest.'};
-  if(current.items.some(item=>item.kind==='answer'&&item.answerEventId&&!item.answerReturnInputId))
+  const movableNow=new Set(current.items.filter(item=>item.kind==='queued'&&item.movable).map(item=>item.ref));
+  if(current.items.some(item=>item.kind==='answer'&&item.answerEventId&&!item.answerReturnInputId
+    &&!answerReturnTravels(item.answerEventId,movableNow)))
     return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A ChatGPT answer has not reached its asking session yet. Let the exact return receipt settle before handing off its duty.'};
   if(current.items.some(item=>item.kind==='queued'&&!item.movable&&!item.obsolete))
     return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A queued input may have reached its provider or has dependencies. Let its exact outcome settle before accepting ownership.'};
@@ -345,7 +364,14 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     const successorTurnId=getAcceptedSessionInput(successorInputId)?.turn_id;
     if(!successorTurnId)throw new Error('Successor handoff brief was not queued.');
     const movable=new Set(verified.items.filter(item=>item.kind==='queued'&&item.movable).map(item=>item.ref));
-    for(const item of verified.items){
+    // A ChatGPT answer duty moves its own active request with it, so its sent request must move
+    // first; inventory order (answer:… sorts before sent:…) refused every handoff holding both
+    // (concierge:9767 → 9847, 2026-11-16).
+    // Read before any queued item moves: moving it re-points the answer event at the successor's copy.
+    const travellingAnswers=new Set(verified.items.filter(item=>item.kind==='answer'&&item.answerEventId&&!item.answerReturnInputId
+      &&answerReturnTravels(item.answerEventId,movable)).map(item=>item.ref));
+    const transferOrder=[...verified.items].sort((a,b)=>Number(a.kind==='answer')-Number(b.kind==='answer'));
+    for(const item of transferOrder){
       if(item.kind==='sent'){
         const table=db.query('SELECT 1 FROM session_communication_requests WHERE request_id=?').get(item.ref)?'session_communication_requests':'session_peer_requests';
         const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND ${item.pendingReturn?'outcome IS NOT NULL':'outcome IS NULL'}`).run(to,item.ref,from);
@@ -362,7 +388,7 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
         }
         record(item.kind,item.ref);
       }else if(item.kind==='answer'){
-        if(!transferChatGptAnswerOwnership(item.ref,from,to,Date.now()))
+        if(!transferChatGptAnswerOwnership(item.ref,from,to,Date.now(),travellingAnswers.has(item.ref)))
           throw new Error(`ChatGPT answer ${item.ref} changed during handoff.`);
         record(item.kind,item.ref);
       }else if(item.kind==='owed'){
@@ -444,6 +470,13 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     // after acceptance, so a proposed successor cannot receive captures prematurely.
     const predecessorMeta=sessionMetadata(getSessionById(from)!);
     if(predecessorMeta.inboxRole==='project-router')takeInboxRouterRole(to,predecessorMeta);
+    // Any other standing role (journal keeper, repair agent, …) follows the work the same way. Left
+    // on the superseded predecessor, the role kept receiving saved journal entries and check-ins
+    // after concierge:4571 → 9752 (2026-11-15), and no turn ever ran them.
+    else if(typeof predecessorMeta.standingRole==='string'&&predecessorMeta.standingRole){
+      db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole') WHERE id=?`).run(from);
+      updateSessionMetadata(to,{standingRole:predecessorMeta.standingRole});
+    }
     // Suspension prevents the next turn. It does not interrupt an already admitted run;
     // that run receives a direct notice after this transaction commits.
     updateSessionMetadata(from,{suspended:true});

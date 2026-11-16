@@ -1452,7 +1452,24 @@ export class SessionPeers {
       }
     }
     let remote:any;
-    try {remote=reconciledStatus??await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);this.unreachable.delete(row.peer);}
+    try {
+      remote=reconciledStatus??await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);
+      this.unreachable.delete(row.peer);
+      const askedClock=JSON.parse(row.payload_json);
+      if(askedClock.promptAnswerQuestionId&&!askedClock.promptAnswerPeerAcknowledged){
+        try{
+          const accepted=await client.request<{recorded:boolean}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/prompt-answer`,{
+            originSessionId:`concierge:${row.source_session_id}`,originInputId:row.source_input_id,originRunId:nativeRunId(row.source_turn_id),
+            questionId:askedClock.promptAnswerQuestionId,createdAtMs:row.created_at_ms},OWNER_READ_RESPONSE_MS,false,this.peerReadController.signal);
+          if(accepted.recorded)db.query("UPDATE session_peer_requests SET payload_json=json_set(payload_json,'$.promptAnswerPeerAcknowledged',1) WHERE request_id=?")
+            .run(row.request_id);
+        }catch(error){
+          if(this.stopped)return;
+          // The existing reconciliation retries only this exact clock command, never the task.
+          log('info','session_peer_answer_clock_waiting',{request_id:row.request_id,peer:row.peer,...errorFields(error)});
+        }
+      }
+    }
     catch(error) {
       if(this.stopped)return;
       this.recordStatusReadFailure(row,peerStatusReadFailureReason(error),error instanceof PeerStatusReadError?error:undefined);
@@ -2087,7 +2104,8 @@ export class SessionPeers {
     return this.replyBody(row,reply);
   }
   private remindPromptAnswer(row:DeliveryRow) {
-    if(row.closed_at_ms!==null||row.prompt_reminded_at_ms!==null||!JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.promptAnswer)return;
+    const provenance=JSON.parse(row.origin_provenance_json??'{}');
+    if(row.closed_at_ms!==null||row.prompt_reminded_at_ms!==null||!(provenance.forwardedIntent?.promptAnswer||provenance.askedAnswer))return;
     if(db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND (kind='final' OR json_extract(payload_json,'$.answersQuestion')=1) LIMIT 1").get(row.request_id)){
       db.query('UPDATE session_peer_deliveries SET prompt_reminded_at_ms=? WHERE request_id=? AND prompt_reminded_at_ms IS NULL').run(this.now(),row.request_id);
       return;
@@ -2097,6 +2115,24 @@ export class SessionPeers {
       origin:'service',sourceInputId:row.target_input_id,sourceRunId:target?.turn_id?nativeRunId(target.turn_id):row.origin_run_id,requestId:row.request_id,
       text:`${JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.forwardedReply?.authorKind==='agent'?'The marked agent test':'Tejas'} is still waiting for an answer to the question in request ${row.request_id}. Answer in the Inbox thread now with sessions reply ${row.request_id} --partial --answers-question, even if the rest of the work continues. A progress-only reply does not answer it.`});
     db.query('UPDATE session_peer_deliveries SET prompt_reminded_at_ms=? WHERE request_id=? AND prompt_reminded_at_ms IS NULL').run(this.now(),row.request_id);
+  }
+  /** Adds a clock to an already accepted exact request; it never admits the task again. */
+  requirePromptAnswer(requestId:string,input:any){
+    const row=this.delivery(requestId);
+    if(input.originSessionId!==row.origin_session_id||input.originInputId!==row.origin_input_id||input.originRunId!==row.origin_run_id)
+      throw new SessionOwnerError('The answer clock must name this request’s original source.',409,'PROMPT_ANSWER_SOURCE_MISMATCH');
+    if(typeof input.questionId!=='string'||!/^q:[A-Za-z0-9-]{1,100}$/.test(input.questionId)
+      ||!Number.isSafeInteger(input.createdAtMs)||input.createdAtMs<0||input.createdAtMs>this.now())
+      throw new SessionOwnerError('An exact question and accepted request time are required.',400,'PROMPT_ANSWER_INVALID');
+    const provenance=JSON.parse(row.origin_provenance_json??'{}');
+    const existing=provenance.askedAnswer;
+    if(existing&&(existing.questionId!==input.questionId||existing.createdAtMs!==input.createdAtMs))
+      throw new SessionOwnerError('The retained answer clock has a different identity.',409,'PROMPT_ANSWER_IDENTITY_MISMATCH');
+    if(!existing&&row.closed_at_ms===null)db.query("UPDATE session_peer_deliveries SET origin_provenance_json=json_set(coalesce(origin_provenance_json,'{}'),'$.askedAnswer',json(?)) WHERE request_id=?")
+      .run(JSON.stringify({questionId:input.questionId,createdAtMs:input.createdAtMs}),requestId);
+    if(input.createdAtMs+PROMPT_ANSWER_REMINDER_MS<=this.now())this.remindPromptAnswer(this.delivery(requestId));
+    this.wake();
+    return {recorded:true};
   }
   /** Deliveries from a peer that this session holds without a final reply (see the coordinator's owed). */
   owedDeliveries(sessionId:number,runId:string,mark:{offer:string[];remind:boolean}):OwedRequest[] {
@@ -2332,7 +2368,8 @@ export class SessionPeers {
           this.schedule(`report:${row.request_id}`,()=>this.report(this.delivery(row.request_id)));
         });
       await this.scanRows<DeliveryRow>('session_peer_deliveries',`SELECT rowid AS reconciliation_rowid,* FROM session_peer_deliveries WHERE closed_at_ms IS NULL AND prompt_reminded_at_ms IS NULL
-          AND json_extract(origin_provenance_json,'$.forwardedIntent.promptAnswer')=1 AND created_at_ms<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
+          AND (json_extract(origin_provenance_json,'$.forwardedIntent.promptAnswer')=1 OR json_extract(origin_provenance_json,'$.askedAnswer') IS NOT NULL)
+          AND coalesce(json_extract(origin_provenance_json,'$.askedAnswer.createdAtMs'),created_at_ms)<=? AND rowid<=? AND rowid>? ORDER BY rowid LIMIT 1`,
         row=>this.remindPromptAnswer(row),this.now()-PROMPT_ANSWER_REMINDER_MS);
       if(!this.stopped)this.arm();
     }
@@ -2362,8 +2399,8 @@ export class SessionPeers {
       ||db.query("SELECT 1 FROM session_peer_replies WHERE status='pending' LIMIT 1").get()
       ||db.query('SELECT 1 FROM session_peer_deliveries WHERE closed_at_ms IS NULL LIMIT 1').get())!==null;
     const due=(db.query(`SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE ${AWAITING_INSPECTION} AND json_extract(payload_json,'$.responseMode') IS NOT 'context'`).get() as {due:number|null}).due;
-    const reminder=(db.query(`SELECT min(created_at_ms)+? AS due FROM session_peer_deliveries WHERE closed_at_ms IS NULL AND prompt_reminded_at_ms IS NULL
-      AND json_extract(origin_provenance_json,'$.forwardedIntent.promptAnswer')=1`).get(PROMPT_ANSWER_REMINDER_MS) as {due:number|null}).due;
+    const reminder=(db.query(`SELECT min(coalesce(json_extract(origin_provenance_json,'$.askedAnswer.createdAtMs'),created_at_ms))+? AS due FROM session_peer_deliveries WHERE closed_at_ms IS NULL AND prompt_reminded_at_ms IS NULL
+      AND (json_extract(origin_provenance_json,'$.forwardedIntent.promptAnswer')=1 OR json_extract(origin_provenance_json,'$.askedAnswer') IS NOT NULL)`).get(PROMPT_ANSWER_REMINDER_MS) as {due:number|null}).due;
     const delays=[...(owed?[retryDelayMs(RETRY_POLICIES.peerRequest,RETRY_POLICIES.peerRequest.maxAttempts)]:[]),...(due===null?[]:[Math.max(0,due-this.now())]),...(reminder===null?[]:[Math.max(0,reminder-this.now())])];
     if(!delays.length)return;
     const timer=setTimeout(()=>this.wake(),Math.min(24*60*60_000,...delays));

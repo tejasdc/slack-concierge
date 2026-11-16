@@ -319,6 +319,7 @@ export class SessionExecutionHost {
       codexTestConnectionLoss:(session,turn,binding)=>this.loseTestCodexConnection(session,turn,binding),
       safeStop:async(session,turn)=>{const stopped=options.registry.requestSafeSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
+      readJournalEntry:this.capabilityClient?root=>this.capabilityClient!.readJournalEntry(root):undefined,
       saveCaptureNote:this.capabilityClient?input=>this.capabilityClient!.saveCaptureNote(input):undefined,
       history:options.history??((session,cursor,limit)=>this.history(session,cursor,limit)),
       projectedHistory:options.history||Object.entries(options.providers).some(([provider,value])=>

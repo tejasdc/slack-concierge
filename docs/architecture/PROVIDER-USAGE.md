@@ -542,13 +542,23 @@ as an ordinary usage hold. The last account is
 recorded only when Claude reports that the process started. Each main-conversation response with
 usage also retains its account, conversation ID, response ID and receipt time in that session's
 metadata. The next ordinary turn stays on that account when its last response is within the
-main conversation's one-hour cache lifetime and the account still has usable room. Anthropic
-isolates prompt caches between organizations; in the 48 hours before this change, 133 account
-changes accompanied 68.2 million rewritten tokens, and all 14 sampled changes within 50 minutes
-were cold. Keeping an eligible warm account avoids sacrificing that prefix to spend a different
-weekly allowance. A fresh Accounts selection still wins the next turn, a banked turn stays bound
-to its saved account, and a cached usage refusal makes an account ineligible. When the prefix is
-cold, the chooser again ranks usable accounts by weekly allowance lapse pressure and uses the
+main conversation's one-hour cache lifetime, the account still has usable room, **and no other
+account's weekly allowance is clearly closer to lapsing** (its lapse pressure under twice the warm
+account's, `WARM_STAY_BAND`). Anthropic
+isolates prompt caches between organizations; in the 48 hours before the warm stay was added
+(2026-10-23), 133 account changes accompanied 68.2 million rewritten tokens, and all 14 sampled
+changes within 50 minutes were cold. Keeping an eligible warm account avoids sacrificing that
+prefix to spend a different weekly allowance. But an unconditional stay let every conversation
+active within the hour keep its account whatever the weeks' ends: on 2026-11-13 the ledger
+recorded 159 warm stays against 48 moves for room, and the week ending Sunday was spent while a
+week ending Wednesday kept its room (Tejas, 2026-11-15: "we should not be changing only when
+they're expiring, but actually based on what weekly windows are happening"; failure record
+[2026-11-15](../incidents/2026-11-15-warm-cache-kept-spending-the-later-week.md)). The band is
+hysteresis: a move pays one prefix rewrite and the new account is then warm, so staying is worth
+it only while the accounts are close, and two accounts cannot ping-pong unless their pressures
+swing fourfold. A fresh Accounts selection still wins the next turn, a banked turn stays bound
+to its saved account, and a cached usage refusal makes an account ineligible. Otherwise the
+chooser ranks usable accounts by weekly allowance lapse pressure and uses the
 previous account to break equal-room ties. That ranking preserves weekly room: at
 07:22 Eastern on 2026-10-10 Inbox stayed on an account with about 13% weekly room even though
 another launchable account had about 83%, because the older rule always preferred its last
@@ -566,7 +576,8 @@ The provider's response establishes a possible warm prefix, while a transcript u
 establishes what was actually read or rewritten. If a response is not recorded, a process restarts,
 the conversation ID changes, or the marker expires, dispatch uses the existing cold ranking.
 Older readers ignore the optional metadata. The falsifying sequence is a warm call on account A
-while account B has higher lapse pressure: A must win with room, B must win when A has no room,
+while account B has higher lapse pressure: A must win with room while B's pressure is under
+twice A's, B must win when it is more than twice or when A has no room,
 and a bound banked turn must remain bound. The focused chooser check exercises that sequence;
 installed usage figures measure the resulting cache behavior.
 "None has room" is a claim about readings and refusals only. A reading older than six minutes

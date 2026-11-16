@@ -92,6 +92,12 @@ const launchable = (account: AccountRoom) =>
 const WEEK_HOURS = 7 * 24;
 
 /**
+ * How much more lapse pressure another account needs before a warm conversation leaves its
+ * account. Two: the warm account stays while its own pressure is at least half the best one's.
+ */
+export const WARM_STAY_BAND = 2;
+
+/**
  * Percent of weekly room per hour left to use it: the rate at which this account's room has to
  * be spent before it lapses. Higher means more at risk of being wasted, so it is spent first.
  */
@@ -143,11 +149,7 @@ export function chooseAccountForTurn(input: {
   if (input.newlySelected && preferred)
     return { account: preferred.account, home: preferred.home, because: "stayed-on-its-account" };
 
-  const warm = input.warmCacheAccount && withRoom.find(account => account.account === input.warmCacheAccount);
-  if (warm)
-    return { account: warm.account, home: warm.home, because: "stayed-for-warm-cache" };
-
-  // Cold work is ranked by how fast room has to be spent before it lapses: the percent left divided by
+  // Work is ranked by how fast room has to be spent before it lapses: the percent left divided by
   // the hours until that weekly allowance ends. A full week with 15 hours to its end outranks a
   // half week with five days (6.7 against 0.4 points an hour), and the 2026-10-10 case still
   // holds — 13% with two days left (0.3) loses to 83% with five (0.7). An unknown end counts as
@@ -157,6 +159,19 @@ export function chooseAccountForTurn(input: {
     pressure(account) > pressure(best)
       || (pressure(account) === pressure(best) && account.account === input.prefer)
       ? account : best);
+
+  // A warm prefix keeps its account only while that account is not clearly the wrong week to
+  // spend. From 2026-10-23 the warm stay came before the ranking, so a conversation active every
+  // hour never left its account: on 2026-11-13 the ledger recorded 159 warm stays against 48
+  // moves for room, and the week ending Sunday was spent while a week ending Wednesday kept its
+  // room (Tejas, 2026-11-15: "we should not be changing only when they're expiring, but actually
+  // based on what weekly windows are happening"). The band is hysteresis, not a cost model: a
+  // move pays one rewrite of the prefix and then the new account is warm, so staying is only
+  // worth it while the accounts are close; beyond twice the pressure the room that would lapse
+  // outweighs that rewrite, and two accounts cannot ping-pong unless their pressures swing fourfold.
+  const warm = input.warmCacheAccount && withRoom.find(account => account.account === input.warmCacheAccount);
+  if (warm && pressure(warm) * WARM_STAY_BAND >= pressure(roomiest))
+    return { account: warm.account, home: warm.home, because: "stayed-for-warm-cache" };
   if (roomiest.account === input.prefer)
     return { account: roomiest.account, home: roomiest.home, because: "stayed-on-its-account" };
   return {

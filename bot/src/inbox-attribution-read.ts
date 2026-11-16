@@ -215,7 +215,7 @@ export function inboxAttribution(db:Database){
     const {fromSession,...author}=display.author??{};
     // A named author this machine cannot resolve stays that author, unknown; it is never the
     // session the message is shown in (that named another agent's answer after the Inbox).
-    const named=typeof fromSession==='string'?sessionAuthor(fromSession)??{id:fromSession,title:'Agent session',provider:null,model:null,reasoningEffort:null,agentName:null}:undefined;
+    const named=typeof fromSession==='string'?sessionAuthor(fromSession)??(author.session?.id===fromSession?author.session:{id:fromSession,title:'Agent session',provider:null,model:null,reasoningEffort:null,agentName:null}):undefined;
     return {...display,author:{...author,kind,...(kind==='agent'?{session:named??author.session??authorSession(sourceSessionId)}:{})}};
   };
 }
