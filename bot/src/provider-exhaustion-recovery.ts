@@ -5,6 +5,7 @@ import {accountsWithRoom} from './provider-usage-forecast';
 import {claudeAccountAwaitingSignIn} from './provider-account-dispatch';
 import {sessionAddress} from './session-address';
 import {log} from './log';
+import {aliasKeepingTier,resolveProviderAlias} from './aliases';
 
 export type WaitingTurn={id:number;session_id:number;accepted_input_id:string;status:string;dispatch_attempt:number;
   dispatch_hold:string|null;provider_admission_intended_at:string|null;provider_started_at:string|null;
@@ -111,7 +112,8 @@ export function transferSession(sessionId:number):number {
   const current=previous?getSessionById(previous.successor_session_id):null;
   let successor=current&&current.status!=='archived'&&!sessionMetadata(current).suspended?current:null;
   if(!successor){
-    successor=createNativeSession('codex',{title:`${meta.title??'Claude work'} (continued on Codex)`,
+    const tierModel=resolveProviderAlias(aliasKeepingTier('codex',meta.model));
+    successor=createNativeSession('codex',{model:tierModel.model,...(meta.reasoningEffort?{reasoningEffort:meta.reasoningEffort}:{}),title:`${meta.title??'Claude work'} (continued on Codex)`,
       summary:meta.summary??`Continues “${meta.title??'Claude work'}” on Codex while Claude's allowance is used up.`,
       purpose:meta.purpose??'develop',cwd:meta.cwd,project:meta.project??null,
       additionalDirs:meta.additionalDirs,origin:'native',recovery:{sourceAddress,reason:'claude_usage_exhausted'}});
