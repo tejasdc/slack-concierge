@@ -12,7 +12,7 @@ import {askedAnswerPostIds,askedAnswerStatus,requireAskedAnswer} from './asked-a
 import {BUG_REPORT_OWN_THREAD,isBugReportInput,capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {answerClosingLine} from './answer-closing-line';
 import {notSeenWorking} from './answers-to-tejas';
-import {inboxRequestRoot} from './inbox-request-root';
+import {inboxRequestRoot,inboxSentRequest} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
 import {errorFields,log} from './log';
@@ -3253,9 +3253,10 @@ export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInp
   const inbox=askedIn!==null?getSessionById(askedIn):null;
   if(!human||!inbox||!sessionMetadata(inbox).inbox||inbox.id===input.respondingSessionId)return null;
   // Only the request that delivered this turn can name its thread. A prior request to the
-  // same worker may belong to another topic and must not capture this question.
+  // same worker may belong to another topic and must not capture this question. A router
+  // handoff moves the request's custody to the successor Inbox; its thread stays.
   const request=(db.query(`SELECT request_id,thread_root_input_id FROM session_communication_requests
-      WHERE request_id=? AND target_session_id=? AND source_session_id=? AND target_input_id=? AND thread_root_input_id IS NOT NULL
+      WHERE request_id=? AND target_session_id=? AND source_session_id IN (${INBOX_LINEAGE_SQL}) AND target_input_id=? AND thread_root_input_id IS NOT NULL
       LIMIT 1`)
     .get(provenance?.requestId,input.respondingSessionId,inbox.id,input.turnInputId)) as {request_id:string;thread_root_input_id:string}|null;
   if(!request)return null;
@@ -4700,6 +4701,69 @@ export function retireRecoveredBookkeepingRequests() {
   }
   if(retired)log('info','inbox_recovered_bookkeeping_retired',{session_id:session.id,retired});
   return {retired};
+}
+
+/**
+ * The thread a recovered root was sent from, when that is another thread: a request this Inbox
+ * sent for a thread, or a return or notice whose request was. Its own placement is ignored, since
+ * that placement is exactly what is in question.
+ */
+function sentFromThread(sessionId:number,root:string,ownTopicId:string):string|null {
+  let home:string|null;
+  if(root.startsWith('request:')) {
+    const threadRoot=inboxSentRequest(db,root.slice('request:'.length),sessionId)?.thread_root_input_id??null;
+    home=threadRoot?rootOf(sessionId,threadRoot)??threadRoot:null;
+  } else home=rootOf(sessionId,root);
+  const topicId=home&&home!==root?topicOfRoot(home):null;
+  return topicId&&topicId!==ownTopicId?topicId:null;
+}
+/**
+ * Puts back every thread the Inbox conversion made from something sent out of another thread.
+ * A router handoff moves an open request's custody to the successor Inbox; until 2026-11-16 the
+ * thread lookup asked for the request under the session whose transcript recorded the send, so
+ * every request still open at the Nov 5 handoff looked like the start of a conversation, and the
+ * conversion re-run that morning gave each its own thread, titled with its first words ("No, no,
+ * no, no." was his reply inside "A server that stays responsive while agents work"). Once, at
+ * start: a recovered thread whose every root was sent from one other thread is merged into it,
+ * keeping that thread's name; anything less clear-cut is logged and left alone. See
+ * docs/incidents/2026-11-16-forwarded-replies-became-threads.md.
+ */
+export function rejoinThreadsSplitAtHandoff() {
+  const session=inboxSession();
+  if(!session)return {merged:0,unclear:0};
+  const completionId='threads-split-at-handoff:rejoined-v1';
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(completionId))return {merged:0,unclear:0};
+  refreshRootMemo();
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
+  const reason='Everything in this thread was sent from a message in the thread it now joins; a router handoff had cut it off.';
+  const merged:{from:string;into:string}[]=[],unclear:string[]=[];
+  const candidates=db.query(`SELECT topic.topic_id FROM inbox_topics topic WHERE topic.recovered=1
+      AND NOT (topic.state='closed' AND json_extract(topic.closure_json,'$.kind')='merged')
+      AND EXISTS (SELECT 1 FROM inbox_topic_roots root WHERE root.topic_id=topic.topic_id
+        AND (root.root_input_id LIKE 'request:%' OR root.root_input_id LIKE 'return:%' OR root.root_input_id LIKE 'thread-upkeep:%'))
+      ORDER BY topic.created_at`)
+    .all() as {topic_id:string}[];
+  for(const {topic_id:topicId} of candidates) {
+    const from=topicRow(topicId);
+    const roots=topicRoots(topicId);
+    if(!roots.length)continue;
+    const homes=roots.map(root=>sentFromThread(from.sessionId,root,topicId));
+    if(homes.every(home=>home===null))continue;
+    const distinct=[...new Set(homes)];
+    if(distinct.length!==1){unclear.push(topicId);continue;}
+    const into=topicRow(distinct[0]!);
+    if(into.state==='closed'&&topicRequests(topicId).some(request=>request.state==='open')){unclear.push(topicId);continue;}
+    db.transaction(()=>{
+      const change=mergeChange(from,into,by,reason);
+      // His thread keeps its own name; the first words of a reply are not another name for it.
+      const payload={...change.change.payload,topic:{...change.destination,aliases:into.aliases}};
+      recordOwnerTopicChange(into.sessionId,`topic-handoff-split-rejoined:${topicId}`,'topic',payload);
+    })();
+    merged.push({from:topicId,into:into.topicId});
+  }
+  recordSessionEvent({eventId:completionId,sessionId:session.id,kind:'topics_migration',payload:{repair:'threads-split-at-handoff',merged,unclear,at:nowIso()}});
+  log('info','inbox_threads_split_at_handoff_rejoined',{merged:merged.length,unclear:unclear.length,unclear_topics:unclear.slice(0,20)});
+  return {merged:merged.length,unclear:unclear.length};
 }
 
 const ATTENTION_MIGRATION_VERSION=2;

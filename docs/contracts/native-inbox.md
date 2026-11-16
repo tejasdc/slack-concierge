@@ -510,7 +510,13 @@ and refuses, before anything is sent, an Inbox ask with no thread, one naming a 
 is not in the Inbox, or one whose thread is not yet placed in a topic; other sessions have
 no threads and name none. The root is recorded on the request (`thread_root_input_id`, local
 and peer rows), so progress and final returns file under that thread and its Timeline lists
-the dispatch, whatever input started the turn that sent it. When the dispatch itself is placed
+the dispatch, whatever input started the turn that sent it. The thread is fixed when the request
+is sent: a router handoff moves an open request's custody (its source session) to the successor
+Inbox, and every thread lookup finds the request by its exact id among the Inbox's sessions, never
+by its current custodian. Before 2026-11-16 the lookup asked only the session whose transcript
+recorded the send, so twelve of his forwarded replies became threads of their own; a one-time start
+repair merges any such recovered thread back
+(`docs/incidents/2026-11-16-forwarded-replies-became-threads.md`). When the dispatch itself is placed
 as a topic root, that placement owns the request and every answer to it, even if `--thread`
 named an older topic. The Conversation shows the original request text as its root message;
 the answer keeps its exact source and author. One dispatch may serve several explicit Inbox

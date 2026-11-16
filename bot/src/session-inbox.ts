@@ -3,7 +3,7 @@ import {db,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
-import {inboxRequestRoot,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
+import {inboxRequestRoot,inboxSentRequest,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
 import {firstInboxAcceptanceSql,savedContextMessageSql} from './inbox-message-identity';
 import {inboxContextMessage} from './inbox-context-message';
 import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
@@ -262,8 +262,7 @@ export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<s
   if(row?.kind==='request'){
     const requestId=JSON.parse(row.payload_json).requestId;
     if(typeof requestId==='string'){
-      const request=(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)
-        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)) as {thread_root_input_id:string|null}|null;
+      const request=inboxSentRequest(db,requestId,row.session_id);
       const linked=request?.thread_root_input_id?inboxRequestRoot(db,requestId,request.thread_root_input_id):null;
       if(linked&&linked!==row.event_id)return linked;
     }
@@ -316,10 +315,8 @@ function returnedRequestSource(sessionId:number,inputId:string):string|null {
  * send this request, you have to tell me which thread it's for").
  */
 export function requestThreadSource(sessionId:number,requestId:string):string|null {
-  const local=db.query('SELECT source_input_id,thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
-  if(local)return inboxRequestRoot(db,requestId,local.thread_root_input_id??local.source_input_id);
-  const peer=db.query('SELECT source_input_id,thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
-  return peer?inboxRequestRoot(db,requestId,peer.thread_root_input_id??peer.source_input_id):null;
+  const sent=inboxSentRequest(db,requestId,sessionId);
+  return sent?inboxRequestRoot(db,requestId,sent.thread_root_input_id??sent.source_input_id):null;
 }
 /**
  * The thread an Inbox request works for, resolved at admission: the exact message the sender
