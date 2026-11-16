@@ -1,5 +1,5 @@
 import type {Database} from 'bun:sqlite';
-import {inboxRequestRoot} from './inbox-request-root';
+import {inboxRequestRoot,inboxSentRequest} from './inbox-request-root';
 import {firstInboxAcceptanceSql,savedContextMessageSql} from './inbox-message-identity';
 import {retainedReplyTarget} from './inbox-reply-lineage';
 import {routedTurnResultSql} from './inbox-routing-result';
@@ -55,8 +55,8 @@ export function inboxRootResolver(db:Database) {
       WHERE event.session_id IN (${INBOX_LINEAGE_SQL}) AND event.input_id=? AND event.kind NOT IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)) as {session_id:number;input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
     if(row?.kind==='request'){
       const requestId=JSON.parse(row.payload_json).requestId;
-      const request=(typeof requestId==='string'?(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)
-        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)):null) as {thread_root_input_id:string|null}|null;
+      // Found among the Inbox's sessions: a router handoff moves an open request's custody, not its thread.
+      const request=typeof requestId==='string'?inboxSentRequest(db,requestId,row.session_id):null;
       const linked=typeof requestId==='string'?inboxRequestRoot(db,requestId,request?.thread_root_input_id??null):null;
       if(linked&&linked!==row.event_id){memo.set(cacheKey,linked);return linked;}
       memo.set(cacheKey,row.event_id);return row.event_id;
@@ -91,8 +91,8 @@ export function inboxRootResolver(db:Database) {
       const root=resolve(sessionId,replyTo.messageId,seen)??inputId;memo.set(cacheKey,root);return root;
     }
     if(own?.origin==='service'&&own.request_id){
-      const request=(db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS source FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(own.request_id,row.session_id)
-        ??db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS source FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(own.request_id,row.session_id)) as {source:string|null}|null;
+      const sent=inboxSentRequest(db,own.request_id,row.session_id);
+      const request=sent?{source:sent.thread_root_input_id??sent.source_input_id}:null;
       if(request?.source){const routed=inboxRequestRoot(db,own.request_id,request.source);
         const root=resolve(sessionId,routed??request.source,seen)??inputId;memo.set(cacheKey,root);return root;}
     }

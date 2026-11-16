@@ -510,7 +510,13 @@ and refuses, before anything is sent, an Inbox ask with no thread, one naming a 
 is not in the Inbox, or one whose thread is not yet placed in a topic; other sessions have
 no threads and name none. The root is recorded on the request (`thread_root_input_id`, local
 and peer rows), so progress and final returns file under that thread and its Timeline lists
-the dispatch, whatever input started the turn that sent it. When the dispatch itself is placed
+the dispatch, whatever input started the turn that sent it. The thread is fixed when the request
+is sent: a router handoff moves an open request's custody (its source session) to the successor
+Inbox, and every thread lookup finds the request by its exact id among the Inbox's sessions, never
+by its current custodian. Before 2026-11-16 the lookup asked only the session whose transcript
+recorded the send, so twelve of his forwarded replies became threads of their own; a one-time start
+repair merges any such recovered thread back
+(`docs/incidents/2026-11-16-forwarded-replies-became-threads.md`). When the dispatch itself is placed
 as a topic root, that placement owns the request and every answer to it, even if `--thread`
 named an older topic. The Conversation shows the original request text as its root message;
 the answer keeps its exact source and author. One dispatch may serve several explicit Inbox
@@ -1111,6 +1117,28 @@ upkeep leaves no receipt, so the same exact event can finish safely on retry. Th
 usage watch checks open work in short, yielding owner turns; its per-thread transactions and
 recovery identities remain the same. A recovery admission rechecks current work and his
 answers after any yield, and a new reading joins an already running pass.
+
+## Quiet service notices
+
+Owner-generated reminders and reconciliation notices carry `threadReplyNotRequired:true`
+at admission. This covers unanswered-request and prompt reminders, overdue/stalled returns
+on either machine, still-open upkeep, handoff notices, background-job and update-wait
+notices, theme-area filing prompts, and question to-do/defer reconciliation. The mark
+waives only the notice's own thread reply: it neither closes the underlying request nor
+suppresses a later genuine answer or question.
+
+Retained inputs admitted before that mark existed use the same owner-generated identity
+contract: dedicated maintenance prefixes, or an exact `return:<event>` whose request and
+recorded local/peer event identify an `overdue` notice. Owner-made handoff copies follow
+their exact original input. No wording, including “You do not need to reply,” grants an
+exemption. An ordinary service return, genuine worker final answer, or agent question
+keeps its owed-post rule; a human message keeps its explicit quiet-reason requirement.
+
+Both `sessions outcome done` and automatic closing-text relay use this classification.
+The disposable `bot/scripts/inbox-quiet-service-notices-fixture.ts` exercises quiet
+outcome/no relay, retained local and peer overdue notices, handoff copies, genuine final
+answers, agent questions and the human silence guard. See the
+[failure record](../incidents/2026-11-16-no-reply-notice-forced-thread-post.md).
 
 ## Journal processing dispositions
 

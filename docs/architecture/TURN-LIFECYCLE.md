@@ -74,6 +74,18 @@ other cycle cannot trap the owner and stall unrelated sessions.
 - `bot/src/session-runtime.ts` composes the same owner, queue, registry and executor when Slack is disabled. `session-execution-host.ts` admits native inputs and controls; it does not own a second provider queue.
 - `bot/src/session-turn-queue.ts` owns process-local wakeup coalescing for durable ownerless queued turns. SQLite claim transitions in `bot/src/state.ts` remain the concurrency boundary.
 
+### Claude launch refused before start
+
+Concierge's Claude launcher refuses some launches before Claude starts (an unavailable or ambiguous
+account binding, a malformed owner header, a competing credential). It prints the reason after a fixed
+marker and exits 78 (`bot/src/claude-launch-refusal.ts`); the turn runner treats that as proof nothing
+was sent and fails the turn at once with the launcher's reason, scoped to that conversation's retry
+budget, so its requests settle failed and return to their requester. An unmarked end before Claude
+acknowledges its input still parks as ambiguous. A transcript begun before Claude wrote session-owner
+headers resumes on Concierge's verified account choice. Startup fails turns already parked as
+unacknowledged Claude launches, replaying nothing
+([record](../incidents/2026-11-16-claude-legacy-resume-refusal-parked-turns.md)).
+
 ### Stop while taking back an existing Codex turn
 
 Adoption means Codex may already be executing the accepted input. The adapter establishes the

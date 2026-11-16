@@ -3,7 +3,7 @@ import {db,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
-import {inboxRequestRoot,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
+import {inboxRequestRoot,inboxSentRequest,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
 import {firstInboxAcceptanceSql,savedContextMessageSql} from './inbox-message-identity';
 import {inboxContextMessage} from './inbox-context-message';
 import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
@@ -262,8 +262,7 @@ export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<s
   if(row?.kind==='request'){
     const requestId=JSON.parse(row.payload_json).requestId;
     if(typeof requestId==='string'){
-      const request=(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)
-        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)) as {thread_root_input_id:string|null}|null;
+      const request=inboxSentRequest(db,requestId,row.session_id);
       const linked=request?.thread_root_input_id?inboxRequestRoot(db,requestId,request.thread_root_input_id):null;
       if(linked&&linked!==row.event_id)return linked;
     }
@@ -316,10 +315,8 @@ function returnedRequestSource(sessionId:number,inputId:string):string|null {
  * send this request, you have to tell me which thread it's for").
  */
 export function requestThreadSource(sessionId:number,requestId:string):string|null {
-  const local=db.query('SELECT source_input_id,thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
-  if(local)return inboxRequestRoot(db,requestId,local.thread_root_input_id??local.source_input_id);
-  const peer=db.query('SELECT source_input_id,thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
-  return peer?inboxRequestRoot(db,requestId,peer.thread_root_input_id??peer.source_input_id):null;
+  const sent=inboxSentRequest(db,requestId,sessionId);
+  return sent?inboxRequestRoot(db,requestId,sent.thread_root_input_id??sent.source_input_id):null;
 }
 /**
  * The thread an Inbox request works for, resolved at admission: the exact message the sender
@@ -347,9 +344,10 @@ function turnQuietReason(sessionId:number,turnId:number):string|null {
 export function turnThreadActions(sessionId:number,turnId:number,ownInputId:string|null):{mixedThreads:boolean;answeredByPost:boolean} {
   const own=ownInputId?inboxThreadRoot(sessionId,ownInputId):null;
   const named=new Set<string>();
-  for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_communication_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
+  // A turn id names one session's turn; a later router handoff moves its requests' custody.
+  for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_communication_requests WHERE source_turn_id=?').all(turnId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
-  for(const row of db.query("SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND source_session_id=? AND json_extract(payload_json,'$.responseMode') IS NOT 'context'").all(turnId,sessionId) as {root:string|null}[])
+  for(const row of db.query("SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND json_extract(payload_json,'$.responseMode') IS NOT 'context'").all(turnId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
   let answeredByPost=false;
   for(const row of db.query("SELECT event_id,input_id FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post'").all(sessionId,turnId) as {event_id:string;input_id:string|null}[]){
@@ -369,17 +367,39 @@ export const turnMixesThreads=(sessionId:number,turnId:number,ownInputId:string|
  * two hours: "either none of the protocols that we have built is working, or you've been
  * bushing me."
  */
+const NO_REPLY_SERVICE_PREFIXES = [
+  'thread-upkeep:', 'unfiled-wake:', 'request-reminder:', 'question-reminder:',
+  'question-todo-done:', 'direct-todo-done:', 'question-returned:', 'handoff-notice:',
+  'background-job:', 'update-wait:', 'area-theme:',
+] as const;
+
+/** Retained notices predate the explicit mark; prove their contract from owner identity,
+ * never from their words. Follow only the exact original of an owner-made handoff copy. */
+function serviceNoticeNeedsNoThreadReply(opening:AcceptedSessionInput):boolean {
+  const seen=new Set<string>();
+  let input:AcceptedSessionInput|null=opening;
+  while(input?.origin==='service'&&!seen.has(input.id)){
+    seen.add(input.id);
+    const payload=JSON.parse(input.payload_json);
+    if(payload.alreadyPostedInThread===true||payload.threadReplyNotRequired===true
+      ||NO_REPLY_SERVICE_PREFIXES.some(prefix=>input!.id.startsWith(prefix)))return true;
+    if(input.id.startsWith('return:')){
+      const eventId=input.id.slice('return:'.length);
+      for(const table of ['session_communication_events','session_peer_events']){
+        const event=db.query(`SELECT kind FROM ${table} WHERE event_id=? AND request_id=?`).get(eventId,input.request_id) as {kind:string}|null;
+        if(event?.kind==='overdue')return true;
+      }
+    }
+    input=input.scope.startsWith('handoff:')&&input.id.startsWith('handoff-input:')
+      ?getAcceptedSessionInput(input.action_id):null;
+  }
+  return false;
+}
 export function threadOwedByTurn(session:SessionRow,openingInputId:string|null):string|null {
   if(!openingInputId||!sessionMetadata(session).inbox)return null;
   const opening=getAcceptedSessionInput(openingInputId);
   if(!opening||opening.origin==='human')return null;
-  if(opening.origin==='service'){
-    const payload=JSON.parse(opening.payload_json);
-    // Older upkeep inputs were admitted before the explicit mark existed. Their
-    // service identity and owner-generated prefix still prove the no-reply contract.
-    if(payload.alreadyPostedInThread===true||payload.threadReplyNotRequired===true
-      ||opening.id.startsWith('thread-upkeep:'))return null;
-  }
+  if(serviceNoticeNeedsNoThreadReply(opening))return null;
   return inboxThreadRoot(session.id,openingInputId);
 }
 export function turnPostedInto(sessionId:number,turnId:number,root:string):boolean {

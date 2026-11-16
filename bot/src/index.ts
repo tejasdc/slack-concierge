@@ -10,7 +10,7 @@ import {createSessionPeerServices} from './session-peer-services';
 import { withRetry } from './retry';
 import { RETRY_POLICIES } from './retry-policies';
 import { SessionCommunicationCoordinator } from './session-communication';
-import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
+import { db, getTurnDependencies, recoverRoutedInputClaim, failUnacknowledgedClaudeParkedTurns } from "./state";
 import { prepareSavedWorkForClaims } from "./saved-work";
 import { createBankedUpkeep } from "./banked-upkeep";
 import toml from "@iarna/toml";
@@ -355,7 +355,7 @@ import { startMachineWatchWorker,wakeWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
-import {expireUnreadableReadingItems,fileServiceNotices,settleReadInboxAttention,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,retireRecoveredBookkeepingRequests,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
+import {expireUnreadableReadingItems,fileServiceNotices,settleReadInboxAttention,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,retireRecoveredBookkeepingRequests,rejoinThreadsSplitAtHandoff,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,scheduleSessionPurposeRepair,startDeferredStartupRepairs} from './startup-repairs';
 import {CodexSessionObserver} from './codex-session-observer';
@@ -566,6 +566,7 @@ catch(error) {log('error','session_purposes_fill_failed',errorFields(error));}
 // guarded by its own event and does nothing once it has run.
 try {runStartupStep('inbox_topics_migration',()=>migrateInboxTopics());} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
 try {runStartupStep('inbox_bookkeeping_repair',()=>retireRecoveredBookkeepingRequests());} catch(error) {log('error','inbox_bookkeeping_repair_failed',errorFields(error));}
+try {runStartupStep('inbox_handoff_split_rejoin',()=>rejoinThreadsSplitAtHandoff());} catch(error) {log('error','inbox_handoff_split_rejoin_failed',errorFields(error));}
 try {runStartupStep('forwarded_final_answers',()=>runStartupCatchUp('forwarded-final-answers',ownerEventMaxSequence,
   (afterSequence,throughSequence)=>reconcileForwardedFinalAnswers(undefined,{afterSequence,throughSequence}),20_000));}
 catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
@@ -4387,6 +4388,9 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         void runStartupPhase('provider_readiness', () => verifySharedCodexAppServerReady());
       },
       startQueue: () => {
+        // Turns parked because Claude never acknowledged their input fail now, so their requests return for a new owner.
+        try { const failed = failUnacknowledgedClaudeParkedTurns(); if (failed.length) log("warn", "unacknowledged_claude_parks_failed", { turn_ids: failed }); }
+        catch (error) { log("error", "unacknowledged_claude_park_repair_failed", errorFields(error)); }
         startSessionTurnQueue();
         sessionCommunication?.start();
         codexRemoteObserver?.start();
