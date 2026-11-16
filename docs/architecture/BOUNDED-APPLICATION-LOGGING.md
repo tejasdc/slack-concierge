@@ -39,3 +39,39 @@ outputs connected to paused UNIX stream socketpairs, then checks timer progress,
 memory, drop accounting, reserved error delivery, summary order, oversized records,
 closed streams and blocked exit.
 It does not use the disabled test suites or production state.
+
+## Mac launchd retention
+
+The same application sink runs on the Mac, but launchd writes its output to regular
+files rather than the server's retained journal. The sink's memory/backpressure bound
+does not bound those files. The existing fifteen-minute automatic update job now runs
+`scripts/mac-disk-maintenance.py` before deciding whether an update is due or work is
+busy. It rotates only the seven named Concierge launchd output files at 32 MiB,
+preserving the inode and append descriptors through copytruncate. No process restarts
+or macOS permission prompts are required.
+
+The first oversized generation is compressed in full as `<name>.0.gz` and retained as
+incident evidence (including the November 10–12 freeze diagnostics). Subsequent
+generations retain at most the newest 32 MiB, compressed under immutable numeric
+time identifiers; only the newest three ordinary generations are kept.
+Thus the ordinary retained history is at most 192 MiB uncompressed per file after a
+pass (three 32 MiB tails plus up to 32 MiB compression-time appends each), plus the
+separately counted, fixed first evidence generation. The active file
+continues growing between passes; this is periodic retention, not an instantaneous
+writer cap. Rotation snapshots have a fixed length and compression streams in 1 MiB
+chunks. Up to 32 MiB appended during compression is preserved in the same gzip archive;
+faster growth refuses truncation. Archive failures leave the source intact. Like
+standard copytruncate, a write between the final snapshot and truncation can be lost;
+these diagnostics are not the durable session or request record.
+
+Existing generations expire only after replacement compression, fsync and truncation
+succeed. A known failure before publication retries without aging history. A retained
+per-log rotation marker after publication holds further rotation and records one
+repair notice; the repair agent reconciles whether truncation happened before clearing
+that marker. Ambiguous publication never silently repeats or expires another archive.
+
+Archives remain in the same log directory and use numbered names so the existing
+log observer can follow file shrinkage. A generation lasts at least an updater
+interval, longer than the observer's five-minute interval. The exact limits, receipts,
+rollback and disposable acceptance are in
+[Mac disk maintenance](../runbooks/MAC-DISK-MAINTENANCE.md).

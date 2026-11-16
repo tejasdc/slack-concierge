@@ -835,6 +835,7 @@ db.exec(`
 `);
 
 addColumn("channels", "group_name", "group_name TEXT");
+addColumn("deployment_drain", "purpose", "purpose TEXT NOT NULL DEFAULT 'restart' CHECK(purpose IN ('restart','worktree-retirement'))");
 addColumn("channels", "name", "name TEXT");
 addColumn("channels", "additional_paths", "additional_paths TEXT DEFAULT '[]'");
 addColumn("channels", "provider_default", "provider_default TEXT NOT NULL DEFAULT 'codex'");
@@ -5823,7 +5824,10 @@ function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly nu
 }
 
 function currentClaimSurvivability() {
-  return db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get() ? survivableRunKinds() : null;
+  const gate=db.query("SELECT purpose FROM deployment_drain WHERE singleton=1").get() as {purpose:string}|null;
+  // Moving a finished checkout needs all new starts held briefly, including providers that
+  // survive an ordinary update. Existing restarts keep their survivable-provider admission.
+  return gate?.purpose==='worktree-retirement'?{providers:[]}:gate?survivableRunKinds():null;
 }
 
 export type ClaimableNotClaimedRow={turnId:number;sessionId:number;queuedAt:string};
