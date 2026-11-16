@@ -63,11 +63,31 @@ ledger event, and the Inbox page and its `history?after=` delta both include it,
 they share one query. It appears as an assistant message with `author.communication:
 "post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
 
-The canonical post operation is also available to an authenticated peer owner at
-`POST /session-communication/post`. It takes the exact accepted agent input and run, stable action
-ID, and Inbox message. It uses the same ledger, thread-root validation, attribution and idempotency
-as a local `sessions post`, without admitting a provider turn or creating a reply request. Peer
-access is limited to this post operation, not the rest of the local communication API.
+Lab publications use `POST /sessions/v1/inbox/posts`, a version-1 trusted-service command.
+Network run/runner principals are refused; the root-only service socket and authenticated peer
+listener carry it. Fields are `version:1`, `source:{input_id,run_id}`, `action_id`, `sourceOwner`,
+`destinationOwner`, `targetSessionId`, `thread`, and `text`. Unknown fields are refused.
+Thinkering derives both owners from configured federation and the verified source session,
+and hashes the existing Lab key to the canonical action alphabet.
+
+The destination requires its own machine identity and atomically checks the exact current Inbox
+and message-to-thread binding beside the post. A local source uses canonical `sessions post`.
+A foreign source is proved by a direct authenticated call to its configured peer's
+`POST /sessions/v1/peers/inbox-post-source`, carrying the entire immutable publication.
+That owner validates live exact input/run admission and the handoff fence before retaining
+the new intent in its existing action journal. Identical intent reads remain valid after the run
+ends; different text, run, destination or thread conflicts. No caller-supplied actor is trusted.
+The receiver retains proof and foreign author metadata beside one post event; both live and
+prepared Inbox histories show the source pair and peer author. There is no executable input,
+provider turn, request, attention duty or return obligation.
+
+Existing protected owner receipts and peer-client durability barriers remain in force; no network
+wait occurs inside a transaction. After a lost response, the exact retained post returns before
+contacting the peer; concurrent identical deliveries converge inside the transaction. There is no
+new queue, timer or service. An unavailable/older peer leaves filing unconfirmed and the Lab record
+intact; retry the same publication, never a replacement or human-input route. Install owner support
+on source and destination before the corrected Thinkering caller. Generic communication routes
+remain private to their existing entrances.
 
 ### Direct messages to the Inbox router
 

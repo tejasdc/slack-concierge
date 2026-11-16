@@ -4546,7 +4546,13 @@ export class SessionOwner {
       }
       let result:unknown;
       const answerHeaders:Record<string,string>={};
-      if(request.method==='GET'&&parts[0]==='events'&&parts[1]==='stream'&&parts.length===2){
+      if(request.method==='POST'&&this.communication&&((parts[0]==='inbox'&&parts[1]==='posts')||(parts[0]==='peers'&&parts[1]==='inbox-post-source'))&&parts.length===2){
+        // The private service socket and authenticated peer listener may carry Lab publication.
+        // A run/runner token cannot choose another actor by supplying source IDs.
+        if(request.headers.has('x-concierge-agent-principal'))throw new SessionOwnerError('Inbox publication requires a trusted service or peer.',403,'SERVICE_ONLY');
+        result=parts[0]==='inbox'?await this.communication.publishInbox(body):this.communication.publicationSource(body);
+      }
+      else if(request.method==='GET'&&parts[0]==='events'&&parts[1]==='stream'&&parts.length===2){
         if(this.streamsClosed)throw new SessionOwnerError('The session owner is restarting.',503,'OWNER_DRAINING');
         return this.stream(request,url);
       }

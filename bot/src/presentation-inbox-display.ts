@@ -102,6 +102,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
       ...(displayedRoot!==row.event_id?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:displayedRoot}}:{})}:{}),
     ...(result&&typeof payload.messageThreadRootId==='string'&&row.input_id?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:row.input_id}}:{}),
     ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message',sessionId:`concierge:${sessionId}`,messageId:displayedRoot}:event.replyToMessage,author:{kind:event.postedBy==='service'?'service':'agent',communication:'post',
+      ...(event.postSource??{}),
       ...(typeof event.requestId==='string'?{requestId:event.requestId}:{}),
       ...(typeof event.postedBySession==='string'?{fromSession:event.postedBySession}:{})},...(event.relayed?{relayed:true}:{})}:{}),
     ...(link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:link.thread},routedBy:link.routedBy}:{}),

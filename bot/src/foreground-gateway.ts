@@ -105,7 +105,7 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
         if(presented.length!==expected.length||!timingSafeEqual(presented,expected))
           return Response.json({error:{code:'PEER_UNAUTHORIZED',message:'A valid peer token is required.'}},{status:401});
         const path=new URL(request.url).pathname;
-        if(path!=='/sessions/v1'&&!path.startsWith('/sessions/v1/')&&!(request.method==='POST'&&path==='/session-communication/post'))
+        if(path!=='/sessions/v1'&&!path.startsWith('/sessions/v1/'))
           return Response.json({error:{code:'NOT_FOUND',message:'Only the session owner API is served to peers.'}},{status:404});
         config.onContact?.();
         return route(request,true);

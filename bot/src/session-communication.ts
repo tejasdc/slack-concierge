@@ -7,7 +7,7 @@ import {implementationEditDecision,recordImplementationEditReason} from './imple
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, codexUnacknowledgedRecovery, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, stablePayload, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -20,6 +20,7 @@ import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
 import {turnRoutedInput} from './inbox-routing-result';
 import {acceptedInputAuthor,sessionAuthor} from './session-message-author';
+import {inboxPublication,postPromisesAnswer,type PublicationProof} from './inbox-publication';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import {ProviderCapabilityUnavailableError} from './provider-policy';
@@ -1146,7 +1147,7 @@ export class SessionCommunicationCoordinator {
      * accepted there and then never seen, and it would sit inside the window a history
      * delta fingerprints.
      */
-    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;topic?:string;promise_request?:string;keep_working?:boolean;notify?:boolean;attachments?:string[];files?:AttachedFile[]}) {
+    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;targetSessionId?:string;topic?:string;promise_request?:string;keep_working?:boolean;notify?:boolean;attachments?:string[];files?:AttachedFile[]}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.fenced(this.actor(input.source));action(input.action_id);
         const carried=files(input.files);
@@ -1161,13 +1162,15 @@ export class SessionCommunicationCoordinator {
             // ledger-backed history [decision: agents-are-never-handcuffed].
             const own=getSessionById(actor.session)!,session=sessionMetadata(own).inbox?own:inboxSession();
             if(!session)throw new Error('No Inbox session exists yet.');
+            if(input.targetSessionId!==undefined&&input.targetSessionId!==`concierge:${session.id}`)
+                throw new Error('The Inbox destination changed; nothing was posted.');
             const router=session.id===own.id;
             // The owner, not the caller, decides which thread this belongs to. A reply to any
             // message in a thread carries that thread's root forward.
             const rootInputId=inboxThreadRoot(session.id,input.thread);
             if(!rootInputId)throw new Error('That --thread is not a message in this Inbox.');
             const topicId=topicOfRoot(rootInputId);
-            const promisesAnswer=/\b(?:i(?:'|’)ll|we(?:'|’)ll|will\b(?!\s+(?:not|never)\b)|going to)\b[^.!?\n]{0,100}\b(?:answer|reply|respond)\b|\banswers? here\b|\bwill be answered\b/i.test(text);
+            const promisesAnswer=postPromisesAnswer(text);
             // A named topic must be the one the thread is in; a post cannot be filed under another.
             if(input.topic){const placed=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(rootInputId) as {topic_id:string}|null;
                 if(placed&&placed.topic_id!==input.topic)throw new Error(`That message is in thread ${placed.topic_id}, not ${input.topic}. Nothing was posted.`);}
@@ -1182,7 +1185,7 @@ export class SessionCommunicationCoordinator {
                 ?this.retainAttachments(sourceInputId,input.action_id,'post-file',input)
                 :[];
             const saved=retainSessionInput({sessionId:own.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,
-                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,
+                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,...(input.targetSessionId?{targetSessionId:input.targetSessionId}:{}),
                     ...(input.topic?{topic:input.topic}:{}),...(input.promise_request?{promiseRequest:input.promise_request}:{}),
                     ...(input.keep_working?{keepWorking:true}:{}),...(input.notify?{notify:true}:{}),...(attachments.length?{attachments}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             const messageId=`post:${saved.input.id}`;
@@ -1193,13 +1196,78 @@ export class SessionCommunicationCoordinator {
                 &&!hasOpenInboxWorkForSource(topicId,sourceInputId,input.promise_request))
                 throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open topic request with --promise-request. Nothing was posted.');
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
-                payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),...(attachments.length?{attachments}:{})}});
+                payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),postSource:{inputId:sourceInputId,runId:nativeRunId(actor.turn)},...(attachments.length?{attachments}:{})}});
             if(input.notify)notifyAgentPost(session.id,rootInputId,messageId,text,true,nativeRunId(actor.turn));
             // Post and release: a deliberate reply ends the router's declared work on the
             // inputs it covers, unless it said it keeps working.
             const topic=input.keep_working||!router?null:releaseFocusForPost(session,rootInputId,input.topic??null);
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',post:receipt}),saved.input.id);
             return {post:{...receipt,...(topic?{topicId:topic.topicId}:{})},duplicate:false};
+        })();
+    }
+    /** The source owner retains the whole send intent, never just a caller's actor number.
+     * Its immutable receipt can be read after the run ends; new text still needs a live run. */
+    publicationSource(value:unknown):PublicationProof {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const input=inboxPublication(value),self=this.dependencies.peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';
+        if(input.sourceOwner!==self)throw new Error('This instance does not own that publication source.');
+        const scope=`inbox-publication-source:${input.source.input_id}`;
+        const prior=db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,input.action_id) as AcceptedSessionInput|null;
+        if(prior){
+            const retained=JSON.parse(prior.payload_json);
+            if(stablePayload(retained.publication)!==stablePayload(input))throw new Error('Idempotency conflict: publication changed.');
+            return retained.proof;
+        }
+        const actor=this.fenced(this.actor(input.source));
+        const author=sessionAuthor(`concierge:${actor.session}`);
+        if(!author)throw new Error('The publication author is unavailable.');
+        return db.transaction(()=>{
+            this.fenced(this.actor(input.source));
+            const proof:PublicationProof={version:1,source:input.source,sourceOwner:self,session:author};
+            const saved=retainSessionInput({sessionId:actor.session,scope,actionId:input.action_id,kind:'action',origin:'agent',
+                payload:{kind:'inbox-publication-source',publication:input,proof},sourceInputId:actor.inputId!,sourceRunId:input.source.run_id});
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',publication:proof}),saved.input.id);
+            return proof;
+        })();
+    }
+    /** A trusted Lab service posts to an explicit Inbox; foreign source proof comes from
+     * the configured peer itself. It never admits an input, turn, request, or reply duty. */
+    async publishInbox(value:unknown) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const input=inboxPublication(value),peers=this.dependencies.peers,self=peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';
+        if(input.destinationOwner!==self)throw new Error('This instance does not own that Inbox destination.');
+        if(input.sourceOwner===self)return this.post({...input});
+        if(!peers)throw new Error('The publication source owner is unavailable.');
+        const scope=`inbox-publication:${input.sourceOwner}:${input.source.input_id}`;
+        const existing=()=>db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,input.action_id) as AcceptedSessionInput|null;
+        const duplicate=(prior:AcceptedSessionInput)=>{
+            if(stablePayload(JSON.parse(prior.payload_json).publication)!==stablePayload(input))throw new Error('Idempotency conflict: publication changed.');
+            return {post:JSON.parse(prior.receipt_json!).post,duplicate:true};
+        };
+        const prior=existing();if(prior)return duplicate(prior);
+        const proof=await peers.client(input.sourceOwner).request<ReturnType<SessionCommunicationCoordinator['publicationSource']>>(
+            'POST','/sessions/v1/peers/inbox-post-source',input);
+        if(proof?.version!==1||proof.sourceOwner!==input.sourceOwner||proof.source?.input_id!==input.source.input_id
+            ||proof.source.run_id!==input.source.run_id||!/^concierge:[1-9][0-9]*$/.test(proof.session?.id??''))
+            throw new Error('The source owner did not prove this exact publication.');
+        return db.transaction(()=>{
+            const raced=existing();if(raced)return duplicate(raced);
+            const session=inboxSession();
+            if(!session||input.targetSessionId!==`concierge:${session.id}`)throw new Error('The Inbox destination changed; nothing was posted.');
+            const root=inboxThreadRoot(session.id,input.thread);
+            if(!root)throw new Error('That --thread is not a message in this Inbox.');
+            const topicId=topicOfRoot(root);
+            if(postPromisesAnswer(input.text)&&(!topicId||!hasOpenInboxWorkForSource(topicId,input.source.input_id)))
+                throw new Error('This post promises an answer without a matching open Inbox request. Nothing was posted.');
+            const author={...proof.session,id:`${input.sourceOwner}:${proof.session.id.slice('concierge:'.length)}`};
+            const saved=retainSessionInput({sessionId:session.id,scope,actionId:input.action_id,kind:'action',origin:'agent',
+                payload:{kind:'inbox-publication',publication:input,proof:{...proof,session:author}}});
+            const messageId=`post:${saved.input.id}`,receipt={messageId,thread:input.thread,inputId:root};
+            recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:root,kind:'post',payload:{text:input.text,
+                replyToMessage:{kind:'message',sessionId:input.targetSessionId,messageId:input.thread},postedBy:saved.input.id,postedBySession:author.id,
+                postSource:{session:author,inputId:input.source.input_id,runId:input.source.run_id}}});
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',post:receipt}),saved.input.id);
+            return {post:receipt,duplicate:false};
         })();
     }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
