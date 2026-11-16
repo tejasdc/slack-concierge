@@ -9,8 +9,8 @@
  * every event-stream page). The TypeScript compiler reports exactly that class as TS2304 and
  * TS2552; the rest of its diagnostics stay advisory until the whole codebase typechecks.
  *
- * The entry points are read from the `bun build` step of the package build script so this
- * check and the bundler never disagree about what ships.
+ * Application entry points come from the package build; controller entry points come from
+ * the sealed artifact declaration. Both kinds ship and must reject unresolved identifiers.
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -21,8 +21,12 @@ const build = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).scrip
 if (typeof build !== 'string') throw new Error('package.json has no build script to read bundle entry points from.');
 const bundleStep = build.split('&&').map((step) => step.trim()).find((step) => step.startsWith('bun build '));
 if (!bundleStep) throw new Error('The build script has no `bun build` step to read bundle entry points from.');
-const entries = bundleStep.split(/\s+/).filter((part) => part.startsWith('src/') && part.endsWith('.ts'));
-if (!entries.length) throw new Error('The `bun build` step names no src/*.ts entry points.');
+const applicationEntries = bundleStep.split(/\s+/).filter((part) => part.startsWith('src/') && part.endsWith('.ts'));
+if (!applicationEntries.length) throw new Error('The `bun build` step names no src/*.ts entry points.');
+const declaration = JSON.parse(readFileSync(join(root,'src/deployment-artifact-files.json'),'utf8'));
+const controlEntries = Object.values(declaration.controlBundles as Record<string,string>)
+  .filter(path=>path.endsWith('.ts')).map(path=>path.startsWith('bot/')?path.slice(4):join('..',path));
+const entries = [...new Set([...applicationEntries,...controlEntries])];
 
 const tsc = join(root, 'node_modules', '.bin', 'tsc');
 if (!existsSync(tsc)) throw new Error(`${tsc} is missing; run bun install --frozen-lockfile first.`);

@@ -350,6 +350,32 @@ const peerRequestStatus=(value:unknown,expected:{requestId:string;sessionId?:str
     return {status:null,reason:'answer_guarantee_evidence_incomplete'};
   return {status:value as PeerRequestStatus,reason:null};
 };
+/** Only an exact status read from the authenticated recipient establishes changed custody.
+ * `former` lists the sessions that held the request before the current one, in committed handoff
+ * order: the only authors, besides the current holder, whose already retained events are valid. */
+function currentPeerRecipient(row:PeerRequestRow){
+  const original={sessionId:row.remote_session_id,address:row.remote_address,inputId:row.remote_operation_id,custodyPlacement:false,former:[] as string[]};
+  const remote=JSON.parse(row.remote_status_json??'{}'),placement=remote.custodyPlacement;
+  if(remote.requestId!==row.request_id||placement?.version!==1||placement.placementTurnId!==remote.execution?.turnId
+    ||placement.placementInputId!==remote.operationId||!Array.isArray(placement.transfers)||!placement.transfers.length)return original;
+  let sessionId=original.sessionId,inputId=original.inputId;
+  const former:string[]=[];
+  for(const transfer of placement.transfers){
+    if(transfer.requestId!==row.request_id||transfer.fromSessionId!==sessionId||transfer.fromInputId!==inputId
+      ||typeof transfer.handoffId!=='string'||!transfer.handoffId||typeof transfer.toSessionId!=='string'||!/^concierge:[1-9][0-9]*$/.test(transfer.toSessionId)
+      ||typeof transfer.toInputId!=='string'||!transfer.toInputId)return original;
+    former.push(sessionId);sessionId=transfer.toSessionId;inputId=transfer.toInputId;
+  }
+  return sessionId===remote.sessionId&&inputId===remote.operationId&&typeof remote.address==='string'&&remote.address.startsWith('session:')
+    ?{sessionId,address:remote.address,inputId,custodyPlacement:true,former}:original;
+}
+/** The recipient a status read must come from: the accepted one, or the current holder when the
+ * status itself carries a valid committed custody chain from it. */
+const peerStatusRecipient=(row:PeerRequestRow,status:unknown)=>{
+  if(!record(status))return {sessionId:row.remote_session_id,address:row.remote_address};
+  const recipient=currentPeerRecipient({...row,remote_status_json:JSON.stringify(status)});
+  return {sessionId:recipient.sessionId,address:recipient.address};
+};
 type Dependencies={self:string;clients:Map<string,PeerClient>;owner:SessionOwner;now?:()=>number;onError:(error:unknown)=>void;isOwnerAlive:(owner:string)=>boolean;onWake?:()=>void;hasPendingOperations?:()=>boolean};
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const object=(value:unknown):Record<string,any>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new SessionOwnerError('A JSON object is required.');return value as Record<string,any>;};
@@ -924,13 +950,15 @@ export class SessionPeers {
       if(!operation)throw new Error('The saved context operation is missing.');
       return {operation:this.dependencies.owner.receipt(operation)};
     }
+    const recipient=currentPeerRecipient(row);
     const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
-    const remoteCheck=remote?peerRequestStatus(remote,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address,requestedEffect:JSON.parse(row.payload_json).requestedEffect}):null;
+    const remoteCheck=remote?peerRequestStatus(remote,{requestId:row.request_id,...peerStatusRecipient(row,remote),requestedEffect:JSON.parse(row.payload_json).requestedEffect}):null;
     const execution=remote?.execution;
     const queued=row.status==='queued_offline';
     return {request_id:row.request_id,status:row.status,outcome:row.outcome,peer:row.peer,source_session_id:`concierge:${row.source_session_id}`,
       availability:queued?{...this.availability(row.peer),note:`This ask is retained here for dispatch to ${row.peer}; no peer receipt is confirmed yet.`}:this.availability(row.peer),
-      target_address:row.remote_address?this.presentedAddress(row.peer,row.remote_address):null,target:row.remote_session_id?this.cachedView(row.peer,row.remote_session_id):null,target_session_id:row.remote_session_id?this.presentedSession(row.peer,row.remote_session_id):null,target_input_id:row.remote_operation_id,
+      target_address:recipient.address?this.presentedAddress(row.peer,recipient.address):null,target:recipient.sessionId?this.cachedView(row.peer,recipient.sessionId):null,target_session_id:recipient.sessionId?this.presentedSession(row.peer,recipient.sessionId):null,target_input_id:recipient.inputId,
+      accepted_recipient:{session_id:row.remote_session_id,address:row.remote_address,input_id:row.remote_operation_id},
       operation_id:(db.query("SELECT id FROM session_inputs WHERE request_id=? AND kind='request' ORDER BY rowid LIMIT 1").get(row.request_id) as {id:string}|null)?.id??null,
       routed_request_id:null,target_turn_id:null,due_at_ms:row.due_at_ms,overdue_at_ms:row.overdue_at_ms,result:row.result_json?JSON.parse(row.result_json):null,
       remote:remote?{inputState:remote.inputState,inputError:remote.inputError??null,stillWorking:remote.stillWorking,observedAt:remote.observedAt,
@@ -1066,7 +1094,7 @@ export class SessionPeers {
     }
     db.transaction(()=>{
       if(this.row(row.request_id).outcome)return;
-      const payload={outcome,text,output,responding_session_id:this.presentedSession(row.peer,row.remote_session_id),...(disposition?{workDisposition:disposition}:{})};
+      const payload={outcome,text,output,responding_session_id:this.presentedSession(row.peer,currentPeerRecipient(row).sessionId),...(disposition?{workDisposition:disposition}:{})};
       const final=this.currentFinal(row.request_id);
       if(final){
         const declared=JSON.parse(final.payload_json);
@@ -1095,19 +1123,38 @@ export class SessionPeers {
     return {outcome:this.row(requestId).outcome,eventId:input.eventId,...recorded};
   }
   /** Whether this instance now holds the reply: recorded, already held, or refused with the reason. */
-  private recordReply(row:PeerRequestRow,input:Record<string,any>):{recorded:'recorded'|'duplicate'|'refused';reason?:string} {
+  private recordReply(row:PeerRequestRow,input:Record<string,any>):{recorded:'recorded'|'duplicate'|'refused'|'pending';reason?:string} {
     const requestId=row.request_id;
+    const recipient=currentPeerRecipient(row);
+    // The author of a retained event is not the request's current holder. An earlier holder's
+    // event is valid only when the committed handoff chain names that holder and the current
+    // holder's authenticated status lists this exact event as authored by it; that status read is
+    // what attests the event was retained, so custody never grants a former holder a new reply.
+    let author=recipient.sessionId;
+    const asserted=input.responder?.sessionId;
+    if(!row.outcome&&typeof asserted==='string'&&asserted!==recipient.sessionId){
+      const remoteReplies=JSON.parse(row.remote_status_json??'{}').replies;
+      const retainedBeforeTransfer=recipient.former.includes(asserted)&&Array.isArray(remoteReplies)
+        &&remoteReplies.some((reply:any)=>reply?.eventId===input.eventId&&reply.kind===input.kind&&reply.responderSessionId===asserted);
+      if(!retainedBeforeTransfer){
+        // A successor's first push is not authority to change custody. Keep the event at
+        // its sender until an authenticated exact-request status read confirms the handoff.
+        this.schedule(`ask:${requestId}`,()=>this.dispatch(this.row(requestId)));
+        return {recorded:'pending',reason:'The current recipient needs exact custody reconciliation.'};
+      }
+      author=asserted;
+    }
     if(input.turnOutcome==='needs_you'){
       if(typeof input.eventId!=='string'||!input.eventId.startsWith('turn_outcome:action:')||input.kind!=='progress'
         ||typeof input.text!=='string'||!input.text.trim()||input.files!==undefined
-        ||input.responder?.sessionId!==row.remote_session_id||typeof input.responder?.runId!=='string'||!input.responder.runId
+        ||input.responder?.sessionId!==recipient.sessionId||typeof input.responder?.runId!=='string'||!input.responder.runId
         ||typeof input.responder?.inputId!=='string'||!input.responder.inputId)
         throw new SessionOwnerError('A peer turn question needs its exact outcome, session, input and run.');
       return db.transaction(()=>{
         if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(input.eventId))return {recorded:'duplicate' as const};
         this.event(row,'progress',{text:input.text.trim().slice(0,2000),turnOutcome:'needs_you',
           source:{peer:row.peer,input_id:input.responder.inputId,run_id:input.responder.runId},
-          responding_session_id:this.presentedSession(row.peer,row.remote_session_id)},input.eventId);
+          responding_session_id:this.presentedSession(row.peer,recipient.sessionId)},input.eventId);
         return {recorded:'recorded' as const};
       })();
     }
@@ -1122,14 +1169,14 @@ export class SessionPeers {
       const proof=input.settlementProof;
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
       const preUpgradeReceipt=!remote?.originStatusReadFailure&&remote?.answerGuaranteeVersion===1&&remote.acceptedAnswerGuaranteeVersion===null
-        &&remote.answerTaskReady===true&&remote.requestId===requestId&&remote.sessionId===row.remote_session_id;
+        &&remote.answerTaskReady===true&&remote.requestId===requestId&&remote.sessionId===recipient.sessionId;
       const citedOpen=Array.isArray(proof?.openObligationIds)&&proof.openObligationIds.length>0
         &&proof.openObligationIds.every((id:unknown)=>typeof id==='string'&&id.length>0)
         &&new Set(proof.openObligationIds).size===proof.openObligationIds.length
         &&proof.unresolvedObligations===proof.openObligationIds.length
         &&(disposition==='failed'||disposition==='needs_decision');
       if(!preUpgradeReceipt&&(proof?.version!==1||proof.requestId!==requestId||proof.recipientPeer!==row.peer
-        ||proof.targetSessionId!==row.remote_session_id||!(proof.unresolvedObligations===0||citedOpen)))
+        ||proof.targetSessionId!==author||input.responder?.sessionId!==author||!(proof.unresolvedObligations===0||citedOpen)))
         return {recorded:'refused',reason:'The peer final did not prove its exact task has no unresolved ChatGPT answers.'};
     }
     const requestPayload=JSON.parse(row.payload_json);
@@ -1176,7 +1223,7 @@ export class SessionPeers {
       const attachments=((input.files??[]) as {name:string;contentType:string;base64:string}[])
         .map((file,index)=>this.dependencies.owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,
           clientActionId:`peer-reply-file:${requestId}:${input.eventId}:${index}`}).attachment.id);
-      const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
+      const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,author),
         ...(final?{settlementProof:input.settlementProof}:{}),
         ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
         ...(input.answersQuestion?{answersQuestion:true}:{}),...(answerMarkDropped?{answerMarkDropped:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
@@ -1209,7 +1256,9 @@ export class SessionPeers {
    * the peer stays in `unrecovered` and the whole reply is fetched on a later attempt.
    */
   private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
-    const responder={peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
+    // A retained event keeps its author; only an older peer's status lacks it, and that peer
+    // cannot have transferred custody, so its author is the current recipient.
+    const responder={peer:row.peer,sessionId:typeof reply.responderSessionId==='string'?reply.responderSessionId:currentPeerRecipient(row).sessionId,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
     if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,turnOutcome:reply.turnOutcome,replyBody:reply.replyBody,closingLine:reply.closingLine,answerGroup:reply.answerGroup,answersQuestion:reply.answersQuestion??undefined,notify:reply.notify===true,alsoMainThread:reply.alsoMainThread===true,workDisposition:reply.workDisposition??undefined,settlementProof:reply.settlementProof,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,handBack:reply.handBack??undefined,quiet:reply.quiet??undefined,responder});
     let whole:any;
     try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal);}
@@ -1288,7 +1337,7 @@ export class SessionPeers {
         const raw=await client.request<unknown>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`,undefined,OWNER_READ_RESPONSE_MS,true,this.peerReadController.signal,true);
         if(this.stopped)return;
         row=this.row(row.request_id);if(row.outcome)return;
-        const checked=peerRequestStatus(raw,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
+        const checked=peerRequestStatus(raw,{requestId:row.request_id,...peerStatusRecipient(row,raw),requestedEffect:JSON.parse(row.payload_json).requestedEffect});
         if(!checked.status){this.recordStatusReadFailure(row,checked.reason??'status_invalid');return;}
         const remote=checked.status;
         if(remote.answerGuaranteeVersion!==1){
@@ -1483,7 +1532,7 @@ export class SessionPeers {
     }
     if(this.stopped)return;
     row=this.row(row.request_id);if(row.outcome)return;
-    const checked=peerRequestStatus(remote,{requestId:row.request_id,sessionId:row.remote_session_id,address:row.remote_address,requestedEffect:JSON.parse(row.payload_json).requestedEffect});
+    const checked=peerRequestStatus(remote,{requestId:row.request_id,...peerStatusRecipient(row,remote),requestedEffect:JSON.parse(row.payload_json).requestedEffect});
     if(!checked.status){this.recordStatusReadFailure(row,checked.reason??'status_invalid');return;}
     remote={...checked.status,observedAt:new Date(this.now()).toISOString()};
     const priorRemote=row.remote_status_json?JSON.parse(row.remote_status_json):{};
@@ -1509,8 +1558,10 @@ export class SessionPeers {
     db.query(`UPDATE session_peer_requests SET remote_status_json=?1,status=?2 WHERE request_id=?3 AND outcome IS NULL
       AND (status IS NOT ?2 OR remote_status_json IS NULL OR json_remove(remote_status_json,'$.observedAt') IS NOT json_remove(?1,'$.observedAt'))`)
       .run(JSON.stringify(remote),remote.execution?'admitted':remote.inputState==='failed'?'failed':'recorded',row.request_id);
+    row=this.row(row.request_id);
+    const recipient=currentPeerRecipient(row),custodyPlacement=recipient.custodyPlacement;
     // His thread reply on a Mac agent says what that agent is doing with it, as a server agent's does.
-    if(JSON.parse(row.payload_json).forwardedReply)followForwardedReply(row.source_input_id,{sessionId:this.presentedSession(row.peer,row.remote_session_id),requestId:row.request_id},
+    if(JSON.parse(row.payload_json).forwardedReply)followForwardedReply(row.source_input_id,{sessionId:this.presentedSession(row.peer,recipient.sessionId),requestId:row.request_id},
       {working:!!remote.execution?.acknowledged||['running','delivering'].includes(remote.execution?.status??''),hold:remote.hold??null});
     // A reply the peer retained but could not push yet lands here by the same event ID, so
     // push and pull never produce two records for one reply.
@@ -1532,8 +1583,15 @@ export class SessionPeers {
     if(row.outcome)return;
     const effect=JSON.parse(row.payload_json).requestedEffect;
     const execution=remote.execution;
-    const output=execution?{turn_id:execution.turnId,session_id:this.presentedSession(row.peer,row.remote_session_id),run_id:execution.runId,input_id:row.remote_operation_id,sha256:execution.sha256??null,
+    const output=execution?{turn_id:execution.turnId,session_id:this.presentedSession(row.peer,recipient.sessionId),run_id:execution.runId,input_id:recipient.inputId,sha256:execution.sha256??null,
       ...(execution.text?{text:execution.text}:{}),...(execution.error?{error:execution.error}:{})}:null;
+    // An authenticated transfer with incomplete provenance remains unconfirmed; it
+    // neither changes the recipient nor licenses inference from its selected attempt.
+    if(remote.custodyPlacement&&!custodyPlacement)return;
+    // The selected recovery attempt carries independent duties; its terminal outcome
+    // describes that attempt alone. Explicit replies above and requester cancellation
+    // still settle their exact request through their existing paths.
+    if(custodyPlacement&&(remote.inputState==='failed'||execution?.settled))return;
     // A run that started and then failed is not a request the peer could not receive: say what
     // stopped it. Two Mac runs of over an hour were reported as "could not receive" (2026-09-30).
     if(remote.inputState==='failed'){this.settle(row,'failed',remote.inputError?.message??(typeof remote.inputError==='string'?remote.inputError:null)
@@ -1546,7 +1604,7 @@ export class SessionPeers {
         if(current.outcome||current.stalled_at_ms!==null)return;
         const partial=db.query("SELECT payload_json FROM session_peer_events WHERE request_id=? AND kind='progress' ORDER BY rowid DESC LIMIT 1").get(row.request_id) as {payload_json:string}|null;
         this.event(row,'overdue',{text:stalledNotice(remote.stalled.reason,partial?JSON.parse(partial.payload_json).text:null),stalled:true,
-          reason:remote.stalled.reason,noticeGroup:`stalled:${row.peer}:${row.remote_session_id}:${remote.execution?.turnId??remote.stalled.atMs}`});
+          reason:remote.stalled.reason,noticeGroup:`stalled:${row.peer}:${recipient.sessionId}:${remote.execution?.turnId??remote.stalled.atMs}`});
         db.query('UPDATE session_peer_requests SET stalled_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
       })();
       log('warn','session_peer_request_stalled',{request_id:row.request_id,peer:row.peer,reason:remote.stalled.reason});
@@ -1576,6 +1634,7 @@ export class SessionPeers {
   private async deliver(event:PeerEventRow) {
     if(this.stopped)return;
     const row=this.row(event.request_id);
+    const recipient=currentPeerRecipient(row);
     const declared=JSON.parse(event.payload_json);
     if(declared.turnOutcome==='needs_you'){
       filePeerWorkerNeedInThread({requestId:row.request_id,inboxSessionId:row.source_session_id,
@@ -1652,7 +1711,7 @@ export class SessionPeers {
     recoverUnsentSteeredInput(`return:${event.event_id}`);
     const existing=getAcceptedSessionInput(`return:${event.event_id}`);
     const accepted=existing?this.dependencies.owner.dispatch(existing):this.dependencies.owner.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',...(event.kind==='overdue'?{threadReplyNotRequired:true}:{}),sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
-      text:answerNotice({responder:(()=>{const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
+      text:answerNotice({responder:(()=>{const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,recipient.sessionId) as {view_json:string}|null;
           const title=catalogue?JSON.parse(catalogue.view_json)?.title:null;return title?`“${title}” on the ${row.peer}`:`the session on the ${row.peer}`;})(),
         labels:[row,...group.joining.map(joined=>this.row(joined.request_id))].map(item=>requestLabel(item.payload_json)),kind:event.kind,stalled:!!declared.stalled,
         body:String(payload.text??''),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
@@ -1662,7 +1721,7 @@ export class SessionPeers {
       ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{}),
       ...(directPost?{alreadyPostedInThread:true}:{})});
     if(event.kind==='final'&&payload.workDisposition==='needs_decision'&&!sessionMetadata(source).inbox){
-      const author=sessionAuthor(receiveSessionFromPeer(row.remote_session_id,row.peer,this.self));
+      const author=sessionAuthor(receiveSessionFromPeer(recipient.sessionId,row.peer,this.self));
       recordRequesterDecisionReturn({sessionId:source.id,returnInputId:accepted.id,requestId:row.request_id,
         question:String(payload.text??''),agentName:author?.agentName,taskTitle:author?.title});
     }
@@ -1692,6 +1751,7 @@ export class SessionPeers {
   }
   private postThreadEvent(row:PeerRequestRow,event:PeerEventRow,declared:any):boolean {
     if(event.kind==='overdue')return false;
+    const recipient=currentPeerRecipient(row);
     // A named thread receives the peer's own reply; requester delivery needs its own choice.
     const requestPayload=JSON.parse(row.payload_json);
     const forwarded=requestPayload.forwardedReply;
@@ -1704,10 +1764,10 @@ export class SessionPeers {
     const threadReply=(forwarded&&typeof forwarded.inboxInputId==='string')||routed;
     const directPost=threadReply&&declared.output?.stoppedBy!=='tejas';
     if(directPost){
-      const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
+      const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,recipient.sessionId) as {view_json:string}|null;
       const root=answerRoot??row.source_input_id;
       postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,
-        inboxInputId:routed?requestPayload.routedFrom?.messageId??root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),
+        inboxInputId:routed?requestPayload.routedFrom?.messageId??root:forwarded.inboxInputId,respondingSessionId:this.presentedSession(row.peer,recipient.sessionId),
         respondingTitle:catalogue?JSON.parse(catalogue.view_json)?.title??null:null,text:String(declared.replyBody??declared.text??''),todoId:typeof declared.todoId==='string'?declared.todoId:null,
         attachments:Array.isArray(declared.attachments)?declared.attachments as string[]:[],
         stalled:event.kind==='overdue'||!!declared.stalled||(!declared.source&&declared.outcome!=='answered'),final:event.kind==='final',
@@ -1725,10 +1785,10 @@ export class SessionPeers {
     if(declared.output?.stoppedBy==='tejas'&&typeof declared.output.stoppedAtMs==='number'){
       const root=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,row.request_id,row.thread_root_input_id??requestPayload.routedFrom?.root??(forwarded?row.source_input_id:null));
       if(root&&inbox&&sessionMetadata(inbox).inbox&&topicOfRoot(root)){
-        const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
+        const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,recipient.sessionId) as {view_json:string}|null;
         const title=catalogue?JSON.parse(catalogue.view_json)?.title??null:null;
         postAgentAnswer({inboxSessionId:row.source_session_id,eventId:event.event_id,requestId:row.request_id,root,inboxInputId:forwarded?.inboxInputId??requestPayload.routedFrom?.messageId??root,
-          respondingSessionId:this.presentedSession(row.peer,row.remote_session_id),respondingTitle:title,
+          respondingSessionId:this.presentedSession(row.peer,recipient.sessionId),respondingTitle:title,
           text:`You stopped ${title?`“${title}”`:'this agent'} on ${row.peer} at ${noticeTime(db,declared.output.stoppedAtMs)}; its work on this ended there.`,
           attachments:[],stalled:true,final:true,workDisposition:null,hisInputId:null,quiet:'Stopped by Tejas',
           messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null});
@@ -1772,6 +1832,7 @@ export class SessionPeers {
   }
   private inspectOverdueRequest(row:PeerRequestRow) {
     const now=this.now();
+    const recipient=currentPeerRecipient(row);
       if(JSON.parse(row.payload_json).promptAnswer&&row.prompt_answered_at_ms===null){
         const human=getAcceptedSessionInput(row.source_input_id)?.origin==='human';
         db.transaction(()=>{
@@ -1783,7 +1844,7 @@ export class SessionPeers {
           } else {
             const remote=JSON.parse(current.remote_status_json??'{}');
             this.event(current,'overdue',{text:`No answer to this ${human?'question':'marked test question'} arrived within three minutes. The agent has been reminded if its machine is awake. The request remains open, and its answer will still appear here when it arrives.`,promptAnswerOverdue:true,
-              noticeGroup:`prompt-overdue:${current.peer}:${current.remote_session_id}:${remote.execution?.turnId??current.remote_operation_id}`});
+              noticeGroup:`prompt-overdue:${current.peer}:${currentPeerRecipient(current).sessionId}:${remote.execution?.turnId??currentPeerRecipient(current).inputId}`});
             db.query('UPDATE session_peer_requests SET overdue_at_ms=? WHERE request_id=?').run(now,current.request_id);
           }
         })();
@@ -1806,7 +1867,7 @@ export class SessionPeers {
         return;
       }
       const health=remote?.execution?.stopped?'deliberately stopped'
-        :remote?.execution?.status==='done'?`${this.presentedSession(row.peer,row.remote_session_id)} ended its turn without a final reply; the request stays open until that session replies or you cancel it`
+        :remote?.execution?.status==='done'?`${this.presentedSession(row.peer,recipient.sessionId)} ended its turn without a final reply; the request stays open until that session replies or you cancel it`
         :remote?.execution?.status??remote?.inputState??'waiting for admission on the peer';
       db.transaction(()=>{
         if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
@@ -2035,6 +2096,32 @@ export class SessionPeers {
     const current=carriedInput?{input:carriedInput,observed:readInputExecution(carriedInput),
       saved:carriedInput.receipt_json?JSON.parse(carriedInput.receipt_json):{}}:{input,observed,saved};
     const turn=carrying?db.query(`SELECT prerequisite.*,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(carrying.id) as any:null;
+    const custodyPlacement=turn?db.query(`SELECT custody.canonical_input_id,custody.predecessor_session_id,custody.placement_input_id,custody.placement_turn_id
+      FROM codex_custody_successors custody JOIN session_handoffs handoff ON handoff.id=custody.handoff_id
+      JOIN session_handoff_items item ON item.handoff_id=handoff.id AND item.kind='owed' AND item.ref=?
+        AND item.from_session_id=custody.predecessor_session_id AND item.to_session_id=custody.successor_session_id
+      WHERE custody.placement_turn_id=? AND custody.placement_input_id=? AND custody.successor_session_id=?
+        AND handoff.state='accepted' AND handoff.handoff_kind='codex-custody-successor'`)
+      .get(row.request_id,turn.id,input.id,row.target_session_id) as {canonical_input_id:string;predecessor_session_id:number;placement_input_id:string;placement_turn_id:number}|null:null;
+    const transfers:{requestId:string;handoffId:string;fromSessionId:string;fromInputId:string;toSessionId:string;toInputId:string}[]=[];
+    if(custodyPlacement){
+      let sessionId=row.target_session_id,inputId=row.target_input_id;
+      const seen=new Set<number>();
+      while(!seen.has(sessionId)){
+        seen.add(sessionId);
+        const handoff=db.query(`SELECT handoff.id,handoff.predecessor_session_id,handoff.inventory_json
+          FROM session_handoffs handoff JOIN session_handoff_items item ON item.handoff_id=handoff.id
+          WHERE handoff.successor_session_id=? AND handoff.state='accepted' AND item.kind='owed' AND item.ref=?
+            AND item.from_session_id=handoff.predecessor_session_id AND item.to_session_id=handoff.successor_session_id`)
+          .get(sessionId,row.request_id) as {id:string;predecessor_session_id:number;inventory_json:string}|null;
+        if(!handoff)break;
+        const item=JSON.parse(handoff.inventory_json).items?.find((item:any)=>item.kind==='owed'&&item.source==='peer'&&item.ref===row.request_id);
+        if(typeof item?.targetInputId!=='string'){transfers.length=0;break;}
+        transfers.unshift({requestId:row.request_id,handoffId:handoff.id,fromSessionId:`concierge:${handoff.predecessor_session_id}`,
+          fromInputId:item.targetInputId,toSessionId:`concierge:${sessionId}`,toInputId:inputId});
+        sessionId=handoff.predecessor_session_id;inputId=item.targetInputId;
+      }
+    }
     const steeringCount=turn?(db.query("SELECT count(*) AS count FROM turn_steering_messages WHERE turn_id=? AND status<>'failed'").get(turn.id) as any).count:0;
     const shared=turn?(db.query(`SELECT count(*) AS count FROM session_inputs WHERE turn_id=? AND (id IN (SELECT target_input_id FROM session_peer_deliveries) OR id IN (SELECT target_input_id FROM session_communication_requests WHERE target_input_id IS NOT NULL))`).get(turn.id) as any).count:0;
     const dedicated=!!turn&&turn.accepted_input_id===input.id&&!!turn.provider_input_acknowledged_at&&!input.steering_id&&shared===1&&steeringCount===0;
@@ -2045,7 +2132,7 @@ export class SessionPeers {
     const replies=(db.query('SELECT * FROM session_peer_replies WHERE request_id=? ORDER BY rowid').all(requestId) as ReplyRow[]).map(reply=>{
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
-      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,turnOutcome:payload.turnOutcome??null,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,settlementProof:payload.settlementProof??null,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
+      return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,turnOutcome:payload.turnOutcome??null,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition??null,settlementProof:payload.settlementProof??null,responderSessionId:typeof payload.responding_session_id==='string'?payload.responding_session_id:`concierge:${row.target_session_id}`,createdAtMs:reply.created_at_ms,files:payload.attachments?.length??0,
         completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
@@ -2054,7 +2141,11 @@ export class SessionPeers {
     try{requireChatGptTaskResolved(answerTask);answerTaskReady=true;}catch{}
     return {requestId,answerGuaranteeVersion:1,acceptedAnswerGuaranteeVersion:acceptedAnswerGuaranteeVersion===1?1:null,
       answerTaskReady,unresolvedChatGptObligations:openChatGptObligations(answerTask).length,
-      sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:current.saved.state??current.observed.state,inputError:current.saved.error??null,stillWorking:['running','queued'].includes(execution),
+      sessionId:`concierge:${session.id}`,address:sessionAddress(session),operationId:row.target_input_id,
+      ...(custodyPlacement?{custodyPlacement:{version:1,canonicalInputId:custodyPlacement.canonical_input_id,
+        predecessorSessionId:`concierge:${custodyPlacement.predecessor_session_id}`,placementInputId:custodyPlacement.placement_input_id,
+        placementTurnId:custodyPlacement.placement_turn_id,transfers}}:{}),
+      inputState:current.saved.state??current.observed.state,inputError:current.saved.error??null,stillWorking:['running','queued'].includes(execution),
       execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,stoppedByTejasAtMs:turn.status==='cancelled'?stoppedByTejas(turn.id)?.atMs??null:null,dedicated,answersWithTurn,
         steeringStatus:observed.steering?.status??null,text:turn.status==='done'?turn.agent_text||null:null,error:turn.status!=='done'?turn.agent_text??null:null,sha256:turn.agent_text?hash(turn.agent_text):null}:null,
       // A continuation held for a sign-in or a reset is this request's hold, told to its sender.
@@ -2096,7 +2187,7 @@ export class SessionPeers {
     return {eventId:reply.event_id,kind:reply.kind,text:payload.text,turnOutcome:payload.turnOutcome,replyBody:payload.replyBody,closingLine:payload.closingLine,answerGroup:payload.answerGroup,answersQuestion:payload.answersQuestion??false,notify:payload.notify===true,alsoMainThread:payload.alsoMainThread===true,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
       ...(payload.settlementProof?{settlementProof:payload.settlementProof}:{}),
       ...(payload.handBack?{handBack:payload.handBack}:{}),...(payload.quiet?{quiet:payload.quiet}:{}),...(files?{files}:{}),
-      responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
+      responder:{peer:this.self,sessionId:typeof payload.responding_session_id==='string'?payload.responding_session_id:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}};
   }
   /** GET …/requests/:id/replies/:eventId — a reply with its files, for an origin that pulls. */
   fullReply(requestId:string,eventId:string) {
@@ -2240,7 +2331,7 @@ export class SessionPeers {
           startedAtMs:turnNeed?this.now():reply.created_at_ms,
           run:async()=>{
             const response=await client.request<{eventId?:string;recorded?:string;reason?:string}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,this.replyBody(row,reply),undefined,false);
-            if(response?.eventId!==reply.event_id||!['recorded','duplicate','refused'].includes(response.recorded??''))
+            if(response?.eventId!==reply.event_id||!['recorded','duplicate','refused','pending'].includes(response.recorded??''))
               throw new PeerReplyContractError('The peer answered, but did not confirm this reply by event ID and recorded status.');
             return response;
           },
@@ -2248,6 +2339,7 @@ export class SessionPeers {
             ?attempt>=PEER_REPLY_SCHEMA_MISMATCH_ATTEMPTS?'permanent':'unknown'
             :error instanceof PeerError&&error.kind==='refused'&&error.status!==null&&error.status<500?'permanent':'transient',
         });
+        if(answer.recorded==='pending')continue;
         // Forwarded means the origin confirmed it holds this exact event. A refusal is recorded as
         // one; any other answer (an origin from before confirmations) leaves it pending and resent.
         // A plain success used to count as delivery while the origin discarded the reply.
