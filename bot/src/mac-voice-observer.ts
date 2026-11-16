@@ -24,13 +24,17 @@ type Sample = { at: string; elapsedMs: number; helper: ProcessReading | null; en
 type VoiceEvent = { id: string; mode: "dictation" | "canvas_voice" | "think_aloud" | "unknown"; pageSessionId: string | null; beganAt: string; endedAt?: string; cutoffAt?: string; page: { pid: number; birthAbstime: number; evidence: string } | null; attribution: string; attributionDiagnostics?: AttributionDiagnostics; samples: Sample[]; deadline: number; afterUntil?: number };
 // Content-free: process IDs, WebKit page-proxy IDs, timestamps, counts and command outcome classes only.
 type StageOutcome = { stage: "log_query" | "renderer_launch"; outcome: "ok" | "timeout" | "exit" | "signal" | "output_limit" | "spawn_error" | "unknown_error"; elapsedMs: number; exitCode?: number; signal?: string; errorCode?: string };
-type OpenProxy = { pageProxyId: number; pid: number; committedAt: string | null; liveChild: boolean; serviceWorkerPid: boolean };
-type CandidateLifecycle = { pid: number; birthAbstime: number; launchedAt: string | null; launchedBeforeLogWindow: boolean | null; openMainFrameProxyIds: number[] };
+type CaptureTransition = { pageProxyId: number; pid: number; from: number; to: number; at: string | null };
+type CapturingPage = { pageProxyId: number; pid: number; state: number; startObserved: boolean; closedAfter: boolean; liveChild: boolean; serviceWorkerPid: boolean };
+type CandidateProcess = { pid: number; birthAbstime: number; launchedAt: string | null };
+// Version 1 (2026-11-16 morning) read 30 minutes of main-frame commit/close history; records
+// written with it keep their own fields. Version 2 reads WebKit's per-recording capture state.
 type AttributionDiagnostics = {
-  version: 1; elapsedMs: number; logWindowMs: number; stages: StageOutcome[];
-  reason: "no_live_web_app_page" | "log_query_failed" | "no_open_main_frame_proxy" | "multiple_open_main_frame_proxies" | "open_proxy_not_unique_live_child" | "renderer_launch_unknown" | "renderer_older_than_log_window" | "unique" | "observer_error";
-  lifecycleLines?: { commits: number; mainFrameCommits: number; closes: number; serviceWorkerLines: number };
-  openMainFrameProxies?: OpenProxy[]; candidates?: CandidateLifecycle[]; errorName?: string;
+  version: 2; elapsedMs: number; logWindowMs: number; stages: StageOutcome[];
+  reason: "no_live_web_app_page" | "log_query_failed" | "concurrent_listener_recording" | "no_capturing_page" | "multiple_capturing_pages" | "capture_start_not_observed" | "capturing_page_closed" | "capturing_page_not_live_child" | "unique" | "observer_error";
+  lines?: { captureStates: number; closes: number; serviceWorkerLines: number };
+  captureTransitions?: CaptureTransition[]; capturingPages?: CapturingPage[]; candidates?: CandidateProcess[];
+  concurrentRecordings?: number; errorName?: string;
 };
 
 async function command(file: string, args: string[], timeout = 1500) {
@@ -82,9 +86,14 @@ async function sample(): Promise<Sample> {
   return result;
 }
 
-// WebKit's app-owned page-proxy lifecycle is stronger than a WebContent start-time match.
-// Missing or truncated unified logs produce unknown, never a guessed page.
-const logWindowMs = 30 * 60_000;
+// `log show` decodes every persisted entry in its time range before applying the predicate, so its
+// cost follows the whole system's log volume (measured on the Mac 2026-11-16: about 0.8 s fixed,
+// 1.9 s for 30 minutes, 3.4 s for two hours), and this chatty app's WebKit lines were retained for
+// only about six hours. Page-load history for a long-lived renderer is therefore unrecoverable at
+// any cost. WebKit instead reports each page's capture state when the page opens the microphone
+// for a recording, so a short window ending now contains this recording's own evidence.
+const logWindowMs = 2 * 60_000;
+const activeAudioCapture = 2048; // WebKit MediaProducerMediaState::HasActiveAudioCaptureDevice
 
 function failedStage(stage: StageOutcome["stage"], error: unknown, elapsedMs: number): StageOutcome {
   const failure = (error && typeof error === "object" ? error : {}) as { code?: unknown; killed?: unknown; signal?: unknown };
@@ -115,64 +124,69 @@ function localLogTime(line: string) {
   return at && Number.isFinite(at.valueOf()) ? at.toISOString() : null;
 }
 
-// WebKit's app-owned page-proxy lifecycle is stronger than a WebContent start-time match.
-// Missing or truncated unified logs produce unknown, never a guessed page. Diagnostics record
-// which boundary failed and every open main-frame proxy, so ambiguity stays visible instead of
-// being resolved by largest child or start-time coincidence.
-async function attribute(shell: ProcessReading | null, candidates: ProcessReading[]) {
+// A page is named only when WebKit's own capture-state report leaves exactly one Web App page proxy
+// capturing, that report shows it starting active microphone capture inside the window, the page
+// was not closed afterwards, its renderer is a live child of the Web App, and the listener has no
+// other recording that could own a different capturing page. Anything else stays unknown; a page
+// is never chosen by size, renderer start time or nearness of timestamps. The one platform limit:
+// a Web App page holding the microphone, outside any listener recording, since before the window.
+async function attribute(shell: ProcessReading | null, candidates: ProcessReading[], concurrentRecordings: number) {
   const start = performance.now();
   const stages: StageOutcome[] = [];
   const finish = (attribution: string, reason: AttributionDiagnostics["reason"], extra: Partial<AttributionDiagnostics> = {}, page: VoiceEvent["page"] = null) =>
-    ({ page, attribution, diagnostics: { version: 1, elapsedMs: Math.round(performance.now() - start), logWindowMs, stages, reason, ...extra } as AttributionDiagnostics });
+    ({ page, attribution, diagnostics: { version: 2, elapsedMs: Math.round(performance.now() - start), logWindowMs, stages, reason, concurrentRecordings, ...extra } as AttributionDiagnostics });
   if (!shell || !candidates.length) return finish("no_live_web_app_page", "no_live_web_app_page");
 
-  const query = await timedStage("log_query", "/usr/bin/log", ["show", "--last", "30m", "--info", "--style", "compact", "--predicate", `processID == ${shell.pid} AND (eventMessage CONTAINS "WebPageProxy::didCommitLoadForFrame" OR eventMessage CONTAINS "WebPageProxy::close" OR eventMessage CONTAINS "service worker process without page")`], 3000);
+  const query = await timedStage("log_query", "/usr/bin/log", ["show", "--last", "2m", "--style", "compact", "--predicate", `processID == ${shell.pid} AND subsystem == "com.apple.WebKit" AND (eventMessage CONTAINS "WebPageProxy::updateReportedMediaCaptureState" OR eventMessage CONTAINS "WebPageProxy::close" OR eventMessage CONTAINS "service worker process without page")`], 3000);
   stages.push(query.outcome);
-  const open = new Map<number, { pid: number; committedAt: string | null }>();
+  const transitions: CaptureTransition[] = [];
+  const closedAt = new Map<number, number>();
   const workers = new Set<number>();
-  const lifecycleLines = { commits: 0, mainFrameCommits: 0, closes: 0, serviceWorkerLines: 0 };
+  const lines = { captureStates: 0, closes: 0, serviceWorkerLines: 0 };
   if (query.outcome.outcome === "ok") {
     for (const line of (query.stdout ?? "").split("\n")) {
       const worker = line.match(/\[PID=(\d+)\].*service worker process without page/);
-      if (worker) { workers.add(Number(worker[1])); lifecycleLines.serviceWorkerLines++; }
-      const match = line.match(/\[pageProxyID=(\d+), webPageID=\d+, PID=(\d+)\] WebPageProxy::(didCommitLoadForFrame|close):?/);
-      if (!match) continue;
-      if (match[3] === "close") { lifecycleLines.closes++; open.delete(Number(match[1])); continue; }
-      lifecycleLines.commits++;
-      if (line.includes("isMainFrame=1")) { lifecycleLines.mainFrameCommits++; open.set(Number(match[1]), { pid: Number(match[2]), committedAt: localLogTime(line) }); }
+      if (worker) { workers.add(Number(worker[1])); lines.serviceWorkerLines++; }
+      const capture = line.match(/\[pageProxyID=(\d+), webPageID=\d+, PID=(\d+)\] WebPageProxy::updateReportedMediaCaptureState: from (\d+) to (\d+)/);
+      if (capture) { lines.captureStates++; transitions.push({ pageProxyId: Number(capture[1]), pid: Number(capture[2]), from: Number(capture[3]), to: Number(capture[4]), at: localLogTime(line) }); continue; }
+      const close = line.match(/\[pageProxyID=(\d+), webPageID=\d+, PID=\d+\] WebPageProxy::close/);
+      if (close) { lines.closes++; closedAt.set(Number(close[1]), transitions.length); }
     }
   }
 
-  // One read of every candidate's start time, taken even when the log query failed, shows whether
-  // the 30-minute lifecycle window could have contained each renderer's main-frame commit.
+  // One start-time read of every candidate, kept as context; it is not used to choose a page.
   const launch = await timedStage("renderer_launch", "/bin/ps", ["-p", candidates.map((item) => item.pid).join(","), "-o", "pid=,lstart="], 700);
   stages.push(launch.outcome);
-  const launchedAt = new Map<number, number>();
+  const launchedAt = new Map<number, string>();
   for (const line of (launch.stdout ?? "").split("\n")) {
     const row = line.match(/^\s*(\d+)\s+(.+?)\s*$/);
-    const at = row ? new Date(row[2]).valueOf() : NaN;
-    if (row && Number.isFinite(at)) launchedAt.set(Number(row[1]), at);
+    const at = row ? new Date(row[2]) : null;
+    if (row && at && Number.isFinite(at.valueOf())) launchedAt.set(Number(row[1]), at.toISOString());
   }
-  const windowStart = Date.now() - logWindowMs;
   const livePids = new Set(candidates.map((item) => item.pid));
-  const openMainFrameProxies: OpenProxy[] = [...open].slice(0, 16).map(([pageProxyId, item]) => ({ pageProxyId, pid: item.pid, committedAt: item.committedAt, liveChild: livePids.has(item.pid), serviceWorkerPid: workers.has(item.pid) }));
-  const lifecycle: CandidateLifecycle[] = candidates.map((item) => {
-    const at = launchedAt.get(item.pid);
-    return { pid: item.pid, birthAbstime: item.birthAbstime, launchedAt: at === undefined ? null : new Date(at).toISOString(), launchedBeforeLogWindow: at === undefined ? null : at < windowStart, openMainFrameProxyIds: [...open].filter(([, proxy]) => proxy.pid === item.pid).map(([id]) => id).slice(0, 8) };
+  const latest = new Map<number, { pid: number; state: number; startObserved: boolean; index: number }>();
+  transitions.forEach((item, index) => {
+    const startObserved = (latest.get(item.pageProxyId)?.startObserved ?? false) || ((item.from & activeAudioCapture) === 0 && (item.to & activeAudioCapture) !== 0);
+    latest.set(item.pageProxyId, { pid: item.pid, state: item.to, startObserved, index });
   });
-  const evidence = { lifecycleLines, openMainFrameProxies, candidates: lifecycle };
+  const capturingPages: CapturingPage[] = [...latest].filter(([, item]) => item.state !== 0).slice(0, 16).map(([pageProxyId, item]) => ({
+    pageProxyId, pid: item.pid, state: item.state, startObserved: item.startObserved,
+    closedAfter: (closedAt.get(pageProxyId) ?? -1) > item.index, liveChild: livePids.has(item.pid), serviceWorkerPid: workers.has(item.pid),
+  }));
+  const evidence: Partial<AttributionDiagnostics> = {
+    lines, captureTransitions: transitions.slice(-16), capturingPages,
+    candidates: candidates.map((item) => ({ pid: item.pid, birthAbstime: item.birthAbstime, launchedAt: launchedAt.get(item.pid) ?? null })),
+  };
   if (query.outcome.outcome !== "ok") return finish("page_lifecycle_unavailable", "log_query_failed", evidence);
-
-  const active = [...new Set([...open.values()].map((item) => item.pid))];
-  const matches = candidates.filter((item) => active.includes(item.pid) && !workers.has(item.pid));
-  if (matches.length !== 1 || active.length !== 1) {
-    const reason = active.length === 0 ? "no_open_main_frame_proxy" : active.length > 1 ? "multiple_open_main_frame_proxies" : "open_proxy_not_unique_live_child";
-    return finish("page_lifecycle_missing_or_ambiguous", reason, evidence);
-  }
-  const launched = launchedAt.get(matches[0].pid);
-  if (launched === undefined) return finish("page_lifecycle_unavailable", "renderer_launch_unknown", evidence);
-  if (Date.now() - launched > logWindowMs) return finish("renderer_older_than_log_window", "renderer_older_than_log_window", evidence);
-  return finish("unique_webkit_page_proxy", "unique", evidence, { pid: matches[0].pid, birthAbstime: matches[0].birthAbstime, evidence: `Web App ${shell.pid} main-frame commit with no close; unique live child` });
+  if (concurrentRecordings > 0) return finish("page_lifecycle_missing_or_ambiguous", "concurrent_listener_recording", evidence);
+  if (!capturingPages.length) return finish("page_lifecycle_missing_or_ambiguous", "no_capturing_page", evidence);
+  if (capturingPages.length > 1) return finish("page_lifecycle_missing_or_ambiguous", "multiple_capturing_pages", evidence);
+  const [page] = capturingPages;
+  if (!page.startObserved || (page.state & activeAudioCapture) === 0) return finish("page_lifecycle_missing_or_ambiguous", "capture_start_not_observed", evidence);
+  if (page.closedAfter) return finish("page_lifecycle_missing_or_ambiguous", "capturing_page_closed", evidence);
+  const renderer = candidates.find((item) => item.pid === page.pid);
+  if (!renderer || page.serviceWorkerPid) return finish("page_lifecycle_missing_or_ambiguous", "capturing_page_not_live_child", evidence);
+  return finish("unique_webkit_capture_page", "unique", evidence, { pid: renderer.pid, birthAbstime: renderer.birthAbstime, evidence: `Web App ${shell.pid} page proxy ${page.pageProxyId} reported starting active microphone capture; only capturing page; live child; no other listener recording` });
 }
 
 async function writeEvent(event: VoiceEvent) {
@@ -233,7 +247,10 @@ export const macVoiceObserver = {
     void tick();
   },
   async stop() { if (timer) clearInterval(timer); if (eventTimer) clearInterval(eventTimer); timer = undefined; eventTimer = undefined; await persistQueue; },
-  begin(id: string, mode: unknown, pageSessionId: unknown) {
+  // otherRecordings counts the listener's other active recordings at begin; a caller that cannot
+  // say leaves page identity unprovable, because another recording may own another capturing page.
+  begin(id: string, mode: unknown, pageSessionId: unknown, otherRecordings?: number) {
+    const concurrentRecordings = Number.isSafeInteger(otherRecordings) && otherRecordings! >= 0 ? otherRecordings! : 1;
     if (events.has(id)) return;
     if (events.size >= 4) return;
     const event: VoiceEvent = {
@@ -246,13 +263,13 @@ export const macVoiceObserver = {
     void (async () => {
       const current = await sample();
       event.samples.push(current);
-      const answer = await attribute(current.shell, current.children);
+      const answer = await attribute(current.shell, current.children, concurrentRecordings);
       event.page = answer.page;
       event.attribution = answer.attribution;
       event.attributionDiagnostics = answer.diagnostics;
     })().catch((error) => {
       event.attribution = "observer_error";
-      event.attributionDiagnostics = { version: 1, elapsedMs: 0, logWindowMs, stages: [], reason: "observer_error", errorName: error instanceof Error ? error.name.slice(0, 40) : "unknown" };
+      event.attributionDiagnostics = { version: 2, elapsedMs: 0, logWindowMs, stages: [], reason: "observer_error", concurrentRecordings, errorName: error instanceof Error ? error.name.slice(0, 40) : "unknown" };
     });
   },
   end(id: string) { const event = events.get(id); if (event) { event.endedAt = new Date().toISOString(); event.afterUntil = Math.min(Date.now() + 30_000, event.deadline); } },

@@ -68,7 +68,7 @@ async function begin(id: string, mode?: unknown, pageSessionId?: unknown) {
   decoder.stdin.on("error", () => {});
   recording.decoded = new Promise((resolve) => { decoder.on("close", (code) => { recording.ended = true; resolve(code ?? 1); }); decoder.on("error", () => { recording.ended = true; resolve(1); }); });
   recordings.set(id, recording);
-  macVoiceObserver.begin(id, mode, pageSessionId);
+  macVoiceObserver.begin(id, mode, pageSessionId, recordings.size - 1);
   try { await started; } catch (error) { cancel(id); throw error; }
 }
 
