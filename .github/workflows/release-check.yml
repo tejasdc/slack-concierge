@@ -75,6 +75,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y restic bubblewrap
+          # Ubuntu 24.04 runners refuse unprivileged user namespaces through AppArmor, which
+          # bubblewrap's database isolation needs. This changes only the disposable runner.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --die-with-parent --bind / / --dev /dev -- true
       - name: Run the complete bounded check group
         working-directory: bot
         env:
