@@ -260,7 +260,7 @@ type RecordRow={path:string;record_id:string;provider:string;conversation:string
   source_account:string|null;parent_thread_id:string|null;first_usage:number};
 type Session={id:number;agent_session_uuid:string;native_metadata_json:string;provider_id:string};
 type Turn={id:number;session_id:number;status:string;provider_turn_id:string|null;provider_started_at:string|null;ended_at:string|null;
-  systemInstructionsSha256:string|null;effort:string|null;topic_id:string|null;startMs:number;endMs:number};
+  systemInstructionsSha256:string|null;effort:string|null;topic_id:string|null;trigger:string|null;startMs:number;endMs:number};
 type ScheduledFiring={id:number;session_id:number;status:string;saved_root_id:number;saved_sequence:number;saved_fire_at_ms:number;
   provider_started_at:string|null;provider_duration_ms:number|null;ended_at:string|null};
 type CallMix={totalCalls:number;helperCalls:number;models:Map<string,{calls:number;helperCalls:number}>};
@@ -323,7 +323,7 @@ function report(period:'today'|'week',since:number,zone:string){
   const accountsByTurn=new Map<number,string>();
   for(const e of events){const a=accounts.get(e.session_id)??[];a.push({at:Date.parse(e.created_at+'Z'),name:e.account});accounts.set(e.session_id,a);
     if(e.turn_id!==null)accountsByTurn.set(e.turn_id,e.account);}
-  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,turn.topic_id,
+  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,turn.topic_id,turn.trigger,
     json_extract(identity.payload_json,'$.systemInstructionsSha256') AS systemInstructionsSha256,
     json_extract(identity.payload_json,'$.effort') AS effort
     FROM turns turn LEFT JOIN session_owner_events identity ON identity.sequence=(
@@ -376,7 +376,7 @@ function report(period:'today'|'week',since:number,zone:string){
   },{}));
   const groups=new Map<string,any>();
   const attributionBuckets=new Map<string,{provider:string;account:string;window:string;atMs:number;sessionId:string|null;topicId:string|null;
-    routineRootId:number|null;weighted:number;raw:Counts;calls:number;conversation:string|null}>();
+    routineRootId:number|null;weighted:number;raw:Counts;calls:number;conversation:string|null;unlinked:string|null}>();
   const scheduled=(ledger.query(`SELECT id,session_id,status,saved_root_id,saved_sequence,saved_fire_at_ms,
     provider_started_at,provider_duration_ms,ended_at FROM turns
     WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL
@@ -497,10 +497,12 @@ function report(period:'today'|'week',since:number,zone:string){
     const windows=r.provider==='claude-code'&&r.model?.includes('fable')?['Weekly','Weekly · Fable only']:['Weekly'];
     const topicId=turn?.topic_id??null,routineRootId=firing?.saved_root_id??null;
     const conversation=s?null:`outside:${r.conversation}`;
+    // Why this use has no thread: run outside Concierge, between a session's turns, or the turn's trigger.
+    const unlinked=topicId?null:!s?'outside Concierge':!turn?'between turns':turn.trigger??'no recorded input';
     for(const window of windows){
-      const bucketKey=JSON.stringify([key,window,atMs,sessionId,conversation,topicId,routineRootId]);
+      const bucketKey=JSON.stringify([key,window,atMs,sessionId,conversation,topicId,routineRootId,unlinked]);
       let bucket=attributionBuckets.get(bucketKey);
-      if(!bucket){bucket={provider:r.provider,account,window,atMs,sessionId,topicId,routineRootId,weighted:0,raw:empty(),calls:0,conversation};attributionBuckets.set(bucketKey,bucket);}
+      if(!bucket){bucket={provider:r.provider,account,window,atMs,sessionId,topicId,routineRootId,weighted:0,raw:empty(),calls:0,conversation,unlinked};attributionBuckets.set(bucketKey,bucket);}
       bucket.weighted+=weighted;bucket.calls++;
       bucket.raw.input+=r.input;bucket.raw.cacheWrite+=r.cache_write;bucket.raw.cacheWrite1h+=r.cache_write_1h;
       bucket.raw.cacheRead+=r.cache_read;bucket.raw.output+=r.output;

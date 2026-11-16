@@ -89,3 +89,16 @@ const rows=outsideResult.accounts[0].bySession;
 if(rows[0].weeklyAllowance.usedPercent!==2.5||rows[1].weeklyAllowance.usedPercent!==7.5)
   throw new Error('Conversations outside Concierge shared one combined estimate.');
 console.log('weekly allowance separates account meters, sums cross-session threads once, keeps routine days, shares each reset period, charges Fable to both Claude meters, keeps outside conversations apart, and preserves unknown coverage');
+
+// "Not in a thread" names, per account, the sessions and the triggers behind it.
+const unlinkedResult=attributeWeeklyAllowance({...report,accounts:[{provider:'codex',account:'one',
+  bySession:[{address:'concierge:1',title:'Linked work'},{address:'concierge:2',title:'Worker'}]},report.accounts[1]],
+  attributionBuckets:[bucket('one','concierge:1','topic-a',2),{...bucket('one','concierge:2',null,1),unlinked:'agent request'},
+    {...bucket('one','concierge:2',null,1),unlinked:'report-back'},{...bucket('one','concierge:1',null,0.5),unlinked:'between turns'}]},readings,now) as any;
+const notInThread=unlinkedResult.accounts[0].notInThread,share=(value:any)=>value.components[0]?.usedPercent;
+if(notInThread.sessionCount!==2||notInThread.bySession[0]?.title!=='Worker'||Math.abs(share(notInThread.bySession[0].weeklyAllowance)-40/9)>1e-9
+  ||notInThread.bySession[0].triggers.join()!=='agent request,report-back'||notInThread.bySession[1]?.address!=='concierge:1'
+  ||notInThread.byTrigger.length!==3||Math.abs(share(notInThread.byTrigger.find((row:any)=>row.trigger==='between turns').weeklyAllowance)-10/9)>1e-9
+  ||unlinkedResult.accounts[1].notInThread.sessionCount!==0)
+  throw new Error('Not-in-a-thread use lost its per-account sessions or triggers.');
+console.log('Not-in-a-thread breakdown names sessions and triggers per account.');

@@ -50,7 +50,8 @@ try{
     CREATE TABLE session_communication_requests(target_input_id TEXT,topic_root_input_id TEXT,thread_root_input_id TEXT,created_at_ms INTEGER);
     CREATE TABLE inbox_topic_roots(root_input_id TEXT PRIMARY KEY,topic_id TEXT);
     CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,turn_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT,input_id TEXT);
-    CREATE TABLE saved_work_settings(singleton INTEGER PRIMARY KEY,time_zone TEXT);`);
+    CREATE TABLE saved_work_settings(singleton INTEGER PRIMARY KEY,time_zone TEXT);
+    CREATE TABLE session_inputs(id TEXT PRIMARY KEY,origin TEXT);`);
   const started=new Date(Date.now()-60_000).toISOString().slice(0,19).replace('T',' ');
   db.query('INSERT INTO sessions(id,agent_session_uuid,provider_id,native_metadata_json) VALUES(1,?,?,?)').run(nativeId,'claude-code',JSON.stringify({title:'Usage fixture',project:'/workspace/usage-fixture'}));
   db.query('INSERT INTO turns(id,session_id,status,provider_started_at,accepted_input_id) VALUES(1,1,?,?,?)').run('running',started,'request:one');
@@ -69,6 +70,9 @@ try{
   db.query('INSERT INTO saved_work_settings VALUES(1,?)').run('America/New_York');
   const captured=captureUsageLedgerSnapshot(db,Date.now()-7*86400_000);
   if(!captured.events.some(row=>row.sequence===3))throw new Error('snapshot lost prior session authorization');
+  db.query('INSERT INTO session_inputs VALUES(?,?)').run('request:two','human');
+  const triggers=captureUsageLedgerSnapshot(db,Date.now()-7*86400_000).turns.map(row=>row.trigger).join();
+  if(triggers!=='agent request,his request')throw new Error(`snapshot lost what started each turn: ${triggers}`);
   const snapshot=encodeUsageSnapshot(captured);db.close();
   let calls=0;
   const result=await collectRunnerUsageReports(new Map([['fixture',new Set(['claude-code' as const])],['second',new Set(['claude-code' as const])]]),snapshot,
