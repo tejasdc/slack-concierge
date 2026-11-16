@@ -4752,7 +4752,8 @@ export function rejoinThreadsSplitAtHandoff() {
     const distinct=[...new Set(homes)];
     if(distinct.length!==1){unclear.push(topicId);continue;}
     const into=topicRow(distinct[0]!);
-    if(into.state==='closed'&&topicRequests(topicId).some(request=>request.state==='open')){unclear.push(topicId);continue;}
+    if(into.state==='closed'&&(topicRequests(topicId).some(request=>request.state==='open')
+      ||topicQuestions(topicId).some(question=>!SETTLED_QUESTION_STATES.has(question.state)))){unclear.push(topicId);continue;}
     db.transaction(()=>{
       const change=mergeChange(from,into,by,reason);
       // His thread keeps its own name; the first words of a reply are not another name for it.

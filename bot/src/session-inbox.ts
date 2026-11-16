@@ -344,9 +344,10 @@ function turnQuietReason(sessionId:number,turnId:number):string|null {
 export function turnThreadActions(sessionId:number,turnId:number,ownInputId:string|null):{mixedThreads:boolean;answeredByPost:boolean} {
   const own=ownInputId?inboxThreadRoot(sessionId,ownInputId):null;
   const named=new Set<string>();
-  for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_communication_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
+  // A turn id names one session's turn; a later router handoff moves its requests' custody.
+  for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_communication_requests WHERE source_turn_id=?').all(turnId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
-  for(const row of db.query("SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND source_session_id=? AND json_extract(payload_json,'$.responseMode') IS NOT 'context'").all(turnId,sessionId) as {root:string|null}[])
+  for(const row of db.query("SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND json_extract(payload_json,'$.responseMode') IS NOT 'context'").all(turnId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
   let answeredByPost=false;
   for(const row of db.query("SELECT event_id,input_id FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post'").all(sessionId,turnId) as {event_id:string;input_id:string|null}[]){

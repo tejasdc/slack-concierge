@@ -16,8 +16,8 @@ process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=THREAD_SURVIVES_ROUTER_HANDOFF_TEST_AUTHORIZATION;
 
-const [{db},{createNativeSession,recordSessionEvent,retainSessionInput},topics,inbox]=await Promise.all([
-  import('../src/state'),import('../src/session-inputs'),import('../src/session-topics'),import('../src/session-inbox')]);
+const [{db},{createNativeSession,recordSessionEvent,retainSessionInput},topics,inbox,{inboxRootResolver}]=await Promise.all([
+  import('../src/state'),import('../src/session-inputs'),import('../src/session-topics'),import('../src/session-inbox'),import('../src/presentation-message-source')]);
 
 try {
   const router=createNativeSession('codex',{title:'Inbox',summary:'Router before the handoff',inbox:true,inboxRole:'project-router',standingRole:'inbox'});
@@ -72,6 +72,9 @@ try {
   topics.invalidateTopicRoots();
   for(const sessionId of [router.id,successor.id])
     assert.equal(inbox.inboxThreadRoot(sessionId,sent),capture,'custody moved; the thread did not');
+  // The Inbox page's prepared read resolves threads with its own copy of the rule.
+  for(const sessionId of [router.id,successor.id])
+    assert.equal(inboxRootResolver(db)(sessionId,sent),capture,'the prepared Inbox view keeps it in its thread');
   assert.equal(inbox.requestThreadSource(successor.id,requestId),capture,'its returns file under the same thread');
   assert.equal(inbox.requestThreadSource(router.id,requestId),capture);
 
