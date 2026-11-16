@@ -315,7 +315,8 @@ A request's `dispatches` are projected live from the request rows, not from the 
 who a reply inside the thread goes to. `choices` include agents that wrote posts in the thread,
 even when their requests have closed or the Inbox role has moved to another session; the post's
 author is read across the same Inbox lineage as the visible thread. Open work and questions also
-remain choices. `default` is the author of an item he explicitly replies to, else the latest
+remain choices. Earlier Inbox role holders count as the router rather than separate agent choices.
+`default` is the author of an item he explicitly replies to, else the latest
 speaker in the thread, else its single working agent, else the router. The questions read carries
 the same per group. A human input to the Inbox with
 `replyToMessage` may carry `deliverTo` (a choice's session id, or `router`); absent, the owner

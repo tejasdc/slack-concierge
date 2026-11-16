@@ -59,15 +59,17 @@ function sessionTitle(source:Database,sessionId:string):string|null {
 
 export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyTargets {
  const {router,roots,about}=input;
+ const inboxSessions=new Set((source.query(INBOX_LINEAGE_SQL).all(input.inboxSessionId) as {id:number}[]).map(row=>`concierge:${row.id}`));
  const choices=new Map<string,ReplyTarget>();
  // Choices named by a predecessor that answered here: its name is the one on the answer he read.
  const namedByAnswer=new Set<string>();
  const add=(named:string|null|undefined,why:string,owns:readonly string[],answered=owns.length>0):string|null=>{
-  if(!named||named===router)return null;
+  if(!named)return null;
   // Older records spelt a peer session `mac:concierge:84`; the catalogue and the app say `mac:84`.
   const written=named.replace(/^([\w-]+):concierge:([1-9]\d*)$/,'$1:$2');
   const sessionId=liveEndOfHandoffs(source,written);
-  if(sessionId===router)return null;
+  // Every Inbox role holder in this conversation is the router, not another agent choice.
+  if(inboxSessions.has(written)||inboxSessions.has(sessionId))return router;
   const predecessorName=written===sessionId?null:sessionTitle(source,written);
   const existing=choices.get(sessionId);
   if(existing){
@@ -132,7 +134,7 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
  for(const dispatch of input.workDispatches)if(dispatch.root&&roots.includes(dispatch.root))busy(add(dispatch.sessionId,'working on this thread now',[dispatch.root]));
  for(const question of input.questions)if(OPEN_QUESTION_STATES.some(state=>state===question.state)||question.state==='deferred')
   busy(add(question.ownerSessionId,question.decision?`asked you: ${question.decision}`:'asked you a question here',[question.id,...question.sources]));
- if(about&&input.spokenBy)add(input.spokenBy,'answered here',[about]);
+ const selectedSpeaker=about&&input.spokenBy?add(input.spokenBy,'answered here',[about]):null;
  for(const [sessionId,title] of signedAs){const choice=choices.get(sessionId);if(choice&&title)choice.title=title;}
  const list=[...choices.values()];
  // The one invariant (Tejas, 2026-11-05: "It's finding the right one to respond to quickly"): the
@@ -141,5 +143,5 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
  // here is first only in a thread where nobody has spoken yet, as the one agent at work on it.
  const owning=about?list.find(choice=>choice.owns.includes(about)):undefined;
  const atWork=list.filter(choice=>working.has(choice.sessionId));
- return {router,default:owning?.sessionId??newestSpeaker??(atWork.length===1?atWork[0]!.sessionId:router),choices:list};
+ return {router,default:selectedSpeaker??owning?.sessionId??newestSpeaker??(atWork.length===1?atWork[0]!.sessionId:router),choices:list};
 }

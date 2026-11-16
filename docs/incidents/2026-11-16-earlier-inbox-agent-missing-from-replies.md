@@ -18,6 +18,7 @@ The thread read follows all Inbox sessions in one lineage, but the reply-target 
 ## Fix
 
 Read post writers across the same Inbox lineage as the visible thread. Preserve the established rule for ordinary main-thread replies: the latest speaker is the initial recipient, and the current Inbox agent remains a choice. A reply under an exact agent post initially goes to that post's writer, subject to an accepted handoff successor, even when its request is closed.
+An earlier Inbox role holder still counts as the router, so exposing its posts does not add a false agent choice.
 
 ## Acceptance scenario
 
