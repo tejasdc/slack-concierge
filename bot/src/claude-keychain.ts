@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { log } from "./log";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 /**
  * On a Mac, Claude Code keeps a login in the login Keychain, not in `.credentials.json`: one
@@ -56,6 +58,19 @@ function readSecret(service: string): string | null {
   const secret = read.stdout.replace(/\n$/, "");
   // Claude stores JSON; anything else (security prints binary data as hex) is not moved blindly.
   return secret.startsWith("{") ? secret : null;
+}
+
+/** Read the login where Claude Code keeps it on the Mac, without moving or writing it. */
+export function claudeKeychainOauth(home: string): { oauth: Record<string, unknown>; version: string } | null {
+  if (process.platform !== "darwin") return null;
+  const service = home === join(homedir(), ".claude") ? "Claude Code-credentials" : claudeKeychainService(home);
+  const secret = readSecret(service);
+  if (!secret) return null;
+  try {
+    const oauth = JSON.parse(secret)?.claudeAiOauth;
+    if (!oauth || typeof oauth !== "object") return null;
+    return { oauth, version: createHash("sha256").update(secret).digest("hex") };
+  } catch { return null; }
 }
 
 function account(service: string): string | null {

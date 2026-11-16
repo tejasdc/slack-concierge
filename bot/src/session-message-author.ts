@@ -4,7 +4,9 @@ import {authorCorrection,sessionMetadata,getAcceptedSessionInput,sessionInputPro
 import type {MessageAuthor} from './provider-history';
 import {peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
 import {SERVICE_NOTICE_SCOPE,noticeTime} from './provider-free-notice';
+import {routedMaterialSource} from './session-routed-material';
 import {minutesText,pebbleArrivalWaitMs} from './session-inbox';
+import {passiveContributorAuthor} from './inbox-attribution-read';
 import {FIXED_PRODUCER_DOORS,readerCaptureVia,type InboxProducerKind} from './inbox-producer-sources';
 
 /** Who wrote a message, by the one author-session rule in session-presence.ts. */
@@ -105,7 +107,9 @@ function withProvenance(input:AcceptedSessionInput,projected:{author:MessageAuth
 
 /** Retained return identity takes precedence over its delivery envelope's service origin. */
 export function acceptedInputAuthor(input:AcceptedSessionInput):{author:MessageAuthor;text?:string} {
-  return withProvenance(input,acceptedInputAuthorWithoutProvenance(input));
+  const material=routedMaterialSource(db,input);
+  const projected=material.record?acceptedInputAuthorWithoutProvenance(material.record):{author:material.author??{kind:'unknown' as const}};
+  return withProvenance(input,material.reference?{...projected,text:material.text}:projected);
 }
 
 /**
@@ -161,6 +165,8 @@ export function doorOf(input:AcceptedSessionInput):string|null {
 }
 
 function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{author:MessageAuthor;text?:string} {
+  const contributor=passiveContributorAuthor(input);
+  if(contributor)return {author:contributor as MessageAuthor};
   const external=db.query('SELECT agent_name,text,request_id FROM session_external_requests WHERE target_input_id=?').get(input.id) as {agent_name:string;text:string;request_id:string}|null;
   if(external)return {author:{kind:'agent',outsideAgent:{name:external.agent_name,label:`Outside agent · ${external.agent_name}`},requestId:external.request_id,communication:'request'},text:external.text};
   const captureSource=JSON.parse(input.payload_json).capture?.source;
@@ -195,9 +201,13 @@ function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{autho
     // His reply in a thread, carried to the agent working on it, is his words: the Inbox only
     // delivered it. With no sending session it read "Unknown agent · Request" (2026-11-02).
     const own=payload.forwardedReply&&request.source_input_id?getAcceptedSessionInput(request.source_input_id):null;
-    if(own?.origin==='human'){
-      const door=doorOf(own);
-      return {author:{kind:'human',via:door?`${door}, reply in a thread`:'reply in a thread',requestId:request.request_id},text:payload.text};
+    if(own){
+      const original=acceptedInputAuthor(own).author;
+      if(original.kind==='human'){
+        const door=doorOf(own);
+        return {author:{kind:'human',via:door?`${door}, reply in a thread`:'reply in a thread',requestId:request.request_id},text:payload.text};
+      }
+      return {author:{...original,requestId:request.request_id,communication:'request'},text:payload.text};
     }
     author.communication='request';return {author,text:payload.text};
   }

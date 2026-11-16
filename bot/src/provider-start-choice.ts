@@ -1,5 +1,5 @@
-import {createHash} from 'node:crypto';
 import { BUDGET_NOTICE_MAX_AGE_MS, currentAccount, listProfiles } from './provider-accounts';
+import { pickByProviderRoom } from './provider-start-spread';
 import { providerAccountUsage } from './provider-account-usage';
 import { accountReadingFresh,includedAllowanceWindows,refillsWithinHours,codexCreditsCanCover } from './account-allowance-observation';
 import { savedWorkAccountRooms } from './provider-account-dispatch';
@@ -10,8 +10,43 @@ import {modelCapacityRefused} from './provider-model-capacity';
 import {claudeAllowanceHeld} from './claude-allowance-hold';
 
 export type AutomaticProvider = keyof typeof AUTOMATIC_PROVIDER_ALIASES;
-type Candidate = { provider: AutomaticProvider; account: string; used: number; paidCredits: boolean; resetsAt: number | null; windowResetAt: number | null };
+/**
+ * One account a provider could start new work on. `providerRoom` is the provider's whole remaining
+ * weekly room summed over every account it can run on, the same figure on each of its candidates:
+ * three Claude accounts at 14% are 258 points of room, one Codex account at 14% is 86, and a
+ * provider is weighed by that total, not by its roomiest account alone (Tejas, 2026-11-16: "It has
+ * to look at aggregated usage per provider, not existing usage per single account").
+ */
+export type Candidate = { provider: AutomaticProvider; account: string; used: number; paidCredits: boolean; resetsAt: number | null; windowResetAt: number | null; providerRoom: number };
 export const capacityCanStart=(candidate:Candidate):boolean=>candidate.used<100||candidate.paidCredits;
+
+/**
+ * A provider's remaining weekly room across the accounts it can actually run on, in points (one
+ * account fully free is 100). Claude counts each account with its own home; Codex counts the account
+ * signed in to the App Server plus every kept account with a fresh reading, because the owner moves
+ * the login to a kept account with room by itself once the signed-in one is spent; Google has one.
+ * An account under a cached usage refusal counts as spent. Readings that are stale or unreadable
+ * count nothing, never a guess.
+ */
+export function providerTotalRoom(provider: AutomaticProvider, now = Date.now()): number {
+  const model=resolveProviderAlias(AUTOMATIC_PROVIDER_ALIASES[provider]).model;
+  const usage = providerAccountUsage(provider);
+  if (!usage || usage.problem) return 0;
+  const launchable = new Set(savedWorkAccountRooms(provider, usage, now, model)
+    .filter(room => !room.problem && room.tightestUsedPercent !== null && (room.home || room.isDefault)).map(room => room.account));
+  let total = 0;
+  for (const account of usage.accounts) {
+    const counted = provider === 'codex' ? !account.problem && !account.signedOut : launchable.has(account.label);
+    if (!counted || !accountReadingFresh(provider,usage,account,now,undefined,model)) continue;
+    if (provider === 'claude-code' && claudeAccountCachedReset(account.label,model)) continue;
+    if (provider === 'codex' && cachedUsageLimit(usageAttempt('codex',undefined,account.label))) continue;
+    const weekly = includedAllowanceWindows(provider,account,model).filter(window => !refillsWithinHours(window) && Number.isFinite(window.usedPercent));
+    if (!weekly.length) continue;
+    total += Math.max(0, 100 - Math.max(...weekly.map(window => window.usedPercent)));
+  }
+  return total;
+}
+
 
 /** New, unbound work only. A running session never changes provider. */
 function candidatesForNewWork(now: number,includeHeldClaude=false): Candidate[] {
@@ -52,10 +87,14 @@ function candidatesForNewWork(now: number,includeHeldClaude=false): Candidate[] 
       const windowResetAt = Date.parse(tightest.resetsAt ?? '');
       candidates.push({ provider, account: account.label, used,
         paidCredits:provider==='codex'&&!codexRefusal&&codexCreditsCanCover(account),resetsAt: spent.length ? Math.max(...spent) : null,
-        windowResetAt: Number.isFinite(windowResetAt) ? windowResetAt : null });
+        windowResetAt: Number.isFinite(windowResetAt) ? windowResetAt : null, providerRoom: 0 });
     }
   }
-  return candidates;
+  const totals = new Map<AutomaticProvider, number>();
+  return candidates.map(candidate => {
+    if (!totals.has(candidate.provider)) totals.set(candidate.provider, providerTotalRoom(candidate.provider, now));
+    return { ...candidate, providerRoom: totals.get(candidate.provider)! };
+  });
 }
 
 export function newWorkHeadroom(provider: 'claude-code' | 'codex', now = Date.now()): number | null {
@@ -67,18 +106,19 @@ export function newWorkCapacity(provider: AutomaticProvider, now = Date.now(),in
     .sort((a,b) => a.used - b.used || (a.windowResetAt ?? Infinity) - (b.windowResetAt ?? Infinity))[0] ?? null;
 }
 
-/** A running Claude agent's independent helper can use Codex while its own allowance is under pressure. */
-export function codexRoomForClaudeDelegation(now = Date.now(), accountLabel?: string): { claudeUsed: number; codexUsed: number } | null {
-  const usage = storedUsage('claude-code');
+/** Whether independent work can use the other provider while this run's allowance is low. */
+export function otherProviderRoomForDelegation(provider: 'claude-code' | 'codex', now = Date.now(), accountLabel?: string): 'claude-code' | 'codex' | null {
+  const usage = storedUsage(provider);
   const selected = usage?.accounts.find(account => account.current)?.label;
   // Automatic dispatch compares the selected launchable account. A run on another
-  // account must not be promised Codex delegation from that comparison.
+  // account must not be promised another provider from that comparison.
   if (accountLabel && selected !== accountLabel) return null;
-  if (!measuredBudgetPressure('claude-code', accountLabel, now)) return null;
-  const claude = newWorkCapacity('claude-code', now);
-  const codex = newWorkCapacity('codex', now);
-  if (!claude || !codex || codex.used >= 100 || codex.used >= claude.used) return null;
-  return { claudeUsed: claude.used, codexUsed: codex.used };
+  if (!measuredBudgetPressure(provider, accountLabel, now)) return null;
+  const other = provider === 'claude-code' ? 'codex' : 'claude-code';
+  const current = newWorkCapacity(provider, now);
+  const alternative = newWorkCapacity(other, now);
+  if (!current || !alternative || alternative.used >= 100 || alternative.used >= current.used) return null;
+  return other;
 }
 
 /** A threshold notice is an Accounts reading, never a dispatch estimate or cached refusal. */
@@ -103,9 +143,9 @@ export function budgetBriefWithProviderRoom(provider: 'claude-code' | 'codex', n
   const pressure = measuredBudgetPressure(provider, accountLabel, now);
   if (!pressure) return null;
   const name = (key: 'claude-code' | 'codex') => providerDisplayName(key) ?? key;
-  const codex = provider === 'claude-code' ? codexRoomForClaudeDelegation(now, pressure.account) : null;
-  const action = codex
-    ? 'Continue the accepted work. Provider-native subagents inherit this session\'s provider. If other work is its own job, a new session without --provider lets the owner use current Codex room, whether or not Tejas follows it. Review its result before you finish; this running session keeps its provider.'
+  const other = otherProviderRoomForDelegation(provider, now, pressure.account);
+  const action = other
+    ? `Continue the accepted work. Provider-native subagents inherit this session's provider. If other work is its own job, a new session without --provider lets the owner use current ${name(other)} room, whether or not Tejas follows it. Review its result before you finish; this running session keeps its provider.`
     : 'Continue the accepted work. Provider-native subagents inherit this session\'s provider; no other provider has been established as the roomier choice for separate work.';
   const machine = process.platform === 'darwin' ? 'your Mac' : 'the server';
   return [`Budget: Accounts on ${machine} measured ${name(provider)} account ${pressure.account}, ${pressure.window}: ${pressure.usedPercent}% used at ${pressure.observedAt}.`,
@@ -116,7 +156,7 @@ export function budgetBriefWithProviderRoom(provider: 'claude-code' | 'codex', n
 /** A stable request ID spreads starts in proportion to verified remaining allowance.
  * The 90% warning is already the reserve boundary: use accounts below it first. */
 export function chooseProviderForNewWork(canStart: (provider: AutomaticProvider) => boolean,
-  choiceKey: string, now = Date.now(), delegatedFromClaude = false, smallTask = false): AutomaticProvider {
+  choiceKey: string, now = Date.now(), delegatedFrom: 'claude-code' | 'codex' | null = null, smallTask = false): AutomaticProvider {
   if (!choiceKey) throw new Error('Automatic provider choice needs the accepted action identity.');
   const eligible = (smallTask ? ['claude-code','codex','antigravity'] : ['claude-code','codex']) as AutomaticProvider[];
   const rooms = candidatesForNewWork(now);
@@ -125,19 +165,15 @@ export function chooseProviderForNewWork(canStart: (provider: AutomaticProvider)
       .sort((a,b) => a.used - b.used || (a.windowResetAt ?? Infinity) - (b.windowResetAt ?? Infinity))[0];
     return candidate && canStart(provider) ? [candidate] : [];
   });
-  if (!smallTask && delegatedFromClaude && canStart('codex') && codexRoomForClaudeDelegation(now)) return 'codex';
+  const delegationRoom = !smallTask && delegatedFrom ? otherProviderRoomForDelegation(delegatedFrom, now) : null;
+  if (delegationRoom && canStart(delegationRoom)) return delegationRoom;
   const available = candidates.filter(candidate => candidate.used < 100);
   if (available.length) {
+    // Startable now (its roomiest account under the warning) decides the pool; the provider's
+    // total room across its accounts decides the share.
     const belowReserve = available.filter(candidate => candidate.used < NOTICE_AT_PERCENT);
     const pool = belowReserve.length ? belowReserve : available;
-    const total = pool.reduce((sum,candidate) => sum + 100 - candidate.used, 0);
-    const fraction = createHash('sha256').update(choiceKey).digest().readUInt32BE(0) / 0x1_0000_0000;
-    let point = fraction * total;
-    for (const candidate of pool) {
-      point -= 100 - candidate.used;
-      if (point < 0) return candidate.provider;
-    }
-    return pool.at(-1)!.provider;
+    return pickByProviderRoom(pool, choiceKey).provider;
   }
   const paid=candidates.find(candidate=>candidate.paidCredits);
   if(paid)return paid.provider;

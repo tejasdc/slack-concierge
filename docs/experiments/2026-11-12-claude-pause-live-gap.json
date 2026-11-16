@@ -1,0 +1,533 @@
+{
+  "installedCommit": "30091dda5e0dc48d1d2f43f6146e2d5b398fc803",
+  "controls": [
+    {
+      "label": "pause-A",
+      "session": {
+        "id": "concierge:9503",
+        "address": "session:WzIsOTUwMywxXQ",
+        "bindingGeneration": 1,
+        "runtimeThreadId": "b4de3d93-02eb-428b-895b-80d8bf94788c",
+        "suspended": true,
+        "activeRunId": null,
+        "latestRunId": "3645dfa1-d3c0-4d77-a29d-95b6e73e11bd",
+        "pendingCount": 0
+      },
+      "operation": {
+        "version": 1,
+        "operationId": "27f2a384-6203-4a5b-912f-535bba2d2a28",
+        "sessionId": "concierge:9503",
+        "humanAuthored": false,
+        "provenance": {
+          "source": {
+            "inputId": "watch:9d3a3e3ceab4:fired",
+            "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+            "sessionId": "concierge:9501"
+          },
+          "requestId": null,
+          "effectScope": "work",
+          "originatingHuman": {
+            "inputId": "c3179fa5-049c-41b9-b3cd-d6d75246d285",
+            "runId": "3bfed436-f5fb-4a8d-8e60-44374a8dcc9d",
+            "sessionId": "concierge:3172"
+          }
+        },
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "kind": "action",
+        "origin": "agent",
+        "state": "completed",
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "statusDetail": null,
+        "providerOutage": null,
+        "text": null,
+        "request": null,
+        "attachments": [],
+        "notificationRequest": null,
+        "createdAt": "2026-11-12T21:13:43.000Z",
+        "updatedAt": "2026-11-12T21:13:43.000Z",
+        "childSessionId": null,
+        "result": null,
+        "admission": null
+      }
+    },
+    {
+      "label": "continue-B",
+      "session": {
+        "id": "concierge:9503",
+        "address": "session:WzIsOTUwMywxXQ",
+        "bindingGeneration": 1,
+        "runtimeThreadId": "b4de3d93-02eb-428b-895b-80d8bf94788c",
+        "suspended": false,
+        "activeRunId": null,
+        "latestRunId": "3645dfa1-d3c0-4d77-a29d-95b6e73e11bd",
+        "pendingCount": 0
+      },
+      "operation": {
+        "version": 1,
+        "operationId": "ea81b5e7-ddde-4bce-a82c-f02d70b175a7",
+        "sessionId": "concierge:9503",
+        "humanAuthored": false,
+        "provenance": {
+          "source": {
+            "inputId": "watch:9d3a3e3ceab4:fired",
+            "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+            "sessionId": "concierge:9501"
+          },
+          "requestId": null,
+          "effectScope": "work",
+          "originatingHuman": {
+            "inputId": "c3179fa5-049c-41b9-b3cd-d6d75246d285",
+            "runId": "3bfed436-f5fb-4a8d-8e60-44374a8dcc9d",
+            "sessionId": "concierge:3172"
+          }
+        },
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "kind": "action",
+        "origin": "agent",
+        "state": "completed",
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "statusDetail": null,
+        "providerOutage": null,
+        "text": null,
+        "request": null,
+        "attachments": [],
+        "notificationRequest": null,
+        "createdAt": "2026-11-12T21:13:54.000Z",
+        "updatedAt": "2026-11-12T21:13:54.000Z",
+        "childSessionId": null,
+        "result": null,
+        "admission": null
+      }
+    },
+    {
+      "label": "retry-A",
+      "session": {
+        "id": "concierge:9503",
+        "address": "session:WzIsOTUwMywxXQ",
+        "bindingGeneration": 1,
+        "runtimeThreadId": "b4de3d93-02eb-428b-895b-80d8bf94788c",
+        "suspended": false,
+        "activeRunId": null,
+        "latestRunId": "3645dfa1-d3c0-4d77-a29d-95b6e73e11bd",
+        "pendingCount": 0
+      },
+      "operation": {
+        "version": 1,
+        "operationId": "27f2a384-6203-4a5b-912f-535bba2d2a28",
+        "sessionId": "concierge:9503",
+        "humanAuthored": false,
+        "provenance": {
+          "source": {
+            "inputId": "watch:9d3a3e3ceab4:fired",
+            "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+            "sessionId": "concierge:9501"
+          },
+          "requestId": null,
+          "effectScope": "work",
+          "originatingHuman": {
+            "inputId": "c3179fa5-049c-41b9-b3cd-d6d75246d285",
+            "runId": "3bfed436-f5fb-4a8d-8e60-44374a8dcc9d",
+            "sessionId": "concierge:3172"
+          }
+        },
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "kind": "action",
+        "origin": "agent",
+        "state": "completed",
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "statusDetail": null,
+        "providerOutage": null,
+        "text": null,
+        "request": null,
+        "attachments": [],
+        "notificationRequest": null,
+        "createdAt": "2026-11-12T21:13:43.000Z",
+        "updatedAt": "2026-11-12T21:13:43.000Z",
+        "childSessionId": null,
+        "result": null,
+        "admission": null
+      }
+    },
+    {
+      "label": "pause-C",
+      "session": {
+        "id": "concierge:9503",
+        "address": "session:WzIsOTUwMywxXQ",
+        "bindingGeneration": 1,
+        "runtimeThreadId": "b4de3d93-02eb-428b-895b-80d8bf94788c",
+        "suspended": true,
+        "activeRunId": null,
+        "latestRunId": "3645dfa1-d3c0-4d77-a29d-95b6e73e11bd",
+        "pendingCount": 0
+      },
+      "operation": {
+        "version": 1,
+        "operationId": "5f23b582-4be9-465e-82f1-71414d929dcf",
+        "sessionId": "concierge:9503",
+        "humanAuthored": false,
+        "provenance": {
+          "source": {
+            "inputId": "watch:9d3a3e3ceab4:fired",
+            "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+            "sessionId": "concierge:9501"
+          },
+          "requestId": null,
+          "effectScope": "work",
+          "originatingHuman": {
+            "inputId": "c3179fa5-049c-41b9-b3cd-d6d75246d285",
+            "runId": "3bfed436-f5fb-4a8d-8e60-44374a8dcc9d",
+            "sessionId": "concierge:3172"
+          }
+        },
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "kind": "action",
+        "origin": "agent",
+        "state": "completed",
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "statusDetail": null,
+        "providerOutage": null,
+        "text": null,
+        "request": null,
+        "attachments": [],
+        "notificationRequest": null,
+        "createdAt": "2026-11-12T21:13:56.000Z",
+        "updatedAt": "2026-11-12T21:13:56.000Z",
+        "childSessionId": null,
+        "result": null,
+        "admission": null
+      }
+    },
+    {
+      "label": "retry-B",
+      "session": {
+        "id": "concierge:9503",
+        "address": "session:WzIsOTUwMywxXQ",
+        "bindingGeneration": 1,
+        "runtimeThreadId": "b4de3d93-02eb-428b-895b-80d8bf94788c",
+        "suspended": true,
+        "activeRunId": null,
+        "latestRunId": "3645dfa1-d3c0-4d77-a29d-95b6e73e11bd",
+        "pendingCount": 0
+      },
+      "operation": {
+        "version": 1,
+        "operationId": "ea81b5e7-ddde-4bce-a82c-f02d70b175a7",
+        "sessionId": "concierge:9503",
+        "humanAuthored": false,
+        "provenance": {
+          "source": {
+            "inputId": "watch:9d3a3e3ceab4:fired",
+            "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+            "sessionId": "concierge:9501"
+          },
+          "requestId": null,
+          "effectScope": "work",
+          "originatingHuman": {
+            "inputId": "c3179fa5-049c-41b9-b3cd-d6d75246d285",
+            "runId": "3bfed436-f5fb-4a8d-8e60-44374a8dcc9d",
+            "sessionId": "concierge:3172"
+          }
+        },
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "kind": "action",
+        "origin": "agent",
+        "state": "completed",
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "statusDetail": null,
+        "providerOutage": null,
+        "text": null,
+        "request": null,
+        "attachments": [],
+        "notificationRequest": null,
+        "createdAt": "2026-11-12T21:13:54.000Z",
+        "updatedAt": "2026-11-12T21:13:54.000Z",
+        "childSessionId": null,
+        "result": null,
+        "admission": null
+      }
+    },
+    {
+      "label": "continue-D",
+      "session": {
+        "id": "concierge:9503",
+        "address": "session:WzIsOTUwMywxXQ",
+        "bindingGeneration": 1,
+        "runtimeThreadId": "b4de3d93-02eb-428b-895b-80d8bf94788c",
+        "suspended": false,
+        "activeRunId": null,
+        "latestRunId": "3645dfa1-d3c0-4d77-a29d-95b6e73e11bd",
+        "pendingCount": 0
+      },
+      "operation": {
+        "version": 1,
+        "operationId": "e311caa8-1918-4391-9c55-20cb00830321",
+        "sessionId": "concierge:9503",
+        "humanAuthored": false,
+        "provenance": {
+          "source": {
+            "inputId": "watch:9d3a3e3ceab4:fired",
+            "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+            "sessionId": "concierge:9501"
+          },
+          "requestId": null,
+          "effectScope": "work",
+          "originatingHuman": {
+            "inputId": "c3179fa5-049c-41b9-b3cd-d6d75246d285",
+            "runId": "3bfed436-f5fb-4a8d-8e60-44374a8dcc9d",
+            "sessionId": "concierge:3172"
+          }
+        },
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "kind": "action",
+        "origin": "agent",
+        "state": "completed",
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "statusDetail": null,
+        "providerOutage": null,
+        "text": null,
+        "request": null,
+        "attachments": [],
+        "notificationRequest": null,
+        "createdAt": "2026-11-12T21:16:24.000Z",
+        "updatedAt": "2026-11-12T21:16:24.000Z",
+        "childSessionId": null,
+        "result": null,
+        "admission": null
+      }
+    }
+  ],
+  "conflicts": {
+    "conflict-verb": {
+      "error": "Idempotency conflict: accepted action payload changed."
+    },
+    "conflict-target": {
+      "error": "Idempotency conflict: accepted action payload changed."
+    }
+  },
+  "markedCapture": {
+    "ok": true,
+    "path": "mac",
+    "status": 200,
+    "body": "{\"outcome\":\"replied\",\"captureId\":\"f2469628-37b9-4e28-b43e-5ff922262b3d\",\"sessionId\":\"concierge:9503\",\"operationId\":\"71b9aeb2-54d5-4294-ba02-ff2afc33ac85\",\"inputId\":\"71b9aeb2-54d5-4294-ba02-ff2afc33ac85\"}"
+  },
+  "heldInputSnapshots": {
+    "held-operation-before": {
+      "version": 1,
+      "operationId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+      "sessionId": "concierge:9503",
+      "humanAuthored": false,
+      "provenance": {
+        "source": {
+          "inputId": "watch:9d3a3e3ceab4:fired",
+          "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+          "sessionId": "concierge:9501"
+        },
+        "requestId": null,
+        "effectScope": null,
+        "originatingHuman": null
+      },
+      "inputId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+      "requestId": null,
+      "runId": null,
+      "kind": "input",
+      "origin": "agent",
+      "state": "waiting",
+      "acknowledgedAt": null,
+      "settlement": null,
+      "returnDelivery": null,
+      "error": null,
+      "statusDetail": {
+        "code": "INPUT_HELD",
+        "message": "This accepted input has not been submitted to a provider.",
+        "clearsAt": null,
+        "automaticRetry": false
+      },
+      "providerOutage": null,
+      "text": "Synthetic read-only per-session Pause/Continue acceptance from controller9501. When explicitly continued, recall the exact synthetic fact from your first turn without reading any file, transcript, notes, tools or other session to retrieve it. Then run only ordinary inherited claude auth status, no environment override or account mutation. Reply once with the remembered fact and actual account email/configDirectory. Do not perform any other action or replay earlier effects. This message must remain unstarted while this exact conversation is intentionally paused.",
+      "request": {
+        "agentSource": {
+          "inputId": "watch:9d3a3e3ceab4:fired",
+          "runId": "4ab333d7-bbb2-418b-9b31-892135197385"
+        },
+        "attachments": [],
+        "clientActionId": "share-reply:f2469628-37b9-4e28-b43e-5ff922262b3d",
+        "intent": null,
+        "selection": [],
+        "text": "Synthetic read-only per-session Pause/Continue acceptance from controller9501. When explicitly continued, recall the exact synthetic fact from your first turn without reading any file, transcript, notes, tools or other session to retrieve it. Then run only ordinary inherited claude auth status, no environment override or account mutation. Reply once with the remembered fact and actual account email/configDirectory. Do not perform any other action or replay earlier effects. This message must remain unstarted while this exact conversation is intentionally paused."
+      },
+      "attachments": [],
+      "notificationRequest": null,
+      "createdAt": "2026-11-12T21:14:21.000Z",
+      "updatedAt": "2026-11-12T21:14:21.000Z",
+      "childSessionId": null,
+      "result": null,
+      "admission": null
+    },
+    "held-operation-after-isolation": {
+      "version": 1,
+      "operationId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+      "sessionId": "concierge:9503",
+      "humanAuthored": false,
+      "provenance": {
+        "source": {
+          "inputId": "watch:9d3a3e3ceab4:fired",
+          "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+          "sessionId": "concierge:9501"
+        },
+        "requestId": null,
+        "effectScope": null,
+        "originatingHuman": null
+      },
+      "inputId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+      "requestId": null,
+      "runId": null,
+      "kind": "input",
+      "origin": "agent",
+      "state": "waiting",
+      "acknowledgedAt": null,
+      "settlement": null,
+      "returnDelivery": null,
+      "error": null,
+      "statusDetail": {
+        "code": "INPUT_HELD",
+        "message": "This accepted input has not been submitted to a provider.",
+        "clearsAt": null,
+        "automaticRetry": false
+      },
+      "providerOutage": null,
+      "text": "Synthetic read-only per-session Pause/Continue acceptance from controller9501. When explicitly continued, recall the exact synthetic fact from your first turn without reading any file, transcript, notes, tools or other session to retrieve it. Then run only ordinary inherited claude auth status, no environment override or account mutation. Reply once with the remembered fact and actual account email/configDirectory. Do not perform any other action or replay earlier effects. This message must remain unstarted while this exact conversation is intentionally paused.",
+      "request": {
+        "agentSource": {
+          "inputId": "watch:9d3a3e3ceab4:fired",
+          "runId": "4ab333d7-bbb2-418b-9b31-892135197385"
+        },
+        "attachments": [],
+        "clientActionId": "share-reply:f2469628-37b9-4e28-b43e-5ff922262b3d",
+        "intent": null,
+        "selection": [],
+        "text": "Synthetic read-only per-session Pause/Continue acceptance from controller9501. When explicitly continued, recall the exact synthetic fact from your first turn without reading any file, transcript, notes, tools or other session to retrieve it. Then run only ordinary inherited claude auth status, no environment override or account mutation. Reply once with the remembered fact and actual account email/configDirectory. Do not perform any other action or replay earlier effects. This message must remain unstarted while this exact conversation is intentionally paused."
+      },
+      "attachments": [],
+      "notificationRequest": null,
+      "createdAt": "2026-11-12T21:14:21.000Z",
+      "updatedAt": "2026-11-12T21:14:21.000Z",
+      "childSessionId": null,
+      "result": null,
+      "admission": null
+    },
+    "held-operation-after-continue": {
+      "version": 1,
+      "operationId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+      "sessionId": "concierge:9503",
+      "humanAuthored": false,
+      "provenance": {
+        "source": {
+          "inputId": "watch:9d3a3e3ceab4:fired",
+          "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+          "sessionId": "concierge:9501"
+        },
+        "requestId": null,
+        "effectScope": null,
+        "originatingHuman": null
+      },
+      "inputId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+      "requestId": null,
+      "runId": null,
+      "kind": "input",
+      "origin": "agent",
+      "state": "waiting",
+      "acknowledgedAt": null,
+      "settlement": null,
+      "returnDelivery": null,
+      "error": null,
+      "statusDetail": {
+        "code": "INPUT_HELD",
+        "message": "This accepted input has not been submitted to a provider.",
+        "clearsAt": null,
+        "automaticRetry": false
+      },
+      "providerOutage": null,
+      "text": "Synthetic read-only per-session Pause/Continue acceptance from controller9501. When explicitly continued, recall the exact synthetic fact from your first turn without reading any file, transcript, notes, tools or other session to retrieve it. Then run only ordinary inherited claude auth status, no environment override or account mutation. Reply once with the remembered fact and actual account email/configDirectory. Do not perform any other action or replay earlier effects. This message must remain unstarted while this exact conversation is intentionally paused.",
+      "request": {
+        "agentSource": {
+          "inputId": "watch:9d3a3e3ceab4:fired",
+          "runId": "4ab333d7-bbb2-418b-9b31-892135197385"
+        },
+        "attachments": [],
+        "clientActionId": "share-reply:f2469628-37b9-4e28-b43e-5ff922262b3d",
+        "intent": null,
+        "selection": [],
+        "text": "Synthetic read-only per-session Pause/Continue acceptance from controller9501. When explicitly continued, recall the exact synthetic fact from your first turn without reading any file, transcript, notes, tools or other session to retrieve it. Then run only ordinary inherited claude auth status, no environment override or account mutation. Reply once with the remembered fact and actual account email/configDirectory. Do not perform any other action or replay earlier effects. This message must remain unstarted while this exact conversation is intentionally paused."
+      },
+      "attachments": [],
+      "notificationRequest": null,
+      "createdAt": "2026-11-12T21:14:21.000Z",
+      "updatedAt": "2026-11-12T21:14:21.000Z",
+      "childSessionId": null,
+      "result": null,
+      "admission": null
+    }
+  },
+  "globalPause": {
+    "paused": false,
+    "generation": 12,
+    "changedAt": "2026-10-22T05:16:05.767Z",
+    "peers": [
+      {
+        "name": "mac",
+        "paused": false
+      }
+    ]
+  },
+  "isolation": {
+    "request": "4b20d61c-96b6-4789-b0a0-4115ce166273",
+    "status": "settled",
+    "outcome": "answered",
+    "result": {
+      "text": "Remembered marker: ISOLATION-LOTUS-9501 (recalled from my original turn, no files or sessions read). Actual email: tejas@chann.app. configDirectory: /root/.claude-accounts/tejas-chann-app.\n\nChecked on the real system: Ran ordinary claude auth status: loggedIn true, email tejas@chann.app, configDirectory /root/.claude-accounts/tejas-chann-app.",
+      "final": true,
+      "source": {
+        "input_id": "request:4b20d61c-96b6-4789-b0a0-4115ce166273",
+        "run_id": "c4ecbba8-0304-4bae-b360-d5c6ac6d127e"
+      },
+      "responding_session_id": "concierge:9506",
+      "replyBody": "Remembered marker: ISOLATION-LOTUS-9501 (recalled from my original turn, no files or sessions read). Actual email: tejas@chann.app. configDirectory: /root/.claude-accounts/tejas-chann-app.",
+      "closingLine": "Completed \u00b7 Checked on the real system: Ran ordinary claude auth status: loggedIn true, email tejas@chann.app, configDirectory /root/.claude-accounts/tejas-chann-app.",
+      "summary": "Comparison conversation still works: marker ISOLATION-LOTUS-9501, tejas@chann.app",
+      "workDisposition": "completed",
+      "completionTurnId": 29273,
+      "event_id": "5a20836a-57df-4c91-87ac-c4ca2df70e10"
+    }
+  },
+  "verdict": "Control and held admission observed; comparison conversation completed during hold. Continue cleared suspension but exact accepted input stayed unsubmitted. Overall Continue acceptance FAILED on this installed release; recovery correction not yet installed."
+}

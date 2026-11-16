@@ -50,7 +50,8 @@ thnkr.ing keeps at `THINKERING_AGENT_TEST_KEY_FILE`), `notification-reply` (thnk
 as `X-Concierge-Agent-Source: <input> <run>` on the drop-off and thnkr.ing, and as
 `source.metadata.agentSource` or `agentSource` at the owner. The owner (`agentTestSource`)
 records the capture with origin agent and that source, shows it in the Inbox under the agent's
-name and starts no Inbox turn; a reply is an agent input to its session. Naming a run can only
+name and starts no Inbox turn; a reply is an agent input to its session. The named run must be
+the run assigned to that exact accepted input. Naming a run can only
 label something as an agent's, never as his. thnkr.ing refuses its agent test key without the
 header.
 
@@ -59,6 +60,11 @@ entrance uses the existing server-held Thinkering capture key with its agent-sou
 header. The Pebble route accepts that key only with the header; ordinary Pebble
 requests still use the phone key. The canonical owner validates the named input and
 run before it records an agent capture.
+
+Monologue, Alexa and Voice Memos tests use the same agent-to-owner connection as
+`sessions` commands. This works for a run outside Concierge's process, where the
+owner's local socket is not mounted. The returned Inbox receipt identifies the accepted
+capture and its agent origin; these marked tests do not start an Inbox turn.
 
 His own messages show the door they came through ("You · iPhone Action Button", "You · Mac
 quick capture", "You · Pebble", "You · web", "You · web (password)"), derived by the owner from

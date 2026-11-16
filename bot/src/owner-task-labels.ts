@@ -24,6 +24,9 @@ const context=new AsyncLocalStorage<number>();
 // Times, in ms since `origin` as 64-bit floats so they never wrap: [0] heartbeat, [1] running label
 // set, [2] last label ended, [3] latest block started, [4] cumulative ledger-occupied ms.
 const shared=new Int32Array(new SharedArrayBuffer(16)),times=new Float64Array(new SharedArrayBuffer(40));
+// [version, fingerprint high 32 bits, low 32 bits, active]. A version is published
+// only after the other fields, so the watchdog never joins a torn statement identity.
+const statement=new Int32Array(new SharedArrayBuffer(16));
 const origin=performance.timeOrigin+performance.now();
 const labelIds=new Map<string,number>(),labelNames:string[]=['none'];
 let watchdog:Worker|null=null;
@@ -91,6 +94,29 @@ export function lastBlockTask(sinceMs:number):{task:string;task_marked:boolean;b
 /** Ledger time on the owner's thread, so a block reports how much of it was waiting on the ledger. */
 export function noteLedgerOccupied(ms:number):void {if(watchdog)times[4]=times[4]!+ms;}
 
+/** Publish only the content-free SQL fingerprint while one native statement runs.
+ * The watchdog does the procfs reads; the accepting loop only writes shared integers. */
+export function markStorageStatement(fingerprint:()=>string):number {
+  if(!watchdog)return 0;
+  let high:number,low:number;
+  try {
+    const value=fingerprint();
+    if(!/^[0-9a-f]{16}$/.test(value))return 0;
+    high=parseInt(value.slice(0,8),16);low=parseInt(value.slice(8),16);
+  } catch {return 0;}
+  Atomics.add(statement,0,1); // odd while being written
+  Atomics.store(statement,1,high);
+  Atomics.store(statement,2,low);
+  Atomics.store(statement,3,1);
+  return Atomics.add(statement,0,1)+1;
+}
+export function clearStorageStatement(version:number):void {
+  if(!version||Atomics.load(statement,0)!==version)return;
+  Atomics.add(statement,0,1);
+  Atomics.store(statement,3,0);
+  Atomics.add(statement,0,1);
+}
+
 /** A bounded label for an HTTP route: identifiers in the path become ":id". */
 export function routeLabel(kind:string,method:string,pathname:string):string {
   const path=pathname.split('/').map(part=>/^[0-9]+$|^[0-9a-f-]{16,}$|^[A-Za-z0-9_-]{24,}$|:/.test(part)?':id':part).join('/');
@@ -125,7 +151,7 @@ function wrapTimer<F extends (...args:any[])=>any>(kind:string,original:F):F {
 /** Owner process only: label every timer, start the heartbeat and the watchdog thread. */
 export function installOwnerTaskLabels():void {
   if(watchdog)return;
-  watchdog=new Worker(releaseWorkerPath('owner-task-watchdog-worker'),{workerData:{shared:shared.buffer,times:times.buffer,labels:labelNames,origin}});
+  watchdog=new Worker(releaseWorkerPath('owner-task-watchdog-worker'),{workerData:{shared:shared.buffer,times:times.buffer,statement:statement.buffer,labels:labelNames,origin}});
   watchdog.unref();
   const plainInterval=globalThis.setInterval;
   globalThis.setTimeout=wrapTimer('timeout',globalThis.setTimeout);

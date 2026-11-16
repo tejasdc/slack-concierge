@@ -66,6 +66,12 @@ function insidePrivateCodeEntrance() {
 /** Whether the owner applies this request at most once however often it is sent. */
 export function resendIsSafe(path: string, body?: unknown) {
   if (body === undefined) return true;
+  if(/^\/sessions\/v1\/lab\/conversations\/[^/]+\/participants$/.test(path)&&body&&typeof body==='object'){
+    const value=body as {clientActionId?:unknown;agentSource?:{inputId?:unknown;runId?:unknown}};
+    return typeof value.clientActionId==='string'&&!!value.clientActionId&&typeof value.agentSource?.inputId==='string'&&!!value.agentSource.inputId&&typeof value.agentSource?.runId==='string'&&!!value.agentSource.runId;
+  }
+  if(path.startsWith('/sessions/v1/agent-test/sessions/')&&body&&typeof body==='object'
+    &&typeof (body as {clientActionId?:unknown}).clientActionId==='string')return true;
   if(path==='/sessions/v1/canvas-projects/ensure'&&body&&typeof body==='object'&&'clientActionId' in body)return true;
   if(path==='/sessions/v1/agent-report'&&body&&typeof body==='object'&&typeof (body as {actionId?:unknown}).actionId==='string')return true;
   return path.startsWith('/session-communication/') || path.startsWith('/external/');
@@ -75,7 +81,7 @@ function failureKind(error: unknown): "never-reached" | "maybe-reached" {
   return ownerNeverReached(error) ? "never-reached" : "maybe-reached";
 }
 
-export async function requestApiResponse(path: string, body?: unknown, policy: RetryPolicy = RETRY_POLICIES.ownerRestart) {
+export async function requestApiResponse(path: string, body?: unknown, policy: RetryPolicy = RETRY_POLICIES.ownerRestart, source?:{inputId:string;runId:string}) {
   const serialized = body === undefined ? undefined : JSON.stringify(body);
   const safe = resendIsSafe(path, body);
   if (insidePrivateCodeEntrance()) return { ok: false, status: 0, result: { ok: false, error: "owner_hidden_by_private_code",
@@ -85,10 +91,15 @@ export async function requestApiResponse(path: string, body?: unknown, policy: R
   for (let attempts = 1; ; attempts++) {
     let failure: unknown;
     try {
+      // A retry policy bounds the whole operation, not only the time between failures. In
+      // particular, managed provider hooks have a 20-second process limit and a 15-second
+      // owner-restart budget; the shared 120-second command timeout must not overrun either.
+      const remainingMs = policy.maxAgeMs - (Date.now() - started);
+      if (remainingMs <= 0) throw new Error('owner request retry budget expired');
       // The socket path is resolved per attempt: a restart may have replaced the directory link.
       const response = await fetch(ownerUrl(path), {
-        ...ownerTransport(), signal: AbortSignal.timeout(OWNER_COMMAND_RESPONSE_MS),
-        headers: { ...ownerHeaders(), ...(serialized === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        ...ownerTransport(), signal: AbortSignal.timeout(Math.min(OWNER_COMMAND_RESPONSE_MS, remainingMs)),
+        headers: { ...ownerHeaders(), ...(source?{'x-concierge-agent-source':`${source.inputId} ${source.runId}`}:{}), ...(serialized === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(serialized === undefined ? {} : { method: 'POST', body: serialized }),
       });
       const result: any = await response.json();
@@ -111,10 +122,25 @@ export async function requestApiResponse(path: string, body?: unknown, policy: R
   }
 }
 
+/**
+ * The owner refuses as `{error:{code,message}}` while this client's own failures use
+ * `{error:"code",detail}`; passing the object form to `Error` printed "[object Object]"
+ * and lost the refusal (2026-11-12, a session event read).
+ */
+export function refusalText(result: any, status: number) {
+  const error = result?.error;
+  const text = typeof result?.detail === 'string' && result.detail ? result.detail
+    : typeof error === 'string' && error ? error
+    : error && typeof error === 'object' ? [error.code, error.message].filter(part => typeof part === 'string' && part).join(': ')
+      || JSON.stringify(error)
+    : '';
+  return text || `Concierge rejected the request${status ? ` with HTTP ${status}` : ''}.`;
+}
+
 export async function requestApi(path: string, body?: unknown) {
   const response = await requestApiResponse(path, body);
   const result = response.result;
-  if (!response.ok) throw new Error(result.detail || result.error || 'Concierge request API rejected the request.');
+  if (!response.ok) throw new Error(refusalText(result, response.status));
   return result;
 }
 

@@ -3,6 +3,15 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
+export function requireOfflineReleaseServiceStopped(service:string,
+  read:(service:string)=>{status:number|null;stdout:string}) {
+  const status=read(service);
+  const fields=Object.fromEntries(status.stdout.trim().split('\n').map(line => line.split('=')));
+  if(status.status!==0||fields.LoadState!=='loaded'||!['inactive','failed'].includes(fields.ActiveState??'')
+    ||!['dead','failed'].includes(fields.SubState??'')||fields.MainPID!=='0'||fields.ControlPID!=='0'||fields.Job!=='')
+    throw new Error(`Offline release pointer publication requires ${service} fully stopped; observed ${JSON.stringify(fields)}.`);
+}
+
 /** Live schema has one owner. A helper importing a command must not migrate the ledger
  * before it runs that command; even a no-op UPDATE acquires SQLite's only writer. */
 export function ledgerAccess(directory: string, main: string, readWorker: boolean) {
@@ -15,8 +24,18 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
   };
   const live = directory === canonical || sameFile(join(directory, 'state.db'), join(canonical, 'state.db'));
   const name = basename(main).replace(/\.[cm]?[jt]s$/, '');
+  const offlinePointerCommands = new Set(['activate','restore-lkg','promote','set-control']);
+  if (live && process.platform === 'linux' && name === 'release-manager'
+      && offlinePointerCommands.has(process.argv[2] ?? '') && process.env.CONCIERGE_RELEASE_OFFLINE === '1') {
+    const service = process.env.CONCIERGE_SERVICE || 'concierge-bot.service';
+    requireOfflineReleaseServiceStopped(service,unit=>{
+      const status=spawnSync('systemctl',['show',unit,'-p','LoadState','-p','ActiveState','-p','SubState',
+        '-p','MainPID','-p','ControlPID','-p','Job'],{encoding:'utf8'});
+      return {status:status.status,stdout:status.stdout};
+    });
+  }
   const readCommands: Record<string, readonly string[]> = {
-    'release-manager': ['lkg', 'current', 'install-runtime', 'restore-lkg', 'set-control'],
+    'release-manager': ['lkg', 'current', 'install-runtime', 'install-launchers', 'restore-lkg', 'set-control'],
     'deploy-state': ['show', 'desired', 'repair-show'],
   };
   // The installed release controller sends its pre-stop mutations to the serving owner.
@@ -24,7 +43,7 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
   const ownerServedReleaseCommand = live && process.platform === 'linux'
     && process.env.CONCIERGE_RELEASE_OFFLINE !== '1'
     && name === 'release-manager'
-    && ['prepare', 'activate', 'restore-lkg', 'lkg', 'promote', 'prune'].includes(process.argv[2] ?? '');
+    && ['prepare', 'activate', 'restore-lkg', 'lkg', 'promote', 'set-control', 'prune'].includes(process.argv[2] ?? '');
   // Claiming a run was still an independent live writer after release preparation moved
   // to the owner. Its short-lived connection held WAL locks while it closed under disk load.
   const ownerServedDeploymentCommand = live && process.platform === 'linux'
@@ -34,7 +53,7 @@ export function ledgerAccess(directory: string, main: string, readWorker: boolea
   const forbidControllerLedgerOpen = live && process.platform === 'linux'
     && (ownerServedReleaseCommand || ownerServedDeploymentCommand
       || name === 'native-pipeline-continuation'
-      || (name === 'release-manager' && ['install-runtime', 'current', 'set-control'].includes(process.argv[2] ?? '')));
+      || (name === 'release-manager' && ['install-runtime', 'install-launchers', 'current', 'set-control'].includes(process.argv[2] ?? '')));
   const readonly = readWorker || ownerServedReleaseCommand || ownerServedDeploymentCommand
     || (readCommands[name]?.includes(process.argv[2] ?? '') ?? false);
   const command = new Set(['deploy-state', 'release-manager', 'deployment-repair', 'recover-deployment', 'session-turn-queue',

@@ -16,12 +16,11 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { request as httpRequest } from 'node:http';
+import { requestApiResponse } from './router-request-client';
 
 const DROP_OFF = process.env.CONCIERGE_CAPTURE_URL ?? 'https://capture.tejas.nyc';
 const THNKRING = process.env.THINKERING_ORIGIN_URL ?? 'https://thnkr.ing';
 const TEST_KEY_FILE = process.env.THINKERING_AGENT_TEST_KEY_FILE ?? '/root/.local/state/thinkering/agent-test-device.key';
-const SOCKET = `${process.env.CONCIERGE_STATE_DIR ?? '/root/.local/state/concierge'}/requests.sock`;
 const DEVICE_APPS: Record<string, string> = { 'iphone-share': 'thnkring-share', 'action-button': 'thnkring-action', watch: 'thnkring-watch', mac: 'thnkring-mac' };
 
 const fail = (message: string): never => { console.error(JSON.stringify({ ok: false, error: message })); process.exit(2); };
@@ -70,16 +69,12 @@ if (path === 'send-to-inbox' || path === 'bug-report') {
     headers: { ...agentHeader, 'content-type': 'application/json', authorization: `Bearer ${key(TEST_KEY_FILE)}` } });
 } else if (path === 'monologue' || path === 'alexa' || path === 'voice-memo') {
   // Supply the same source ID and recordedAt to exercise a producer's exact retry.
-  const body = JSON.stringify({ source: { kind: path, id: flags.get('--source-id') ?? `agent-test-${randomUUID()}`, recordedAt: flags.get('--recorded-at') ?? new Date().toISOString(), title: 'Agent test',
+  const result = await requestApiResponse('/sessions/v1/inbox', { source: { kind: path,
+    id: flags.get('--source-id') ?? `agent-test-${randomUUID()}`,
+    recordedAt: flags.get('--recorded-at') ?? new Date().toISOString(), title: 'Agent test',
     metadata: { agentSource: { inputId, runId } } }, text, files: [] });
-  const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-    const call = httpRequest({ socketPath: SOCKET, path: '/sessions/v1/inbox', method: 'POST', headers: { 'content-type': 'application/json' } }, response => {
-      let data = ''; response.on('data', chunk => data += chunk); response.on('end', () => resolve({ status: response.statusCode ?? 0, body: data }));
-    });
-    call.on('error', reject); call.end(body);
-  });
-  console.log(JSON.stringify({ ok: result.status < 300, path, status: result.status, body: result.body.slice(0, 2000) }));
-  process.exit(result.status < 300 ? 0 : 1);
+  console.log(JSON.stringify({ ok: result.ok, path, status: result.status, body: JSON.stringify(result.result).slice(0, 2000) }));
+  process.exit(result.ok ? 0 : 1);
 } else {
   fail('Choose a path: send-to-inbox, bug-report, pebble, iphone-share, action-button, watch, mac, notification-reply, monologue, alexa, voice-memo.');
 }

@@ -1,0 +1,224 @@
+{
+  "installedCommit": "a0cad8cdd3c189bb329f21e0d018be2f93cf38d7",
+  "requiredRepairCommit": "0a5d63e7b189e75a4cffaafce062b4b0637d96c0",
+  "repairMerge": "0b67838945bc1b5b79004ab8715145cc80eb87a3",
+  "releaseWatch": {
+    "id": "b1b890ea2253",
+    "registeredAt": "2026-11-12T21:26:09.451Z",
+    "lastObservedAt": "2026-11-12T21:45:43.474Z",
+    "observationGaps": []
+  },
+  "operation": {
+    "version": 1,
+    "operationId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+    "sessionId": "concierge:9503",
+    "humanAuthored": false,
+    "provenance": {
+      "source": {
+        "inputId": "watch:9d3a3e3ceab4:fired",
+        "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+        "sessionId": "concierge:9501"
+      },
+      "requestId": null,
+      "effectScope": null,
+      "originatingHuman": null
+    },
+    "inputId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+    "requestId": null,
+    "runId": "53f4bab6-839e-4a0f-93b7-eaf1d5143f5d",
+    "kind": "input",
+    "origin": "agent",
+    "state": "completed",
+    "acknowledgedAt": "2026-11-12T21:45:58.000Z",
+    "settlement": null,
+    "returnDelivery": null,
+    "error": null,
+    "statusDetail": null,
+    "providerOutage": null,
+    "text": "Synthetic read-only per-session Pause/Continue acceptance from controller9501. When explicitly continued, recall the exact synthetic fact from your first turn without reading any file, transcript, notes, tools or other session to retrieve it. Then run only ordinary inherited claude auth status, no environment override or account mutation. Reply once with the remembered fact and actual account email/configDirectory. Do not perform any other action or replay earlier effects. This message must remain unstarted while this exact conversation is intentionally paused.",
+    "request": {
+      "agentSource": {
+        "inputId": "watch:9d3a3e3ceab4:fired",
+        "runId": "4ab333d7-bbb2-418b-9b31-892135197385"
+      },
+      "attachments": [],
+      "clientActionId": "share-reply:f2469628-37b9-4e28-b43e-5ff922262b3d",
+      "intent": null,
+      "selection": [],
+      "text": "Synthetic read-only per-session Pause/Continue acceptance from controller9501. When explicitly continued, recall the exact synthetic fact from your first turn without reading any file, transcript, notes, tools or other session to retrieve it. Then run only ordinary inherited claude auth status, no environment override or account mutation. Reply once with the remembered fact and actual account email/configDirectory. Do not perform any other action or replay earlier effects. This message must remain unstarted while this exact conversation is intentionally paused."
+    },
+    "attachments": [],
+    "notificationRequest": null,
+    "createdAt": "2026-11-12T21:14:21.000Z",
+    "updatedAt": "2026-11-12T21:46:02.000Z",
+    "childSessionId": null,
+    "result": "TL;DR: The fact I was asked to remember is LIFECYCLE-IRIS-9501. `claude auth status` reports `tejas@chann.app`, with config directory `/root/.claude-accounts/tejas-chann-app`.\n\nI recalled the fact from this conversation's first turn without reading any file or transcript. I ran only plain `claude auth status`, with no environment override or account change. I took no other action.",
+    "admission": {
+      "provider": "claude-code",
+      "purpose": "develop",
+      "inputId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+      "runId": "53f4bab6-839e-4a0f-93b7-eaf1d5143f5d",
+      "bindingGeneration": 1,
+      "admittedAt": "2026-11-12T21:45:53.715Z",
+      "promptHash": "0bb8fe19ef6b640c8df76112c9fd02d95bcdb3946baffb449e49c46ee76764bf",
+      "model": "claude-sonnet-5-5",
+      "attachments": [],
+      "policy": "standard",
+      "nativeBinding": null
+    }
+  },
+  "nativeEvidence": {
+    "nativeUuid": "b4de3d93-02eb-428b-895b-80d8bf94788c",
+    "inputHeader": {
+      "type": "concierge-session-input",
+      "input": {
+        "id": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+        "runId": "53f4bab6-839e-4a0f-93b7-eaf1d5143f5d",
+        "sessionId": "concierge:9503",
+        "origin": "agent",
+        "provenance": {
+          "source": {
+            "inputId": "watch:9d3a3e3ceab4:fired",
+            "runId": "4ab333d7-bbb2-418b-9b31-892135197385",
+            "sessionId": "concierge:9501"
+          },
+          "requestId": null,
+          "effectScope": null,
+          "originatingHuman": null
+        }
+      }
+    },
+    "inputUuid": "5043f99f-6d05-42f2-ac87-d5bc8ccc39c6",
+    "inputTimestamp": "2026-11-12T21:45:56.225Z",
+    "completeAdmittedInputBytes": 1622,
+    "completeAdmittedInputSHA256": "0bb8fe19ef6b640c8df76112c9fd02d95bcdb3946baffb449e49c46ee76764bf",
+    "expectedFactAbsentFromAdmittedInput": true,
+    "matchingNativeAdmittedInputCount": 1,
+    "toolUses": [
+      {
+        "uuid": "e27de1a6-7ff9-4511-b815-36d4c4d12277",
+        "timestamp": "2026-11-12T21:45:58.095Z",
+        "name": "Bash",
+        "input": {
+          "command": "claude auth status"
+        }
+      }
+    ],
+    "authResults": [
+      {
+        "uuid": "d02b25b0-abeb-4910-8bc3-7400c5f0c590",
+        "timestamp": "2026-11-12T21:45:58.853Z",
+        "auth": {
+          "loggedIn": true,
+          "authMethod": "claude.ai",
+          "configDirectory": "/root/.claude-accounts/tejas-chann-app",
+          "email": "tejas@chann.app"
+        }
+      }
+    ],
+    "finalAnswers": [
+      {
+        "uuid": "ee18f6ce-3811-4ce3-8bbf-75cd2ad93909",
+        "timestamp": "2026-11-12T21:46:00.343Z",
+        "text": "TL;DR: The fact I was asked to remember is LIFECYCLE-IRIS-9501. `claude auth status` reports `tejas@chann.app`, with config directory `/root/.claude-accounts/tejas-chann-app`.\n\nI recalled the fact from this conversation's first turn without reading any file or transcript. I ran only plain `claude auth status`, with no environment override or account change. I took no other action."
+      }
+    ]
+  },
+  "target": {
+    "id": "concierge:9503",
+    "address": "session:WzIsOTUwMywxXQ",
+    "bindingGeneration": 1,
+    "runtimeThreadId": "b4de3d93-02eb-428b-895b-80d8bf94788c",
+    "suspended": false,
+    "execution": "completed",
+    "activeRunId": null,
+    "latestRunId": "53f4bab6-839e-4a0f-93b7-eaf1d5143f5d",
+    "pendingCount": 0
+  },
+  "comparison": {
+    "id": "concierge:9506",
+    "address": "session:WzIsOTUwNiwxXQ",
+    "bindingGeneration": 1,
+    "runtimeThreadId": "1cf38a30-6ed6-4737-9737-1c42a3e10406",
+    "suspended": false,
+    "execution": "completed",
+    "latestRunId": "c4ecbba8-0304-4bae-b360-d5c6ac6d127e"
+  },
+  "globalPause": {
+    "paused": false,
+    "generation": 12,
+    "changedAt": "2026-10-22T05:16:05.767Z"
+  },
+  "review": {
+    "provider": "Claude Code",
+    "model": "claude-sonnet-5-5",
+    "session": "cfa28e34-4a5a-4979-9dc6-dc0777217996",
+    "verdict": "SHIP for delivery; no installed acceptance claim"
+  },
+  "audit": "GPT-6 Luna independent read-only audit PASS for narrow repaired native Pause/Continue context and isolation: full marker-free admitted input matches owner prompt hash; same exact accepted input/native UUID; one observed native admission, auth call and terminal answer; distinct comparison completed while target held. Dispatch attempt is2, not a one-attempt claim. Mac, fresh exhaustion and independent different-account memory remain unproved.",
+  "limits": [
+    "Same-account Pause/Continue context check; current actual account remained Chann.",
+    "One observed input admission, auth command and terminal answer; no universal external-effect exactly-once claim.",
+    "Comparison conversation completed while target held; no universal all-process survival or credential-byte measurement.",
+    "Mac, fresh exhaustion and independent cross-account recall remain separate.",
+    "The account event suffix is attempt2; one observed provider input/final is not a claim of one dispatch attempt."
+  ],
+  "ownerCompletionEvents": {
+    "events": [
+      {
+        "cursor": "1805756",
+        "eventId": "queued:71b9aeb2-54d5-4294-ba02-ff2afc33ac85:29300",
+        "sessionId": "concierge:9503",
+        "operationId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+        "inputId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+        "runId": "53f4bab6-839e-4a0f-93b7-eaf1d5143f5d",
+        "kind": "accepted",
+        "at": "2026-11-12T21:45:37.000Z",
+        "payload": {
+          "origin": "agent",
+          "text": "Synthetic read-only per-session Pause/Continue acceptance from controller9501. When explicitly continued, recall the exact synthetic fact from your first turn without reading any file, transcript, notes, tools or other session to retrieve it. Then run only ordinary inherited claude auth status, no environment override or account mutation. Reply once with the remembered fact and actual account email/configDirectory. Do not perform any other action or replay earlier effects. This message must remain unstarted while this exact conversation is intentionally paused."
+        }
+      },
+      {
+        "cursor": "1805893",
+        "eventId": "claude-account:29300:2",
+        "sessionId": "concierge:9503",
+        "operationId": null,
+        "inputId": null,
+        "runId": "53f4bab6-839e-4a0f-93b7-eaf1d5143f5d",
+        "kind": "account",
+        "at": "2026-11-12T21:45:58.000Z",
+        "payload": {
+          "account": "tejas@chann.app",
+          "because": "stayed-for-warm-cache",
+          "expected": "tejas@chann.app"
+        }
+      },
+      {
+        "cursor": "1805907",
+        "eventId": "result:29300",
+        "sessionId": "concierge:9503",
+        "operationId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+        "inputId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+        "runId": "53f4bab6-839e-4a0f-93b7-eaf1d5143f5d",
+        "kind": "result",
+        "at": "2026-11-12T21:46:02.000Z",
+        "payload": {
+          "text": "TL;DR: The fact I was asked to remember is LIFECYCLE-IRIS-9501. `claude auth status` reports `tejas@chann.app`, with config directory `/root/.claude-accounts/tejas-chann-app`.\n\nI recalled the fact from this conversation's first turn without reading any file or transcript. I ran only plain `claude auth status`, with no environment override or account change. I took no other action.",
+          "sessionUUID": "b4de3d93-02eb-428b-895b-80d8bf94788c",
+          "toolsUsed": [
+            "Bash"
+          ],
+          "model": "claude-sonnet-5-5",
+          "durationMs": 4347,
+          "turnId": 29300,
+          "sessionId": 9503,
+          "inputId": "71b9aeb2-54d5-4294-ba02-ff2afc33ac85",
+          "runId": "53f4bab6-839e-4a0f-93b7-eaf1d5143f5d"
+        }
+      }
+    ],
+    "nextCursor": "1805907",
+    "hasMore": false
+  }
+}

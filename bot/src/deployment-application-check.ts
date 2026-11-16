@@ -47,6 +47,8 @@ export function checkReleaseApplication(artifact:string,repositoryRoot:string,re
    const bridge=join(artifact,'bot/src/codex-app-server-bridge.mjs');
    if(releaseCodexBridgePath(join(artifact,historyWorker))!==bridge)
     throw new Error('Sealed history worker cannot resolve its Codex bridge.');
+   if(releaseCodexBridgePath(join(artifact,'control/bot/scripts/runner.js'))!==bridge)
+    throw new Error('Sealed runner cannot resolve its Codex bridge.');
    const absentSocket=join(scratch,'missing-codex-app-server.sock');
    const bridgeCheck=spawnSync('/usr/bin/node',[bridge,absentSocket],{cwd:artifact,encoding:'utf8',timeout:5_000});
    if(bridgeCheck.error||bridgeCheck.status!==1||!bridgeCheck.stdout.includes('"type":"disconnect"')||

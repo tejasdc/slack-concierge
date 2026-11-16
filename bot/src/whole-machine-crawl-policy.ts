@@ -97,6 +97,40 @@ function crawlRoot(words: string[], dir: string | null): string | null {
   return absolute.find(path => path !== null && wholeMachineRoot(path)) ?? null;
 }
 
+/**
+ * A read of the whole system journal over days. At 14:17 ET on 2026-11-12 three Thinkering agents
+ * ran `journalctl --since 2026-11-05 -o cat` and week-long scans of every Thinkering unit at once;
+ * load reached 58 on 12 cores while Concierge and thnkr.ing waited. A read is scoped when it names
+ * a unit, identifier, kernel ring or field match, caps its lines, follows live output, only asks
+ * about the journal itself, or starts within the last six hours. `--grep` does not scope: journalctl
+ * still reads every entry to test it.
+ */
+const JOURNAL_SCOPES = /^(?:-u|--unit(?:=.*)?|--user-unit(?:=.*)?|-t|--identifier(?:=.*)?|-k|--dmesg|-n\d*|--lines(?:=.*)?|-f|--follow|-F|--field(?:=.*)?|-N|--fields|--list-boots|--disk-usage|--vacuum-\w+(?:=.*)?|--verify|--flush|--rotate|--sync|--header|--list-catalog|--update-catalog|--cursor-file(?:=.*)?|--after-cursor(?:=.*)?|--cursor(?:=.*)?|-[A-Za-z]*[ukfn][A-Za-z]*)$/;
+function recentSince(value: string | undefined): boolean {
+  if (!value) return false;
+  const match = /^-(\d+)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hours?)$/.exec(value.trim());
+  if (!match) return false;
+  const amount = Number(match[1]);
+  const unit = match[2]!;
+  const minutes = unit.startsWith('h') ? amount * 60 : unit.startsWith('s') ? amount / 60 : amount;
+  return minutes <= 6 * 60;
+}
+function wholeJournalScan(args: string[]): boolean {
+  let since: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i]!;
+    if (JOURNAL_SCOPES.test(word)) return false;
+    if (/^[A-Z_][A-Z0-9_]*=/.test(word)) return false;
+    if (word === '-S' || word === '--since') since = args[++i];
+    else if (word.startsWith('--since=')) since = word.slice('--since='.length);
+    else if (/^-S./.test(word)) since = word.slice(2);
+  }
+  return !recentSince(since);
+}
+const journalRefusal = () => 'Refused: this reads the whole system journal over a long window. '
+  + 'On 2026-11-12 three agents running week-long journal scans at once took the server to load 58 while Concierge and thnkr.ing waited. '
+  + 'Name the unit (`-u <unit>`), cap the lines (`-n 2000`), or use a window of six hours or less (`--since -2h`); `--grep` alone still reads every entry.';
+
 const refusal = (root: string) => `Refused: this recursive search starts at ${root}, which covers the whole machine `
   + '(each /proc/<pid>/cwd and /proc/<pid>/root leads back to a whole folder tree, once per process). '
   + 'On 2026-11-05 one such search ran at about 5 CPUs for 4.5 minutes and stalled Concierge and thnkr.ing. '
@@ -141,6 +175,7 @@ export function wholeMachineCrawlRefusal(command: string | null, toolName = '', 
       }
       continue;
     }
+    if (name === 'journalctl' && wholeJournalScan(words.slice(1))) return journalRefusal();
     const root = crawlRoot(words, dir);
     if (root) return refusal(root);
   }

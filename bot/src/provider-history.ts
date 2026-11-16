@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { claudeQueuedMessages, withQueuedMessages } from "./claude-queued-messages";
 import { CLAUDE_HISTORY_FORMAT } from "./provider-history-format";
 import { claudeConfigDir, locateClaudeTranscript } from "./claude-transcript-watch";
-import { log } from "./log";
+import { errorFields, log } from "./log";
 import { db as ownerDb } from "./state";
 import { preparedOwnerMessageVersion } from "./presentation-message-reader";
 import type { RunResult } from "./codex";
@@ -18,6 +18,7 @@ import { assertProviderForkPolicy, type ProviderInteractionPolicy } from "./prov
 import { codexTranscriptTimestamps, codexTranscriptTimestampsAfter, type CodexTranscriptMark } from './provider-transcript-metadata';
 import { LEGACY_STRUCTURED_OUTPUT_TOOL, legacyStructuredOutputMessage, splitTurnOutcomeMarker } from './turn-outcome-marker';
 import {readRunnerClaudeTranscriptChunk,readRunnerCodexTimestamps,statRunnerClaudeTranscript} from './runner-provider-history-client';
+import {decodeStoredSdkRow} from './provider-history-object-spans';
 
 /**
  * The session a message came from, and who that agent is by the one presence rule
@@ -46,6 +47,8 @@ export type MessageAuthor = {
 };
 
 export interface ProviderHistoryMessage {
+  responseMode?: 'context';
+  contextDelivery?: {targetSessionId:string;state:string;requestId?:string;peer?:string;error?:string};
   id: string;
   author?: MessageAuthor;
   role: "user" | "assistant" | "tool";
@@ -69,7 +72,7 @@ export interface ProviderHistoryMessage {
   /** The exact message a deliberate thread post answers. */
   replyToMessage?: { kind: "message"; sessionId: string; messageId: string };
   /** This session received the exact accepted Inbox message from another thread. */
-  routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'};
+  routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'|'service'|'unknown';author?:MessageAuthor};
   toolCallId?: string;
   detailKey?: string;
   attachments?: Array<{ id: string; name: string; contentType: string }>;
@@ -185,6 +188,9 @@ export function codexHistoryMessages(value: unknown, turnId: string, sessionUuid
 export async function readCodexHistory(input: ProviderHistoryInput,
   request: CodexHistoryRequest = codexRequest()): Promise<ProviderHistoryPage> {
   validatePageInput(input);
+  if(input.ownerSessionId&&(input.cursor===null||decode(input.cursor,input.sessionUuid).contextMerge===true)
+    && (input.cursor!==null||hasSavedContext(input.ownerSessionId)))
+    return readCodexContextPage(input,request);
   const cursor = input.cursor === null ? null : decode(input.cursor, input.sessionUuid).cursor;
   if (cursor !== null && typeof cursor !== "string") throw new Error("INVALID_HISTORY_REFERENCE");
   const page = codexPage(await request("thread/items/list", {
@@ -206,6 +212,54 @@ export async function readCodexHistory(input: ProviderHistoryInput,
   }
   return { messages, nextCursor: page.nextCursor === null ? null : encode({ sessionUuid: input.sessionUuid, cursor: page.nextCursor }),
     ...(omissions.size ? { coverage: { complete: false, omissions: [...omissions] } } : {}) };
+}
+
+export function hasSavedContext(sessionId:number):boolean {
+  return !!ownerDb.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='message'
+    AND json_extract(payload_json,'$.message.responseMode')='context' LIMIT 1`).get(sessionId);
+}
+
+/** Merge two bounded descending streams. Provider rows without timestamps retain their
+ * provider order ahead of saved context; their unknown time never establishes provenance. */
+async function readCodexContextPage(input:ProviderHistoryInput,request:CodexHistoryRequest):Promise<ProviderHistoryPage> {
+  const position=input.cursor===null?null:decode(input.cursor,input.sessionUuid);
+  const head=position?.contextHead??(ownerDb.query('SELECT MAX(sequence) AS n FROM session_owner_events').get() as {n:number|null}).n??0;
+  const before=position?.contextBefore??Number.MAX_SAFE_INTEGER;
+  const skip=position?.providerSkip??0;
+  if(!Number.isSafeInteger(head)||head<0||!Number.isSafeInteger(before)||before<1
+    ||!Number.isSafeInteger(skip)||skip<0||position&&typeof position.providerDone!=='boolean'
+    ||position&&position.providerCursor!==null&&typeof position.providerCursor!=='string')throw new Error('INVALID_HISTORY_REFERENCE');
+  const contexts=ownerDb.query(`SELECT sequence,payload_json FROM session_owner_events
+    WHERE session_id=? AND kind='message' AND sequence<=? AND sequence<?
+      AND json_extract(payload_json,'$.message.responseMode')='context'
+    ORDER BY sequence DESC LIMIT ?`).all(input.ownerSessionId!,head,before,input.limit+1) as {sequence:number;payload_json:string}[];
+  const providerCursor=position?.providerCursor??null;
+  const provider=position?.providerDone?{messages:[],nextCursor:null}:await readCodexHistory(
+    {...input,ownerSessionId:undefined,cursor:providerCursor,limit:100},request);
+  const providerHash=createHash('sha256').update(JSON.stringify(provider.messages.map(message=>
+    [message.turnId??null,message.id,message.role]))).digest('hex');
+  if(skip>provider.messages.length||position?.providerHash&&position.providerHash!==providerHash)throw new Error('STALE_HISTORY_CURSOR');
+  const pending=provider.messages.slice().reverse().slice(skip);
+  const merged:ProviderHistoryMessage[]=[];
+  let usedProvider=0,usedContext=0;
+  while(merged.length<input.limit&&(pending.length||usedContext<contexts.length)) {
+    // An older provider page may still outrank the next saved note. Continue from
+    // that page before consuming more context rather than guessing its timestamp.
+    if(!pending.length&&provider.nextCursor!==null)break;
+    const saved=contexts[usedContext],context=saved?JSON.parse(saved.payload_json).message as ProviderHistoryMessage:null;
+    const next=pending[0];
+    if(next&&(!context||!next.createdAt||!context.createdAt||next.createdAt>=context.createdAt)) {
+      merged.push(pending.shift()!);usedProvider++;
+    } else if(context){merged.push(context);usedContext++;}else break;
+  }
+  const providerPending=pending.length>0;
+  const providerDone=!providerPending&&provider.nextCursor===null;
+  const moreContexts=usedContext<contexts.length;
+  const nextCursor=providerDone&&!moreContexts?null:encode({sessionUuid:input.sessionUuid,contextMerge:true,
+    contextHead:head,contextBefore:usedContext?contexts[usedContext-1]!.sequence:before,
+    providerCursor:providerPending?providerCursor:provider.nextCursor,providerSkip:providerPending?skip+usedProvider:0,
+    providerHash:providerPending?providerHash:null,providerDone});
+  return {...provider,messages:merged.reverse(),nextCursor};
 }
 
 /**
@@ -564,7 +618,15 @@ function scheduleQuietRefresh(sessionUuid: string, cwd: string, source: {path:st
   observedVersions.set(sessionUuid, version);
   const old = pendingRefresh.get(sessionUuid);
   if (old) clearTimeout(old);
-  const timer = setTimeout(async () => {
+  const timer = setTimeout(() => { void refreshQuietly().catch(error => {
+    // A timer's rejection has no awaiting caller, so it reached the process's last-resort handler
+    // and restarted Concierge at 16:17 ET on 2026-11-12 (PROVIDER_TRANSCRIPT_CHANGED: a live
+    // transcript grew while the runner copy read it). A changed source is retried by its next
+    // change; anything else is logged, never fatal.
+    if(error instanceof Error&&error.message==='PROVIDER_TRANSCRIPT_CHANGED')return;
+    log('warn','provider_history_quiet_refresh_failed',{session_uuid:sessionUuid,...errorFields(error)});
+  }); }, 5_000);
+  async function refreshQuietly() {
     pendingRefresh.delete(sessionUuid);
     const current = await sourceVersion(sessionUuid, cwd,machine);
     if (!current) return;
@@ -578,7 +640,7 @@ function scheduleQuietRefresh(sessionUuid: string, cwd: string, source: {path:st
       || cache.meta.verified_source_mtime_ms!==current.mtimeMs;
     cache?.db.close();
     if(stillUncovered)queueCanonicalImport(sessionUuid, cwd, current.path, ownerSessionId,current.configDir);
-  }, 5_000);
+  }
   timer.unref?.();
   pendingRefresh.set(sessionUuid, timer);
 }
@@ -635,7 +697,7 @@ function novelIds(db:Database,sessionId:number,cutoff:number,head:number,before:
     if(!meta?.ready)return {ids:[],hasMore:false,appliedSequence:0,complete:false};
     const rows=db.query(`SELECT p.message_id AS messageId,p.first_sequence AS firstSequence
       FROM presentation.presentation_owner_messages p
-      WHERE p.generation=? AND p.session_id=? AND p.first_sequence>? AND p.first_sequence<=?
+      WHERE p.generation=? AND p.session_id=? AND (p.first_sequence>? OR p.message_id LIKE 'context:%') AND p.first_sequence<=?
         AND p.first_sequence<? AND NOT EXISTS(SELECT 1 FROM message_ids b WHERE b.id=p.message_id)
       ORDER BY p.first_sequence DESC LIMIT ?`)
       .all(meta.generation,sessionId,cutoff,head,before,limit+1) as NovelId[];
@@ -679,7 +741,7 @@ async function claudeCachedPage(input: ProviderHistoryInput): Promise<ProviderHi
     if(!Number.isSafeInteger(end) || end<0 || end>meta.row_count)throw new Error("STALE_HISTORY_CURSOR");
     const offset=Math.max(0,end-remaining);
     const rows=remaining>0 ? (db.query("SELECT json FROM rows WHERE ordinal>=? AND ordinal<? ORDER BY ordinal")
-      .all(offset,end) as {json:string}[]).map(row=>JSON.parse(row.json)) as SessionMessage[] : [];
+      .all(offset,end) as {json:string}[]).map(row=>decodeStoredSdkRow(row.json)) as SessionMessage[] : [];
     const needed = new Set<string>();
     for (const row of rows) for (const part of Array.isArray((row as any).message?.content) ? (row as any).message.content : [])
       if (part?.type === "tool_result" && typeof part.tool_use_id === "string") needed.add(part.tool_use_id);
@@ -739,7 +801,7 @@ export function readClaudeCachedMessage(sessionUuid:string,messageId:string):Pro
       JOIN rows ON rows.ordinal=message_ids.ordinal WHERE message_ids.id=?`)
       .get(messageId) as {json:string}|null;
     if(!row)return null;
-    return claudeHistoryMessages(JSON.parse(row.json),sessionUuid).find(message=>message.id===messageId)??null;
+    return claudeHistoryMessages(decodeStoredSdkRow(row.json),sessionUuid).find(message=>message.id===messageId)??null;
   } finally {cache.db.close();}
 }
 
@@ -767,7 +829,7 @@ async function claudeCachedDetail(input: ProviderDetailInput): Promise<{ content
       ? cache.db.query("SELECT json FROM rows WHERE uuid=?").all(location.uuid) as { json: string }[]
       : cache.db.query("SELECT json FROM rows WHERE ordinal=? AND uuid=?").all(location.offset, location.uuid) as { json: string }[];
     if (row.length !== 1) throw new Error("STALE_HISTORY_CURSOR");
-    const message = JSON.parse(row[0]!.json);
+    const message = decodeStoredSdkRow(row[0]!.json);
     const parts = message.message?.content;
     if (location.toolId !== undefined) {
       if (typeof location.toolId !== "string" || !location.toolId

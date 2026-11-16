@@ -17,13 +17,13 @@ source.exec(`CREATE TABLE channels(slack_channel_id TEXT PRIMARY KEY,name TEXT,c
   CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,event_id TEXT,input_id TEXT,kind TEXT,payload_json TEXT,created_at TEXT,turn_id INTEGER);
   CREATE TABLE inbox_topic_roots(root_input_id TEXT PRIMARY KEY,topic_id TEXT);
   CREATE TABLE session_communication_requests(request_id TEXT,source_session_id INTEGER,source_turn_id INTEGER,source_input_id TEXT,thread_root_input_id TEXT,target_input_id TEXT,target_session_id INTEGER,payload_json TEXT,
-    action_id TEXT,created_at_ms INTEGER);
+    action_id TEXT,created_at_ms INTEGER,outcome TEXT);
   CREATE TABLE session_peer_requests(request_id TEXT,source_session_id INTEGER,source_turn_id INTEGER,source_input_id TEXT,thread_root_input_id TEXT);
   CREATE TABLE session_external_requests(target_input_id TEXT,agent_name TEXT,text TEXT,request_id TEXT);
   CREATE TABLE session_input_author_corrections(input_id TEXT,author_session_id INTEGER,reason TEXT,created_at TEXT);
   CREATE TABLE session_communication_events(accepted_input_id TEXT,request_id TEXT,payload_json TEXT);
   CREATE TABLE session_peer_events(accepted_input_id TEXT,request_id TEXT,payload_json TEXT);
-  CREATE TABLE session_peer_deliveries(target_input_id TEXT,target_session_id INTEGER);
+  CREATE TABLE session_peer_deliveries(target_input_id TEXT,target_session_id INTEGER,closed_at_ms INTEGER,created_at_ms INTEGER);
   CREATE TABLE session_attachments(id TEXT PRIMARY KEY,name TEXT,content_type TEXT);
   CREATE TABLE presentation_change_log(sequence INTEGER PRIMARY KEY,source_table TEXT,row_key TEXT,session_id INTEGER,target_session_id INTEGER);
   INSERT INTO sessions(id,native_metadata_json,slack_channel_id,slack_thread_ts) VALUES(1,'{"inbox":true,"title":"Inbox"}',NULL,NULL);
@@ -47,7 +47,9 @@ try {
       candidate.close();continue;
     }
     const meta=candidate.query('SELECT generation,ready FROM presentation_message_meta WHERE singleton=1').get() as {generation:number;ready:number}|null;
-    if(meta?.ready){result=candidate;break;}
+    const searchReady=candidate.query("SELECT 1 FROM sqlite_master WHERE name='search_meta'").get()
+      &&(candidate.query('SELECT ready FROM search_meta WHERE singleton=1').get() as {ready:number}|null)?.ready;
+    if(meta?.ready&&searchReady){result=candidate;break;}
     candidate.close();
   }
   if(!result)throw new Error('Presentation worker did not publish an indexed generation.');
@@ -60,7 +62,7 @@ try {
     throw new Error(`Prepared author/text disagrees with accepted input: ${JSON.stringify(attributed)}`);
   const version=result.query('SELECT message_id FROM presentation_owner_message_versions WHERE event_sequence=2').get() as {message_id:string}|null;
   if(version?.message_id!=='m1')throw new Error('Owner message version was not indexed.');
-  const search=result.query("SELECT COUNT(*) AS n FROM prepared_search_documents WHERE kind='input'").get() as {n:number};
+  const search=result.query("SELECT COUNT(*) AS n FROM search_documents WHERE document_key LIKE 'input:%'").get() as {n:number};
   if(search.n!==1)throw new Error('Accepted input was not indexed for search.');
   const reader=Bun.spawn([process.execPath,join(import.meta.dir,'../src/presentation-search-read.ts')],
     {env:{...process.env,CONCIERGE_STATE_DIR:dir},stdin:'pipe',stdout:'pipe',stderr:'pipe'});

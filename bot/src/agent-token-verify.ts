@@ -47,3 +47,11 @@ export function agentPrincipalHeader(agent:VerifiedAgent):string {
   return agent.kind==='run'?`run:${agent.sessionId}:${agent.turnId}`:`runner:${agent.runner}`;
 }
 
+/** Inverse of the gateway-owned principal header, shared by canonical capability gates. */
+export function parseAgentPrincipalHeader(value:string):AgentPrincipal|null {
+  const run=/^run:([1-9][0-9]*):([1-9][0-9]*)$/.exec(value);
+  if(run&&Number.isSafeInteger(Number(run[1]))&&Number.isSafeInteger(Number(run[2])))return {kind:'run',sessionId:Number(run[1]),turnId:Number(run[2])};
+  const runner=/^runner:([a-z][a-z0-9-]{1,40})$/.exec(value);
+  return runner?{kind:'runner',runner:runner[1]!}:null;
+}
+

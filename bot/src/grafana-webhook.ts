@@ -12,7 +12,7 @@ export const GRAFANA_CONDITIONS: Readonly<Record<string, string>> = {
   ThinkeringMacWebContentFootprintUnavailable: "Mac WebContent physical-memory observations are missing or stale.",
   ThinkeringJournalTypingSlow: "Journal typing has a severe measured key delay.",
   ThinkeringJournalTypingEvidenceUnavailable: "Journal typing measurements are missing or stale.",
-  ThinkeringWorkspaceSyncStuck: "A thnkr.ing page has said for over two minutes that its sync stopped; its changes are held on that device.",
+  ThinkeringWorkspaceSyncStuck: "A thnkr.ing page has said for over two minutes that its sync stopped. A problem named edit: means unsent changes are held on that device; one named page: means it stopped receiving changes, possibly with nothing unsent.",
   AX41ResourcePressure: "AX41 has sustained disk, inode or memory pressure.",
   AX41AgentWorkOverloaded: "AX41 has sustained queued work, processor wait or aged detached agent browsers.",
   AX41AppProcessorConfined: "The app and Concierge are confined to fewer processor threads while work waits for CPU; do not change allocation without Tejas's approval.",

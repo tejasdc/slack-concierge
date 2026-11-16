@@ -1,9 +1,40 @@
 /** Account binding for fresh Claude CLI work launched from a Concierge agent shell. */
-import {accessSync,constants,existsSync,realpathSync,readlinkSync,watch} from 'node:fs';
+import {accessSync,closeSync,constants,existsSync,openSync,readdirSync,readFileSync,readSync,realpathSync,readlinkSync,watch} from 'node:fs';
 import {dirname,delimiter,isAbsolute,join,resolve,sep} from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {requestApiResponse} from './router-request-client';
+import {LAUNCH_REFUSED_EXIT,LAUNCH_REFUSED_MARKER} from '../src/claude-launch-refusal';
 
+// When the owner places a launch on a runner, it names the account, not a path: the path is the
+// runner's own (runner-provider-accounts.ts). Passed through unresolved, Claude found no sign-in at
+// "runner-account:<email>" and every new Claude start on the server failed the identity check
+// (2026-11-11, Inbox takeover concierge:9326). Resolve it the way the runner does: the one local
+// account folder whose recorded account and saved sign-in match.
+const RUNNER_ACCOUNT_PREFIX='runner-account:';
+function runnerClaudeHome(account:string):string{
+  const root=join(process.env.HOME??'','.claude-accounts');
+  let names:string[]=[];
+  try{names=readdirSync(root).filter(name=>!name.startsWith('.'));}catch{}
+  const matches=names.map(name=>join(root,name)).filter(home=>{
+    try{
+      const recorded=readFileSync(join(home,'.account-email'),'utf8').trim();
+      const refresh=JSON.parse(readFileSync(join(home,'.credentials.json'),'utf8'))?.claudeAiOauth?.refreshToken;
+      return recorded===account&&typeof refresh==='string'&&refresh.length>0;
+    }catch{return false;}
+  });
+  if(matches.length!==1)throw new Error(`This runner has ${matches.length?'more than one':'no'} signed-in Claude folder for ${account}.`);
+  return matches[0]!;
+}
+
+// Every refusal before Claude starts is marked (claude-launch-refusal.ts says why).
+let claudeStarted=false;
+const refuse=(error:unknown)=>{
+  if(claudeStarted){console.error(error instanceof Error?error.message:String(error));process.exit(1);}
+  console.error(`${LAUNCH_REFUSED_MARKER} ${(error instanceof Error?error.message:String(error)).replace(/\s+/g,' ')}`);
+  process.exit(LAUNCH_REFUSED_EXIT);
+};
+process.on('uncaughtException',refuse);
+process.on('unhandledRejection',refuse);
 const args=process.argv.slice(2);
 const wrapper=realpathSync(join(import.meta.dir,'claude'));
 if(process.env.CONCIERGE_CLAUDE_LAUNCH_PARENT_PID===String(process.ppid)){
@@ -86,9 +117,24 @@ async function actualClaude():Promise<string> {
 }
 const executable=await actualClaude();
 const firstCommandArg=args.find(arg=>arg!=='--dangerously-skip-permissions');
+const exactResume=(()=>{
+  const values:string[]=[];
+  for(let i=0;i<args.length;i++){
+    const arg=args[i]!;
+    if(arg==='--resume'||arg==='-r')values.push(args[++i]??'');
+    else if(arg.startsWith('--resume='))values.push(arg.slice('--resume='.length));
+    else if(arg.startsWith('-r')&&arg.length>2)values.push(arg.slice(2));
+  }
+  const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if(values.length>1&&values.some(value=>uuid.test(value))&&process.env.CONCIERGE_CLAUDE_ACCOUNT_PIN!=='1'
+    &&!args.some(arg=>arg==='--agent-id'||arg.startsWith('--agent-id=')))throw new Error('Claude exact resume has multiple resume arguments; original binding is ambiguous.');
+  if(values.length!==1||!uuid.test(values[0]!))return null;
+  return values[0]!;
+})();
 const passthrough=['auth','config','doctor','update','mcp','plugin','agents'].includes(firstCommandArg??'')
   || args.some(arg=>['--version','-v','--help','-h'].includes(arg))
-  || args.some(arg=>arg==='--resume'||arg==='-r'||arg==='--continue'||arg==='-c'||arg==='--fork-session'||arg==='--agent-id')
+  || (!exactResume&&args.some(arg=>arg==='--resume'||arg==='-r'||arg.startsWith('--resume=')||arg.startsWith('-r')||arg==='--continue'||arg==='-c'||arg==='--fork-session'))
+  || args.some(arg=>arg==='--agent-id'||arg.startsWith('--agent-id='))
   || process.env.CONCIERGE_CLAUDE_ACCOUNT_PIN==='1';
 const model=(()=>{for(let i=0;i<args.length;i++){
   if(args[i]==='--model')return args[i+1]??null;
@@ -102,6 +148,73 @@ if(!passthrough){
   for(const name of ['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY']){
     if(environment[name])throw new Error(`Claude account selection refused a competing ${name} credential or provider setting. Explicitly pin an intentional route.`);
   }
+  let useConciergeChoice=!exactResume;
+  if(exactResume){
+    const root=process.env.HOME??'';
+    const defaultHome=join(root,'.claude');
+    let names:string[]=[];
+    try{names=readdirSync(join(root,'.claude-accounts')).filter(name=>!name.startsWith('.'));}catch{}
+    const homes=[defaultHome,...names.map(name=>join(root,'.claude-accounts',name))];
+    const paths=new Set<string>();
+    for(const home of homes){
+      let projects:string[]=[];
+      try{projects=readdirSync(join(home,'projects'));}catch{}
+      for(const project of projects){
+        try{paths.add(realpathSync(join(home,'projects',project,`${exactResume}.jsonl`)));}catch{}
+      }
+    }
+    if(paths.size!==1)throw new Error(`Claude exact resume ${exactResume}: original transcript is ${paths.size?'ambiguous':'unavailable'}.`);
+    // The first row is Claude's original owner header; later rows can name later logins.
+    // Its small fixed ceiling prevents a damaged or huge transcript from becoming a full scan.
+    const header=Buffer.alloc(64*1024);
+    let used=0, newline=-1;
+    const fd=openSync([...paths][0]!,'r');
+    try{
+      while(used<header.length&&newline<0){
+        const count=readSync(fd,header,used,header.length-used,null);
+        if(!count)break;
+        newline=header.indexOf(10,used); used+=count;
+        if(newline>=used)newline=-1;
+      }
+    }finally{closeSync(fd);}
+    if(newline<0)throw new Error(`Claude exact resume ${exactResume}: original transcript header is missing, incomplete or too large.`);
+    let binding:{accountUuid:string;organizationUuid:string}|null=null;
+    try{
+      const row=JSON.parse(header.subarray(0,newline).toString('utf8'));
+      // Claude Code wrote no owner header before mid-November 2026; such a transcript is shared by
+      // every account home, so Concierge's verified account choice below resumes it (2026-11-16:
+      // refusing it parked 29 turns in 9 sessions).
+      if(row?.type!=='session-owner')throw new Error('legacy');
+      if(row.sessionId!==exactResume||typeof row.accountUuid!=='string'||!row.accountUuid||typeof row.organizationUuid!=='string'||!row.organizationUuid)throw new Error('invalid header');
+      binding={accountUuid:row.accountUuid,organizationUuid:row.organizationUuid};
+    }catch(error){
+      if(!(error instanceof Error&&error.message==='legacy'))throw new Error(`Claude exact resume ${exactResume}: original transcript header binding is missing or malformed.`);
+    }
+    if(binding){
+    const matches:string[]=[];
+    for(const home of homes){
+      try{
+        const config=JSON.parse(readFileSync(home===defaultHome?join(root,'.claude.json'):join(home,'.claude.json'),'utf8'))?.oauthAccount;
+        if(config?.accountUuid!==binding.accountUuid||config?.organizationUuid!==binding.organizationUuid||typeof config.emailAddress!=='string')continue;
+        const label=join(home,'.account-email');
+        if(existsSync(label)&&readFileSync(label,'utf8').trim()!==config.emailAddress)continue;
+        // A selected home must expose this exact transcript, not merely the same account.
+        if(![...paths].some(path=>{try{return readdirSync(join(home,'projects')).some(project=>{try{return realpathSync(join(home,'projects',project,`${exactResume}.jsonl`))===path;}catch{return false;}});}catch{return false;}}))continue;
+        const env={...environment};
+        if(process.platform==='darwin'&&home===defaultHome)delete env.CLAUDE_CONFIG_DIR;
+        else env.CLAUDE_CONFIG_DIR=home;
+        const status=spawnSync(executable,['auth','status'],{env,encoding:'utf8',timeout:15_000});
+        const identity=JSON.parse(status.stdout??'');
+        if(status.status===0&&identity.loggedIn===true&&identity.authMethod==='claude.ai'&&identity.apiProvider==='firstParty'
+          &&identity.email===config.emailAddress&&typeof identity.configDirectory==='string'&&realpathSync(identity.configDirectory)===realpathSync(home))matches.push(home);
+      }catch{}
+    }
+    if(matches.length!==1)throw new Error(`Claude exact resume ${exactResume}: original account ${binding.accountUuid} organization ${binding.organizationUuid} has ${matches.length?'ambiguous working homes':'no working home'}.`);
+    if(process.platform==='darwin'&&matches[0]===defaultHome)delete environment.CLAUDE_CONFIG_DIR;
+    else environment.CLAUDE_CONFIG_DIR=matches[0];
+    }else useConciergeChoice=true;
+  }
+  if(useConciergeChoice){
   const response=await requestApiResponse(`/sessions/v1/auth/claude-launch-choice${model?`?model=${encodeURIComponent(model)}`:''}`);
   if(!response.ok){
     const refusal=response.result?.error;
@@ -113,7 +226,8 @@ if(!passthrough){
   const choice=response.result?.choice as {account?:unknown;home?:unknown}|null;
   if(choice&&typeof choice.account!=='string')throw new Error('Concierge returned an invalid Claude account choice.');
   if(choice?.home!==null&&choice?.home!==undefined&&typeof choice.home!=='string')throw new Error('Concierge returned an invalid Claude account home.');
-  if(choice?.home)environment.CLAUDE_CONFIG_DIR=choice.home;
+  const home=choice?.home?.startsWith(RUNNER_ACCOUNT_PREFIX)?runnerClaudeHome(choice.home.slice(RUNNER_ACCOUNT_PREFIX.length)):choice?.home;
+  if(home)environment.CLAUDE_CONFIG_DIR=home;
   else delete environment.CLAUDE_CONFIG_DIR;
   if(choice?.account){
     // The directory is only a proposed route. Claude itself confirms the effective login.
@@ -122,11 +236,13 @@ if(!passthrough){
     try{identity=JSON.parse(status.stdout??'');}catch{throw new Error('Claude could not confirm the selected account.');}
     if(status.status!==0||!identity.loggedIn||identity.authMethod!=='claude.ai'||identity.apiProvider!=='firstParty'
       ||identity.email!==choice.account||!identity.configDirectory
-      ||realpathSync(identity.configDirectory)!==realpathSync(choice.home??join(process.env.HOME??'', '.claude'))){
+      ||realpathSync(identity.configDirectory)!==realpathSync(home??join(process.env.HOME??'', '.claude'))){
       throw new Error('Claude authenticated with a different account than Concierge selected.');
     }
   }
+  }
 }
+claudeStarted=true;
 const child=spawn(executable,args,{env:environment,stdio:'inherit'});
 for(const signal of ['SIGINT','SIGTERM'] as const)process.on(signal,()=>child.kill(signal));
 child.on('error',error=>{console.error(error.message);process.exitCode=1;});

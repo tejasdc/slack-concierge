@@ -13,7 +13,7 @@ process.env.CONCIERGE_TEST_AUTHORIZATION=LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZAT
 
 const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
   {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata,recordSessionEvent,retainSessionInput},
-  {topicsCommand}]=await Promise.all([
+  {topicsCommand,topicPromptContext,invalidateTopicRoots}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-communication'),
   import('../src/session-inputs'),import('../src/session-topics')]);
 
@@ -53,6 +53,24 @@ try {
   await communication.idle();
   const finalEvent=communication.inspect(dispatch.request_id).events.find(event=>event.kind==='final');
   assert.ok(finalEvent);
+  // Prompt preparation must read this topic's retained answer after a cold index reset,
+  // without waiting for the global history warm-up to finish.
+  const returnedId=`return:${finalEvent.event_id}`;
+  if(!db.query('SELECT 1 FROM session_inputs WHERE id=?').get(returnedId))retainSessionInput({
+    id:returnedId,sessionId:inboxId,scope:`session:${rootId}`,actionId:returnedId,
+    kind:'input',origin:'service',sourceInputId:rootId,sourceRunId:current.actor.runId,
+    requestId:dispatch.request_id,payload:{text:'The retained worker answer.'},
+  });
+  recordSessionEvent({eventId:'fixture-accepted-return',sessionId:inboxId,inputId:returnedId,kind:'accepted',payload:{}});
+  invalidateTopicRoots();
+  const promptContext=topicPromptContext(inboxId,rootId,{});
+  const topicContext=JSON.parse(promptContext.match(/<topic>\n([\s\S]*?)\n<\/topic>/)?.[1]??'null');
+  assert.equal(topicContext.id,topicId);
+  assert.equal(topicContext.unrelayedResult?.inputId,returnedId);
+  recordSessionEvent({eventId:'fixture-post-after-return',sessionId:inboxId,inputId:rootId,kind:'post',payload:{text:'Relayed'}});
+  invalidateTopicRoots();
+  const relayed=JSON.parse(topicPromptContext(inboxId,rootId,{}).match(/<topic>\n([\s\S]*?)\n<\/topic>/)?.[1]??'null');
+  assert.equal(relayed.unrelayedResult,undefined);
   db.query("UPDATE session_communication_requests SET payload_json=json_set(payload_json,'$.requestedEffect','work') WHERE request_id=?")
     .run(dispatch.request_id);
   topicsCommand(current.actor,{verb:'request.link',request_id:requestId,action_id:'legacy-link',dispatch:dispatch.request_id});
@@ -102,6 +120,44 @@ try {
     assert.deepEqual(result.request.closure.evidence,[typedEvent.event_id]);
   }
   assert.equal(answerPosts().n,postsBeforeClosure);
+
+  // The shared acceptance can fail on a sibling while an earlier repaired request
+  // has its own successful installed check. Both final events are required.
+  const notice=topicsCommand(current.actor,{verb:'request.add',topic_id:topicId,action_id:'split-notice',
+    title:'Repair the notice',sources:[rootId],brief:'Keep the notice clear of Send.'}).request.requestId;
+  const steering=topicsCommand(current.actor,{verb:'request.add',topic_id:topicId,action_id:'split-steering',
+    title:'Repair attachment steering',sources:[rootId],brief:'Check steering in a running conversation.'}).request.requestId;
+  const noticeTarget=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
+  const noticeWork=await communication.ask({source:current.source,action_id:'split-notice-work',address:noticeTarget.session.address,
+    thread:rootId,summary:'Repair notice layout',text:'Repair the notice layout.',requestedEffect:'informational'});
+  await communication.idle();const noticeWorker=run();
+  communication.reply({source:noticeWorker.source,action_id:'split-notice-final',request_id:noticeWork.request_id,
+    text:'Notice layout installed; later live check needed.',final:true});
+  await communication.idle();
+  db.query("UPDATE session_communication_requests SET payload_json=json_set(payload_json,'$.requestedEffect','work') WHERE request_id=?")
+    .run(noticeWork.request_id);
+  const noticeFinal=communication.inspect(noticeWork.request_id).events.find(event=>event.kind==='final');assert.ok(noticeFinal);
+  topicsCommand(current.actor,{verb:'request.link',request_id:notice,action_id:'split-link-notice-work',dispatch:noticeWork.request_id});
+  const sharedTarget=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
+  const sharedCheck=await communication.ask({source:current.source,action_id:'split-shared-check',address:sharedTarget.session.address,
+    thread:rootId,summary:'Check both repairs',text:'Check notice and steering.',requestedEffect:'work'});
+  await communication.idle();const sharedWorker=run();
+  communication.reply({source:sharedWorker.source,action_id:'split-shared-final',request_id:sharedCheck.request_id,
+    text:'Notice geometry passed in installed browser; attachment steering could not be checked.',final:true,
+    workDisposition:'failed',summary:'Steering still unverified'});
+  await communication.idle();
+  const sharedFinal=communication.inspect(sharedCheck.request_id).events.find(event=>event.kind==='final');assert.ok(sharedFinal);
+  topicsCommand(current.actor,{verb:'request.link',request_id:notice,action_id:'split-link-notice-check',dispatch:sharedCheck.request_id});
+  topicsCommand(current.actor,{verb:'request.link',request_id:steering,action_id:'split-link-steering-check',dispatch:sharedCheck.request_id});
+  assert.throws(()=>topicsCommand(current.actor,{verb:'request.close',request_id:notice,action_id:'split-no-check-evidence',
+    disposition:'completed',evidence:[noticeFinal.event_id],reason:'Checked the notice.'}),/has not finished/);
+  assert.throws(()=>topicsCommand(current.actor,{verb:'request.close',request_id:steering,action_id:'split-steering-still-open',
+    disposition:'completed',evidence:[sharedFinal.event_id],reason:'Steering was checked.'}),/has not finished/);
+  const noticeClosed=topicsCommand(current.actor,{verb:'request.close',request_id:notice,action_id:'split-close-notice',
+    disposition:'completed',evidence:[noticeFinal.event_id,sharedFinal.event_id],
+    reason:'The installed notice check passed; steering remains a separate open request.'});
+  assert.equal(noticeClosed.request.state,'closed');
+  assert.equal((db.query('SELECT state FROM inbox_requests WHERE request_id=?').get(steering) as {state:string}).state,'open');
 
   // A recipient can settle its original request during a later return turn. The
   // final event stays attached to the dispatch but retains that turn's source input.

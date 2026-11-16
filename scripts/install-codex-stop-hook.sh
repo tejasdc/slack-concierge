@@ -30,13 +30,13 @@ while [ $# -gt 0 ]; do
 done
 [ -x "$bun" ] || { echo "No bun runtime at: $bun" >&2; exit 2; }
 if [ -n "$release" ]; then
-  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] && [ -f "$release/control/bot/scripts/live-store-copy-guard.js" ] && [ -f "$release/control/bot/scripts/private-code-command.js" ] && [ -f "$release/control/bot/scripts/install-codex-browser-policy.js" ] && [ -f "$release/control/ensure-codex-updater-disabled.js" ] || { echo "No release hooks or updater policy under: $release" >&2; exit 2; }
+  [ -f "$release/control/bot/scripts/owed-reply-stop-hook.js" ] && [ -f "$release/control/bot/scripts/history-guard.js" ] && [ -f "$release/control/bot/scripts/codex-model-start-hook.js" ] && [ -f "$release/control/bot/scripts/implementation-edit-hook.js" ] && [ -f "$release/control/bot/scripts/live-store-copy-guard.js" ] && [ -f "$release/control/bot/scripts/private-code-command.js" ] && [ -f "$release/control/bot/scripts/install-codex-browser-policy.js" ] && [ -f "$release/control/ensure-codex-updater-disabled.js" ] || { echo "No release hooks or updater policy under: $release" >&2; exit 2; }
   bot="$release/control/bot"
   updater_policy="$release/control/ensure-codex-updater-disabled.js"
   browser_policy="$bot/scripts/install-codex-browser-policy.js"
   suffix=js
 else
-  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] && [ -f "$bot/scripts/live-store-copy-guard.ts" ] && [ -f "$bot/scripts/private-code-command.ts" ] && [ -f "$bot/scripts/install-codex-browser-policy.ts" ] && [ -f "$bot/scripts/ensure-codex-updater-disabled.ts" ] || { echo "No Concierge hooks or updater policy under: $bot" >&2; exit 2; }
+  [ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] && [ -f "$bot/scripts/codex-model-start-hook.ts" ] && [ -f "$bot/scripts/implementation-edit-hook.ts" ] && [ -f "$bot/scripts/live-store-copy-guard.ts" ] && [ -f "$bot/scripts/private-code-command.ts" ] && [ -f "$bot/scripts/install-codex-browser-policy.ts" ] && [ -f "$bot/scripts/ensure-codex-updater-disabled.ts" ] || { echo "No Concierge hooks or updater policy under: $bot" >&2; exit 2; }
   updater_policy="$bot/scripts/ensure-codex-updater-disabled.ts"
   browser_policy="$bot/scripts/install-codex-browser-policy.ts"
   suffix=ts
@@ -177,6 +177,18 @@ if [ -e "$guard" ] && ! grep -Fq "$marker" "$guard"; then
   exit 1
 fi
 write_wrapper "$guard" history-guard "Codex and Claude run this before every command; it refuses one that rewrites pushed history." "" ""
+model_guard="$etc/hooks/concierge-model-start"
+if [ -e "$model_guard" ] && ! grep -Fq "$marker" "$model_guard"; then
+  echo "$model_guard exists and was not written by this installer; refusing to replace it." >&2
+  exit 1
+fi
+write_wrapper "$model_guard" codex-model-start-hook "Codex refuses a native Astra start without a recorded escalation reason." "CONCIERGE_STATE_DIR='$state' " ""
+edit_guard="$etc/hooks/concierge-implementation-edit"
+if [ -e "$edit_guard" ] && ! grep -Fq "$marker" "$edit_guard"; then
+  echo "$edit_guard exists and was not written by this installer; refusing to replace it." >&2
+  exit 1
+fi
+write_wrapper "$edit_guard" implementation-edit-hook "The fifth top-model edit waits for a cheaper handoff or a recorded reason." "CONCIERGE_STATE_DIR='$state' " ""
 
 # remote-box's package reinstall hook is no longer registered (2026-11-04): it was added on
 # 2026-10-09 without an observed failure, then caused two disk incidents. remote-box removes the
@@ -192,6 +204,13 @@ hooks = true
 
 [hooks]
 managed_dir = "$etc/hooks"
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "$model_guard"
+timeout = 20
+statusMessage = "Checking Astra escalation reason"
 
 [[hooks.Stop]]
 [[hooks.Stop.hooks]]
@@ -217,9 +236,15 @@ type = "command"
 command = "$guard"
 timeout = 20
 statusMessage = "Checking this does not rewrite pushed history"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "$edit_guard"
+timeout = 20
+statusMessage = "Checking implementation model choice"
 EOF
 install -m 0644 "$tmp" "$requirements"
-echo "Installed Codex managed hooks: $requirements -> $hook, $guard"
+echo "Installed Codex managed hooks: $requirements -> $hook, $guard, $model_guard, $edit_guard"
 
 # The approval check that ran before every agent command was removed on 2026-09-23: agents keep
 # full control of this machine (Tejas). Its launcher stays gone; the machine settings file it used
@@ -239,7 +264,7 @@ if [ -e "$managed" ] && [ ! -e "$claude_etc/.concierge-managed" ]; then
   exit 1
 fi
 mkdir -p "$claude_etc"
-printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]}]}}' > "$tmp"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]},{"matcher":"Bash|Edit|MultiEdit|Write|NotebookEdit|mcp__.*","hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}]}}' > "$tmp"
 install -m 0644 "$tmp" "$managed"
 printf '%s\n' "$marker" > "$claude_etc/.concierge-managed"
 rm -f "$tmp"

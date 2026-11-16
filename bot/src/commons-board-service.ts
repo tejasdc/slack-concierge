@@ -21,6 +21,7 @@ export type BoardVerb='read'|'thread'|'post'|'claim'|'reveal'|'close'|'product'|
 export type BoardInput={
   verb:BoardVerb; board?:string; thread?:string; reply_to?:string; action_id?:string; kind?:string; title?:string; blind?:string; text?:string;
   members?:string[]; decider?:string; mentions?:string[]; sealed?:boolean; end?:string; outcome?:string; all?:boolean;
+  responseTargets?:string[];
   /** product: finding|decision|skill|design; from: "<address> :: <reason>" each; supersedes: "<address> :: <reason>". */
   product?:string; from?:string[]; supersedes?:string;
   /** post: the design section this speaks to (`lab:<design-handle>.<passage>`), what the post is (answer|ask|comment), and,
@@ -181,6 +182,7 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
   if(withdrawnSuccessor(actor.session))throw new BoardError('This proposed handoff was withdrawn; this successor cannot write to the Lab.');
   if(!input.action_id?.trim())throw new BoardError('Changing the board needs a stable --action-id.');
   if(input.reply_to&&input.verb!=='post')throw new BoardError('--reply-to is only for board post.');
+  if(input.responseTargets!==undefined&&input.verb!=='post')throw new BoardError('--response-target is only for board post.');
   if(input.target&&input.verb!=='post')throw new BoardError('--target is only for board post.');
   if(input.target&&!DESIGN_PASSAGE.test(input.target.trim()))throw new BoardError('--target names a design section as lab:<design-handle>.<passage>.');
   if((input.intent||input.speaker||input.his_input)&&input.verb!=='post')throw new BoardError('--intent, --speaker and --his-input are only for board post.');
@@ -231,6 +233,7 @@ export async function boardCommand(input:BoardInput,actor:BoardActor|null,delive
     written=await lab('POST',`/records/${encodeURIComponent(input.thread.replace(/^lab:/,''))}/entries`,actor,{actionId,act:input.verb,text,
       ...(replyToEntryId?{replyToEntryId}:{}),...(input.target?{targetAddress:input.target.trim()}:{}),...(input.intent?{intent:input.intent.trim()}:{}),
       ...(input.disposition?{disposition:input.disposition}:{}),
+      ...(input.responseTargets!==undefined?{responseTargets:input.responseTargets.map(identityOf)}:{}),
       ...(input.speaker?{speaker:'tejas',source:input.his_input!.trim(),...inbox}:{}),
       ...(mentions?.length?{mentions}:{}),...(input.sealed?{sealed:true}:{}),...(input.end?{end:input.end}:{}),...(input.outcome?{outcome:input.outcome}:{})});
   }

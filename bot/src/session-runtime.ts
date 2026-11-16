@@ -19,22 +19,22 @@ import {startProviderUsageWatch} from './provider-account-usage';
 import {watchAuthHeldCredentials} from './provider-activation';
 import {refreshUsageBreakdownIfStale} from './usage-breakdown';
 import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
-import {keepThreadsCurrent,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,retireRecoveredBookkeepingRequests,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
+import {keepThreadsCurrent,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,retireRecoveredBookkeepingRequests,rejoinThreadsSplitAtHandoff,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
-import {CodexSessionObserver} from './codex-session-observer';
-import {prepareSavedWorkForClaims,reconsiderBankedWork,inspectSavedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings,quietOnlyCutoff} from './saved-work';
-import {quietOnlyAdmits} from './quiet-hours';
+import {bindCodexProviderSession,CodexSessionObserver} from './codex-session-observer';
+import {prepareSavedWorkForClaims} from './saved-work';
+import {createBankedUpkeep} from './banked-upkeep';
 import {providerAccountUsage} from './provider-account-usage';
-import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {startBackgroundJobWatch} from './background-waits';
 import {startUpdateWaitWatch} from './update-wait-notices';
 import {startMachineWatchWorker,wakeWatchWorker} from './watches';
 import {claimAdoptableExecutions,forgetTrackedHostedExecutionsOfTurn,hostedTurns,watchHeldExecution,type Adoption} from './executions';
-import {interruptOrphanedTurn} from './state';
+import {interruptOrphanedTurn,failUnacknowledgedClaudeParkedTurns} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
-import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
+import {moveStandingRolesOffSpentProviders} from './standing-role-provider-failover';
+import {moveHeldWork} from './held-work-failover';
 import {reconcileCoveredTasteRequest,recoverOctoberBudgetPauses} from './incident-budget-pause-recovery';
 import {startAreaFiling} from './area-filing';
 
@@ -46,51 +46,11 @@ export async function startSessionRuntime() {
   registerProcessInstance(instanceId,identity.pid,identity.bootId,identity.startTicks);
   let draining=false;
   const active=new Set<number>();
-  const yielding=new Map<number,'allowance_boundary'|'deployment_boundary'|'quiet_boundary'>();
-  let quietBoundaryTimer:ReturnType<typeof setTimeout>|null=null;
+  const banked=createBankedUpkeep({registry:()=>registry});
+  const inspectActiveBanked=banked.inspectActive;
   const registry=new ActiveTurnDispatchRegistry({onStarted:()=>queueMicrotask(inspectActiveBanked),onSettled:turnId=>{forgetTrackedHostedExecutionsOfTurn(turnId);queue.wake();}});
-  const requestBankedYield=(turnId:number,reason:'allowance_boundary'|'deployment_boundary'|'quiet_boundary')=>{
-    if(yielding.has(turnId))return;
-    const row=savedTurn(turnId);
-    if(!row||row.saved_kind!=='banked'||row.saved_manual_start&&!row.saved_quiet_only)return;
-    const requested=registry.requestSessionCancellation(row.session_id,turnId);
-    if(!requested.matched)return;
-    yielding.set(turnId,reason);
-    void requested.completion.catch(error=>log('warn','banked_yield_failed',{turn_id:turnId,...errorFields(error)}));
-  };
-  const inspectActiveBanked=()=>{
-    if(quietBoundaryTimer){clearTimeout(quietBoundaryTimer);quietBoundaryTimer=null;}
-    const draining=!!db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get();
-    const settings=savedWorkSettings(),reserve=settings.reserve_percent,now=Date.now();
-    let nextQuietBoundary=Infinity;
-    for(const turnId of active){
-      const row=savedTurn(turnId);if(!row||row.saved_kind!=='banked'||row.saved_manual_start&&!row.saved_quiet_only)continue;
-      if(yielding.has(turnId))continue;
-      if(draining){requestBankedYield(turnId,'deployment_boundary');continue;}
-      if(row.saved_quiet_only){
-        if(!quietOnlyAdmits(now,settings)){requestBankedYield(turnId,'quiet_boundary');continue;}
-        nextQuietBoundary=Math.min(nextQuietBoundary,quietOnlyCutoff(now,settings));
-      }
-      if(row.saved_manual_start)continue;
-      const session=db.query('SELECT provider_id FROM sessions WHERE id=?').get(row.session_id) as {provider_id:string}|null;
-      if(!session||!['codex','claude-code','antigravity'].includes(session.provider_id))continue;
-      const provider=session.provider_id as 'codex'|'claude-code'|'antigravity';
-      const usage=providerAccountUsage(provider);
-      const account=usage?.accounts.find(item=>item.label===row.saved_account);
-      const window=account?.windows.find(item=>item.name===row.saved_window);
-      const owningSession=provider==='claude-code'?getSessionById(row.session_id):null;
-      const model=provider==='claude-code'
-        ?getClaudePreferredModel(row.session_id,row.id)??(owningSession?sessionMetadata(owningSession).model:null)??null:undefined;
-      const room=usage?savedWorkAccountRooms(provider,usage,Date.now(),model).find(item=>item.account===row.saved_account):null;
-      if(row.saved_boundary_ms!==null&&row.saved_boundary_ms<=Date.now()||
-        !usage||!account||!room||room.problem||room.tightestUsedPercent===null||room.tightestUsedPercent>=100-reserve
-        ||!window||window.usedPercent>=100-reserve)
-        requestBankedYield(turnId,'allowance_boundary');
-    }
-    if(Number.isFinite(nextQuietBoundary))quietBoundaryTimer=setTimeout(()=>inspectActiveBanked(),Math.max(1,nextQuietBoundary-Date.now()));
-  };
   let codexSessionObserver:CodexSessionObserver|null=null;
-  const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve()});
+  const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>bindCodexProviderSession(codexSessionObserver,uuid)});
   codexSessionObserver=new CodexSessionObserver();
   startAreaFiling(admission=>host.owner.admit(admission),body=>host.owner.search(body));
   const unavailable=()=>{throw new Error('Slack adapter is disabled.');};
@@ -110,15 +70,15 @@ export async function startSessionRuntime() {
   // Additive and safe while the Inbox is live; a second start finds its guard event.
   try {runStartupStep('inbox_topics_migration',()=>migrateInboxTopics());} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
   try {runStartupStep('inbox_bookkeeping_repair',()=>retireRecoveredBookkeepingRequests());} catch(error) {log('error','inbox_bookkeeping_repair_failed',errorFields(error));}
+  try {runStartupStep('inbox_handoff_split_rejoin',()=>rejoinThreadsSplitAtHandoff());} catch(error) {log('error','inbox_handoff_split_rejoin_failed',errorFields(error));}
   try {runStartupStep('forwarded_final_answers',()=>runStartupCatchUp('forwarded-final-answers',ownerEventMaxSequence,(afterSequence,throughSequence)=>reconcileForwardedFinalAnswers(undefined,{afterSequence,throughSequence}),20_000));runStartupStep('carried_closures',()=>runStartupSweep('carried-closures',ownerEventMaxSequence,(afterSequence,throughSequence)=>reconcileCarriedClosures(undefined,{afterSequence,throughSequence}),20_000));} catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
   const queue=new SessionTurnQueueCoordinator({beforeClaims:prepareSavedWorkForClaims,
     claim:activeTurnIds=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions,[...new Set([...activeTurnIds,...active])]),shouldStop:()=>draining,
     nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
     onClaimError:(error,consecutiveFailures)=>log('error','session_turn_claim_failed',{...errorFields(error),consecutive_failures:consecutiveFailures}),
     run:async(claim:QueuedTurnClaimRow)=>{
-      active.add(claim.turn_id);
+      active.add(claim.turn_id);banked.started(claim.turn_id);
       try {
-        inspectActiveBanked();
         if(claim.turn_kind!=='native') {
           if(claim.turn_kind!=='slack_user'||!claim.slack_channel_id||!claim.slack_user_msg_ts)throw new Error('This queued adapter control requires its original surface.');
           const input=retainSlackInput(claim.slack_channel_id,claim.slack_user_msg_ts);
@@ -128,11 +88,7 @@ export async function startSessionRuntime() {
         }
         return await host.run(claim);
       } finally {
-        active.delete(claim.turn_id);
-        inspectActiveBanked();
-        const reason=yielding.get(claim.turn_id);
-        yielding.delete(claim.turn_id);
-        if(reason)resumeBankedAfterYield(claim.turn_id,reason);
+        active.delete(claim.turn_id);banked.settled(claim.turn_id);
       }
     },onError:(claim,error)=>{host.settleSetupFailure(claim,error);log('error','native_turn_setup_failed',{turn_id:claim.turn_id,...errorFields(error)});}});
   await host.owner.refreshGlobalPauseFromOwner(true);
@@ -140,17 +96,12 @@ export async function startSessionRuntime() {
   // their turns as orphaned, and continue under the same run (design 2026-10-07 §3.1 step 4).
   const runAdopted=(adoption:Adoption)=>{
     if(draining)return;
-    active.add(adoption.claim.turn_id);
-    inspectActiveBanked();
+    active.add(adoption.claim.turn_id);banked.started(adoption.claim.turn_id);
     void host.run(adoption.claim,adoption).catch(error=>{
       log('error','execution_adoption_failed',{turn_id:adoption.claim.turn_id,execution_id:adoption.execution.execution_id,...errorFields(error)});
       host.settleSetupFailure(adoption.claim,error);
     }).finally(()=>{
-      active.delete(adoption.claim.turn_id);
-      inspectActiveBanked();
-      const reason=yielding.get(adoption.claim.turn_id);
-      yielding.delete(adoption.claim.turn_id);
-      if(reason)resumeBankedAfterYield(adoption.claim.turn_id,reason);
+      active.delete(adoption.claim.turn_id);banked.settled(adoption.claim.turn_id);
       queue.wake();
     });
   };
@@ -173,6 +124,7 @@ export async function startSessionRuntime() {
   parkedRecovery.unref?.();
   recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   host.recoverOutsideWaitingInputs();
+  host.recoverAntigravityUnsentInputs();
   recoverTurnArtifactDeliveryClaims(isProcessIdentityAlive);
   const activeTurnIds=()=>[...new Set([...registry.activeTurns,...queue.activeTurns,...active])];
   await reconcileRecoverableTurns({client:null,instanceId,activeTurnIds:activeTurnIds(),isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
@@ -190,14 +142,14 @@ export async function startSessionRuntime() {
   if(peering.listen)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
   // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
   // composition, so this runtime spent the same accounts while never watching them.
-  const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:()=>[...active].some(id=>{const saved=savedTurn(id);return saved?.saved_kind==='banked'&&!saved.saved_manual_start;}),
-    onReading:()=>{void keepThreadsCurrent(admission=>host.owner.admit(admission)).catch(error=>log('error','inbox_recovery_pass_failed',errorFields(error)));
-      reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();maybeStartInboxProviderFailover();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));void closeQuestionsAnsweredByTodos(admission=>host.owner.admit(admission)).catch(()=>{});queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
+  const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:banked.hasActiveUnattendedBanked,
+    onReading:()=>{void keepThreadsCurrent(admission=>host.owner.admit(admission),(requestId,replacedBy)=>communication.withdrawSupersededAttempt(requestId,replacedBy)).catch(error=>log('error','inbox_recovery_pass_failed',errorFields(error)));
+      banked.onReading();reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();moveStandingRolesOffSpentProviders();moveHeldWork();wakeDeferredQuestions(Date.now(),admission=>host.owner.admit(admission));void closeQuestionsAnsweredByTodos(admission=>host.owner.admit(admission)).catch(()=>{});queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);refreshUsageBreakdownIfStale();briefRunningSessions(admission=>host.owner.admit(admission));}});
   const stopBackgroundJobWatch=startBackgroundJobWatch(admission=>host.owner.admit(admission));
   const stopUpdateWaitWatch=startUpdateWaitWatch({admit:admission=>host.owner.admit(admission),stateDir:process.env.CONCIERGE_STATE_DIR!});
   const stopWatchWorker=startMachineWatchWorker(admission=>host.owner.admit(admission),()=>draining);
   const stopAuthWatch=watchAuthHeldCredentials();
-  const detach=observeExecutionChanges(()=>{reconsiderBankedWork();inspectActiveBanked();recoverExhaustedClaudeWork();queue.wake();});
+  const detach=observeExecutionChanges(()=>{banked.onExecutionChange();recoverExhaustedClaudeWork();queue.wake();});
   const ghostSweep=setInterval(()=>{
     if(draining)return;
     try {
@@ -207,6 +159,9 @@ export async function startSessionRuntime() {
   },60_000);
   ghostSweep.unref?.();
   const stopProcessAuditSweep=host.startCodexProcessAuditSweep(()=>draining);
+  // Turns parked because Claude never acknowledged their input fail now, so their requests return for a new owner.
+  try{const failed=failUnacknowledgedClaudeParkedTurns();if(failed.length)log('warn','unacknowledged_claude_parks_failed',{turn_ids:failed});}
+  catch(error){log('error','unacknowledged_claude_park_repair_failed',errorFields(error));}
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
@@ -220,11 +175,9 @@ export async function startSessionRuntime() {
     draining=true;
     const codexSessionObserverStop=codexSessionObserver?.stop();
     if(codexSessionObserverStop)void codexSessionObserverStop.catch(()=>{});
-    if(quietBoundaryTimer)clearTimeout(quietBoundaryTimer);clearInterval(globalPauseReconcile);clearInterval(ghostSweep);stopProcessAuditSweep();clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();host.beginDrain();await communication.stop();await codexSessionObserverStop;
+    banked.stop();clearInterval(globalPauseReconcile);clearInterval(ghostSweep);stopProcessAuditSweep();clearInterval(parkedRecovery);clearSandboxReadyReceipt(runtime);stopUsageWatch();stopBackgroundJobWatch();stopUpdateWaitWatch();stopWatchWorker();stopAuthWatch();detach();detachProjection();queue.stop();host.beginDrain();await communication.stop();await codexSessionObserverStop;
     // A hosted agent keeps working through this exit; the next coordinator takes it back.
     for(const turnId of active){
-      // Another turn can gain hosted custody while we await a previous cancellation.
-      // Classify each turn at the point we decide whether to cancel it.
       if(hostedTurns([turnId]).has(turnId))continue;
       const row=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
       if(row){const cancellation=registry.requestSessionDrainCancellation(row.session_id,turnId,

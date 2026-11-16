@@ -6,23 +6,29 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {db,executionChanged,finishTurn,getSessionById,settleTurnDependencies} from './state';
 import {createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,sessionInputProvenance,sessionMetadata,stablePayload,updateSessionMetadata} from './session-inputs';
+import {lastLaunchedConversationHome} from './session-runner-home';
 import {safeTurn,type WaitingTurn} from './provider-exhaustion-recovery';
 import {parseProviderSelector,resolveProviderSelector,normalizeReasoningEffort} from './aliases';
 import {escalationReason,topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {sessionAddress} from './session-address';
+import {transferChatGptAnswerOwnership} from './chatgpt-obligations';
 import {takeInboxRouterRole} from './standing-agents';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
 import {runnerMachineCall} from './runner-machine-calls';
 import {resolveRunnerProjectLocation} from './runner-project-location';
+import {undeliveredRequestState} from './request-prerequisite-hold';
 
 const run=promisify(execFile);
-type Item={id:string;kind:'sent'|'owed'|'queued'|'watch'|'lab'|'worktree';ref:string;holder:string;[key:string]:unknown};
-type Inventory={items:Item[];omissions:string[]};
-type HandoffRow={id:string;predecessor_session_id:number;successor_session_id:number;state:string;action_id:string;caller_session_id:number;requesting_input_id:string;inventory_json:string;inventory_digest:string};
+type Item={id:string;kind:'sent'|'owed'|'answer'|'queued'|'watch'|'lab'|'worktree';ref:string;holder:string;[key:string]:unknown};
+type Inventory={items:Item[];omissions:string[];dispositions?:{kind:string;source:string;reason:string;preservedSourcePath:string;namespace:Record<string,unknown>;effect:string}[]};
+type HandoffRow={id:string;predecessor_session_id:number;successor_session_id:number;state:string;action_id:string;caller_session_id:number;requesting_input_id:string;inventory_json:string;inventory_digest:string;handoff_kind?:string;canonical_input_id?:string|null};
 const digest=(value:Inventory)=>createHash('sha256').update(stablePayload(value)).digest('hex');
+const RECOVERY_HANDOFF_AUTHORITY=Symbol('owner-validated-codex-recovery-handoff');
 const canonical=(id:number)=>`concierge:${id}`;
 const row=(id:string)=>db.query('SELECT * FROM session_handoffs WHERE id=?').get(id) as HandoffRow|null;
+const requestRow=(id:string)=>db.query('SELECT request_id,source_session_id,source_input_id,target_input_id,payload_json FROM session_communication_requests WHERE request_id=?')
+  .get(id) as {request_id:string;source_session_id:number;source_input_id:string|null;target_input_id:string|null;payload_json:string};
 const pending=(id:number)=>db.query("SELECT * FROM session_handoffs WHERE predecessor_session_id=? AND state='proposed'").get(id) as HandoffRow|null;
 
 export function supersededBy(sessionId:number):string|null {
@@ -63,31 +69,117 @@ function ledgerItems(sessionId:number):Item[] {
     const turn=request.target_input_id?db.query('SELECT t.provider_input_acknowledged_at,t.provider_turn_id,t.status FROM session_inputs i LEFT JOIN turns t ON t.id=i.turn_id WHERE i.id=?').get(request.target_input_id) as any:null;
     const target=getSessionById(request.target_session_id);
     items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:canonical(request.target_session_id),status:request.status,
-      doNotRedispatch:!!turn?.provider_input_acknowledged_at||!!turn?.provider_turn_id||target?.provider_id==='chatgpt'});
+      doNotRedispatch:!!turn?.provider_input_acknowledged_at||!!turn?.provider_turn_id||target?.provider_id==='chatgpt',
+      ...(undeliveredRequestState(requestRow(request.request_id))??{})});
   }
+  // A worker can settle a request before its final return reaches the asker. That return is
+  // still owed to whoever holds the asking work, so it moves with the handoff (Inbox 8785 →
+  // 8876, 2026-11-06: two returns reached the suspended predecessor after acceptance).
+  for(const [requests,events,target] of [
+    ['session_communication_requests','session_communication_events',"'concierge:'||request.target_session_id"],
+    ['session_peer_requests','session_peer_events',"request.peer||':'||request.remote_session_id"]] as const)
+    for(const request of db.query(`SELECT request.request_id,${target} AS target FROM ${requests} request
+      WHERE request.source_session_id=? AND request.outcome IS NOT NULL AND EXISTS (SELECT 1 FROM ${events} event
+        WHERE event.request_id=request.request_id AND event.kind='final' AND event.superseded_by_event_id IS NULL AND event.status NOT IN ('received','retained'))
+      ORDER BY request.created_at_ms,request.request_id`).all(sessionId) as {request_id:string;target:string}[]){
+      if(pendingReturnInputs(request.request_id).some(input=>input.state==='delivered'))continue;
+      items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:request.target,status:'settled',
+        pendingReturn:true,doNotRedispatch:true});
+    }
   for(const request of db.query('SELECT request_id,peer,remote_session_id,status FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL ORDER BY created_at_ms,request_id').all(sessionId) as any[])
     items.push({id:`sent:${request.request_id}`,kind:'sent',ref:request.request_id,holder,target:`${request.peer}:${request.remote_session_id}`,status:request.status,doNotRedispatch:true});
+  for(const answer of db.query(`SELECT obligation_id,state,answer_event_id,answer_return_input_id FROM session_chatgpt_obligations
+    WHERE asker_session_id=? AND state NOT IN ('resolved','withdrawn_by_tejas') ORDER BY created_at_ms,obligation_id`).all(sessionId) as any[])
+    items.push({id:`answer:${answer.obligation_id}`,kind:'answer',ref:answer.obligation_id,holder,state:answer.state,
+      answerEventId:answer.answer_event_id,answerReturnInputId:answer.answer_return_input_id});
   for(const [table,kind] of [['session_communication_requests','local'],['session_peer_deliveries','peer'],['session_external_requests','outside']] as const){
     const where=table==='session_peer_deliveries'?'closed_at_ms IS NULL':'outcome IS NULL';
     for(const request of db.query(`SELECT request_id,target_input_id FROM ${table} WHERE target_session_id=? AND ${where} ORDER BY rowid`).all(sessionId) as any[])
-      items.push({id:`owed:${request.request_id}`,kind:'owed',ref:request.request_id,holder,source:kind,targetInputId:request.target_input_id});
+      // A local request that never reached a run is not work this session can do: reply refuses it,
+      // and a held one waits on its requester's decision. Say so on the row instead of hiding it,
+      // because a handoff must still move it.
+      items.push({id:`owed:${request.request_id}`,kind:'owed',ref:request.request_id,holder,source:kind,targetInputId:request.target_input_id,
+        ...(kind==='local'?undeliveredRequestState(requestRow(request.request_id))??{}:{})});
   }
   for(const input of db.query(`SELECT i.id AS input_id,i.turn_id,t.* FROM session_inputs i JOIN turns t ON t.id=i.turn_id
     WHERE i.session_id=? AND t.session_id=? AND t.status='queued' AND t.accepted_input_id=i.id ORDER BY t.id`).all(sessionId,sessionId) as any[]){
+    // The answer duty represents its service repair input. Transfer withdraws an unstarted
+    // repair, then the current holder receives a fresh prompt for the same exact answer.
+    if(input.input_id.startsWith('chatgpt-repair:')&&safeTurn(input as WaitingTurn,getAcceptedSessionInput(input.input_id)!))continue;
     // A request's target input is already represented by its owed item; it is still a queued
     // execution and is shown here so the successor can see whether it is safe to move.
     const accepted=getAcceptedSessionInput(input.input_id)!;
     items.push({id:`queued:${input.input_id}`,kind:'queued',ref:input.input_id,holder,turnId:input.turn_id,
-      movable:safeTurn(input as WaitingTurn,accepted),obsolete:closedThreadUpkeep(accepted)});
+      movable:movableQueuedTurn(input as WaitingTurn,accepted),obsolete:obsoleteQueuedTurn(accepted)});
   }
+  for(const repair of db.query(`SELECT i.id AS input_id,i.turn_id FROM session_inputs i JOIN turns t ON t.id=i.turn_id
+    WHERE i.session_id=? AND t.session_id=? AND i.id GLOB 'chatgpt-repair:*'
+      AND t.status='running' AND t.accepted_input_id=i.id ORDER BY t.id`).all(sessionId,sessionId) as any[])
+    items.push({id:`queued:${repair.input_id}`,kind:'queued',ref:repair.input_id,holder,turnId:repair.turn_id,movable:false});
   for(const watch of db.query("SELECT watch_id,state FROM watches WHERE session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending') ORDER BY created_at_ms,watch_id").all(sessionId) as any[])
     items.push({id:`watch:${watch.watch_id}`,kind:'watch',ref:watch.watch_id,holder,state:watch.state});
   return items;
 }
 
-function closedThreadUpkeep(input:ReturnType<typeof getAcceptedSessionInput>):boolean {
-  if(!input||input.origin!=='service'||!input.id.startsWith('thread-upkeep:')||!input.request_id)return false;
-  return !!db.query("SELECT 1 FROM inbox_requests WHERE request_id=? AND state='closed'").get(input.request_id);
+/** Whether acceptance could move every queued input: the same rule `acceptHandoff` enforces, read
+ * before a proposal so an automatic move never proposes a handoff its successor must refuse. */
+export function queuedWorkMovable(sessionId:number):{queued:number;movable:boolean} {
+  const queued=ledgerItems(sessionId).filter(item=>item.kind==='queued');
+  return {queued:queued.length,movable:queued.every(item=>item.movable||item.obsolete)};
+}
+
+/**
+ * Where each undelivered final return of a settled request stands on its asker's side.
+ * unadmitted: nothing was written to the asker yet; unstarted: an accepted input with no turn
+ * or steering; queued: waiting in a queued turn (moved by the queued item when safe);
+ * delivered: already handed to a run, so the predecessor has it and it is never taken back.
+ */
+function pendingReturnInputs(requestId:string):{inputId:string|null;state:'unadmitted'|'unstarted'|'queued'|'delivered'}[] {
+  return (db.query(`SELECT accepted_input_id FROM session_communication_events WHERE request_id=? AND kind='final'
+    AND superseded_by_event_id IS NULL AND status NOT IN ('received','retained')
+    UNION ALL SELECT accepted_input_id FROM session_peer_events WHERE request_id=? AND kind='final'
+    AND superseded_by_event_id IS NULL AND status NOT IN ('received','retained')`).all(requestId,requestId) as {accepted_input_id:string|null}[]).map(event=>{
+    if(!event.accepted_input_id)return {inputId:null,state:'unadmitted' as const};
+    const input=getAcceptedSessionInput(event.accepted_input_id);
+    if(!input||input.steering_id!==null||(input.receipt_json&&JSON.parse(input.receipt_json).state))return {inputId:event.accepted_input_id,state:'delivered' as const};
+    if(input.turn_id===null)return {inputId:input.id,state:'unstarted' as const};
+    const turn=db.query('SELECT status FROM turns WHERE id=?').get(input.turn_id) as {status:string}|null;
+    return {inputId:input.id,state:turn?.status==='queued'?'queued' as const:'delivered' as const};
+  });
+}
+
+/**
+ * Whether a ChatGPT answer's not-yet-acknowledged return input waits in a queued turn this handoff
+ * moves (never started, no dependencies; see movableQueuedTurn). The answer duty can
+ * then move too, and the receipt is recorded when the successor's provider acknowledges that input.
+ * Waiting for the predecessor to acknowledge it deadlocked every handoff whose predecessor could not
+ * run (concierge:9772 → 9874, 2026-11-16: Codex allowance exhausted with a review answer queued).
+ */
+function answerReturnTravels(answerEventId:string,movable:Set<string>):boolean {
+  const event=(db.query(`SELECT accepted_input_id,status FROM session_communication_events WHERE event_id=?`).get(answerEventId)
+    ??db.query(`SELECT accepted_input_id,status FROM session_peer_events WHERE event_id=?`).get(answerEventId)) as
+    {accepted_input_id:string|null;status:string}|null;
+  if(!event?.accepted_input_id||event.status==='received'||event.status==='retained')return false;
+  const input=getAcceptedSessionInput(event.accepted_input_id);
+  if(!input||input.steering_id!==null||(input.receipt_json&&JSON.parse(input.receipt_json).state))return false;
+  return movable.has(input.id);
+}
+
+function movableQueuedTurn(turn:WaitingTurn,input:NonNullable<ReturnType<typeof getAcceptedSessionInput>>):boolean {
+  // An unfired or replay-safe held schedule has no provider effects. Keep its turn and firing identity when
+  // ownership moves: repeating schedules use that identity to book exactly one successor.
+  return safeTurn(turn.saved_kind==='scheduled'?{...turn,saved_kind:null}:turn,input);
+}
+
+function obsoleteQueuedTurn(input:ReturnType<typeof getAcceptedSessionInput>):boolean {
+  if(!input)return false;
+  if(input.origin==='service'&&input.id.startsWith('thread-upkeep:')&&input.request_id){
+    return !!db.query("SELECT 1 FROM inbox_requests WHERE request_id=? AND state='closed'").get(input.request_id);
+  }
+  if(input.scope==='turn-continuation'||input.id.startsWith('turn-continuation:')){
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -111,11 +203,7 @@ async function worktrees(sessionId:number):Promise<{items:Item[];omissions:strin
   let runner=typeof meta.providerRunner==='string'?meta.providerRunner:null;
   if(meta.providerRunner===undefined&&session.provider_id==='codex')runner=process.env.CONCIERGE_CODEX_RUNNER?.trim()||null;
   if(meta.providerRunner===undefined&&session.provider_id==='claude-code'&&session.agent_session_uuid){
-    const prior=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
-      LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
-      WHERE execution.session_id=? AND execution.provider='claude-code'
-      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(sessionId) as
-      {supervisor:string;runner:string|null}|null;
+    const prior=lastLaunchedConversationHome(db,sessionId,'claude-code');
     if(prior?.supervisor==='runner'){
       if(!prior.runner)return {items:[],omissions:['The exact runner lease for this conversation is unavailable; worktrees were not inspected.']};
       runner=prior.runner;
@@ -181,9 +269,49 @@ async function labItems(sessionId:number,source:{inputId:string;runId:string}):P
   }catch(error){return {items:[],omissions:[`Lab inventory unavailable: ${error instanceof Error?error.message:String(error)}`]};}
 }
 
-async function inventory(sessionId:number,source:{inputId:string;runId:string}):Promise<Inventory> {
+async function inventory(sessionId:number,source:{inputId:string;runId:string},recovery?:{preservedSourcePath:string}):Promise<Inventory> {
   const [lab,git]=await Promise.all([labItems(sessionId,source),worktrees(sessionId)]);
-  return {items:[...ledgerItems(sessionId),...lab.items,...git.items].sort((a,b)=>a.id.localeCompare(b.id)),omissions:[...lab.omissions,...git.omissions].sort()};
+  const items=[...ledgerItems(sessionId),...lab.items,...git.items],omissions=[...lab.omissions],dispositions:NonNullable<Inventory['dispositions']> = [];
+  if(!recovery)omissions.push(...git.omissions);
+  else {
+    const session=getSessionById(sessionId)!,metadata=sessionMetadata(session);
+    const namespace={sessionId,threadId:session.agent_session_uuid,cwd:metadata.cwd??null,additionalDirs:metadata.additionalDirs??[]};
+    const disposition=(source:'transcript'|'git',reason:string)=>dispositions.push({kind:'discovery-limit',source,reason,
+      preservedSourcePath:recovery.preservedSourcePath,namespace,
+      effect:'The original source and retained namespace stay in place; no rewrite or remap occurs. This inventory is not exhaustive.'});
+    for(const omission of git.omissions){
+      if(omission.startsWith('Provider transcript unavailable')||omission.startsWith('Provider transcript exceeds the bounded worktree inventory read')){
+        disposition('transcript',omission);continue;
+      }
+      if(omission==='Git worktree list could not be inspected.'){
+        disposition('git',omission);continue;
+      }
+      const inaccessible=omission.match(/^Worktree at (.+) could not be inspected\.$/);
+      if(inaccessible){
+        try{
+          const value=await stat(inaccessible[1]!);
+          if(value.isDirectory()){
+            if(!items.some(item=>item.kind==='worktree'&&item.ref===inaccessible[1]))items.push({id:`worktree:${inaccessible[1]}`,kind:'worktree',ref:inaccessible[1]!,holder:canonical(sessionId)});
+            disposition('git',`${omission} The exact referenced directory is accessible and retained without Git inspection.`);continue;
+          }
+        }catch{/* keep the concrete omission below */}
+      }
+      omissions.push(omission);
+    }
+  }
+  return {items:items.sort((a,b)=>a.id.localeCompare(b.id)),omissions:omissions.sort(),...(dispositions.length?{dispositions}: {})};
+}
+
+async function assertRecoveryResources(sessionId:number,preservedSourcePath:string,items:Item[]=[]):Promise<void> {
+  if(!preservedSourcePath.startsWith('/'))throw new Error('Recovery source path must be absolute.');
+  const source=await stat(preservedSourcePath);
+  if(!source.isFile())throw new Error('The preserved native conversation source is unavailable.');
+  const session=getSessionById(sessionId);if(!session)throw new Error('Recovery predecessor is unavailable.');
+  const metadata=sessionMetadata(session),roots=[metadata.cwd,...(metadata.additionalDirs??[])].filter((value):value is string=>typeof value==='string');
+  if(!metadata.cwd||roots.some(path=>!path.startsWith('/')))throw new Error('Recovery workspace namespace is incomplete.');
+  for(const path of [...new Set([...roots,...items.filter(item=>item.kind==='worktree').map(item=>item.ref)])]){
+    const resource=await stat(path);if(!resource.isDirectory())throw new Error(`Recovery resource directory is unavailable: ${path}`);
+  }
 }
 
 export async function handoffObligations(sessionId:number,addressId?:number,source?:{inputId:string;runId:string}) {
@@ -216,7 +344,7 @@ export async function proposeHandoff(input:{actorSession:number;inputId:string;r
   const snapshot=await inventory(source.id,{inputId:input.inputId,runId:input.runId});
   return db.transaction(()=>{
     const prior=db.query('SELECT * FROM session_handoffs WHERE requesting_input_id=? AND action_id=?').get(input.inputId,input.actionId) as HandoffRow|null;
-    if(prior){if(prior.predecessor_session_id!==source.id)throw new Error('Handoff action identity conflicts with another predecessor.');return {handoffId:prior.id,successor:canonical(prior.successor_session_id),inventory:JSON.parse(prior.inventory_json),digest:prior.inventory_digest,state:prior.state,duplicate:true};}
+    if(prior){if(prior.predecessor_session_id!==source.id||prior.handoff_kind!=='ordinary')throw new Error('Handoff action identity conflicts with another handoff kind or predecessor.');return {handoffId:prior.id,successor:canonical(prior.successor_session_id),inventory:JSON.parse(prior.inventory_json),digest:prior.inventory_digest,state:prior.state,duplicate:true};}
     if(supersededBy(source.id))throw new Error('The predecessor was superseded while preparing handoff.');
     const open=pending(source.id);if(open)throw new Error(`Handoff ${open.id} is already proposed for ${canonical(source.id)}.`);
     const now=inventoryLocalWithExternal(source.id,snapshot);
@@ -244,40 +372,169 @@ export async function proposeHandoff(input:{actorSession:number;inputId:string;r
   }).immediate();
 }
 
+/** Stage a passive Astra continuation. This API is intended for the recovery engine only;
+ * it derives the binding from the retained predecessor and never accepts caller model/effort. */
+export async function stageRecoveryHandoff(input:{actorSession:number;inputId:string;runId:string;predecessorId:number;
+  actionId:string;reason:string;selectedInputId:string;preservedSourcePath:string}) {
+  const source=getSessionById(input.predecessorId);
+  const selected=getAcceptedSessionInput(input.selectedInputId);
+  const sourceInput=getAcceptedSessionInput(input.inputId);
+  if(!source||source.status==='archived'||supersededBy(source.id)||sessionMetadata(source).suspended)
+    throw new Error('The predecessor is unavailable or already excluded.');
+  const metadata=sessionMetadata(source);
+  if(source.provider_id!=='codex'||metadata.model!=='gpt-6-astra'||metadata.reasoningEffort!=='medium'
+    ||!source.agent_session_uuid||!selected||selected.session_id!==source.id||!sourceInput||sourceInput.session_id!==input.actorSession)
+    throw new Error('Recovery staging requires the retained Astra Medium Codex binding and exact selected input.');
+  if(!input.reason.trim()||!input.actionId)throw new Error('A reason and stable action ID are required.');
+  await assertRecoveryResources(source.id,input.preservedSourcePath);
+  const snapshot=await inventory(source.id,{inputId:input.inputId,runId:input.runId},{preservedSourcePath:input.preservedSourcePath});
+  if(snapshot.omissions.length)throw new Error(`Recovery custody inventory has unresolved omissions: ${snapshot.omissions.join(' ')}`);
+  await assertRecoveryResources(source.id,input.preservedSourcePath,snapshot.items);
+  return db.transaction(()=>{
+    const prior=db.query('SELECT * FROM session_handoffs WHERE requesting_input_id=? AND action_id=?').get(input.inputId,input.actionId) as HandoffRow|null;
+    if(prior){
+      if(prior.predecessor_session_id!==source.id||prior.handoff_kind!=='codex-custody-successor'||prior.canonical_input_id!==selected.id)
+        throw new Error('Recovery action identity conflicts with another handoff kind, selected input or predecessor.');
+      const successor=getSessionById(prior.successor_session_id);
+      const linked=db.query('SELECT canonical_input_id,placement_input_id,placement_turn_id FROM codex_custody_successors WHERE handoff_id=?').get(prior.id) as any;
+      if(linked&&linked.canonical_input_id!==selected.id)throw new Error('Recovery handoff is bound to a different canonical input.');
+      if(!linked&&(!successor||!sessionMetadata(successor).suspended||successor.agent_session_uuid!==null
+        ||db.query('SELECT 1 FROM session_inputs WHERE session_id=? LIMIT 1').get(prior.successor_session_id)
+        ||db.query('SELECT 1 FROM turns WHERE session_id=? LIMIT 1').get(prior.successor_session_id)))
+        throw new Error('Unlinked recovery handoff is not a passive staging successor.');
+      return {
+      handoffId:prior.id,successor:canonical(prior.successor_session_id),digest:prior.inventory_digest,
+      inventory:JSON.parse(prior.inventory_json) as Inventory,state:prior.state,duplicate:true};}
+    if(supersededBy(source.id)||pending(source.id))throw new Error('The predecessor already has a competing handoff.');
+    const now=inventoryLocalWithExternal(source.id,snapshot),id=randomUUID(),hash=digest(now);
+    const successor=createNativeSession('codex',{title:`${metadata.title??canonical(source.id)} (continued)`,
+      summary:metadata.summary??`Continue ${metadata.title??canonical(source.id)}.`,purpose:metadata.purpose??'develop',
+      cwd:metadata.cwd,project:metadata.project??null,additionalDirs:metadata.additionalDirs,origin:'native',model:metadata.model,
+      reasoningEffort:metadata.reasoningEffort,providerAccount:metadata.providerAccount,providerRunner:metadata.providerRunner,
+      projectName:metadata.projectName,projectPath:metadata.projectPath,suspended:true,interactionPolicy:metadata.interactionPolicy,
+      nativeBinding:metadata.nativeBinding});
+    const human=sessionInputProvenance(sourceInput)?.originatingHuman??null;
+    db.query(`INSERT INTO session_handoffs(id,predecessor_session_id,successor_session_id,state,action_id,handoff_kind,canonical_input_id,caller_session_id,reason,
+      requesting_input_id,requesting_run_id,originating_human_json,inventory_json,inventory_digest)
+      VALUES(?,?,?,'proposed',?,'codex-custody-successor',?,?,?,?,?,?,?,?)`).run(id,source.id,successor.id,input.actionId,selected.id,input.actorSession,input.reason.trim(),input.inputId,input.runId,
+        human?JSON.stringify(human):null,JSON.stringify(now),hash);
+    executionChanged();
+    return {handoffId:id,successor:canonical(successor.id),digest:hash,inventory:now,state:'proposed',duplicate:false};
+  }).immediate();
+}
+
+/** Commit engine-owned recovery placement and the exact current obligation inventory together. */
+export async function commitRecoveryHandoff(input:{actorSession:number;inputId:string;runId:string;handoffId:string;digest:string;
+  placementInputId:string;placementTurnId:number;validateAuthority:()=>void}) {
+  if(typeof input.validateAuthority!=='function')throw new Error('Recovery custody requires its current owner authority validator.');
+  const proposed=row(input.handoffId);if(!proposed||proposed.handoff_kind!=='codex-custody-successor')
+    throw new Error('Recovery handoff is not the exact engine-owned operation kind.');
+  const relation=db.query(`SELECT canonical_input_id,predecessor_session_id,successor_session_id,placement_input_id,placement_turn_id,state,snapshot_json
+    FROM codex_custody_successors WHERE handoff_id=? AND placement_input_id=? AND placement_turn_id=?`)
+    .get(input.handoffId,input.placementInputId,input.placementTurnId) as any;
+  if(!relation||relation.canonical_input_id!==proposed.canonical_input_id||relation.predecessor_session_id!==proposed.predecessor_session_id
+    ||relation.successor_session_id!==proposed.successor_session_id||relation.state!=='staged')
+    throw new Error('Recovery placement is not bound to this staged custody successor.');
+  const selected=getAcceptedSessionInput(relation.canonical_input_id);
+  if(!selected||selected.session_id!==proposed.predecessor_session_id)
+    throw new Error('Canonical selected input changed before custody commit.');
+  const snapshot=JSON.parse(relation.snapshot_json) as {path?:unknown};
+  if(typeof snapshot.path!=='string')throw new Error('Recovery source path is not retained by the owner.');
+  await assertRecoveryResources(proposed.predecessor_session_id,snapshot.path);
+  return acceptHandoffInternal(input,{placementInputId:input.placementInputId,placementTurnId:input.placementTurnId,
+    authority:RECOVERY_HANDOFF_AUTHORITY,preservedSourcePath:snapshot.path,validateAuthority:input.validateAuthority});
+}
+
 function inventoryLocalWithExternal(sessionId:number,snapshot:Inventory):Inventory {
-  return {items:[...ledgerItems(sessionId),...snapshot.items.filter(item=>item.kind==='lab'||item.kind==='worktree')].sort((a,b)=>a.id.localeCompare(b.id)),omissions:snapshot.omissions};
+  return {items:[...ledgerItems(sessionId),...snapshot.items.filter(item=>item.kind==='lab'||item.kind==='worktree')].sort((a,b)=>a.id.localeCompare(b.id)),omissions:snapshot.omissions,
+    ...(snapshot.dispositions?.length?{dispositions:snapshot.dispositions}:{})};
 }
 
 export async function acceptHandoff(input:{actorSession:number;inputId:string;runId:string;handoffId:string;digest:string}) {
+  return acceptHandoffInternal(input,null);
+}
+
+async function acceptHandoffInternal(input:{actorSession:number;inputId:string;runId:string;handoffId:string;digest:string},
+  recovery:{placementInputId:string;placementTurnId:number;authority:symbol;preservedSourcePath:string;validateAuthority:()=>void}|null) {
   const proposed=row(input.handoffId);if(!proposed)throw new Error('Unknown handoff.');
-  if(proposed.successor_session_id!==input.actorSession)throw new Error('Only the successor’s live run may accept this handoff.');
+  if(recovery?.authority!==RECOVERY_HANDOFF_AUTHORITY&&proposed.successor_session_id!==input.actorSession)
+    throw new Error('Only the successor’s live run may accept this handoff.');
   if(proposed.state==='accepted'){
     if(input.digest!==proposed.inventory_digest)throw new Error('This handoff was already accepted with a different inventory digest.');
     return {accepted:true,duplicate:true,handoffId:proposed.id,predecessor:canonical(proposed.predecessor_session_id),
       successor:canonical(proposed.successor_session_id),inventory:JSON.parse(proposed.inventory_json),digest:proposed.inventory_digest};
   }
   if(proposed.state!=='proposed')throw new Error('This handoff is not proposed.');
-  const observed=await inventory(proposed.predecessor_session_id,{inputId:input.inputId,runId:input.runId});
+  const observed=await inventory(proposed.predecessor_session_id,{inputId:input.inputId,runId:input.runId},recovery?{preservedSourcePath:recovery.preservedSourcePath}:undefined);
   const current=inventoryLocalWithExternal(proposed.predecessor_session_id,observed),currentDigest=digest(current);
+  if(recovery)await assertRecoveryResources(proposed.predecessor_session_id,recovery.preservedSourcePath,current.items);
+  if(recovery&&current.omissions.length)
+    throw new Error(`Recovery custody inventory has unresolved omissions: ${current.omissions.join(' ')}`);
   if(input.digest!==currentDigest) return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'Inventory changed; acknowledge this exact digest.'};
+  const movableNow=new Set(current.items.filter(item=>item.kind==='queued'&&item.movable).map(item=>item.ref));
+  if(current.items.some(item=>item.kind==='answer'&&item.answerEventId&&!item.answerReturnInputId
+    &&!answerReturnTravels(item.answerEventId,movableNow)))
+    return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A ChatGPT answer has not reached its asking session yet. Let the exact return receipt settle before handing off its duty.'};
   if(current.items.some(item=>item.kind==='queued'&&!item.movable&&!item.obsolete))
     return {accepted:false,handoffId:input.handoffId,inventory:current,digest:currentDigest,reason:'A queued input may have reached its provider or has dependencies. Let its exact outcome settle before accepting ownership.'};
   const result=db.transaction(()=>{
+    recovery?.validateAuthority();
     const state=row(input.handoffId);if(!state||state.state!=='proposed')throw new Error('This handoff changed while it was being accepted.');
     const verified=inventoryLocalWithExternal(state.predecessor_session_id,current),verifiedDigest=digest(verified);
     if(verifiedDigest!==input.digest)return {accepted:false,handoffId:input.handoffId,inventory:verified,digest:verifiedDigest,reason:'Ledger obligations changed; acknowledge this exact digest.'};
     const from=state.predecessor_session_id,to=state.successor_session_id;
     const moved:{kind:string;ref:string}[]=[];
     const record=(kind:string,ref:string)=>{db.query('INSERT INTO session_handoff_items(handoff_id,kind,ref,from_session_id,to_session_id) VALUES(?,?,?,?,?)').run(state.id,kind,ref,from,to);moved.push({kind,ref});};
-    const successorInputId=`handoff:${state.id}`;
-    const successorTurnId=getAcceptedSessionInput(successorInputId)?.turn_id;
+    const successorInputId=recovery?.placementInputId??`handoff:${state.id}`;
+    const successorTurnId=recovery?.placementTurnId??getAcceptedSessionInput(successorInputId)?.turn_id;
     if(!successorTurnId)throw new Error('Successor handoff brief was not queued.');
+    if(recovery){
+      const placement=getAcceptedSessionInput(successorInputId);
+      const turn=db.query(`SELECT id,session_id,accepted_input_id,status,owner_instance_id,provider_admission_intended_at,
+        provider_started_at,provider_turn_id,provider_input_acknowledged_at FROM turns WHERE id=?`).get(successorTurnId) as any;
+      if(!placement||placement.session_id!==state.successor_session_id||placement.turn_id!==successorTurnId
+        ||!turn||turn.session_id!==state.successor_session_id||turn.accepted_input_id!==successorInputId
+        ||turn.status!=='queued'||turn.owner_instance_id!==null||turn.provider_admission_intended_at!==null
+        ||turn.provider_started_at!==null||turn.provider_turn_id!==null||turn.provider_input_acknowledged_at!==null)
+        throw new Error('Recovery placement is not an unstarted exact queued turn on the staged successor.');
+      const running=db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering') LIMIT 1")
+        .get(state.predecessor_session_id);
+      const execution=db.query("SELECT 1 FROM executions WHERE session_id=? AND state IN ('intended','live','exited') LIMIT 1")
+        .get(state.predecessor_session_id);
+      const ambiguous=db.query(`SELECT 1 FROM turn_steering_messages steering JOIN turns turn ON turn.id=steering.turn_id
+        WHERE turn.session_id=? AND steering.status IN ('sending','ambiguous') LIMIT 1`).get(state.predecessor_session_id);
+      const predecessor=getSessionById(state.predecessor_session_id);
+      if(running||execution||ambiguous||!predecessor||sessionMetadata(predecessor).suspended||predecessor.status==='archived')
+        throw new Error('Predecessor exclusion is not established; custody cannot commit.');
+    }
     const movable=new Set(verified.items.filter(item=>item.kind==='queued'&&item.movable).map(item=>item.ref));
-    for(const item of verified.items){
+    // A ChatGPT answer duty moves its own active request with it, so its sent request must move
+    // first; inventory order (answer:… sorts before sent:…) refused every handoff holding both
+    // (concierge:9767 → 9847, 2026-11-16).
+    // Read before any queued item moves: moving it re-points the answer event at the successor's copy.
+    const travellingAnswers=new Set(verified.items.filter(item=>item.kind==='answer'&&item.answerEventId&&!item.answerReturnInputId
+      &&answerReturnTravels(item.answerEventId,movable)).map(item=>item.ref));
+    const transferOrder=[...verified.items].sort((a,b)=>Number(a.kind==='answer')-Number(b.kind==='answer'));
+    for(const item of transferOrder){
       if(item.kind==='sent'){
         const table=db.query('SELECT 1 FROM session_communication_requests WHERE request_id=?').get(item.ref)?'session_communication_requests':'session_peer_requests';
-        const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND outcome IS NULL`).run(to,item.ref,from);
-        if(changed.changes!==1)throw new Error(`Sent request ${item.ref} changed during handoff.`);record(item.kind,item.ref);
+        const changed=db.query(`UPDATE ${table} SET source_session_id=? WHERE request_id=? AND source_session_id=? AND ${item.pendingReturn?'outcome IS NOT NULL':'outcome IS NULL'}`).run(to,item.ref,from);
+        if(changed.changes!==1)throw new Error(`Sent request ${item.ref} changed during handoff.`);
+        // An unstarted return input carries its exact ID to the successor; delivery then dispatches it there.
+        // A queued one moves with its queued item below.
+        // One answer can carry several requests through a single return input; it moves once.
+        if(item.pendingReturn)for(const pendingReturn of pendingReturnInputs(item.ref)){
+          if(pendingReturn.state==='delivered')throw new Error(`The return for ${item.ref} reached the predecessor during handoff.`);
+          if(pendingReturn.state==='unstarted'&&db.query(`UPDATE session_inputs SET session_id=?,updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND session_id<>? AND turn_id IS NULL AND steering_id IS NULL`).run(to,pendingReturn.inputId,to).changes!==1
+            &&getAcceptedSessionInput(pendingReturn.inputId!)?.session_id!==to)
+            throw new Error(`The return input for ${item.ref} changed during handoff.`);
+        }
+        record(item.kind,item.ref);
+      }else if(item.kind==='answer'){
+        if(!transferChatGptAnswerOwnership(item.ref,from,to,Date.now(),travellingAnswers.has(item.ref)))
+          throw new Error(`ChatGPT answer ${item.ref} changed during handoff.`);
+        record(item.kind,item.ref);
       }else if(item.kind==='owed'){
         const table=item.source==='peer'?'session_peer_deliveries':item.source==='outside'?'session_external_requests':'session_communication_requests';
         const open=table==='session_peer_deliveries'?'closed_at_ms IS NULL':'outcome IS NULL';
@@ -296,20 +553,34 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
       }else if(item.kind==='queued'&&item.obsolete){
         const original=getAcceptedSessionInput(item.ref);
         const turn=original?.turn_id?db.query('SELECT status,accepted_input_id FROM turns WHERE id=?').get(original.turn_id) as {status:string;accepted_input_id:string}|null:null;
-        if(!original||!turn||turn.status!=='queued'||turn.accepted_input_id!==original.id||!closedThreadUpkeep(original))
-          throw new Error(`Closed-request upkeep ${item.ref} changed during handoff.`);
+        if(!original||!turn||turn.status!=='queued'||turn.accepted_input_id!==original.id||!obsoleteQueuedTurn(original))
+          throw new Error(`Obsolete queued item ${item.ref} changed during handoff.`);
         // The request has its own final receipt. This reminder has no remaining work to transfer.
         // Retire its exact queued turn; never submit its words to another provider.
-        finishTurn(original.turn_id!,'cancelled','The exact Inbox request closed before this reminder ran.');
+        const isContinuation=original.scope==='turn-continuation'||original.id.startsWith('turn-continuation:');
+        finishTurn(original.turn_id!,'cancelled',isContinuation?'Continuation superseded by handoff.':'The exact Inbox request closed before this reminder ran.');
         settleTurnDependencies(original.turn_id!);
         db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
-          .run(JSON.stringify({state:'canceled',reason:'inbox_request_closed'}),original.id);
+          .run(JSON.stringify({state:'canceled',reason:isContinuation?'continuation_superseded':'inbox_request_closed'}),original.id);
       }else if(item.kind==='queued'&&item.movable){
         const original=getAcceptedSessionInput(item.ref)!;
         const turn=db.query(`SELECT id,session_id,accepted_input_id,status,dispatch_attempt,dispatch_hold,provider_admission_intended_at,
           provider_started_at,provider_turn_id,provider_input_acknowledged_at,saved_kind FROM turns WHERE id=?`).get(original.turn_id) as WaitingTurn|null;
-        if(!turn||!safeTurn(turn,original))throw new Error(`Queued input ${item.ref} is no longer safe to move.`);
-        finishTurn(turn.id,'cancelled','Continued in another agent session before provider admission.');
+        if(!turn||!movableQueuedTurn(turn,original))throw new Error(`Queued input ${item.ref} is no longer safe to move.`);
+        if(turn.saved_kind==='scheduled'){
+          const successor=sessionMetadata(getSessionById(to)!);
+          const movedTurn=db.query(`UPDATE turns SET session_id=?,provider_model=?,reasoning_effort=?
+            WHERE id=? AND session_id=? AND status='queued' AND saved_kind='scheduled' AND accepted_input_id=?`)
+            .run(to,successor.model??null,successor.reasoningEffort??null,turn.id,from,original.id);
+          const movedInput=db.query(`UPDATE session_inputs SET session_id=?,updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND session_id=? AND turn_id=?`).run(to,original.id,from,turn.id);
+          if(movedTurn.changes!==1||movedInput.changes!==1)throw new Error(`Scheduled input ${item.ref} changed during handoff.`);
+          db.query(`UPDATE session_communication_requests SET target_turn_id=?
+            WHERE target_input_id=? AND target_session_id=? AND outcome IS NULL`).run(turn.id,original.id,to);
+          record(item.kind,item.ref);
+          continue;
+        }
+        finishTurn(turn.id,'cancelled','Continued in another agent session.');
         settleTurnDependencies(turn.id);
         const originalPayload=JSON.parse(original.payload_json);
         const cloned=retainSessionInput({id:`handoff-input:${state.id}:${original.id}`,sessionId:to,scope:`handoff:${state.id}`,actionId:original.id,
@@ -325,6 +596,10 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
           .run(cloned.id,moved.turn_id,item.ref,to);
         db.query('UPDATE session_external_requests SET target_input_id=? WHERE target_input_id=? AND target_session_id=? AND outcome IS NULL')
           .run(cloned.id,item.ref,to);
+        // A queued return now travels as the clone; its delivery state follows that exact input.
+        for(const events of ['session_communication_events','session_peer_events'])
+          db.query(`UPDATE ${events} SET accepted_input_id=? WHERE accepted_input_id=? AND status NOT IN ('received','retained')`)
+            .run(cloned.id,item.ref);
         record(item.kind,item.ref);
       }else if(item.kind==='watch'){
         const changed=db.query("UPDATE watches SET session_id=? WHERE watch_id=? AND session_id=? AND (state IN ('accepted','observing') OR delivery_state='pending')").run(to,item.ref,from);
@@ -333,12 +608,27 @@ export async function acceptHandoff(input:{actorSession:number;inputId:string;ru
     }
     // Lab records and worktrees are referenced. Their authorship and bytes stay where they are.
     for(const item of verified.items.filter(item=>item.kind==='lab'||item.kind==='worktree'))record(item.kind,item.ref);
+    if(recovery){
+      const custody=db.query(`UPDATE codex_custody_successors SET state='custody'
+        WHERE handoff_id=? AND predecessor_session_id=? AND successor_session_id=? AND placement_input_id=?
+          AND placement_turn_id=? AND state='staged'`).run(state.id,from,to,successorInputId,successorTurnId);
+      if(custody.changes!==1)throw new Error('Recovery custody reservation changed during transfer.');
+    }
     db.query("UPDATE session_handoffs SET state='accepted',accepted_at=CURRENT_TIMESTAMP,inventory_json=?,inventory_digest=? WHERE id=?")
       .run(JSON.stringify(verified),verifiedDigest,state.id);
     // The Inbox is one logical router across provider sessions. Promote its role only
     // after acceptance, so a proposed successor cannot receive captures prematurely.
     const predecessorMeta=sessionMetadata(getSessionById(from)!);
     if(predecessorMeta.inboxRole==='project-router')takeInboxRouterRole(to,predecessorMeta);
+    // Any other standing role (journal keeper, repair agent, …) follows the work the same way. Left
+    // on the superseded predecessor, the role kept receiving saved journal entries and check-ins
+    // after concierge:4571 → 9752 (2026-11-15), and no turn ever ran them.
+    else if(typeof predecessorMeta.standingRole==='string'&&predecessorMeta.standingRole){
+      db.query(`UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.standingRole') WHERE id=?`).run(from);
+      updateSessionMetadata(to,{standingRole:predecessorMeta.standingRole});
+    }
+    // The repair agent's marker (its purpose text and repair-notice delivery) follows the role too.
+    if(predecessorMeta.repairAgent)updateSessionMetadata(to,{repairAgent:true});
     // Suspension prevents the next turn. It does not interrupt an already admitted run;
     // that run receives a direct notice after this transaction commits.
     updateSessionMetadata(from,{suspended:true});
@@ -353,6 +643,9 @@ export function withdrawHandoff(input:{actorSession:number;handoffId:string}) {
     const current=row(input.handoffId);if(!current||current.state!=='proposed')throw new Error('This handoff is not proposed.');
     if(input.actorSession!==current.caller_session_id&&input.actorSession!==current.predecessor_session_id)
       throw new Error('Only the proposing caller or predecessor may withdraw this handoff.');
+    if(current.handoff_kind==='codex-custody-successor'
+      &&db.query('SELECT 1 FROM codex_custody_successors WHERE handoff_id=?').get(current.id))
+      throw new Error('This canonical recovery owns a retained native cutoff. Pause or Stop its work; ordinary handoff withdrawal cannot release that custody reservation.');
     db.query("UPDATE session_handoffs SET state='withdrawn',withdrawn_at=CURRENT_TIMESTAMP WHERE id=? AND state='proposed'").run(current.id);
     updateSessionMetadata(current.successor_session_id,{suspended:true});
     executionChanged();return {withdrawn:true,handoffId:current.id,predecessor:canonical(current.predecessor_session_id)};

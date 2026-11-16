@@ -11,7 +11,7 @@ finishes, or at a deadline" and then ends its turn. No model stays awake while i
 scheduler: "check every N minutes" stays a repeating saved schedule.
 
 ```
-router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] [--required-commit <full-sha>] <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <...> <source-flags> --action-id A -- <argv...>
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
@@ -19,6 +19,26 @@ router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
 
 `--until` is at most 30 days away. Registration is idempotent by (source input, action id); the same
 id with a different condition is refused.
+
+For a request awaiting a particular Concierge repair, use the server's
+`/var/lib/slack-concierge-deployment/current` link with `--renew --required-commit <full-sha>`.
+The owner reads the linked release manifest and Git ancestry, then requires a successful deployment
+receipt for that installed commit. A release without the target commit advances the watch baseline
+without waking an agent. The duration renews the storage lease silently while the target is absent;
+it is not a recurring agent check. An unconfirmed activation keeps its previous baseline and is
+checked again. A Git ancestry error also keeps the previous baseline and is retried; only Git's
+definite non-ancestor result can advance it. Registration also checks the installed revision, so a target already live can fire
+immediately; the caller checks the installed revision again after registering to cover the race with
+its partial reply. The exact target commit is part of the watch condition and idempotency identity.
+This scoped condition is available only on the server's Concierge link, and the owner checks it
+itself whichever runner the registering agent uses (every server agent runs on the AX41 runner); other file watches retain
+their normal change and deadline behavior. A request-bound scoped watch ends quietly when every
+request naming its series has closed. A scoped watch fires once: when the target is installed the
+series ends instead of renewing, because the next check would find the same installed release and
+wake the agent again. A target commit the deployment's full clone does not have (an unmerged or
+unfetched draft) counts as absent, not as an error. Name the commit that main will contain: this
+repository merges pull requests with merge commits, which keep the branch commits; a squash or
+rebase merge gives the repair a new commit, and a watch on the old one never fires.
 
 **Which machine.** A watch is on the machine of the agent that registered it. An agent on a runner
 (its helper carries `CONCIERGE_RUNNER_NAME`) sends that name; the watch row records it (`runner`),
@@ -187,3 +207,69 @@ wait site. The broader history-read p95 has its own investigation.
 Checked on a scratch ledger: file change, command exit code with output, expiry, cancel, a simulated
 10-minute pause, racing deadline and change, directory entries, deletion, a held session then
 delivery, repeated registration. Script: `agent-scripts/watch-step9/check-watches.ts`.
+
+## Exact-pair recovery custody
+
+Ordinary list and cancel remain limited to the registering session. A predecessor's
+one-shot file watch can remain after a provider recovery continuation registers a
+renewing watch. The separate owner commands inspect and reconcile only that exact pair:
+
+```text
+sessions watch inspect-pair --old <predecessor-watch> --new <existing-renewing-watch> --source-input <input> --source-run <run>
+sessions watch reconcile-pair --old <predecessor-watch> --new <existing-renewing-watch> --inspection <returned-inspection> --source-input <input> --source-run <run> --action-id <stable-id>
+```
+
+The admitted source must belong to the successor or follow its retained all-work
+delegation chain (including delegation through Inbox). Every request edge binds the
+source input, source turn/run and target input/session. Recovery-input edges bind both
+input/turn/session triples and the retained provider recovery relationship. Missing,
+informational, cyclic or unrelated chains refuse; message text and common human-root
+identity confer no custody. The old watch's session must be a verified recovery ancestor
+of the new watch's session. Their original human inputs need not match.
+
+Inspection is a metadata-only read: exact source identity, condition, machine, leases,
+series and delivery identities, verified custody links, old/new retained series history,
+and all currently active exact-condition/machine matches across the recovery family.
+Accepted firing input metadata includes its admission/turn state, turn/steering identities
+and payload/receipt digests so readback can compare custody without disclosing dialogue;
+dialogue, credential bytes, observations and baseline contents are excluded. No path is
+opened and no runner call is made. The returned inspection digest binds the source, pair,
+history, active membership, baseline and deadline. Changed evidence requires inspection again.
+
+Reconciliation acquires SQLite's writer before checking evidence. The selected new watch
+must still be active and renewing, with the exact same serialized condition and runner as
+the old file watch. It quietly marks only the active old row or active successor of its
+series cancelled. Additional active matches refuse, rather than reporting one watch while
+leaving another. The transaction records the complete before/after metadata and operation
+receipt together. A retry of the same source, stable action and inspection returns that
+receipt verbatim after response loss; a changed payload conflicts. Fresh inspection gives
+current readback rather than reinterpreting a historical receipt as current state.
+
+Quiet retirement bypasses normal cancellation delivery: it creates no service input,
+notification, series successor, rearm or request cancellation. Already-terminal rows and
+pending/accepted firing inputs remain untouched. The new watch's baseline, deadline and
+ownership remain untouched. Older readers see the existing cancelled terminal vocabulary
+with null delivery; the separate retained receipt explains the quiet transition.
+
+### State card and verification
+
+- Entity/writer: the owner orders watch lifecycle and reconciliation in the existing SQLite
+  ledger. The observation worker owns only its cursor sidecar.
+- Identity: `(source input, action ID)` retains a payload hash and receipt, including the
+  original run and exact inspection. It is not a watch registration identity.
+- Acceptance: a returned reconciliation receipt proves one committed local transaction;
+  inspection proves readback. Neither claims installed or physical-device acceptance.
+- Retained state: old terminal events, original delivery input and new watch remain separate;
+  no provisional mutation or delivery is published before the transaction commits.
+- Lifetime: the request executes synchronously in the owner. Restart reads the receipt from
+  the ledger; no agent, timer or separate worker owns unfinished reconciliation.
+- Compatibility: the additive receipt table and existing cancelled state require no new
+  reader vocabulary. Rollback leaves receipts retained but older code cannot perform this operation.
+- Failure trace: inspect → retirement and receipt commit → response lost → same action retried
+  after restart → original receipt returned. Receipt insertion failure rolls retirement back.
+- Falsifier: the isolated native build fixture rejects unrelated/informational custody,
+  altered pairs and conflicting retries; preserves terminal pending/accepted delivery and
+  queued input bytes; proves quiet one-shot/series retirement, recovered receipts and rollback.
+  Run `bun run scripts/watch-custody-fixture.ts` from `bot/`. It uses disposable SQLite only;
+  the historical test-suite prohibition remains intact. Installed acceptance belongs to the
+  designing session and must use these supported commands, never raw production ledger reads.

@@ -3,10 +3,13 @@ import { requestApiResponse } from "./router-request-client";
 import {readFileSync} from 'node:fs';
 import {basename} from 'node:path';
 import {createHash} from 'node:crypto';
-import {parseProviderSelector,normalizeReasoningEffort,chatgptThinkingLevel,chatgptGpt,CHATGPT_GPT_PREFIX,CHATGPT_THINKING_LEVELS} from '../src/aliases';
+import {parseProviderSelector,normalizeReasoningEffort,chatgptThinkingLevel,chatgptProject,CHATGPT_PROJECT_PREFIX,CHATGPT_GPT_RETIREMENT,CHATGPT_THINKING_LEVELS,DEFAULT_CHATGPT_THINKING,DEFAULT_HIS_CHATGPT_THINKING,PROVIDER_ALIASES} from '../src/aliases';
 import {REQUEST_PROTOCOL} from '../src/request-protocol';
+import {nextDailyWallClock,validDailyWallClock} from '../src/daily-wall-clock';
+import {IMPLEMENTATION_ALIASES} from '../src/implementation-models';
 
-const usage = `router-actions.sh sessions projects <source-flags> [--peer <instance>]
+const usage = `router-actions.sh sessions journal-review --review-file <JSON-path> --source-input <id> --source-run <id> --action-id <stable-id>
+router-actions.sh sessions projects <source-flags> [--peer <instance>]
 router-actions.sh sessions agents <source-flags>
 router-actions.sh sessions agents bind <role> <session-address> <source-flags> --action-id A
 router-actions.sh projects new <name> --purpose "<one sentence>" --consultation <completed organizer request id> [--template brainstorm|writing|design] [--here-only] [--source-input <id> --source-run <id>]
@@ -18,36 +21,48 @@ router-actions.sh projects canvas-bind <board-id> --title <canvas title> --exist
 router-actions.sh projects canvas-status <board-id>
 router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags> [--by-session] [--period today|week]
+router-actions.sh sessions history-storage claude|codex <source-flags> [--after <next filename>] [--limit 1..2000]
 router-actions.sh sessions auth switch codex <saved-profile-id> [--machine mac] <source-flags> --action-id A
+router-actions.sh sessions codex-test stop|connection-loss concierge:<id> --create request:<id> --run <native-run-id> <source-input/run> --action-id A
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] [--thread <message-id>] -- <concept...>
+router-actions.sh sessions commit-identity <session-id> [Codex-thread-id]
 router-actions.sh sessions context <address> <source-flags> [--thread <message-id>]
-router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id> | --route-message <human-input-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] [--after-settled <request-id> ...] -- <text>
+router-actions.sh sessions ask <address> <source-flags> --action-id A [--escalation-reason "<model-selection trigger>" for an existing Astra session] [--thread <message-id> | --route-message <human-input-id>] [--return-to-requester] --summary "<one line>" [--answer-view summary|full] [--after-request <request-id> ...] [--after-settled <request-id> ...] -- <text>
+router-actions.sh sessions ask <address> --response-mode context <source-flags> --action-id A [--route-message <message-id> | --capture-id <capture-id> | [--file <path> ...] -- <text>]  (saves context without starting a turn; the next active message brings it to the agent with its author)
 router-actions.sh sessions ask --role <standing-agent-role> <source-flags> --action-id A --summary "<one line>" [--session-name <title>] -- <text>
-router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--small-task] [--effort <level>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
+router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--small-task] [--effort <level>] [--codex-native-test-until <ISO-8601-time>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
+router-actions.sh sessions ask --purpose research|design-critique|design-review [--provider <alias> --provider-reason "<why ChatGPT Pro is not used>"] [--project <registered-project> (alternate coding provider only)] --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
+router-actions.sh sessions implement --project <registered-project> [--provider ${IMPLEMENTATION_ALIASES.join('|')}] --session-name <title> --summary "<fixed implementation goal>" <source-flags> --action-id A [--text-file F | -- <design and acceptance criteria>]
+router-actions.sh sessions ask <the frozen ask's exact flags, action ID and text> --resume-source-input <original input> --resume-source-run <original run> <this run's source-flags>
+Resumes an ask frozen by a run that has since ended: the same session's live run cites the original source pair; Concierge returns the one request already admitted under that pair and action, or admits it once. A changed payload is an idempotency conflict.
+router-actions.sh sessions edit-reason --reason "<why this turn still needs its thinking model>" <source-flags> --action-id A
 router-actions.sh sessions ask --outside --project <registered-project> [--provider <codex alias>] [--effort <level>] --session-name <title> --summary "<one line>" [--thread <message-id>] <source-flags> --action-id A [--file <path> ...] [--text-file F | -- <text>]
-router-actions.sh sessions ask --provider chatgpt [--effort light|medium|high|extra-high|pro | --gpt <https://chatgpt.com/g/g-…>] [--his-chat] [--session-name <title>] [--for-task <kind>:<exact-id>] [--recovery-of <original-request-id> (missing-context follow-up only)] <source-flags> --action-id A [--file <path> ...] [--text-file F | -- <text>]
+router-actions.sh sessions ask --provider chatgpt [--effort light|medium|high|extra-high|pro] [--chatgpt-project <https://chatgpt.com/g/g-p-…/project|g-p-id>] [--his-chat] [--session-name <title>] [--for-task <kind>:<exact-id>] [--recovery-of <original-request-id> (missing-context follow-up only)] <source-flags> --action-id A [--file <path> ...] [--text-file F | -- <text>]
 router-actions.sh sessions ask <original-chatgpt-address> --for-task <kind>:<exact-id> --correction-of <original-request-id> <source-flags> --action-id A --summary "<one line>" --file <corrected-path> -- <original question>
 router-actions.sh sessions ask --peer mac --machine-need "<ios-native|mac-app|mac-file|mac-screen|messages|human-mac|browser-fallback>:<specific reason>" [--server-attempt-url <URL> --server-attempt-failure "<observed server failure>" (browser-fallback only)] --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
 router-actions.sh sessions open <http(s)-link> [--on mac] [--browser chrome|safari|default] <source-flags> --action-id A
 Only a current direct request from Tejas can open a link in his browser on the Mac; agent browser checks use the server. Chrome is the default unless --browser says otherwise. The opener starts no agent session, and a sleeping Mac queues the link for at most a day. It only opens the page; it never clicks, types or reads it.
-router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
-router-actions.sh sessions schedule --role <standing-agent-role> --at <ISO-8601-time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>
+router-actions.sh sessions schedule (--at <ISO-8601-time> [--every-ms <interval>] | --daily-at HH:MM --time-zone <IANA zone>) [--expires <ISO-8601-time>] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
+router-actions.sh sessions schedule --role <standing-agent-role> (--at <ISO-8601-time> [--every-ms <interval>] | --daily-at HH:MM --time-zone <IANA zone>) --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions bank [--quiet-only] --provider <alias> --project <registered-project> --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address|imported-address> <source-flags> --action-id A --resurrect -- <text>
 router-actions.sh sessions note <captureId | any message ID> <source-flags> --action-id A --summary-file <markdown-path> [--add-to <earlier captureId or message ID> | --person <name> | --journal entry|checkin]
+router-actions.sh sessions note <captureId | any message ID> <source-flags> --action-id A --journal entry --add-to <earlier captureId or message ID>
 Any message the owner retained can become a note: a capture, a thread reply, a post, a routed message or an agent's answer.
+With --add-to, --summary-file is the whole note as it should now read: read the note first (thnkr.ing /threads/<note>), weave the new capture into the right section and merge repeats. It replaces what agents wrote there; never send only the new part, and never a copy to stack. Lines he wrote himself stay, after your outline, so leave them out of your summary.
 router-actions.sh sessions title [--session <session-address>] <source-flags> --action-id A -- <title>
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--promise-request <open-request-id>] [--keep-working] [--notify] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--summary "<one line: what he must decide and the result it depends on>" (needs_you) --only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--text-file F | -- <text>]
-router-actions.sh sessions answer <original-chatgpt-request-id> <source-flags> --action-id A --answer-event <exact-event-id> --handling used|context_supplied|scoped|superseded [--follow-up-request <exact-request-id> (context_supplied)] [--successor-request <answered-request-id> --reason "<how it covers the original>" (superseded)] [--reason "<narrowed claim and missing context>" (scoped)]
+router-actions.sh sessions answer <original-chatgpt-request-id> <source-flags> --action-id A --answer-event <exact-event-id> --handling used|context_supplied|scoped|superseded [--read-receipt <receipt-id> (after sessions get)] [--follow-up-request <exact-request-id> (context_supplied)] [--successor-request <answered-request-id> --reason "<how it covers the original>" (superseded)] [--reason "<narrowed claim and missing context>" (scoped)]
 router-actions.sh sessions legacy-link <historical-chatgpt-request-id> <source-flags> --action-id A --for-task <kind>:<exact-id> --provider chatgpt|other --reason "<inspected target and task evidence>"
 router-actions.sh sessions chatgpt-recover <original-chatgpt-request-id> <source-flags> --action-id A  # requeue the same original run only when its browser receipt proves Send never happened
+router-actions.sh sessions codex-recover <original-request-id> [--custody-successor] <source-flags> --action-id A  # recover only the exact retained reminder; custody-successor preserves Astra Medium in a new native thread
 router-actions.sh sessions attention withdraw <session-address> <source-flags> --action-id A --need <exact open event ID> --reason "<why no answer is needed>"
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
 router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--notify] [--also-main-thread] [--partial [--answers-question] [--waiting-on-watch <watch-id>] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>" | --nothing-changed "<what the answer rests on>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--before "<what earlier agents did and how this differs>" (required on the first reply to a request that came with WHAT CAME BEFORE)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
---notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes any waiting one-shot notification on that Inbox topic. On reply it is honored only for a final --work-disposition completed reply with --checked: progress, partial updates, corrections and failures never ring his phone, and the flag is dropped with a notice. A bodyless final cannot use it.
+--notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes any waiting one-shot notification on that Inbox topic. On reply it is honored for a substantive --partial --answers-question answer or a final --work-disposition completed reply with --checked: ordinary progress, corrections and failures stay quiet and the flag is dropped with a notice. A bodyless final cannot use it.
 When a ready decision question, needs_you outcome, or needs_decision reply blocks work on Tejas, the owner raises one phone notification by default. The question opens with its one-line --summary (required on needs_you as on every final reply): say what he must decide and the result it depends on, because it is the first line of his notice; background and other news go in the text after it. Name what he must do and where he can answer; --notify is for an additional explicit request on a different message, not needed for the blocked question. Routine progress and completed answers keep their existing notification rule. A question that asks him to sign in, give a secret or do something on his device names the to-do it is about with --todo <id> (find it in his to-dos: thinkering -s 'http://x/todos/tasks?limit=200', which reaches thnkr.ing from the server or a runner, or curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL where thinkering is not found; from the Mac, curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL through ssh remote-box), or --todo none when no to-do for that step exists. Concierge refuses the question when that to-do is already done or dropped (he has already done it, so continue from there), and closes the question by itself when he ticks the to-do off.
 --also-main-thread copies a nested answer into the Inbox thread's main conversation; it is refused for ordinary main-thread requests.
 router-actions.sh sessions get <request-id> <source-flags>
@@ -56,21 +71,33 @@ router-actions.sh sessions handoff <predecessor-address> --provider <alias> [--m
 router-actions.sh sessions handoff accept <handoff-id> --digest <sha256> <source-flags> --action-id A
 router-actions.sh sessions handoff withdraw <handoff-id> <source-flags> --action-id A
 router-actions.sh sessions obligations [<address>] <source-flags>
+router-actions.sh sessions mutation-admission --source-input <input-id> --source-run <run-id>
+router-actions.sh sessions agent-test-scope concierge:<id> --create-input request:<uuid> --source-input <input-id> --source-run <run-id>
+Returns the current actor plus handoff-fence decision and attributed identity only. Check immediately before a mutation; this is not a reusable grant. Ordinary obligations reads remain unchanged.
 Provider changes use handoff between sessions on the same machine. Choose a coding provider alias: ChatGPT cannot acknowledge a handoff. The successor reads the predecessor's context and acknowledges the exact inventory digest before the owner moves obligations. A proposed handoff can be withdrawn while the predecessor keeps working. cancel --reason provider-change is refused with the handoff command.
+router-actions.sh sessions snooze --until <ISO time, at most 6 hours ahead> --reason "<why this can wait>" <source-flags> --action-id A
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
+router-actions.sh sessions saved daily <turn-id> --time HH:MM --time-zone <IANA zone> <source-flags> --action-id A
 Stopping a repeating schedule (sessions schedule --every-ms): sessions cancel <its request-id> withdraws every queued firing and books no more (a firing already running finishes); sessions saved cancel <turn-id> of its queued firing does the same. sessions saved list shows each armed schedule's next firing, turn ID and interval.
 router-actions.sh sessions pause status|all|resume <source-flags> [--action-id A] [--session <concierge:N|mac:N> ...]  # --session is for resume only
-router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] <source-flags> --action-id A
+router-actions.sh sessions control pause|continue <discovered-local-session-address> <source-flags> --action-id A
+Controls one native session on this machine using the same Pause/Continue behavior as Thinkering. Pause persists until explicit Continue; an accepted receipt proves the saved choice, not a stopped provider process. Run peer controls on that peer machine.
+router-actions.sh sessions watch file <absolute-path> --until <ISO time | 90s | 30m | 2h | 1d> [--renew] [--required-commit <full-sha>] <source-flags> --action-id A
 router-actions.sh sessions watch command --cwd <dir> --until <ISO time | duration> <source-flags> --action-id A -- <argv...>
 router-actions.sh sessions watch list <source-flags>
 router-actions.sh sessions watch cancel <watch-id> <source-flags> --action-id A
+router-actions.sh sessions watch inspect-pair --old <watch-id> --new <watch-id> <source-flags>
+router-actions.sh sessions watch reconcile-pair --old <watch-id> --new <watch-id> --inspection <inspection> <source-flags> --action-id A
 
 The lab record (thnkr.ing /lab): threads where sessions discuss, and the findings, decisions and skills they produce, each with a lasting address (lab:<handle>, lab:<handle>/<entry>, .<paragraph>). Tejas reads and posts there too. Every thread has a kind and ends explicitly; mentions wake once with a notice.
 router-actions.sh sessions board read [--thread <handle> | --address <lab address>] <source-flags>   # --address lab:<design-handle> prints a design's sections with their states, his posts and the replies under each
+router-actions.sh sessions board roster --thread <handle>
+router-actions.sh sessions board participants --thread <handle> --revision <number> --json-file <file> --source-input <inputId> --source-run <runId> --action-id A
+router-actions.sh sessions board participant-change --thread <handle> --action-id A
 router-actions.sh sessions board thread [<board>] --kind question|proposal|report|task|meeting --title T [--blind <key>] [--member <address> ...] [--decider <address>|tejas] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
 --blind <key> groups parallel threads while each arm's discussion stays hidden from the other until every thread in the group closes.
-router-actions.sh sessions board post --thread <handle> [--reply-to <lab entry address>] [--target lab:<design-handle>.<passage> [--intent answer|ask|comment|challenge|disposition] [--disposition-file F] [--speaker tejas --his-input <his Inbox input id> [--inbox-session <session> --inbox-message <id>]]] [--sealed] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
+router-actions.sh sessions board post --thread <handle> [--reply-to <lab entry address>] [--target lab:<design-handle>.<passage> [--intent answer|ask|comment|challenge|disposition] [--disposition-file F] [--speaker tejas --his-input <his Inbox input id> [--inbox-session <session> --inbox-message <id>]]] [--sealed] [--mention <address> ...] [--response-target concierge:<n> ...] <source-flags> --action-id A [--text-file F | -- <words>]
 router-actions.sh sessions board claim|reveal --thread <handle> <source-flags> --action-id A [-- <words>]
 router-actions.sh sessions board close --thread <handle> --end <end> --outcome <lab address, file, commit or URL> <source-flags> --action-id A [-- <words>]
 router-actions.sh sessions board product --product finding|decision|skill|design --title T --from "<lab address> :: <why it came from there>" ... [--supersedes "<lab address> :: <why>"] [--mention <address> ...] [--inbox-session <session> --inbox-message <id>] <source-flags> --action-id A [--text-file F | -- <words>]
@@ -81,7 +108,7 @@ router-actions.sh sessions board cards --design <design handle> --inbox-session 
 router-actions.sh sessions board status   # says where the board lives now
 A design (--product design, --text-file with ## sections separated by blank lines, --from the open thread whose sessions answer him; --inbox-session/--inbox-message name the Inbox thread the work belongs to, where one line about the publication is filed) is reviewed section by section in thnkr.ing's Lab. Answer his section post with board post --reply-to <his entry> --target <the section address> --intent answer; register your own challenge to an exact passage with --target <passage> --intent challenge. To propose or select a disposition, use --intent disposition --target <current design passage> --disposition-file <JSON object with challenge, version, scope, kind, evidence, nextActor, nextAction, replaces, selected>; the Lab enforces author and decider authority. Place words he said in an Inbox thread at a section with --speaker tejas --his-input <that input id> --intent ask|comment (you stay the author of record); add --inbox-session/--inbox-message so a later answer to that placed post is also filed into his Inbox thread. board verdict records his per-version verdict on a design (approve is refused while a section is contested or has an unanswered ask; the refusal lists them). board cards files the author's section cards (claim, consequence, recommendation, alternative, question) under their sections and one line each into the Inbox thread. board read --address lab:<design> prints the review: each section's state (missing|open|asked|answered|accepted|contested), his entries and the replies, and owed, the sections still waiting on an agent. The board defaults to "lab". Ends: question answered|unanswerable; proposal decided|withdrawn (sealed positions stay hidden from other members until every member posted or the owner or decider reveals); report accepted|retracted; task done|failed (one exclusive claim; the claimer closes); meeting closed. A mention wakes that session once with a notice that owes no reply; nothing else interrupts anyone. It is stored in thnkr.ing's lab journal, so board commands run from a session on the server.
 
-A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). It is on this agent's own machine (its runner, when it runs on one); the same --action-id registers nothing twice. A progress reply that says it is waiting for a release names the active watch with --waiting-on-watch <watch-id>; Concierge checks the link between the open request and the watch, then wakes the agent when it changes.
+A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). It is on this agent's own machine (its runner, when it runs on one); the same --action-id registers nothing twice. A progress reply that says it is waiting for a release names the active watch with --waiting-on-watch <watch-id>. For a specific Concierge repair, --renew --required-commit <full-sha> on /var/lib/slack-concierge-deployment/current wakes only after a successful installed release includes that commit. An unscoped file watch still wakes on any change.
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
 router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
@@ -94,22 +121,24 @@ router-actions.sh sessions topics resolve <messageId> <source-flags>
 router-actions.sh sessions topics message <messageId> <source-flags>  # the words, author, time and attachments of one Inbox message or topic-named request
 router-actions.sh sessions topics create <source-flags> --action-id A --title T [--area <areaId> ...] [--from <source-topicId>] [--summary S] [--root <inputId> ...] [--reason R]
 router-actions.sh sessions topics place <topicId> <source-flags> --action-id A --root <conversation-root> [--root ...] [--reason R]
-router-actions.sh sessions topics route <topicId> <source-flags> --action-id A --message <exact-human-input-id> [--reason R]
+router-actions.sh sessions topics route <topicId> <source-flags> --action-id A --message <exact-human-input-id> [--reason R] [--side-scope "<only the source portion to project>"]
 router-actions.sh sessions topics link <relatedTopicId> <source-flags> --action-id A --into <sourceTopicId> --reason R
 router-actions.sh sessions topics unlink <relatedTopicId> <source-flags> --action-id A --into <sourceTopicId> --reason R
 router-actions.sh sessions topics rename <topicId> <source-flags> --action-id A --reason R -- <title>
 router-actions.sh sessions topics summary <topicId> <source-flags> --action-id A -- <current fact, one line>
-router-actions.sh sessions topics merge <fromTopicId> <source-flags> --action-id A --into <topicId> --reason R
+router-actions.sh sessions topics merge <fromTopicId> <source-flags> --action-id A --into <topicId> --reason R [--correction-source <human input already in the surviving bug-report topic>]
 router-actions.sh sessions topics close <topicId> <source-flags> --action-id A --scope <text> -- <reason>
 router-actions.sh sessions topics reopen <topicId> <source-flags> --action-id A -- <reason>
 router-actions.sh sessions topics pin|unpin <topicId> <source-flags> --action-id A
 router-actions.sh sessions topics request add <topicId> <source-flags> --action-id A --title T [--source <inputId>[:passage] ...] -- <brief>
 router-actions.sh sessions topics request amend <requestId> <source-flags> --action-id A [--title T] [--source ...] -- <what changed and why>
 router-actions.sh sessions topics request link <requestId> <source-flags> --action-id A --dispatch <communicationRequestId>
+router-actions.sh sessions topics request merge <duplicateRequestId> <source-flags> --action-id A --into <keeperRequestId> -- <why they are the same request (they share a source message in two threads)>
 router-actions.sh sessions topics request close <requestId> <source-flags> --action-id A --disposition completed|declined|withdrawn|superseded|failed [--evidence <id> ...] [--human-quote "<his exact withdrawal words>"] -- <reason>
 router-actions.sh sessions topics request reopen <requestId> <source-flags> --action-id A -- <reason>
 router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>
 router-actions.sh sessions topics question settle <questionId> <source-flags> --action-id A --state answered|declined|withdrawn|superseded|deferred [--answer <inputId>] [--replacement <questionId>] -- <reason>
+router-actions.sh sessions topics question restore <questionId> <source-flags> --action-id A --dispatch <erroneous finishing dispatch> --expected-revision N -- <reason>
 router-actions.sh sessions topics answer <inputId> <source-flags> --action-id A --json-file <file>
 router-actions.sh sessions topics acknowledge <topicId> <source-flags> --action-id A --item <questionId|messageId> [...] --source <inputId>
 router-actions.sh sessions topics file <topicId> <source-flags> --action-id A --need <attention entry id> [--reason R]
@@ -130,7 +159,7 @@ Every command requires one exact source pair:
 Do not mix source pairs. No source or run is inferred from the environment.
 Search returns {results:[{session,evidence}],coverage} for both source forms.
 Copy results[i].session.address and returned request IDs exactly. A concierge:<id> is not an address. The service chooses delivery.
-Continue the session that owns the surface when search/context establish one unambiguous, messageable live or recently completed owner. Title, project, source and dialogue must show ownership; topical similarity and consultation-only evidence are insufficient. Clarify ambiguous ownership. When no session owns the work or the surface differs, use --provider auto to create a fresh native session and first input. Each local candidate in search and context carries workload: context in use, running or idle, and the open Inbox topics it holds; with --thread (else the topic your work started from), forTopic says whether it already holds that topic. You choose. A new topic is best started fresh with --consult <address>, which gives the new session a pointer to the earlier one to ask for context informationally. The receiving session judges fit: it may hand a request back (failed with --hand-back not-my-subject|too-loaded), and its answer then opens with that and the ready-made fresh command; send it there. A human's explicit session/provider/model/effort choice takes precedence. An addressed ask requires the exact discovered address. A registered project with its own selected default keeps that selection. Codex/Claude require --project from sessions projects; the owner resolves its cwd. ChatGPT takes no project; its --effort is a ChatGPT thinking level (light, medium, high, extra-high, pro; default pro, ChatGPT's Pro model on Tejas's own subscription) and --file attaches any file. --gpt starts the chat with one GPT from the GPT Store or his own, by its address or g-… id, on the model its maker chose, the way he opens it himself. An agent's chat goes into the Agents project in his ChatGPT and asks ChatGPT to name missing context; --his-chat marks a chat Tejas asked for himself: his normal ChatGPT chats, Extra High by default, his words only. Its answer returns to you like any reply; Pro can take minutes to an hour. From the Mac, the chat starts on the server, where his signed-in ChatGPT browser runs, and the answer comes back to you here. No provider fallback or Slack publication occurs.
+Continue the session that owns the surface when search/context establish one unambiguous, messageable live or recently completed owner. Title, project, source and dialogue must show ownership; topical similarity and consultation-only evidence are insufficient. Clarify ambiguous ownership. When no session owns the work or the surface differs, use --provider auto to create a fresh native session and first input. Each local candidate in search and context carries workload: context in use, running or idle, and the open Inbox topics it holds; with --thread (else the topic your work started from), forTopic says whether it already holds that topic. You choose. A new topic is best started fresh with --consult <address>, which gives the new session a pointer to the earlier one to ask for context informationally. The receiving session judges fit: it may hand a request back (failed with --hand-back not-my-subject|too-loaded), and its answer then opens with that and the ready-made fresh command; send it there. A human's explicit session/provider/model/effort choice takes precedence. An addressed ask requires the exact discovered address. A registered project with its own selected default keeps that selection. Codex/Claude require --project from sessions projects; the owner resolves its cwd. ChatGPT takes no development project; its --effort is a ChatGPT thinking level (light, medium, high, extra-high, pro; default pro, ChatGPT's Pro model on Tejas's own subscription) and --file attaches any file. --chatgpt-project selects an exact native ChatGPT project URL or g-p-id, with normal --effort (default pro) and --his-chat support. --gpt refuses ahead of the December 11, 2026 custom GPT retirement, without fallback. Without explicit project selection, an agent's chat goes into the Agents project in his ChatGPT and asks ChatGPT to name missing context; --his-chat marks a chat Tejas asked for himself: his normal ChatGPT chats, Extra High by default, his words only. Its answer returns to you like any reply; Pro can take minutes to an hour. From the Mac, the chat starts on the server, where his signed-in ChatGPT browser runs, and the answer comes back to you here. No provider fallback or Slack publication occurs.
 Supply --session-name "Meaningful topic" for that new session. It uses the same canonical title shown in Thinkering.
 For a bounded small task that fits one focused agent session, --small-task keeps Automatic choice and admits Google when its current model and allowance are verified. Omit it for broad implementation or uncertain diagnosis. --provider google explicitly starts a Google session.
 --outside is an ordinary request whose agent runs outside Concierge: a new Codex session whose turns run as the Codex command line (codex exec) in its own system unit, which Concierge starts and watches but does not drive. A Concierge restart, update or Pause all does not stop it; only Stop on that session does. Everything else is the ordinary request: it names a thread, its answers post there, you are not woken, and its end-of-turn check sends it back if it tries to stop without replying. If it ends without replying when that check could not run (Concierge was down), Concierge asks it once to report back, then records the stall in the thread. Use it for work that changes Concierge itself or must outlive Concierge trouble; never start Codex by hand with a launcher or file watch for this. Its default model is Concierge's Codex default; name another Codex alias with --provider.
@@ -151,24 +180,29 @@ Use sessions cancel <request-id> to withdraw your own request, for example one y
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =
+  | {operation: "commit-identity"; body: {source?:never;session?:string;codexThread?:string}}
   | { operation: "open"; body: { source: Source; action_id: string; url: string; on?: string; browser?: string } }
   | { operation: "move"; body: { source: Source; action_id: string; address: string; project: string } }
+  | { operation: "journal-review"; body:any }
   | { operation: "projects"; body: { source: Source; peer?: string } }
   | { operation: "agents"; body: { source: Source } }
   | { operation: "agent-bind"; body: { source: Source; action_id:string; role:string; address:string } }
   | { operation: "peers"; body: { source: Source } }
   | { operation: "usage"; body: { source: Source; by_session?:boolean; period?:'today'|'week' } }
+  | { operation: "history-storage"; body: { source: Source; kind:'claude'|'codex'; after?:string; limit?:number } }
   | { operation: "auth-switch"; body: { source: Source; action_id:string; profile_id:string; machine?:'mac' } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string; thread?: string } }
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; smallTask?:boolean; effort?:string; escalationReason?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;quietOnly?:boolean} } }
-  | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; purpose?:'research'|'design-critique'|'design-review';providerReason?:string; implementation?:boolean; smallTask?:boolean; codexNativeTestFaultDeadlineMs?:number; effort?:string; escalationReason?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; resume_source?:{input_id:string;run_id:string}; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean} } }
+  | {operation:'edit-reason';body:{source:Source;action_id:string;reason:string}}
+  | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary?:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string; address?:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; promise_request?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "outcome"; body: { source: Source; action_id:string; outcome:'done'|'response'|'needs_you'|'failed'; text?:string; quiet_because?:string; summary?:string; his_words?:string; why_not_answered?:string; only_he_can?:string; todo?:string; decision_id?:string; approval_action?:string } }
-  | { operation: "answer"; body: { source: Source; action_id:string; obligation_id:string; answer_event_id:string; handling:'used'|'context_supplied'|'scoped'|'superseded'; reason?:string; follow_up_request_id?:string; successor_request_id?:string } }
+  | { operation: "answer"; body: { source: Source; action_id:string; obligation_id:string; answer_event_id:string; handling:'used'|'context_supplied'|'scoped'|'superseded'; reason?:string; follow_up_request_id?:string; successor_request_id?:string; read_receipt_id?:string } }
   | { operation: "legacy-link"; body: { source: Source; action_id:string; request_id:string; for_task:string; provider:'chatgpt'|'other'; reason:string } }
   | { operation: "chatgpt-recover"; body: { source: Source; action_id:string; request_id:string } }
+  | { operation: "codex-recover"; body: { source: Source; action_id:string; request_id:string; custody_successor?:boolean } }
   | { operation: "attention-withdraw"; body: { source: Source; action_id:string; address:string; need_event_id:string; reason:string } }
   | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
@@ -177,10 +211,17 @@ export type SessionCommunicationRequest =
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
-  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'; action_id?: string; until?: string; renew?: boolean; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string } }
-  | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string;cursor?:string } }
+  | { operation: "mutation-admission"; body: { source: Source } }
+  | { operation: "agent-test-scope"; body: { source: Source; address: string; create_input_id: string } }
+  | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'|'inspect-pair'|'reconcile-pair'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string; old_watch_id?:string; new_watch_id?:string; inspection?:string } }
+  | { operation: "snooze"; body: { source: Source; action_id: string; until_ms: number; reason: string } }
+  | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'|'daily'; turn_id?:number; action_id?:string;cursor?:string;time?:string;timeZone?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
-  | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } };
+  | { operation: "control"; body: { source: Source; verb:'pause'|'continue'; address:string; action_id:string } }
+  | { operation: "codex-test-control"; body: { source: Source; verb:'stop'|'connection-loss'; session_id:string; create_input_id:string; run_id:string; action_id:string } }
+  | { operation: "board"; body: { source?: Source; verb: string; [key: string]: unknown } }
+  | { operation:'lab-roster'|'lab-participant-change';body:{thread:string;action_id?:string;source?:Source} }
+  | { operation:'lab-participants';body:{thread:string;source:{input_id:string;run_id:string};action_id:string;revision:number;add:unknown[];remove:unknown[]} };
 
 class SessionUsageError extends Error {}
 
@@ -206,7 +247,7 @@ function sourceFrom(flags: Map<string, string>): Source {
 
 const TOPIC_VERBS = ["list","obligations","read","items","detail","resolve","message","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","request","questions","question","answer","acknowledge","focus","release","file","area"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence","--area"];
-const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
+const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason","--correction-source","--side-scope",
   "--into","--from","--thread","--scope","--dispatch","--disposition","--human-quote","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
 /** `sessions topics <verb> …`: parsed here, dispatched as one operation to the coordinator. */
 function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
@@ -218,13 +259,13 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   let verb = head!;
   if (head === "request") {
     const sub = options.shift();
-    if (!sub || !["add","amend","link","close","reopen"].includes(sub)) invalid("topics request takes add, amend, link, close or reopen.");
+    if (!sub || !["add","amend","link","merge","close","reopen"].includes(sub)) invalid("topics request takes add, amend, link, merge, close or reopen.");
     verb = `request.${sub}`;
   }
   if (head === "question") {
     const sub = options.shift();
-    if (sub !== "settle") invalid("topics question takes settle.");
-    verb = "question.settle";
+    if (!sub || !["settle","restore"].includes(sub)) invalid("topics question takes settle or restore.");
+    verb = `question.${sub}`;
   }
   if(head==='area'){
     const sub=options.shift();
@@ -255,12 +296,13 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const mutating = !["list","obligations","read","items","detail","resolve","message","questions-read","area.list","area.suggest"].includes(verb);
   const actionId = flags.get("--action-id");
   if (mutating && !actionId) invalid(`topics ${verb.replace(".", " ")} requires an explicit stable --action-id.`);
-  const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.close","request.reopen","question.settle","focus"].includes(verb);
+  const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.merge","request.close","request.reopen","question.settle","question.restore","focus"].includes(verb);
   if (takesText && (separator < 0 || content.length !== 1 || !content[0]!.trim())) invalid(`topics ${verb.replace(".", " ")} requires exactly one nonempty text argument after --.`);
   if (!takesText && separator >= 0) invalid(`topics ${verb.replace(".", " ")} does not accept text after --.`);
   const body: Record<string, unknown> = { source, verb, ...(actionId ? { action_id: actionId } : {}) };
   const copy = (flag: string, field: string) => { if (flags.has(flag)) body[field] = flags.get(flag); };
   copy("--reason", "reason"); copy("--title", "title"); copy("--into", "into"); copy("--scope", "scope");
+  copy("--correction-source","correction_source_id"); copy("--side-scope","side_scope");
   if(verb==='create'&&flags.has('--from'))body.parent_topic_id=flags.get('--from');
   if((verb==='link'||verb==='unlink')&&flags.has('--into'))body.parent_topic_id=flags.get('--into');
   copy("--thread", "topic_id");
@@ -312,7 +354,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     if (verb === "resolve" || verb === "message") body.message_id = identity;
     // `request add` opens a request inside a topic; the other request verbs name the request.
     else if (verb.startsWith("request.") && verb !== "request.add") body.request_id = identity;
-    else if (verb === "question.settle") body.question_id = identity;
+    else if (verb.startsWith("question.")) body.question_id = identity;
     else if (verb === "answer") body.input_id = identity;
     else if(verb.startsWith('area.'))body.area_id=identity;
     else body.topic_id = identity;
@@ -334,10 +376,31 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
 
 const BOARD_VERBS=['read','thread','post','claim','reveal','close','product','cite','link','verdict','cards','status','sweep'];
 const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--reply-to','--kind','--title','--blind','--decider','--end','--outcome','--text-file','--product','--supersedes','--medium','--address','--to','--relation','--reason','--target','--intent','--disposition-file','--speaker','--his-input','--inbox-session','--inbox-message','--design','--verdict','--scope','--json-file'];
-const BOARD_REPEATED=['--mention','--member','--from'];
+const BOARD_REPEATED=['--mention','--member','--from','--response-target'];
+function parseLabRosterArgs(verb:string,args:string[]):SessionCommunicationRequest {
+  const allowed=verb==='roster'?['--thread','--source-input','--source-run']:verb==='participant-change'?['--thread','--action-id','--source-input','--source-run']:
+    ['--thread','--revision','--json-file','--source-input','--source-run','--action-id'];
+  const flags=new Map<string,string>();
+  while(args.length){const flag=args.shift()!,value=args.shift();
+    if(!allowed.includes(flag)||flags.has(flag)||!value?.trim()||value.startsWith('--'))invalid(`Invalid ${verb} option ${flag}.`);
+    flags.set(flag,value);
+  }
+  const thread=flags.get('--thread')?.replace(/^lab:/,'');if(!thread)invalid(`${verb} needs --thread.`);
+  const readSource=flags.has('--source-input')||flags.has('--source-run')?sourceFrom(flags):undefined;
+  if(verb==='roster')return {operation:'lab-roster',body:{thread,...(readSource?{source:readSource}:{})}};
+  const action_id=flags.get('--action-id');if(!action_id)invalid(`${verb} needs --action-id.`);
+  if(verb==='participant-change')return {operation:'lab-participant-change',body:{thread,action_id,...(readSource?{source:readSource}:{})}};
+  const source=sourceFrom(flags);if(!('input_id' in source))invalid('Lab participants needs an exact native source input and run.');
+  const revision=Number(flags.get('--revision'));if(!Number.isSafeInteger(revision)||revision<1)invalid('Lab participants needs a positive --revision.');
+  const file=flags.get('--json-file');if(!file)invalid('Lab participants needs --json-file containing add and remove arrays.');
+  let parsed:any;try{parsed=JSON.parse(readFileSync(file,'utf8'));}catch(error){invalid(`--json-file is not JSON: ${error instanceof Error?error.message:String(error)}`);}
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)||Object.keys(parsed).some(key=>!['add','remove'].includes(key))||!Array.isArray(parsed.add)||!Array.isArray(parsed.remove))invalid('--json-file must contain only add and remove arrays.');
+  return {operation:'lab-participants',body:{thread,source,action_id,revision,add:parsed.add,remove:parsed.remove}};
+}
 /** `sessions board <verb> [<board>] …`: the Commons board (docs/plans/2026-10-08-commons-board.md). */
 function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   const verb=args.shift();
+  if(verb&&['roster','participants','participant-change'].includes(verb))return parseLabRosterArgs(verb,args);
   if(!verb||!BOARD_VERBS.includes(verb))invalid(`board takes ${BOARD_VERBS.join(', ')}.`);
   const separator=args.indexOf('--');
   const options=separator<0?[...args]:args.slice(0,separator);
@@ -384,6 +447,7 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   const names:Record<string,string>={'--action-id':'action_id','--thread':'thread','--reply-to':'reply_to','--kind':'kind','--title':'title','--blind':'blind','--decider':'decider','--end':'end','--outcome':'outcome','--product':'product','--supersedes':'supersedes','--medium':'medium','--address':'address','--to':'to','--relation':'relation','--reason':'reason','--target':'target','--intent':'intent','--speaker':'speaker','--his-input':'his_input','--inbox-session':'inbox_session','--inbox-message':'inbox_message','--design':'design','--verdict':'verdict','--scope':'scope'};
   for(const [flag,key] of Object.entries(names))if(flags.has(flag))body[key]=flags.get(flag);
   if(repeated.get('--mention'))body.mentions=repeated.get('--mention');
+  if(repeated.get('--response-target')){if(verb!=='post')invalid('--response-target is only for board post.');body.responseTargets=repeated.get('--response-target');}
   if(repeated.get('--member'))body.members=repeated.get('--member');
   if(repeated.get('--from'))body.from=repeated.get('--from');
   if(flags.has('--json-file')) {
@@ -402,6 +466,21 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [first, ...args] = argv;
+  if(first==='journal-review'){
+    const flags=new Map<string,string>();
+    for(let i=0;i<args.length;i+=2){
+      if(!["--source-input","--source-run","--action-id","--review-file"].includes(args[i]!)||!args[i+1]||flags.has(args[i]!))invalid("journal-review needs source flags, action ID and review-file.");
+      flags.set(args[i]!,args[i+1]!);
+    }
+    for(const key of ["--source-input","--source-run","--action-id","--review-file"])if(!flags.get(key))invalid(`Missing ${key}`);
+    return {operation:"journal-review",body:{source:{input_id:flags.get("--source-input"),run_id:flags.get("--source-run")},action_id:flags.get("--action-id"),review:JSON.parse(readFileSync(flags.get("--review-file")!,"utf8"))}};
+  }
+  if(first==='commit-identity'){
+    const [session,codexThread,...extra]=args;
+    if(extra.length||!session)invalid('commit-identity needs a session or - and optional Codex thread.');
+    return {operation:'commit-identity',body:{...(session==='-'?{}:{session}),...(codexThread?{codexThread}:{})}};
+  }
+
   if(first==='chatgpt-recover'){
     const requestId=args.shift();
     if(!requestId||requestId.startsWith('--'))invalid('chatgpt-recover needs the exact original request ID.');
@@ -414,6 +493,36 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     }
     if(!flags.get('--action-id'))invalid('chatgpt-recover needs a stable --action-id.');
     return {operation:'chatgpt-recover',body:{source:sourceFrom(flags),action_id:flags.get('--action-id')!,request_id:requestId}};
+  }
+  if(first==='codex-recover'){
+    const requestId=args.shift();
+    if(!requestId||requestId.startsWith('--'))invalid('codex-recover needs the exact original work request ID.');
+    const flags=new Map<string,string>();let custodySuccessor=false;
+    while(args.length){const flag=args.shift()!;
+      if(flag==='--custody-successor'){if(custodySuccessor)invalid('Repeated custody-successor mode.');custodySuccessor=true;continue;}
+      const value=args.shift();
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id'].includes(flag)
+        ||!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`Invalid or repeated codex-recover option ${flag}.`);
+      flags.set(flag,value);
+    }
+    if(!flags.get('--action-id'))invalid('codex-recover needs a stable --action-id.');
+    return {operation:'codex-recover',body:{source:sourceFrom(flags),action_id:flags.get('--action-id')!,request_id:requestId,
+      ...(custodySuccessor?{custody_successor:true}:{})}};
+  }
+  if(first==='codex-test'){
+    const verb=args.shift(),session_id=args.shift();
+    if((verb!=='stop'&&verb!=='connection-loss')||!/^concierge:[1-9]\d*$/.test(session_id??''))
+      invalid('codex-test needs stop or connection-loss and an exact concierge:<session-id> target.');
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--action-id','--create','--run'].includes(flag)||!value?.trim()||value.startsWith('--')||flags.has(flag))
+        invalid(`Invalid or repeated codex-test option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags);
+    if(!('input_id' in source)||!/^request:[0-9a-f-]{36}$/i.test(flags.get('--create')??'')||!flags.get('--run')||!flags.get('--action-id'))
+      invalid('codex-test needs exact source input/run, --create request:<uuid>, --run native-run-id and stable --action-id.');
+    return {operation:'codex-test-control',body:{source,verb,session_id,create_input_id:flags.get('--create')!,run_id:flags.get('--run')!,action_id:flags.get('--action-id')!}};
   }
   if(first==='legacy-link'){
     const requestId=args.shift();
@@ -445,6 +554,18 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(!actionId||!needEventId||!reason)invalid('attention withdraw needs --action-id, --need and --reason.');
     return {operation:'attention-withdraw',body:{source:sourceFrom(flags),action_id:actionId,address,need_event_id:needEventId,reason}};
   }
+  if(first==='control'){
+    const verb=args.shift(),address=args.shift();
+    if((verb!=='pause'&&verb!=='continue')||!address?.startsWith('session:'))invalid('control needs pause or continue and an exact discovered local session address.');
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--action-id'].includes(flag)||!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`Invalid or repeated control option ${flag}.`);
+      flags.set(flag,value);
+    }
+    if(!flags.has('--action-id'))invalid('Session control needs --action-id.');
+    return {operation:'control',body:{source:sourceFrom(flags),verb,address,action_id:flags.get('--action-id')!}};
+  }
   if(first==='pause'){
     const verb=args.shift();
     if(verb!=='status'&&verb!=='all'&&verb!=='resume')invalid('pause takes status, all or resume.');
@@ -463,6 +584,34 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     return {operation:'pause',body:{source:sourceFrom(flags),verb,
       ...(flags.has('--action-id')?{action_id:flags.get('--action-id')}:{}),
       ...(sessionIds.length?{session_ids:sessionIds}:{})}};
+  }
+  if (first === 'agent-test-scope') {
+    const address=args.shift();
+    if(!address||!/^concierge:[1-9][0-9]*$/.test(address))invalid('agent-test-scope needs the exact concierge:<id> test session.');
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!;
+      if(!['--create-input','--source-input','--source-run'].includes(flag))invalid(`Unexpected agent-test-scope option ${flag}.`);
+      const value=args.shift();
+      if(!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`${flag} needs one nonempty value.`);
+      flags.set(flag,value);
+    }
+    const createInput=flags.get('--create-input');
+    if(!createInput||!/^request:[0-9a-f-]{36}$/i.test(createInput))invalid('agent-test-scope needs --create-input request:<uuid>.');
+    const source=sourceFrom(flags);
+    return {operation:'agent-test-scope',body:{source,address,create_input_id:createInput}};
+  }
+  if (first === 'mutation-admission') {
+    const flags=new Map<string,string>();
+    while(args.length){
+      const flag=args.shift()!;
+      if(!['--source-input','--source-run'].includes(flag))invalid(`Unexpected mutation-admission option ${flag}.`);
+      const value=args.shift();
+      if(!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`${flag} needs one nonempty value.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags);
+    return {operation:'mutation-admission',body:{source}};
   }
   if (first === 'handoff' || first === 'obligations') {
     const verb = first === 'handoff' && (args[0] === 'accept' || args[0] === 'withdraw')
@@ -505,21 +654,38 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     }
     return {operation:'handoff',body:{source,verb,handoff_id:identity!,action_id:actionId}};
   }
+  if(first==='snooze') {
+    // sessions snooze --until <ISO time> --reason "<why it can wait>" <source-flags> --action-id A
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!,value=args.shift();
+      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id','--until','--reason'].includes(flag)||!value?.trim()||flags.has(flag))invalid('Invalid snooze option.');
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags),actionId=flags.get('--action-id'),untilMs=Date.parse(flags.get('--until')??'');
+    if(!actionId)invalid('Snooze needs --action-id.');
+    if(!Number.isFinite(untilMs))invalid('Snooze needs --until as an ISO time.');
+    if(!flags.get('--reason'))invalid('Snooze needs --reason: why this work can wait.');
+    return {operation:'snooze',body:{source,action_id:actionId!,until_ms:untilMs,reason:flags.get('--reason')!}};
+  }
   if(first==='saved') {
     const sub=args.shift();
-    if(sub!=='list'&&sub!=='start'&&sub!=='cancel')invalid('saved takes list, start or cancel.');
+    if(sub!=='list'&&sub!=='start'&&sub!=='cancel'&&sub!=='daily')invalid('saved takes list, start, cancel or daily.');
     const turnId=sub==='list'?undefined:args.shift();
     if(sub!=='list'&&(!turnId||!/^[1-9]\d*$/.test(turnId)||!Number.isSafeInteger(Number(turnId))))invalid('Name the exact saved turn ID.');
     const flags=new Map<string,string>();
     while(args.length){const flag=args.shift()!,value=args.shift();
-      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id','--cursor'].includes(flag)||!value?.trim()||flags.has(flag))invalid('Invalid saved work option.');
+      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id','--cursor','--time','--time-zone'].includes(flag)||!value?.trim()||flags.has(flag))invalid('Invalid saved work option.');
       flags.set(flag,value);
     }
     const source=sourceFrom(flags),actionId=flags.get('--action-id');
     if(sub==='list'&&actionId)invalid('Listing saved work takes no action ID.');
     if(sub!=='list'&&flags.has('--cursor'))invalid('Only a saved work list can continue at a cursor.');
+    if(sub==='daily'&&!validDailyWallClock({time:flags.get('--time')??'',timeZone:flags.get('--time-zone')??''}))
+      invalid('daily needs --time HH:MM and --time-zone with an IANA time zone.');
+    if(sub!=='daily'&&(flags.has('--time')||flags.has('--time-zone')))invalid('The local time belongs to saved daily.');
     if(sub!=='list'&&!actionId)invalid('Saved work control needs --action-id.');
-    return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{}),...(flags.has('--cursor')?{cursor:flags.get('--cursor')!}:{})}};
+    return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{}),...(flags.has('--cursor')?{cursor:flags.get('--cursor')!}:{}),
+      ...(sub==='daily'?{time:flags.get('--time')!,timeZone:flags.get('--time-zone')!}:{})}};
   }
   if(first==='board')return parseBoardArgs(args);
   if(first==='open') {
@@ -548,6 +714,17 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   if(first==='watch') {
     const sub=args.shift();
+    if(sub==='inspect-pair'||sub==='reconcile-pair'){
+      const flags=new Map<string,string>();
+      while(args.length){const flag=args.shift()!,value=args.shift();
+        if(!['--source-input','--source-run','--old','--new',...(sub==='reconcile-pair'?['--inspection','--action-id']:[])].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch pair option ${flag}.`);
+        flags.set(flag,value);
+      }
+      if(!flags.has('--old')||!flags.has('--new'))invalid('Name the exact --old and --new watches.');
+      if(sub==='reconcile-pair'&&(!flags.has('--inspection')||!flags.has('--action-id')))invalid('Reconciliation needs --inspection and a stable --action-id.');
+      return {operation:'watch',body:{source:sourceFrom(flags),verb:sub,old_watch_id:flags.get('--old')!,new_watch_id:flags.get('--new')!,
+        ...(sub==='reconcile-pair'?{inspection:flags.get('--inspection')!,action_id:flags.get('--action-id')!}:{})}};
+    }
     if(sub!=='file'&&sub!=='command'&&sub!=='list'&&sub!=='cancel')invalid('watch takes file, command, list or cancel.');
     const separatorAt=args.indexOf('--');
     const options=separatorAt<0?[...args]:args.slice(0,separatorAt);
@@ -559,7 +736,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     while(options.length){const flag=options.shift()!;
       if(flag==='--renew') {if(renew)invalid('Repeated --renew.');renew=true;continue;}
       const value=options.shift();
-      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--until','--cwd','--required-commit'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid watch option ${flag}.`);
       flags.set(flag,value);
     }
     const source=sourceFrom(flags),actionId=flags.get('--action-id'),until=flags.get('--until'),cwd=flags.get('--cwd');
@@ -571,16 +748,19 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     } else if(separatorAt>=0||cwd)invalid(`watch ${sub} takes no command or --cwd.`);
     if(sub!=='file'&&sub!=='command'&&until)invalid(`watch ${sub} takes no --until.`);
     if(renew&&sub!=='file')invalid('--renew is only for a file watch.');
+    if(flags.has('--required-commit')&&(sub!=='file'||!renew))invalid('--required-commit needs a renewing file watch.');
     // A bare command name becomes the path the agent's own shell would run.
     const resolved=sub==='command'&&!argv[0]!.includes('/')?(Bun.which(argv[0]!)??argv[0]!):argv[0];
     return {operation:'watch',body:{source,verb:sub,...(actionId?{action_id:actionId}:{}),...(until?{until}:{}),...(renew?{renew:true}:{}),
+      ...(flags.has('--required-commit')?{requiredCommit:flags.get('--required-commit')!}:{}),
       ...(sub==='file'?{path:target!}:{}),...(sub==='cancel'?{watch_id:target!}:{}),
       ...(sub==='command'?{argv:[resolved!,...argv.slice(1)],cwd:cwd!}:{}),
       // An agent on a runner watches its own machine's files and runs its command there (RUNNERS.md).
       ...((sub==='file'||sub==='command')&&process.env.CONCIERGE_RUNNER_NAME?.trim()?{runner:process.env.CONCIERGE_RUNNER_NAME.trim()}:{})}};
   }
   const savedKind=first==='schedule'?'scheduled':first==='bank'?'banked':null;
-  const operation=savedKind?'ask':first;
+  const implementation=first==='implement';
+  const operation=savedKind||implementation?'ask':first;
   const outcome = operation === 'outcome' ? args.shift() : undefined;
   if(operation==='outcome'&&!['done','response','needs_you','failed'].includes(outcome??''))invalid('outcome requires done, response, needs_you or failed.');
   if (operation === "topics") return parseTopicsArgs(args);
@@ -614,7 +794,18 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(machine&&machine!=='mac')invalid('auth switch --machine accepts mac only; omit it for this machine.');
     return {operation:'auth-switch',body:{source,action_id,profile_id,...(machine?{machine:'mac' as const}:{})}};
   }
-  if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "answer" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
+  if(operation==='edit-reason'){
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--source-channel','--source-ts','--action-id','--reason'].includes(flag)
+        ||!value?.trim()||flags.has(flag))invalid(`Invalid edit-reason option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags),action_id=flags.get('--action-id'),reason=flags.get('--reason');
+    if(!action_id||!reason)invalid('edit-reason needs --reason and a stable --action-id from this run.');
+    return {operation:'edit-reason',body:{source,action_id,reason}};
+  }
+  if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "history-storage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "answer" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
     invalid("Choose a session command: thread, topics, projects, agents, peers, usage, search, context, ask, note, title, post, outcome, answer, reply, get, or cancel.");
   }
   const separator = args.indexOf("--");
@@ -728,21 +919,24 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     const allowed = flag === "--source-channel" || flag === "--source-ts" || flag === "--source-input" || flag === "--source-run"
       || (flag==='--period'&&operation==='usage')
       || (flag === "--limit" && operation === "search")
+      || ((flag === "--limit" || flag === "--after") && operation === "history-storage")
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
       || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "answer" || operation === "thread" || operation === "cancel"))
       || (flag === '--reason' && operation === 'cancel')
       || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask" || operation === "search" || operation === "context"))
-      || (flag === "--route-message" && operation === "ask")
+      || (["--route-message","--response-mode"].includes(flag) && operation === "ask")
       || (flag === "--topic" && operation === "post")
       || (flag === "--promise-request" && operation === "post")
       || (flag === "--provider" && operation === "ask")
+      || (flag === "--codex-native-test-until" && operation === "ask")
       || (flag === "--role" && operation === "ask")
       || (flag === "--at" && savedKind==='scheduled')
       || (flag === "--expires" && savedKind==='scheduled')
       || (flag === "--every-ms" && savedKind==='scheduled')
+      || (['--daily-at','--time-zone'].includes(flag) && savedKind==='scheduled')
       || (flag === "--session-name" && operation === "ask")
-      || (["--effort","--escalation-reason","--gpt","--project","--capture-id","--requested-effect","--after-request","--after-settled","--for-task","--recovery-of","--correction-of"].includes(flag) && operation === "ask")
+      || (["--effort","--escalation-reason","--gpt","--chatgpt-project","--project","--capture-id","--requested-effect","--after-request","--after-settled","--for-task","--recovery-of","--correction-of","--purpose","--provider-reason","--resume-source-input","--resume-source-run"].includes(flag) && operation === "ask")
       // A reply or post carries files the same way an ask does: own bytes, or already
       // retained custody a router forwards without downloading it.
       || (["--file","--attachment"].includes(flag) && (operation === "ask" || operation === "reply" || operation === "post"))
@@ -764,7 +958,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === '--also' && operation === 'reply')
       || (flag === '--summary' && (operation === 'ask' || operation === 'reply' || operation === 'outcome'))
       || (flag === '--answer-view' && operation === 'ask')
-      || (["--answer-event","--handling","--reason","--follow-up-request","--successor-request"].includes(flag) && operation === 'answer');
+      || (["--answer-event","--handling","--reason","--read-receipt","--follow-up-request","--successor-request"].includes(flag) && operation === 'answer');
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
     const value = options.shift();
     if (!value?.trim() || value.startsWith("--")) invalid(`${flag} requires a value.`);
@@ -811,6 +1005,15 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(period!==undefined&&period!=='today'&&period!=='week')invalid('--period requires today or week.');
     return {operation,body:{source,...(bySession?{by_session:true,period:(period??'today') as 'today'|'week'}:{})}};
   }
+  if (operation === 'history-storage') {
+    if (separator >= 0) invalid('history-storage does not accept text.');
+    if (identity !== 'claude' && identity !== 'codex') invalid('history-storage requires claude or codex.');
+    const limit = flags.get('--limit');
+    if (limit !== undefined && (!/^[1-9]\d*$/.test(limit) || Number(limit) > 2000))
+      invalid('--limit requires an integer from 1 to 2000.');
+    return {operation,body:{source,kind:identity as 'claude'|'codex',
+      ...(flags.has('--after')?{after:flags.get('--after')!}:{}),...(limit?{limit:Number(limit)}:{})}};
+  }
   if (operation === "search") {
     if (separator < 0 || content.length < 1 || content.length > 8 || content.some(concept => !concept.trim())) {
       invalid("search requires 1–8 nonempty concepts after --, each quoted as one argument.");
@@ -843,16 +1046,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(separator>=0)invalid('note accepts a capture ID or a message ID, not replacement source text.');
     // Any other ID names a retained message; the owner reads its words.
     const message=!/^[0-9a-f]{64}$/.test(identity??'');
-    // The note is a summary of the capture; his own words stay its source (Tejas, 2026-10-01:
-    // "you should not dump my whole transcript here ... create like a nice bulleted list").
-    const summaryFile=flags.get('--summary-file');
-    if(!summaryFile)invalid('note needs --summary-file: a Markdown file with a title line and "- " bullets summarizing what he said, without the spoken command. His words stay the note\'s Source.');
-    const summary=readFileSync(summaryFile!,'utf8');
-    if(!summary.trim())invalid('The summary file is empty.');
     // A follow-up to a thread whose note already exists joins that note as a new section
     // (Tejas, 2026-10-01: "if my platform is built on threads ... where can I find the idea").
-    const addTo=flags.get('--add-to');
-    if(addTo!==undefined&&!addTo.trim())invalid('--add-to takes the earlier capture or message ID whose note this one follows up.');
+    const addTo=flags.get('--add-to')?.trim();
+    if(flags.has('--add-to')&&!addTo)invalid('--add-to takes the earlier capture or message ID whose note this one follows up.');
     // A fact about a person goes into that person's one note in thnkr.ing (Tejas, 2026-10-07:
     // "start a thread for each person and keep adding to a central note").
     const person=flags.get('--person')?.trim();
@@ -860,14 +1057,26 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(person&&addTo)invalid('A note goes to one place: --person or --add-to, not both.');
     // His journal in thnkr.ing (Tejas, 2026-10-08: "another section for journals"): the capture's
     // journal part becomes an entry (or a check-in) on the Journal page, its words still the Source.
+    // A continuation piece (--journal entry --add-to <earlier capture>) moves its exact words,
+    // original recorded time and source into the earlier entry without a separate summary.
     const journal=flags.get('--journal');
     if(flags.has('--journal')&&journal!=='entry'&&journal!=='checkin')invalid('--journal takes entry or checkin.');
-    if(journal&&(person||addTo))invalid('A journal entry is its own note: --journal goes without --person or --add-to.');
-    return {operation,body:{source,action_id:actionId,...(message?{messageId:identity!}:{captureId:identity!}),summary,...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
+    if(journal&&(person||(addTo&&journal!=='entry')))invalid('A journal entry is its own note: --journal goes without --person, and only --journal entry accepts --add-to.');
+    const journalContinuation=journal==='entry'&&Boolean(addTo);
+    // The note is a summary of the capture; his own words stay its source (Tejas, 2026-10-01:
+    // "you should not dump my whole transcript here ... create like a nice bulleted list").
+    const summaryFile=flags.get('--summary-file');
+    if(journalContinuation&&summaryFile!==undefined)invalid('--journal entry --add-to moves the capture\'s exact words into the earlier entry and does not take --summary-file.');
+    if(!journalContinuation&&!summaryFile)invalid('note needs --summary-file: a Markdown file with a title line and "- " bullets summarizing what he said, without the spoken command. His words stay the note\'s Source.');
+    const summary=summaryFile?readFileSync(summaryFile,'utf8'):undefined;
+    if(summary!==undefined&&!summary.trim())invalid('The summary file is empty.');
+    return {operation,body:{source,action_id:actionId,...(message?{messageId:identity!}:{captureId:identity!}),...(summary!==undefined?{summary}:{}),...(addTo?{addTo}:{}),...(person?{person}:{}),...(journal?{journal:journal as 'entry'|'checkin'}:{})}};
   }
   if(operation==='answer') {
     if(separator>=0||content.length)invalid('answer records a handling disposition; it takes no free-form message.');
     const answerEventId=flags.get('--answer-event'),handling=flags.get('--handling');
+    if(flags.has('--read-receipt')&&(!flags.get('--read-receipt')||!['used','scoped'].includes(handling??'')))
+      invalid('--read-receipt requires a retained receipt and --handling used|scoped.');
     if(!answerEventId||!['used','context_supplied','scoped','superseded'].includes(handling??''))
       invalid('answer needs --answer-event <exact return event> and --handling used|context_supplied|scoped|superseded.');
     if(handling==='scoped'&&!flags.get('--reason'))invalid('A scoped answer needs --reason with the conclusion and missing context.');
@@ -876,6 +1085,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       invalid('A superseded question needs --successor-request and --reason explaining coverage.');
     return {operation,body:{source,action_id:actionId,obligation_id:identity!,answer_event_id:answerEventId,
       handling:handling as 'used'|'context_supplied'|'scoped'|'superseded',...(flags.has('--reason')?{reason:flags.get('--reason')!}:{}),
+      ...(flags.has('--read-receipt')?{read_receipt_id:flags.get('--read-receipt')!}:{}),
       ...(flags.has('--follow-up-request')?{follow_up_request_id:flags.get('--follow-up-request')!}:{}),
       ...(flags.has('--successor-request')?{successor_request_id:flags.get('--successor-request')!}:{})}};
   }
@@ -906,7 +1116,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   // Files can carry a message without words; a final can instead close an earlier prompt answer.
   const attachmentOnly=(operation==='reply'||operation==='post')&&!!(paths.length||custody.length);
   const bodylessFinal=operation==='reply'&&!partial&&separator<0&&!textFile&&content.length===0;
-  const exactRoute=operation==='ask'&&flags.has('--route-message');
+  const contextOnly=operation==='ask'&&flags.get('--response-mode')==='context';
+  if(flags.has('--response-mode')&&!contextOnly)invalid('Unknown response mode.');
+  const exactRoute=operation==='ask'&&(flags.has('--route-message')||contextOnly&&flags.has('--capture-id'));
   if(exactRoute&&(separator>=0||textFile||paths.length||custody.length))
     invalid('--route-message uses the original accepted message and attachments; do not supply replacement text or files.');
   if (!exactRoute&&(attachmentOnly ? content.length > 1 : (!bodylessFinal&&((!textFile && separator < 0) || content.length !== 1 || !content[0]!.trim())))) {
@@ -932,21 +1144,36 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   // A project and no address mean a new coding session. Resolve that choice in the owner,
   // so callers do not have to remember a provider when an allowance changes.
   // An outside run is a Codex CLI agent, so its default is Concierge's Codex default, never Automatic.
-  const provider=flags.get('--provider')??(operation==='ask'&&!identity&&flags.has('--project')?(outside?'codex':'auto'):undefined);
-  const title=flags.get('--session-name')?.trim();
+  const declaredPurpose=flags.get('--purpose');
+  if(declaredPurpose&&!['research','design-critique','design-review'].includes(declaredPurpose))
+    invalid('--purpose is research, design-critique, or design-review.');
   const role=flags.get('--role');
+  const defaultPro=operation==='ask'&&!!declaredPurpose&&!identity&&!role&&!implementation;
+  const requestedProvider=flags.get('--provider');
+  const provider=(defaultPro&&(!requestedProvider||requestedProvider==='auto')?'chatgpt':requestedProvider)
+    ??(operation==='ask'&&!identity&&flags.has('--project')?(outside?'codex':'auto'):undefined);
+  const title=flags.get('--session-name')?.trim();
   if(title!==undefined&&title.length>120)invalid('--session-name must contain 1–120 characters.');
   if(title!==undefined&&!provider&&!role)invalid('--session-name names a newly created session; use the session title action to rename an existing session.');
   const effort=flags.get('--effort'),project=flags.get('--project'),requestedEffect=flags.get('--requested-effect');
+  const codexNativeTestUntil=flags.get('--codex-native-test-until');
+  const codexNativeTestDeadlineMs=codexNativeTestUntil===undefined?undefined:Date.parse(codexNativeTestUntil);
+  const selectedProvider=provider&&provider!=='auto'?PROVIDER_ALIASES[parseProviderSelector(provider)?.alias??'cc'].provider:null;
+  const providerReason=flags.get('--provider-reason')?.trim();
+  if(declaredPurpose&&(!provider||identity||role||implementation||outside||savedKind||flags.has('--gpt')))
+    invalid('A declared research or design-review purpose starts one new ordinary session.');
+  // The owner verifies an explicit human provider choice when no reason was supplied.
+  if(providerReason&&(!declaredPurpose||provider==='chatgpt'))invalid('--provider-reason belongs to a declared purpose using another provider.');
+  // A different ChatGPT thinking level is checked against Tejas's own words by the owner.
   const workDisposition=flags.get('--work-disposition');
   if(workDisposition&&(!['completed','failed','needs_decision'].includes(workDisposition)||partial))
     invalid('--work-disposition requires a final reply and one of completed, failed, or needs_decision.');
-  if(effort&&(flags.get('--provider')==='chatgpt'?!chatgptThinkingLevel(effort):!normalizeReasoningEffort(effort)))invalid(flags.get('--provider')==='chatgpt'?`ChatGPT --effort is one of ${CHATGPT_THINKING_LEVELS.join(', ')}.`:'Invalid reasoning effort.');
+  if(effort&&(provider==='chatgpt'?!chatgptThinkingLevel(effort):!normalizeReasoningEffort(effort)))invalid(provider==='chatgpt'?`ChatGPT --effort is one of ${CHATGPT_THINKING_LEVELS.join(', ')}.`:'Invalid reasoning effort.');
   if(requestedEffect&&!['informational','work'].includes(requestedEffect))invalid('--requested-effect must be informational or work.');
   // A one-line summary goes first on every request and final reply: what the reader sees before the body.
   const summary=flags.get('--summary')?.trim();
   if(summary!==undefined&&(summary.length>200||summary.includes('\n')))invalid('--summary is one line of at most 200 characters.');
-  if(operation==='ask'&&provider!=='chatgpt'&&!flags.has('--peer')&&!summary)invalid('ask needs --summary "<one line saying what you ask>"; the recipient and Tejas see it before your words.');
+  if(operation==='ask'&&!contextOnly&&provider!=='chatgpt'&&!flags.has('--peer')&&!summary)invalid('ask needs --summary "<one line saying what you ask>"; the recipient and Tejas see it before your words.');
   if(also.length&&paths.length)invalid('--also sends one answer to several requests; attach files already retained with --attachment, or send the files with one request.');
   if(also.length&&partial)invalid('--also closes other requests with this one final answer; a partial reply names one request.');
   // A misplaced answer mark never stops the answer itself from being sent; the owner applies the
@@ -963,39 +1190,58 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='ask'&&(role?(!!identity||!!provider||!!project||!!peer||savedKind==='banked'):provider!==undefined?(provider!=='chatgpt'&&provider!=='auto'&&!parseProviderSelector(provider)||identity!==undefined):!identity?.trim())) {
     invalid('ask requires a discovered address, --role, or --provider with a supported alias; choose one destination.');
   }
+  if(implementation){
+    if(!project||!title||!summary||identity||role||peer||smallTask||outside||onRunner||savedKind||resurrect||hisChat
+      ||flags.has('--thread')||flags.has('--route-message')||flags.has('--consult')||after.length||pace.length
+      ||flags.has('--escalation-reason')||flags.has('--machine-need')||flags.has('--for-task')
+      ||requestedEffect&&requestedEffect!=='work')
+      invalid('implement needs one local project, session name, summary, fixed design, and no thread or other session mode.');
+    if(provider!=='auto'&&!IMPLEMENTATION_ALIASES.includes(provider as typeof IMPLEMENTATION_ALIASES[number]))
+      invalid(`implement selects a cheaper coding model: ${IMPLEMENTATION_ALIASES.join(', ')}.`);
+  }
   if(role&&(effort||smallTask||outside||resurrect||flags.has('--consult')))
     invalid('--role selects its existing session or creates it in its agent project; these new-session options cannot be combined with it.');
   if(flags.has('--route-message')&&flags.has('--thread'))invalid('--route-message owns one message destination; do not also name an Inbox thread.');
   if(smallTask&&(provider!=='auto'||peer||identity))invalid('--small-task requires a new local Automatic session.');
   if(outside&&(identity||peer||savedKind||provider==='chatgpt'||provider==='auto'||!project))
     invalid('--outside starts a new Codex session on this machine: give --project (and optionally a Codex --provider alias), not an address, --peer, ChatGPT, Automatic or saved work.');
-  if(!provider&&!role&&(project||effort||flags.has('--escalation-reason')))invalid('--project, --effort and --escalation-reason require new session creation.');
+  if(codexNativeTestUntil!==undefined&&(!project||identity||role||peer||selectedProvider!=='codex'
+    ||outside||onRunner||savedKind||implementation||!Number.isSafeInteger(codexNativeTestDeadlineMs)||codexNativeTestDeadlineMs!<=Date.now()))
+    invalid('--codex-native-test-until requires a new local, unsaved Codex session and a finite future ISO-8601 deadline.');
+  if(!provider&&!role&&(project||effort))invalid('--project and --effort require new session creation.');
   if(provider&&provider!=='chatgpt'&&!project)invalid(peer?'New coding sessions on a peer require --project from sessions projects --peer <instance>.':'New coding sessions require --project from sessions projects.');
   if(peer&&(after.length||pace.length))invalid('A peer request cannot wait on --after-request or --after-settled.');
   if(provider==='chatgpt'&&project)invalid('ChatGPT accepts no project.');
   if(flags.has('--recovery-of')&&!flags.get('--for-task'))invalid('--recovery-of needs the exact --for-task obligation.');
+  if(flags.has('--resume-source-input')!==flags.has('--resume-source-run'))invalid('Resuming a frozen ask needs both --resume-source-input and --resume-source-run.');
   if(flags.has('--correction-of')&&(!flags.get('--for-task')||!identity||provider||flags.has('--recovery-of')||paths.length===0||custody.length))
     invalid('--correction-of needs the original ChatGPT address, --for-task, and a corrected --file; it cannot start a new session or use --recovery-of.');
   if(flags.has('--for-task')&&!/^((local_request|peer_delivery|external_request|direct_input):.+)$/.test(flags.get('--for-task')!))
     invalid('--for-task names one exact local_request, peer_delivery, external_request, or direct_input identity.');
   if(hisChat&&provider!=='chatgpt'&&!identity)invalid('--his-chat is for --provider chatgpt: a ChatGPT chat Tejas asked for himself.');
-  const gpt=flags.has('--gpt')?chatgptGpt(flags.get('--gpt')):undefined;
-  if(gpt===null)invalid('--gpt is a GPT\'s address (https://chatgpt.com/g/g-…) or its g-… id.');
-  if(gpt&&provider!=='chatgpt')invalid('--gpt is for --provider chatgpt.');
-  if(gpt&&effort)invalid('A GPT runs on the model its maker chose; --gpt takes no --effort.');
-  const chatgptChoice=gpt?`${CHATGPT_GPT_PREFIX}${gpt}`:effort;
+  if(flags.has('--gpt')&&flags.has('--chatgpt-project'))invalid('--gpt and --chatgpt-project are mutually exclusive. '+CHATGPT_GPT_RETIREMENT);
+  if(flags.has('--gpt'))invalid(CHATGPT_GPT_RETIREMENT);
+  const chatProject=flags.has('--chatgpt-project')?chatgptProject(flags.get('--chatgpt-project')):undefined;
+  if(chatProject===null)invalid('--chatgpt-project needs an exact https://chatgpt.com/g/g-p-<lowercase alphanumeric>/project URL or g-p-id.');
+  if(chatProject&&(provider!=='chatgpt'||identity||role))invalid('--chatgpt-project selects a new --provider chatgpt session.');
+  const chatgptChoice=chatProject?`${CHATGPT_PROJECT_PREFIX}${chatProject}:${effort??(hisChat?DEFAULT_HIS_CHATGPT_THINKING:DEFAULT_CHATGPT_THINKING)}`:effort;
+  const daily=flags.has('--daily-at')?{time:flags.get('--daily-at')!,timeZone:flags.get('--time-zone')??''}:null;
+  if(daily&&(!validDailyWallClock(daily)||flags.has('--at')||flags.has('--every-ms')))
+    invalid('Daily local time needs --daily-at HH:MM and --time-zone; do not combine it with --at or --every-ms.');
+  if(flags.has('--time-zone')&&!daily)invalid('--time-zone needs --daily-at.');
+  const scheduledAt=daily?nextDailyWallClock(Date.now(),daily):Date.parse(flags.get('--at')??'');
   if(savedKind) {
     if((!role&&(!provider||provider==='chatgpt'||!title))||identity||peer||after.length)
       invalid('Saved work needs a standing role or a named new local coding session.');
-    if(savedKind==='scheduled'&&(!flags.get('--at')||!Number.isFinite(Date.parse(flags.get('--at')!))||Date.parse(flags.get('--at')!)<=Date.now()))
-      invalid('schedule requires --at with a future ISO-8601 time.');
-    if(flags.has('--expires')&&(!Number.isFinite(Date.parse(flags.get('--expires')!))||Date.parse(flags.get('--expires')!)<=Date.parse(flags.get('--at')!)))
+    if(savedKind==='scheduled'&&(!Number.isFinite(scheduledAt)||scheduledAt<=Date.now()))
+      invalid('schedule requires --at with a future ISO-8601 time or --daily-at with a local time.');
+    if(flags.has('--expires')&&(!Number.isFinite(Date.parse(flags.get('--expires')!))||Date.parse(flags.get('--expires')!)<=scheduledAt))
       invalid('--expires must follow --at.');
     if(flags.has('--every-ms')&&(!/^\d+$/.test(flags.get('--every-ms')!)||Number(flags.get('--every-ms'))<60_000))
       invalid('--every-ms requires an interval of at least one minute.');
   }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(role?{role}:provider?{provider}:{address:identity!}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(onRunner?{onRunner:true}:{}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(pace.length ? { pace } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:{})),...(flags.has("--escalation-reason")?{escalationReason:flags.get("--escalation-reason")!}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(returnToRequester?{return_to_requester:true}:{}),...(flags.has('--for-task')?{for_task:flags.get('--for-task')!}:{}),...(flags.has('--recovery-of')?{recovery_of:flags.get('--recovery-of')!}:{}),...(flags.has('--correction-of')?{correction_of:flags.get('--correction-of')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--server-attempt-url')||flags.has('--server-attempt-failure')?{server_attempt:{url:flags.get('--server-attempt-url'),failure:flags.get('--server-attempt-failure')}}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{}),...(quietOnly?{quietOnly:true}:{})}}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(contextOnly?{responseMode:'context'}:{}), ...(role?{role}:provider?{provider}:{address:identity!}), ...(declaredPurpose?{purpose:declaredPurpose}:{}),...(providerReason?{providerReason}:{}), ...(implementation?{implementation:true}:{}), ...(smallTask?{smallTask:true}:{}), ...(outside?{outside:true}:{}), ...(onRunner?{onRunner:true}:{}), ...(codexNativeTestDeadlineMs===undefined?{}:{codexNativeTestFaultDeadlineMs:codexNativeTestDeadlineMs}), ...(title===undefined?{}:{title}), text: content[0]??'', ...(after.length ? { after } : {}),...(pace.length ? { pace } : {}),...(identity?(hisChat?{hisChat:true}:{}):(hisChat?{effort:`tejas:${chatgptChoice??''}`}:chatgptChoice?{effort:chatgptChoice}:defaultPro&&provider==='chatgpt'?{effort:'pro'}:{})),...(flags.has("--escalation-reason")?{escalationReason:flags.get("--escalation-reason")!}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--route-message')?{routeMessageId:flags.get('--route-message')!}:{}),...(implementation||returnToRequester?{return_to_requester:true}:{}),...(flags.has('--for-task')?{for_task:flags.get('--for-task')!}:{}),...(flags.has('--recovery-of')?{recovery_of:flags.get('--recovery-of')!}:{}),...(flags.has('--correction-of')?{correction_of:flags.get('--correction-of')!}:{}),...(flags.has('--resume-source-input')?{resume_source:{input_id:flags.get('--resume-source-input')!,run_id:flags.get('--resume-source-run')!}}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(implementation?{requestedEffect:"work"}:requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(summary?{summary}:{}),...(answerView?{answer_view:answerView as 'summary'|'full'}:{}),...(flags.has('--machine-need')?{machine_need:flags.get('--machine-need')!}:{}),...(flags.has('--server-attempt-url')||flags.has('--server-attempt-failure')?{server_attempt:{url:flags.get('--server-attempt-url'),failure:flags.get('--server-attempt-failure')}}:{}),...(flags.has('--consult')?{consult:flags.get('--consult')!}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:scheduledAt}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{}),...(daily?{repeatEveryMs:86_400_000,daily}:{}),...(quietOnly?{quietOnly:true}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial, ...(summary?{summary}:{}),...(notify?{notify:true}:{}),...(alsoMainThread?{also_main_thread:true}:{}),
         ...(answersQuestion?{answers_question:true}:{}),
         ...(flags.has('--waiting-on-watch')?{waiting_on_watch:flags.get('--waiting-on-watch')!}:{}),
@@ -1006,6 +1252,23 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
 }
 
 export async function runRouterSessions(request: SessionCommunicationRequest) {
+  if(request.operation==='lab-roster'||request.operation==='lab-participant-change'){
+    const path=`/sessions/v1/lab/conversations/${encodeURIComponent(request.body.thread)}`;
+    const source=request.body.source;
+    return requestApiResponse(request.operation==='lab-roster'?path:`${path}/participant-changes/${encodeURIComponent(request.body.action_id!)}`,undefined,undefined,source&&'input_id' in source?{inputId:source.input_id,runId:source.run_id}:undefined);
+  }
+  if(request.operation==='lab-participants'){
+    const {thread,source,action_id,revision,add,remove}=request.body;
+    return requestApiResponse(`/sessions/v1/lab/conversations/${encodeURIComponent(thread)}/participants`,{clientActionId:action_id,expectedRevision:revision,add,remove,agentSource:{inputId:source.input_id,runId:source.run_id}});
+  }
+  if(request.operation==='commit-identity')return requestApiResponse('/sessions/v1/commit-identity',request.body);
+  if(request.operation==='codex-test-control'){
+    const {source,verb,session_id,create_input_id,run_id,action_id}=request.body;
+    if(!('input_id' in source))throw new Error('codex-test requires an exact agent source input/run pair.');
+    const path=`/sessions/v1/agent-test/sessions/${encodeURIComponent(session_id)}/${verb==='stop'?'stop':'connection-loss'}`;
+    return requestApiResponse(path,{clientActionId:action_id,runId:run_id,createInputId:create_input_id,
+      agentSource:{inputId:source.input_id,runId:source.run_id}});
+  }
   if(request.operation==='agents')return requestApiResponse('/sessions/v1/presentation/agents');
   if (request.operation !== 'reply' || !request.body.also?.length)
     return requestApiResponse(`/session-communication/${request.operation}`, request.body);

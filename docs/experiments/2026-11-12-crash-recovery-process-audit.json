@@ -1,0 +1,50 @@
+{
+  "observed_at": "2026-11-12T20:06:34.204665+00:00",
+  "scope": "exact original test ancestry PIDs from retained ready receipts; no process command lines or unrelated process data read",
+  "cases": {
+    "repaired-1": [
+      {
+        "pid": 3527092,
+        "present": false
+      },
+      {
+        "pid": 3527089,
+        "present": false
+      },
+      {
+        "pid": 3526101,
+        "present": false
+      },
+      {
+        "pid": 3526031,
+        "present": false
+      },
+      {
+        "pid": 3526023,
+        "present": false
+      }
+    ],
+    "canceled-crash": [
+      {
+        "pid": 3569516,
+        "present": false
+      },
+      {
+        "pid": 3569507,
+        "present": false
+      },
+      {
+        "pid": 3568570,
+        "present": false
+      },
+      {
+        "pid": 3568488,
+        "present": false
+      },
+      {
+        "pid": 3568464,
+        "present": false
+      }
+    ]
+  }
+}

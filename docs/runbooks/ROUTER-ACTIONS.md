@@ -1,5 +1,49 @@
 # Router action helper
 
+## Save exact retained context in an existing session
+
+Use `sessions ask <exact-address> --response-mode context -- <text>` to save your own
+agent-authored context, optionally with existing `--file` or `--attachment` custody.
+No summary is required. For exact retained words, use
+`sessions ask <exact-address> --response-mode context --route-message <message-id>`
+or replace `--route-message` with `--capture-id <capture-id>`. Supply the current
+`--source-input`, `--source-run` and stable `--action-id`. The owner reads the original
+retained words and files in that selector form; omit replacement text and files. This returns a completed
+saved-context operation and creates no work or reply obligation. A later active
+message uses the saved material as attributed data. See the
+[wire contract](../contracts/session-owner-v1.md#passive-session-context).
+
+## Per-session Pause and Continue
+
+An admitted native agent run with work authority can control one exact native session
+on its own Concierge instance:
+
+```bash
+router-actions.sh sessions control pause '<discovered-session-address>' --source-input '<input-id>' --source-run '<run-id>' --action-id '<stable-action-id>'
+router-actions.sh sessions control continue '<discovered-session-address>' --source-input '<input-id>' --source-run '<run-id>' --action-id '<different-stable-action-id>'
+```
+
+Copy the address from discovery; catalogue IDs and peer addresses are refused. A Mac
+controller uses the installed command on the Mac with its own admitted source pair.
+This does not forward remote controls or change global Pause. Informational-only and
+consultation-only callers cannot use it; the existing work-authority check applies.
+Imported evidence, Canvas observation records, superseded bindings and withdrawn
+handoff successors are refused.
+
+The command uses the same owner action as Thinkering's Pause/Continue, with agent
+origin, exact source input/run, acting session and target binding retained. The source
+and action ID identify a retry; changing its target or action conflicts. The retained
+control and event commit together. The original human route still records human origin
+and continues to reject agent-injected author fields.
+
+Pause saves deliberate suspension and discards queued automatic continuations using
+the existing policy. It does not promise to interrupt a provider already running, nor
+does it acquire an automatic release time. Continue clears that suspension, admits
+held ordinary inputs through the existing queue and wakes normal execution. A receipt
+proves the choice was saved; observe the exact provider run separately. A delayed retry
+of an earlier control does not reverse a later saved choice. Usage holds remain separate
+from deliberate Pause; this entrance adds no recovery policy.
+
 ## Outside agents
 
 An agent launched outside Concierge has no accepted Concierge input/run pair. On the
@@ -67,6 +111,263 @@ starting `codex exec` by hand as a background job or through a launcher script w
 on its report. When Concierge cannot accept a request at all, the Codex command line on the
 server remains the way in. Design notes: `bot/src/outside-codex.ts`.
 
+## Exact Codex report-back recovery
+
+For an open work request whose service report-back ended with an empty Codex completion, use the exact recovery entrance from the currently admitted work run:
+
+```bash
+router-actions.sh sessions codex-recover '<original-request-id>' \
+  --source-input '<this accepted input ID>' \
+  --source-run '<this native run ID>' \
+  --action-id '<stable recovery action ID>'
+```
+
+The owner selects only the service input `report-back:<original-request-id>`. It never resends the original request. This path requires verified work authority for the asking run, the retained human model choice for the same existing conversation, an open work request, the exact provider thread and current send controls, and owner evidence for every selected provider attempt. It then reads each exact native turn and all of that turn's item pages; only a terminal empty turn with no acknowledgement, output, tools, later admission, host activity, or other effect can be reserved. A separate empty turn from another accepted input is not attributed to this report-back. Unknown or incomplete evidence leaves the input in custody.
+
+The accepted report-back ID is the durable deduplication key across action IDs. Reservation and requeue commit together. If the caller loses the receipt after reservation, retrying the same action returns its stored result; another action ID returns the same reservation. The original retained result remains unchanged, while a later execution attempt gets its own result identity and is surfaced by the existing result readers. This recovers only the report-back; its original request and any other obligations remain open until their own final receipts.
+
+The incident artifact records the exact parent-controlled recovery command and historical evidence: [Codex empty report-back recovery](../runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md). It is not itself current eligibility proof; the live owner rechecks every guard at execution time.
+
+### Custody-successor recovery
+
+Source-review status: the corrected source implements a positive bounded managed-owner
+transport lane. Whole-feature review and actual target activation evidence remain
+separate. No original-requester restriction or new human approval applies. A terminal
+native snapshot, process absence, source fingerprint or connection identity alone does
+not establish exclusion of already-issued native preparation or external writers.
+
+An explicitly selected recovery mode can continue a retained Astra Medium service
+reminder in a new native conversation while keeping its original logical identity:
+
+```bash
+router-actions.sh sessions codex-recover '<original-request-id>' --custody-successor \
+  --source-input '<current accepted repair input>' --source-run '<current repair run>' \
+  --action-id '<stable action ID>'
+```
+
+This is distinct from the historical same-conversation recovery above. It preserves
+an owner-retained binding; it does not assert a new human model choice or relax the
+ordinary escalation policy. It accepts no caller-supplied model, effort, proof basis,
+assessment boolean, native identity or workspace path. The native model-start hook
+recognizes the committed placement as preservation, and records that fact without
+labelling it human authorization. New Astra helper selections remain subject to
+ordinary escalation.
+
+The retained action binds its recovery kind, request, canonical reminder,
+predecessor/successor handoff, acting source/run and resolved work-authority input.
+An informational wake may use a separate retained work grant under the normal
+authority rules; that grant is recorded separately from the wake. Reusing an action
+for a different operation, canonical target or authority basis conflicts, while a
+new repair action can inspect the same canonical operation without a new allowance.
+The effective grant must remain the same across asynchronous preparation and the
+custody transaction. Broad cross-session agent authority remains unchanged.
+
+The current owner selects the canonical report-back of the named open work request,
+verifies its retained admission, maps every previous attempt to complete native
+turn/item observation, and refuses any acknowledgement, nonempty selected attempt,
+unresolved execution or relevant steering effect. The owner streams a fingerprint
+of the original conversation source and checks the existing workspace identities.
+The supported handoff inventory supplies current duties and source-owned worktree
+references; unresolved inventory omissions prevent custody commitment. Preserved
+worktree references do not grant productive ownership over independently assigned
+work. The repair coordinator must settle any conflicting custody before activation.
+
+Transcript/Git discovery limits remain explicit dispositions when the separately
+owner-resolved original source and referenced directories are physically accessible
+and retained in the same namespace. That does not claim an exhaustive dependency
+manifest. Actual inaccessible resources and unavailable external-duty inventory
+remain blockers. The operation neither rewrites inherited resources nor adds
+discovered historical roots to the native selection.
+
+Staging creates a suspended application successor with no bootstrap message, native
+thread or model turn. A separate execution-placement input holds the exact reminder
+payload and points to its original input/run. The original input, original turn,
+native associations, receipts and result events remain unchanged. The canonical
+reminder is the unique recovery reservation across action IDs and successor IDs;
+historical recovery reservation and custody-successor reservation exclude each
+other. No acknowledged original request is requeued as fresh work.
+
+The proposed recovery handoff is a durable target hold before native eligibility
+reconciliation. Queue admission and the synchronous transport forwarding policy both
+honor it, including requests whose asynchronous preparation began before that hold.
+All covered managed sender objects are captured with their actual endpoint, target,
+owner and connection generation. The transport freezes further relevant sends,
+then requires a correlated successful `thread/read` on each captured old generation.
+This is a received-prefix and known-thread handler barrier, not a disconnect receipt.
+Successful barriers cover their actual literal thread keys and only preceding writes.
+Loss, replacement, rejected/timeout reads and known uncovered prior generations hold
+the operation. Relevant path/history overrides and unkeyed starts require a separate
+conclusive disposition; an RPC response alone is not full handler completion.
+Before canonical reservation, an ordinary proposal can still be withdrawn. Once
+the canonical recovery reservation exists, Pause and exact Stop control its work;
+ordinary handoff withdrawal cannot discard that reservation or reactivate the
+predecessor behind the retained native hold.
+
+Only after those barriers does the owner refresh selected-attempt history, original
+source/resources, native status, paginated queue and background-terminal state, goals
+and a fresh exact-thread process observation. Ongoing or unknown relevant effects
+hold custody. Children and disjoint productive work remain independently owned.
+The process observer validates the actual local endpoint's managed daemon scope and
+refuses unreadable live candidates. An unloaded thread's exact native not-found
+terminal-list response is recorded as unavailable, with the process check still
+required. A disabled-goals response is usable only for an unloaded thread; disabled
+inspection of a resident thread's goal remains a hold.
+
+The receipt states `coverage: managed-client-registry-only` and
+`externalCoverage: not-asserted`. It exposes the exact frozen senders/generations,
+barriers, native association and unresolved effects. These labels grant no authority
+over a process-external or inaccessible legacy sender. Before invoking construction
+for a real target, the parent must establish the actual finite transport population
+and dispositions of any relevant legacy/external traffic. A normal owner release
+losing client objects does not settle their native effects. No supported universal
+external-writer inventory or actuator is supplied by this mode; where required
+external coverage cannot be validated, real activation remains held. Potential
+unregistered writers are a scope limitation; evidenced uncontrolled target writers
+are a concrete hold. There is no caller `assessed` flag or operator certificate.
+
+Custody acceptance is an owner transition, not a fabricated successor-model
+acknowledgement. One immediate transaction transfers current request and return
+responsibilities, answer duties and watches, records referenced Lab/worktree
+resources, suspends the predecessor and commits recovery custody. Claim predicates
+also exclude accepted predecessors independently of their suspension metadata.
+The successor remains held if any later construction step fails. Authority and the
+canonical selected facts are revalidated inside that transaction after asynchronous
+inventory/resource checks. Transferred obligations remain independent of the selected
+recovery attempt's outcome; an empty/error attempt cannot settle other owed duties.
+Recovery staging records its operation kind and canonical reminder, so it cannot
+reuse an ordinary handoff's queued bootstrap under a colliding action identity.
+
+After commitment, one durably recorded native construction intent authorizes
+`thread/start` with the stock explicit `local` environment, current approved cwd
+and runtime roots, Astra, Medium via configuration, disabled model fallback, owner
+instructions, custody context, and the established owner shell/helper configuration.
+Known preserved worktrees remain references rather than being unioned into native
+workspace roots. Native response settings must agree before the recorded thread
+identity is bound and the selected placement is released. A lost construction
+response stays held; another repair action does not construct again. A mismatched
+response retains its known native identity while withholding admission. A successful
+construction response is persisted before further awaited resource validation, so a
+later ordinary failure also retains its observed identity and settings. Construction
+completion preserves a newer explicit Pause; Continue cannot bypass the passive
+construction hold. Pause withholds productive admission and steering, while an exact
+owner-recorded Stop can still interrupt its retained active native turn. Stop retains
+the protected connection checks and does not clear Pause.
+
+The construction connection stays with the execution host because native
+`thread/start` attaches its subscription and may unload idle work after the last
+subscriber leaves. The native adapter never manages, restarts or replaces the
+daemon. The owner plan retains the exact client, live connection generation and the
+actual endpoint/initialize response. Protected requests refuse before an implicit
+reconnect for consequential calls. Read-only reconciliation remains available after
+a transport change; construction, admission and other mutations remain held pending
+boundary revalidation.
+A configured runner route is incompatible with this local-only construction and
+is refused. This is connection association evidence, not native writer exclusion.
+First selected `turn/start` repeats the explicit local selection, cwd,
+roots, model and effort; transport staging never becomes the native context.
+Preparation supplies current source/run identity as application context while the
+logical reminder text remains exact. The existing execution, acknowledgement,
+result and Stop consumers act on the placement, and retained results identify its
+canonical reminder. Just before the possible send, an immediate transaction checks
+current custody, binding, payload/source/resource continuity and turn ownership,
+then spends the shared additional-attempt allowance. The durability barrier precedes
+the native effect. A lost or rejected send never replenishes that allowance.
+
+Queue retries, parked resumption and the legacy recovery reservation cannot create
+another selected send. The same native thread remains protected for later distinct
+inputs without resetting the original allowance. A selected Stop or error records that
+attempt's outcome separately from successor availability. When its actual acknowledgement
+and exact native terminal observation are retained, the successor can accept distinct
+work under its original connection. Before that work reaches native forwarding, the
+owner rechecks current queue, goal, background terminals, processes and other unresolved
+owner effects. The final forwarding guard requires that exact admission's receipt.
+Missing acknowledgement, terminal proof or association remains held. Continue recognizes
+the admitted interval before acknowledgement and never overrides explicit Pause or an
+unfinished/uncertain custody boundary. Reconciliation uses
+the recorded thread, turn/client identity and paginated observation; they never
+resume a cold thread, replace it or resend. Since turn-start and history reads do
+not attach a new native listener, protected reconciliation keeps observing an
+active turn until terminal evidence is available. Stop interrupts only that exact
+execution and verifies the resulting native history. A connection change or owner
+restart holds protected mutations until its native boundary is re-established;
+adoption may still read the exact recorded attempt and settle observed results. Missing
+residency or identity is a hold. This is not a general safe cold-resume capability.
+
+The durable custody record exposes staging, committed custody, construction intent,
+constructed identity, spent attempt, native turn and acknowledgement separately.
+Forwarding-intent events reserve one send before bytes leave the client; those
+events are not provider acceptance or acknowledgement receipts.
+Held errors retain their operation identity. These records and the existing owner
+events are the diagnostic entrance; no additional watcher or service is introduced.
+Strict historical settings failure and diagnostic semantic-coverage records keep
+their original meaning. Neither can become the new custody basis by being placed
+in a caller's payload.
+
+Before staging, the owner publishes a durable reader requirement. Application and
+controller artifacts each carry a sealed custody capability. Release activation
+and rollback check them independently, including application-only rollback with
+its separately selected controller. Hybrid artifacts additionally bind the
+application capability to the application source tree; an old builder copying the
+new controller's capability onto an old application is refused. First requirement
+publication and compatibility-check/pointer publication serialize through the
+serving owner's existing release operation. Offline production pointer commands
+require positively observed stopped-coordinator state. A bounded `EXISTS` read through the sealed
+ledger reader also detects retained custody rows after a restore that lost the
+marker directory. A pre-feature controller can bootstrap the first capable
+release using that verified candidate's sealed read entrance. There is no mutable
+checkout fallback. The marker is not cleared automatically: later inputs in the
+same successor still need the protected interpretation.
+
+The disposable acceptance fixtures (`codex-successor-native`,
+`codex-successor-run`, `codex-custody-handoff`, `codex-custody-successor`,
+`codex-custody-compatibility`, `codex-custody-command`) run in the
+package build. They exercise real owner persistence, positive construction and
+selected admission, useful-result acknowledgement, refusal cases, adoption and Stop
+against typed native substitutes. The compiler's undefined-name gate reads both
+application build roots and the controller's sealed bundle declaration, so either
+kind of shipped TypeScript entry point must resolve its identifiers. The production
+observer composition and its local/remote reconnect paths also preserve protected
+threads through read-only observation, avoiding an independent cold resume. These checks
+do not establish installed recovery.
+The native cutoff, current-effects, forward-policy, connection and production
+observer fixtures cover the bounded transport and callback contracts separately.
+Before real activation, the parent must verify the serving release and associated
+native incarnation/protocol, current exact selected-input eligibility and allowance,
+current exclusion/effect disposition, complete custody inventory, source/resource
+continuity and prospective configuration. Actual persisted acknowledgement and
+useful work are separate live acceptance requirements. The original writing duties
+remain open until their own custodians finish and check them.
+
+## Disposable native Codex tests
+
+Ordinary agent-created Codex sessions keep the shared daemon client and receive no fault control.
+An admitted agent that needs one disposable acceptance target opts in at creation with a finite
+future deadline:
+
+```bash
+router-actions.sh sessions ask --provider cx-sol --project slack-concierge \
+  --session-name "Codex recovery target" --summary "Disposable native Codex recovery target" \
+  --codex-native-test-until '<finite future ISO-8601 time>' \
+  --source-input '<controller input>' --source-run '<controller run>' --action-id '<stable create action>' \
+  -- 'One bounded benign checkpoint prompt'
+```
+
+The owner retains that deadline on the exact create input. Only that input's native Codex execution
+uses a dedicated client to the existing daemon; the client object remains in host memory and is
+never serialized. The owner accepts the exact `sessions codex-test stop|connection-loss` command
+only for the marked create request and its source input/run pair. A connection-loss intent records
+the execution, dispatch attempt, and connection generation before the host rechecks them and
+retained Stop at the final cut boundary. Stop vetoes any later loss. A deadline disarms only loss
+injection; exact-run Stop and ordinary recovery remain available after it. A proven no-effect
+refusal does not spend the one-cut allowance. An ambiguous attempted loss does, and the same stable
+action ID later returns its saved receipt without cutting again.
+
+For a native account-switch acceptance, first keep the baseline continuation on its original
+thread and shared client so it observes the existing guarded switch. Dedicated positive-loss and
+matched Stop targets are separate, explicitly marked disposable creates; do not silently replace
+the baseline continuation with a new conversation. The local fixtures establish owner and bridge
+contracts only. They do not establish real daemon or provider behavior.
+
 ## Thread request returns
 
 `sessions ask --thread <message-id>` delivers replies and notices directly to that thread.
@@ -106,6 +407,16 @@ is never a clean zero. Both commands use the same authenticated owner entrance a
 including from a runner where the ledger file is hidden; the query runs in the isolated read
 process. The owning contract is [Runners](../architecture/RUNNERS.md).
 
+The window also joins ordinary human inputs through their exact Inbox obligation/dispatch
+links, including shared or later-routed work. Each post carries its reply kind, explicit
+answer signal, disposition and service/agent attribution. `answeredInThread` requires the
+semantic answer contract; progress and service terminal notices remain evidence without
+being called answers. `answeredAt` is the original qualifying post time, not recovery time.
+Request source/run/thread identity, answer-clock timestamps, final event receipt and disposition
+are returned as bounded diagnostic facts. A final receipt proves recorded return, not provider
+consumption, push delivery or physical-device display. Untyped historical posts retain their
+unknown classification; inspect their exact words with `topics message` before judging coverage.
+
 ## Waiting for a local process
 
 Use `router-actions.sh wait --pid <pid> [--pid <pid> ...] [--timeout 30m]` when
@@ -118,7 +429,18 @@ because such a loop can match itself and hold a run open indefinitely.
 
 `router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>]
 [--limit <n>]` answers JSON with his texts, received and sent, newest first (default 7 days,
-50 shown messages; at most 365 and 500). A text that looks like a one-time code, a reset or a
+50 shown messages; at most 365 and 500). For older group or direct
+conversations, first use a named read to obtain the exact `chatGuid`, then use
+`router-actions.sh messages --chat-guid <guid> --from YYYY-MM-DD --before YYYY-MM-DD
+[--q <words>] [--limit <n>]`. The dates are UTC; `from` is inclusive, `before` exclusive,
+and one request spans at most 45 days. The exact GUID selects only that conversation.
+Divide a longer history into dated requests; `window.truncated` and
+`olderThanThisNotRead` identify a window that needs narrowing. Shown messages carry their
+Messages GUID as `id` and their `chatGuid`; `chats` gives shown conversations' exact identifier
+and participant addresses when Messages has them. Withheld messages have no ID or text in the
+answer. These identities describe this Mac's Messages database.
+
+A text that looks like a one-time code, a reset or a
 sign-in link is shown only when thnkr.ing's rule allows it
 [decision: codes-hidden-only-for-money-and-identity]: the reader sends those texts (never others)
 over `ssh remote-box` to thnkr.ing's `POST /codes/decide`, which applies his allow and hide lists
@@ -127,11 +449,22 @@ and the protected accounts (see thnkr.ing's AGENTS.md), and hides every one it g
 Hidden ones are counted in `withheldCount` and `withheldByKind` over the same stretch of time,
 `withheld` lists the newest 200 by sender, time and kind, and a search never matches against
 their words (that would let a search spell a code out). `window.truncated` says when the limit
-stopped the read before the requested days. A read that hid or showed a code is logged to
+stopped the read before the requested days. Every completed read is logged to
 `diagnostics/messages-reads.jsonl` under the state directory, without message words, and
 thnkr.ing logs each decision too. It runs only on the Mac; the server answers
 `MESSAGES_NOT_ON_THIS_MACHINE`. Checked 2026-10-07 on his real texts: an Amazon sign-in code was
 shown as an ordinary site and a T-Mobile code stayed hidden as his carrier.
+
+Pictures and files sent in texts: a shown text lists `attachments` as `{id, type, name, bytes,
+onThisMac}`. `router-actions.sh messages --attachment <id> --to <folder>` copies that one
+attachment into the named folder (created if missing), converting HEIC/HEIF photos to JPEG with
+`sips`, and answers `{exported: {path, type, convertedFrom, bytes}}`; agents then open the copy
+with their ordinary tools and never touch the Messages folder. The code rule extends to
+attachments: a text whose words look like a code, reset or sign-in link (even one thnkr.ing would
+show), or any text from an automated or short-code sender, lists no attachments and its
+attachment ids answer `ATTACHMENT_WITHHELD`. Pictures from a person's number or address, or ones
+Tejas sent, are ordinary. `ATTACHMENT_NOT_ON_THIS_MAC` means Messages has not downloaded the file
+(it may be in iCloud only). Every export and refusal is logged to the same diagnostics file.
 
 It is the sanctioned way in, not the only one. The pre-command guard refuses any call that names
 the Messages folder, chat.db or Notification Center's store, or a `mac-screenshot app Messages`,
@@ -152,7 +485,9 @@ long numbers and codes he forwarded), which errs toward hiding.
 
 ## Current native routing
 
-For resource-heavy phone work that Tejas authorized only while he sleeps, create a new banked coding session with `sessions bank --quiet-only` and the usual project, session name, summary, source pair and action ID. The saved-work quiet hours and time zone in thnkr.ing Settings govern the window. Concierge refuses a claim outside that band or during its last five minutes, and asks an active run to stop at that early cutoff; a continuation keeps the same choice. Ordinary `sessions bank` retains its allowance-reset behavior. `sessions cancel <request-id>` withdraws a queued saved turn; `sessions saved cancel <turn-id>` remains the direct saved-work control. Check `sessions saved list` after cancellation. See [session ownership](../architecture/SESSION-OWNER.md#one-execution-owner).
+`sessions snooze --until <ISO time, at most six hours ahead> --reason "<why this can wait>" <source-flags> --action-id A` lets an agent on a crowded machine (the Mac, when it told the agent so at turn start) wake itself later: it queues a scheduled continuation of the same session, shows "Snoozed until <time>: <reason>", and keeps every open request open with its due time moved past the wake. Refused for his direct messages and the Inbox router, when the machine is not crowded, and beyond six hours; end the turn after it. See [turn lifecycle](../architecture/TURN-LIFECYCLE.md#paced-starts).
+
+For resource-heavy phone work that Tejas authorized only while he sleeps, create a new banked coding session with `sessions bank --quiet-only` and the usual project, session name, summary, source pair and action ID. The saved-work quiet hours and time zone in thnkr.ing Settings govern the window. Concierge refuses a claim outside that band or during its last five minutes, and asks an active run to stop at that early cutoff; a continuation keeps the same choice. Inside the band it starts whenever an account has room above the reserve, even while other agents run. Each night it does not start, you are woken with why; `sessions saved list` shows the current reason as `waitingBecause`. Ordinary `sessions bank` retains its allowance-reset behavior. `sessions cancel <request-id>` withdraws a queued saved turn; `sessions saved cancel <turn-id>` remains the direct saved-work control. Check `sessions saved list` after cancellation. See [session ownership](../architecture/SESSION-OWNER.md#one-execution-owner).
 
 ### Standing agents
 
@@ -182,16 +517,27 @@ the Inbox's sessions.
 `sessions topics message <messageId>` returns one Inbox message's words, author, time,
 attachments, thread root and topic: a capture, his reply, an agent's post, result or routed request,
 or a request input that a topic request names as its source or dispatch. Topic reads carry ids and
-short excerpts; this is the read for judging the message itself.
+short excerpts; this is the read for judging the message itself. Its `from` and full `author`
+resolve the current author, including a later correction to an originally human-origin input;
+an unproved user-role message reports unknown rather than Tejas.
 `sessions context` and the session view expose only a session's explicit role binding.
 
 `sessions schedule --role <role> --at <future ISO-8601 time> [--every-ms <interval>] --summary "<one line>" <source-flags> --action-id A -- <text>`
 queues one firing in that bound session, or creates and binds the role's session first. The bound session may run it for its own role: its firing is then a plain scheduled input in itself, with no request to itself and nothing returned. A repeating
 schedule keeps firing there. While one repeating firing for the role is queued, another repeating
 schedule is refused with its exact turn ID; change its time in Thinkering Saved work or cancel it
-with `sessions saved cancel <turn-id>` before replacing it. `sessions schedule --project` remains available for
+with `sessions saved cancel <turn-id>` before replacing it. That control cancels only the named
+queued turn; on a repeating schedule it also prevents another firing from being booked. Other
+scheduled turns in the same session remain queued. `sessions schedule --project` remains available for
 registered projects. The read caps repeating schedules at 32, watches per role at 20, and host
 timers at 128; its coverage field says when a cap was reached.
+
+For a daily wall-clock delivery, use `sessions schedule --daily-at HH:MM --time-zone America/New_York` with the same project or role, provider, title, summary, source and action fields. Concierge computes the next local date and retains the IANA zone on the repeat; it recomputes each later firing from that date, so daylight saving changes do not move the displayed local hour. `--daily-at` is exclusive with `--at` and `--every-ms`. A spring gap fires at the first valid minute after the requested time; a fall repeated hour fires at its first occurrence, once for that local date. `sessions saved list` and the agent view expose `dailyLocal` and the next UTC instant; the daily interval remains in the compatibility field so existing clients still identify the schedule as repeating. To migrate a queued repeat in place, use `sessions saved daily <exact queued turn ID> --time HH:MM --time-zone <IANA zone> <source-flags> --action-id A`. This changes its root recurrence and one queued firing atomically without creating or replaying a session input. It refuses a historical firing, a manually started firing or an ended repeat. The same action ID returns the same result.
+The existing Saved work time control keeps working after migration: choosing a new next run also changes that repeat's wall time in its stored zone, while retaining its expiry. The saved UTC instant remains the next firing the user selected.
+On a runner, the role's declared workspace-relative folder (such as `agents/concierge-repair`)
+must resolve to that runner's registered project at that exact folder before a wake is saved.
+The returned project identity belongs to the existing bound session; a nested agent folder does
+not cause a new session or a fallback to a similarly named root project.
 
 To stop any repeating schedule, run `sessions cancel <request-id>` on the request that created it, or
 `sessions saved cancel <turn-id>` on its queued firing. Either one withdraws every queued firing and
@@ -199,6 +545,11 @@ books no more; a firing already running finishes. The request names only the fir
 saved-work step that books each next firing checks whether the schedule was dropped or its request
 cancelled. Until 2026-11-06 a cancelled request left later firings running. `sessions saved list`
 shows each armed schedule's next firing, turn ID and interval.
+
+A repeating schedule created with `--expires` ends at that instant: the last firing due before it
+runs, no firing is booked at or after it, and every firing carries that same expiry. Until
+2026-11-11 each firing moved the expiry one interval later, so a schedule with an expiry never ended;
+a firing still queued from that time is withdrawn when it comes due past the original end.
 
 New repeating schedules and renewing file watches require both the requesting session and
 the scheduled session, where applicable, to belong to a registered project. Placement under
@@ -289,6 +640,15 @@ Cancellation is accepted only before any delivery attempt; it never undoes a pee
 New work goes to Thinkering native sessions, including requests arriving through
 the retained DM. Agent Slack post/resume/upload/request ingress and automatic
 legacy routed recovery are retired; those commands refuse before publication.
+
+When a Claude or Codex design is fixed and the implementation needs a separate
+worktree, use `sessions implement --project <registered-project> --session-name
+"<task>" --summary "<acceptance criterion>" <source-flags> --action-id <stable-id>
+-- <design and acceptance criteria>`. It starts Sonnet for a Claude designer or
+Luna for a Codex designer by default; `--provider` may name a suitable cheaper
+tier in the same provider. The implementation request returns to the designer
+for review. `sessions --help` and the per-run request protocol carry the exact
+command. Use the same action ID on retry so the worktree and request stay one.
 
 Continue one exact owning session when it built the surface that the capture
 concerns and remains messageable. Use `sessions search` and `sessions context`
@@ -394,7 +754,36 @@ with its exact native source pair and stable action ID. This invokes the existin
 guarded Accounts operation: running Codex turns prevent the move, Codex proves the
 new login, and a failed proof rolls back. The command retains an agent-authored
 receipt; an uncertain operation is inspected, never replayed under the same ID.
+The immediate reply includes that retained operation ID and keeps the switch result's
+existing `status` and `detail`. Exact operation reads and receipt pages derive their
+existing operation state from that structured status: an applied switch is completed,
+a guard refusal is failed, and an unconfirmed switch is uncertain. Historical results
+are shown from their original saved reply, without replay, migration, or a new settlement
+record. A same-action retry returns the same operation identity and result.
 See [provider usage](../architecture/PROVIDER-USAGE.md).
+
+`sessions history-storage claude|codex <source-flags> [--after <next filename>]
+[--limit 1..2000]` reads allocated and logical bytes for one page of private
+history cache files through the authenticated owner. It returns the observation
+time, exact file count scanned, eight largest files in that page, and
+`complete`/`next`. Sum pages until `complete` before reporting a total;
+a missing directory reports
+`exists:false`, while a read error is an error, never a zero-byte result. The
+Claude scope is snapshot SQLite files; the Codex scope is window JSON files.
+Sidecars, runner mirrors and the presentation ledger are separate allocations.
+This command reads file metadata only and never returns transcript content.
+The guarded cutover and its backup/readback gates are in the
+[history object plan](../plans/2026-11-12-concierge-history-object-retirement.md).
+
+### Resuming a frozen ask
+
+A run that persisted an ask (source pair, action ID, exact payload) and ended before knowing
+whether it was admitted can be resumed by a later run of the same session: repeat the identical
+`sessions ask` with this run's own `--source-input/--source-run` plus
+`--resume-source-input <original input> --resume-source-run <original run>`. Concierge returns
+the request already admitted under that original pair and action, or admits it once under the
+original identity. A changed payload is refused as an idempotency conflict; the original run must
+have ended, and the input must belong to this session. Local ordinary asks only.
 
 ### Provider-change handoff
 
@@ -420,8 +809,9 @@ keeps its obligations and can keep working; `sessions handoff withdraw <handoff-
 <source-flags> --action-id A` ends an unaccepted proposal. The successor must read the
 predecessor's context, inspect the exact inventory and acknowledge its digest. If
 acceptance returns a changed inventory, inspect the returned items and accept its new
-digest. On acceptance the owner moves open return and reply obligations, watches and
-safe never-started queued inputs together. Existing child requests keep their IDs and
+digest. On acceptance the owner moves open return and reply obligations, watches, safe
+never-started queued inputs and inputs held by a terminal zero-work usage refusal together.
+Existing child requests keep their IDs and
 continue in place; worktrees are referenced and untouched. `sessions obligations
 [<address>]` shows the outstanding items, lineage and current holder on either side.
 The superseded session can read and close its current turn, but further owner writes are
@@ -440,10 +830,44 @@ running meanwhile. One service input `watch:<id>:<fired|expired|failed|cancelled
 what was observed and any observation gap. Local to this machine. See
 [watches](../architecture/WATCHES.md).
 
+For an exact predecessor file watch and its already registered renewing recovery successor,
+use `sessions watch inspect-pair --old <id> --new <id>` and then
+`sessions watch reconcile-pair --old <id> --new <id> --inspection <returned-inspection> --action-id <stable-id>`,
+each with the current native source input/run. These commands prove retained work delegation
+and recovery custody, expose metadata only, and quietly retire only an active redundant old
+watch or its series successor. Terminal firings are preserved. Ordinary list/cancel do not
+gain cross-session authority. See [exact-pair recovery custody](../architecture/WATCHES.md#exact-pair-recovery-custody).
+
 **Opening a link on his Mac.** `sessions open <http(s)-link> [--on mac] [--browser chrome|safari|default]`
 with the run's source pair and a stable `--action-id` opens the link in his browser on the Mac with no
 session; queued while the Mac sleeps, with one service result when it later opens or expires. See
 [peer instances](PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
+
+<a id="discussing-in-the-lab"></a>
+**Selective comparison conversations.** The [Lab conversation contract](../architecture/LAB-CONVERSATIONS.md)
+owns retained participant bindings and provider answers. In a bound comparison thread, an agent
+can route its own attributed follow-up with `sessions board post --thread <handle>
+--response-target concierge:<n> [--response-target concierge:<m>] <source-flags> --action-id A
+-- <question>`. Only the selected bound voices run. The post retains the exact selected sessions
+before activation; repeating its source/action identity reuses the same post and invocations.
+An explicit empty selection is passive, including for the thread coordinator. The thread's
+coordinator is distinct from the Inbox and can synthesize or route through this same command.
+The Lab surface can add or remove voices later. Membership updates affect future selections;
+accepted responses retain their original roster and conditions, and adding a voice alone
+starts no turn. A selected newcomer sees the shared discussion through the selected entry.
+Participants receive group context and a concise default, while full original answers remain retained.
+
+Agents can inspect the owner roster and its `membershipRevision` with `sessions board roster
+--thread <handle>`. To change it, put an object with `add` and `remove` arrays in a local JSON
+file and run `sessions board participants --thread <handle> --revision <membershipRevision>
+--json-file <file> --source-input <inputId> --source-run <runId> --action-id <stable-id>`.
+Each addition uses the existing participant choice, including an existing session ID or the
+explicit provider, model, effort and project; removals use canonical session IDs. The owner
+checks the exact live source and the expected revision. A stale revision is a refusal, not a
+request to silently apply the change to a later roster. A repeated identical action returns
+its original result. If the response was lost, `sessions board participant-change --thread
+<handle> --action-id <stable-id>` reads only the exact retained change identity, revision and
+added/removed session IDs, including after the originating run ends; an unknown action is 404.
 
 **Discussing in the Lab.** `sessions board read|thread|post|claim|reveal|close|product|cite|link …` with the
 run's source pair (and a stable `--action-id` for changes) reads and writes the lab record in thnkr.ing (/lab):
@@ -553,6 +977,13 @@ router-actions.sh sessions reply <request-id> <source-flags> --action-id A --wor
 His words are checked against the message that started the work and his other messages of the
 last thirty days in this ledger; work that began on the other machine is taken as given. A
 session in a writing project (the messaging agent) cannot send `--requested-effect work`.
+
+An `only-he-can device` question may ask for one physical action in its first sentence,
+including saying a named `Alexa, open …` launch phrase to an Echo. For example:
+`Please say “Alexa, open thinkering box” to your Echo.` The reason field explains why
+the agent route cannot perform this check. A server or simulator result does not establish
+what the Echo heard or whether a capture reached the Inbox. Keep the source request open
+until the physical attempt and its resulting capture or refusal are observed.
 
 ### Approval required by a permanent decision
 
@@ -693,14 +1124,26 @@ sending. `--file` attaches any file type. A Pro answer can take an hour; the req
 ChatGPT finishes. The browser is remote-box's always-running real Chrome
 (`docs/chatgpt-browser.md` there), which Thinkering keeps signed in.
 
-`--gpt <https://chatgpt.com/g/g-…|g-…>` (instead of `--effort`) starts the chat with that GPT, from
-the GPT Store or his own, the way he opens one himself: the browser opens the GPT's page, checks the
-GPT is selected in the composer by the name ChatGPT reports for it, and refuses to send otherwise
-(`CHATGPT_GPT_UNCONFIRMED`). The model value is `[tejas:]gpt:<g-…>`; a GPT runs on the model its
-maker chose, so it has no thinking level, and it is never filed in the Agents project. Find GPTs
-with `/root/workspace/agent-scripts/chatgpt-gpt-search.mjs "<words>"`, which lists the GPT Store's
-matches with their ratings and conversation counts. Added 2026-10-13 when Tejas asked for a
-dating-coach GPT rather than plain ChatGPT.
+`--chatgpt-project <https://chatgpt.com/g/g-p-<lowercase-alphanumeric>/project|g-p-id>`
+selects an exact native ChatGPT project, separately from the development `--project`.
+It accepts ordinary `--effort` (agent default `pro`, `--his-chat` default `extra-high`); its retained model is
+`[tejas:]project:<g-p-id>:<thinking-level>`. The browser confirms the selected project
+before sending. An explicit project overrides the default Agents project or ordinary chat
+destination without changing whose chat it is. Its displayed agent name is `ChatGPT · Pro`
+(or the selected thinking level), rather than the internal project destination.
+
+`--gpt` refuses ahead of the December 11, 2026 custom GPT retirement and points to
+`--chatgpt-project`; the two flags cannot be combined. The canonical owner also refuses
+new GPT destinations from old/direct clients and new messages to retained GPT sessions.
+There is no silent ordinary-chat fallback. Historical GPT metadata, reads, receipts and
+recovery of acknowledged/dispatched runs remain intact; do not replay them to migrate.
+
+Native ChatGPT projects supply first-party instruction context on the existing browser
+channel, with an explicit destination and normal thinking levels. Doing nothing retains
+a retiring dependency; waiting for an unknown third-party plugin has no verified delivery
+date or instruction-custody guarantee. Projects do not recover private GPT configuration:
+the third-party Dating coach GPT (`g-R85Fq7o6n`) returned `instructions:null`, so its private
+instructions have not been migrated or reconstructed.
 
 The exact Slack source pair works too. The owner atomically creates one native
 ChatGPT session and agent-origin first input with the existing request/return
@@ -981,6 +1424,23 @@ Provider contracts: [single-message length guidance and truncation warnings](htt
 Lab comments share their discussion. To answer a specific comment, use `sessions board post --thread <handle> --reply-to lab:<handle>/<entry>` with the usual source and action flags. The record resolves the parent and refuses a different thread or a hidden parent; mention notices include this reply command. Omit `--reply-to` to add a top-level comment.
 
 On the server, the launcher sends Lab board commands to the installed current owner, including when the agent session started before a deployment. The older parser pinned to that session cannot know a new board option. Keep other session commands on their existing routing unless their contract specifically requires the current owner.
+
+## Question expiry recovery
+
+A `completed` or `failed` final reply expires only questions whose recorded dispatch ID matches
+that reply. A same-session question without that link stays open for its exact request or an
+explicit Inbox settlement. For an older sibling expiry, use the supported exact-record repair:
+
+```bash
+router-actions.sh sessions topics question restore '<question-id>' --dispatch '<erroneous-finishing-dispatch>' --expected-revision '<current-revision>' --source-input '<input-id>' --source-run '<run-id>' --action-id '<stable-action-id>' -- 'Why this exact sibling question is being restored'
+```
+
+The Inbox owner checks the retained expiry event, preceding question snapshot, current revision,
+open topic and the question's own open dispatch-linked request. This restores the same stored
+question silently and keeps its revision, timestamp, source and exposure identity. It refuses a
+stale or changed question, a human answer or replacement, a closed request/topic, a question
+correctly expired by that dispatch, or a request-only/thread-level/legacy question with no proven
+dispatch. See the [native Inbox contract](../contracts/native-inbox.md) for the full invariant.
 
 ## Inbox instruction ownership and project commands
 

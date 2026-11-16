@@ -10,6 +10,29 @@ Concierge accepts Slack events and authenticated native surface input into the s
 
 ## Continuing work after a provider refusal
 
+### Confirmed Claude process death after work
+
+When Claude's transport retains an actual process exit without a terminal provider
+result, the adapter carries that typed exit (code and signal) with the observed
+assistant/tool work and native conversation identity. After work began, the turn
+coordinator atomically records the failure and queues the existing `interrupted`
+continuation. The original input is never resent. The continuation resumes the
+same conversation and must inspect the transcript and prior effects before acting.
+One interrupted continuation is allowed; another interruption of that continuation
+does not create a loop. An already declared turn outcome or settled request blocks
+this recovery, as do Stop, withdrawn authority, pause, archive and superseding input.
+
+This requires the transport's confirmed process exit, not error-text matching.
+A still-running or unreachable host, an ambiguous transport failure, an ordinary
+Claude error result, and a launch without acknowledgement do not enter this path.
+Host adoption and liveness checks remain unchanged. There is no historical crash
+backfill: earlier failed experiments remain intact counterexamples.
+
+The replayable live acceptance and exact before-fix identities are in the
+[Claude crash record](../incidents/2026-11-12-claude-checkpoint-crash-not-continued.md).
+
+### Provider refusals
+
 When Claude or Codex confirms that a turn failed on usage, rate limiting, a model at
 capacity (treated as rate limiting; see [provider sessions](PROVIDER-SESSIONS.md#automatic-starts-for-new-work))
 or sign-in after producing assistant content or using tools, the failed turn remains in history. In the
@@ -51,6 +74,103 @@ other cycle cannot trap the owner and stall unrelated sessions.
 - `bot/src/session-runtime.ts` composes the same owner, queue, registry and executor when Slack is disabled. `session-execution-host.ts` admits native inputs and controls; it does not own a second provider queue.
 - `bot/src/session-turn-queue.ts` owns process-local wakeup coalescing for durable ownerless queued turns. SQLite claim transitions in `bot/src/state.ts` remain the concurrency boundary.
 
+### Claude launch refused before start
+
+Concierge's Claude launcher refuses some launches before Claude starts (an unavailable or ambiguous
+account binding, a malformed owner header, a competing credential). It prints the reason after a fixed
+marker and exits 78 (`bot/src/claude-launch-refusal.ts`); the turn runner treats that as proof nothing
+was sent and fails the turn at once with the launcher's reason, scoped to that conversation's retry
+budget, so its requests settle failed and return to their requester. An unmarked end before Claude
+acknowledges its input still parks as ambiguous. A transcript begun before Claude wrote session-owner
+headers resumes on Concierge's verified account choice. Startup fails turns already parked as
+unacknowledged Claude launches, replaying nothing
+([record](../incidents/2026-11-16-claude-legacy-resume-refusal-parked-turns.md)).
+
+### Stop while taking back an existing Codex turn
+
+Adoption means Codex may already be executing the accepted input. The adapter establishes the
+retained thread identity before it registers the cancellation callback, because a Stop retained
+across restart is dispatched synchronously at registration. For adopted work, that callback enters
+the existing exact-history recovery path: it reconnects, finds the turn by the retained provider
+turn ID or the original client message ID, requests `turn/interrupt` for that exact thread and turn,
+and reads history again. The callback's successful return is not terminal evidence; only the
+provider's terminal history settles the turn. If exact identity or history cannot be confirmed,
+the accepted work stays parked as uncertain under its original attempt. It is never treated as an
+unsent input and never submitted again. Ordinary Stop before any provider submission still ends
+the wait without connecting or sending an RPC.
+
+### Empty Codex completion without input acknowledgement
+
+Codex `thread/start` and `thread/resume` establish the conversation. Requested reasoning effort
+belongs to each `turn/start` request, whose App Server schema accepts `effort`; thread parameters
+do not. The adapter records the exact owner dispatch attempt to native turn ID before interpreting
+its terminal result.
+
+If a native turn completes but its submitted `clientUserMessageId` never appears as a provider
+`userMessage`, and the turn has no assistant output or tool activity, Concierge parks the accepted
+turn with `CODEX_INPUT_NOT_ACKNOWLEDGED`. An empty completion is not a successful answer. The
+accepted input and its open communication stay in custody.
+
+The supported `sessions codex-recover <request-id>` entrance is narrower than ordinary resume. It
+selects the exact service `report-back:<request-id>` input, never the earlier work input named by
+the communication's `target_input_id`. The owner requires complete retained identity for each
+attempt of this exact accepted input and checks its exact native turn plus every page of that turn's
+items. A different empty turn in the conversation is not attributed to the selected input; its own
+accepted input and run remain separate. The selected turn must be terminal and empty, with no
+acknowledgement, output, tool, active host, changed conversation binding or controls, later provider
+admission, Stop, or other effect. Null acknowledgement or an empty summary is not proof. This also
+supports the historical completed-result shape: the original admission in the accepted-input
+receipt, retained attempt/result events, and per-turn xhigh prompt identity must all match. A
+durable reservation keyed by the accepted input and the queue transition commit together. A later
+action ID returns that reservation before checking the turn's changed queued state. Existing
+accepted input/run/request identities remain unchanged. The historical result stays immutable;
+each later execution attempt gets a distinct result event so existing readers can surface its
+answer without rewriting history.
+
+Provider admission history follows the same attempt identity boundary. The accepted-input receipt's
+`admission` remains the first retained admission for compatibility and is never replaced by a retry.
+Each provider dispatch records its admission as an immutable `provider_admission` event keyed by the
+owner turn and `dispatch_attempt`. `GET /sessions/v1/operations/:operationId` keeps the existing
+`admission` field and adds `admissionHistory`, an ordered list of `{dispatchAttempt, admission}`
+records. A legacy receipt admission with no matching attempt event is included with
+`dispatchAttempt: null`; the owner does not infer its attempt, reconstruct a missing prompt hash,
+or invent a historical event. ChatGPT's immutable prepared-admission comparison remains in force.
+
+This preservation starts with the admission retained when the correction is installed. For the
+already-recovered `concierge:3012` report-back, the first admission (prompt hash beginning
+`3ff844`) survives in the exact preflight snapshot attached to repair request
+`864895dd-f565-469d-91ca-382f385c0d3b`; its receipt already holds the second attempt's admission
+(prompt hash beginning `a92e30`). Operation history presents that pre-existing receipt as a legacy
+entry with no inferred attempt number. Installing this correction does not reconstruct the first
+admission or manufacture an attempt event for the already-running recovery.
+
+This recovers only the failed service report-back. It does not re-admit or overwrite the original
+human work, settle its request, or close any human obligation. A recovery receipt proves admission
+only; native acknowledgement, useful work and the supported final request outcome remain distinct
+facts. The exact incident and parent command are in [the empty report-back recovery record](../incidents/2026-11-13-codex-empty-report-back.md)
+and [its evidence artifact](../runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md).
+
+The source-bound native Codex acceptance controls use the same normal execution owner. A new
+session receives a dedicated client only when its exact create input carries the explicit
+disposable-test deadline; ordinary agent-created, human-created and outside-command sessions keep
+the shared client. The client object remains in memory beside its live run and is never written
+into the execution record. Adoption creates a fresh dedicated client for the same daemon and exact
+retained provider turn, closing a replaced client while preserving provider work under the retained
+thread/run/attempt. `sessions codex-test connection-loss` derives and records the exact execution,
+attempt and connection generation before acting, then rechecks them and retained Stop at the host's
+final cut boundary. A Stop already retained, an expired deadline, or a stale generation refuses
+without cutting. The finite deadline disarms only fault injection; Stop, adoption and recovery stay
+available. The receipt says `observed` only after the bridge's normal disconnect handler reports
+that generation gone. A stable repeated loss action returns its retained receipt after settlement
+without cutting again; an uncertain attempted cut cannot be rearmed. `sessions codex-test stop`
+retains agent authorship and calls the same exact-run Stop path, including the durable cutoff and
+adapter cancellation. Human attribution and its ChatGPT-specific follow-up remain human-only.
+Both controls require the exact marked creation request and source input/run pair; the owner refuses
+ordinary work, other authorship, sessions, runs, shared-client work and repeated cuts.
+
+The finite post-release acceptance procedure is in
+[`CODEX-NATIVE-RECOVERY-ACCEPTANCE.md`](../runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md).
+
 ### Queue wake bounds
 
 Each runtime runs the saved-work clock once at the start of a queue wake pass, before claiming. It places due repeating firings and settles expired schedules before any claim. The coordinator admits at most four claims per event-loop slice, then continues on a new event-loop turn. Wakes arriving during a drain are retained; after the current claim pass reaches an empty queue, another pass prepares the clock on a new event-loop turn. Stopping the coordinator cancels its pending continuation. The SQLite transaction still owns each claim and its ordering. A claim settles dependencies only for its selected turn; prerequisite completion already settles dependencies for its dependents. This avoids a ledger-wide writer sweep on every empty or busy claim. Slow claims report their candidate, dependency, mutation, projection, survivability, and transaction overhead times so a remaining pause can be assigned to the actual phase.
@@ -78,6 +198,28 @@ for Remote mirroring or advance that Slack thread's cumulative summary.
 - `bot/src/state.ts` owns persisted transitions, leases, recovery identity, and the SQLite schema.
 
 Extend the responsible component instead of adding another lifecycle branch to `handleUserMessage` in `index.ts`.
+
+## Paced starts
+
+A machine configured with `CONCIERGE_START_PACE_BUDGET` (the Mac; never the server) admits new
+provider-process starts at a bounded rate, whatever released the work, because the gate sits in
+`claimNextQueuedTurn` rather than in each release path (`bot/src/start-pace.ts`; plan
+[2026-11-12](../plans/2026-11-12-mac-held-work-pacing.md)). Unset means the query and claim are unchanged.
+
+- A non-exempt candidate over the window's budget stays `queued` with `dispatch_failure_class='backoff'`,
+  hold `start_pace:<place>`, and `dispatch_next_attempt_ms` at its slot; groups of `budget` share one instant and
+  follow each other by a window plus jitter, so the agent's order is the start order. The existing wake clock
+  (`nextQueuedTurnAttemptMs`) drives it. Starts are recorded in `start_pace_starts`.
+- Exempt: a direct human input, the Inbox router, ChatGPT. At macOS memory-pressure warning a paced start is
+  held one slot (hold `start_memory`); at critical every start is.
+- The order is fixed: input from Tejas, then agent requests an open Inbox thread waits on, then oldest. There is no
+  ordering agent; agents decide for themselves (next bullet).
+- Where `CONCIERGE_CROWD_SESSIONS` is set, a start while the machine is crowded (over that many running sessions, macOS
+  memory pressure, load over 2x the processors) carries a notice offering `sessions snooze` (`bot/src/crowding.ts`,
+  `bot/src/snooze.ts`). A snooze is a scheduled continuation turn of the same session with hold `snooze:<reason>`, refused
+  for his direct messages and when not crowded, capped at six hours; open requests stay open with their due time moved past
+  the wake.
+- The status line reads the hold: place and expected time, or the memory reason. No notification.
 
 ## Responses and status projections
 

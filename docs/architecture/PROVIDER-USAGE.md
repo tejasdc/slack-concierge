@@ -1,5 +1,52 @@
 # Provider usage reset cache
 
+## Google quota disagreement evidence
+
+Google may refuse a turn while the metadata-only CLI allowance reading reports room.
+The normal adapter refreshes after the refusal and uses the same existing meter/reset
+decision. If that decision supplies no usable reset, its existing once-per-day repair
+notice now preserves selected account/model/runner at dispatch, dispatch observation
+time, refusal time, and the post-refusal reading's account, runner, source/read times,
+all meter windows and problems. Dispatch identity and reading identity are separate;
+the owner selection is not a CLI-terminal attestation of the account.
+
+`bot/src/google-quota-disagreement.ts` only formats retained evidence. It distinguishes
+verified fresh room, exhausted allowance with no usable reset, and absent, unreadable,
+incomplete or stale readings. Unknown reset or missing reading is not evidence of room.
+The selected dispatch account must match the reading's account after normalization,
+the source runner must match, and the requested model family must be known before
+the formatter can describe matching room or exhaustion. Missing or different identity
+stays unavailable, with both identities preserved for investigation.
+The fixture `bun bot/scripts/google-quota-disagreement-fixture.ts` runs that pure formatter
+for all three cases, exact identity/time context and separate Gemini/Argon families;
+it also retains/renders evidence through real repair-notice functions in disposable
+SQLite, starts no provider work and touches no production state. Actual provider reads, admission,
+percentages, reset handling, hold release and notice deduplication stay unchanged.
+
+On November13 the same account's CLI output alternated between exhausted Gemini weekly
+with reset02:15:16Z and approximately1% used with a new weekly epoch. The native owner
+released held work at23:17:42Z. A bounded, tools-denied, paid-credits-disabled Flash
+health check then succeeded at approximately23:20Z (one turn,8755tokens), and native
+session work resumed. Therefore preserving the earlier exhausted window until its
+original reset would have imposed a false roughly three-hour hold on actual recovery.
+That unshipped policy was rejected. Fresh actual admission is stronger evidence of
+recovery than treating an earlier meter reset as a non-revocable promise.
+
+Decision case: the objective is to preserve exact cause evidence without delaying real
+recovery. Native recovery already worked. Retaining old full meters failed the live
+counterexample; adding another service or retry policy supplies no stronger evidence.
+The narrow correction closes the notice's evidence gap while preserving native behavior.
+Upstream cause remains unknown: quota refresh cancellation appeared with both exhausted
+and room outputs. Google's [native documentation](https://antigravity.google/docs/cli/commands/usage/)
+says usage refreshes backend/disk data; those cancellation logs do not prove a cache race.
+
+Evidence ownership: the existing adapter observes the actual refusal, the existing reader
+owns the post-refusal snapshot, and the existing repair-notice store retains their context
+under the existing daily key. No new state, identity authority or lifecycle exists.
+Older readers still receive ordinary notice text. Formatter fixtures establish local
+classification only; installed notice formatting and actual provider admission are separate
+proof layers. The November13 live admission proves recovery, not this formatter's deployment.
+
 The [current provider state flow](PROVIDER-STATE-FLOW.md) joins this evidence and the session owner into one operator map. Historical notice descriptions below are corrected at the affected sections for the November 3 incident.
 
 Concierge remembers an actual usage refusal and its provider-reported reset instant
@@ -139,6 +186,14 @@ until a Concierge restart's startup check ran it. Record:
 
 ## Sign-in holds
 
+A runner's Claude usage reading marks an account signed out, and so starts a browser
+renewal on the Mac, only when its own home's read fails, claude-swap reports
+`relogin_required`, and that home's own login no longer holds an unexpired refresh token.
+claude-swap's status describes its separate copy, which goes stale when the real login
+renews, and its `token_expired` is only a deferred refresh; an expired access token alone
+keeps the last reading. A refresh token revoked early is caught by the refused turn
+([failure record](../incidents/2026-11-13-expired-access-token-read-as-signed-out.md)).
+
 An authentication refusal is held without a guessed reset time when the provider confirmed
 the turn ended, and the adapter observed no assistant content or tool use. The existing
 dispatch safety checks still exclude unsafe steering, artifact activity and ambiguous
@@ -194,6 +249,16 @@ agent renewed the server's healthy login, reported success, and the Mac's stayed
 notice promised the work would move to that account, and his 7:28 PM message moved to a Codex
 session instead while he was signing in. Record:
 `docs/incidents/2026-11-02-mac-signin-wait-read-as-usage.md`.
+
+The Inbox router keeps one canonical role across providers. When its current provider has no
+launchable allowance and another provider has a launchable account with room, a confirmed
+usage-held Inbox turn can propose the existing session handoff even if a later input is queued
+or the refused attempt recorded admission intent. The successor accepts an exact inventory;
+only then does the role move and safe queued inputs retain their original source and request
+identity. An ambiguous or acknowledged input blocks acceptance. A fresh reading showing room
+on the current provider instead releases its held work there; a provider reset does not switch
+an already running conversation in place. The generic Claude recovery excludes Inbox because
+it cannot own this canonical role transfer.
 
 The first held input of an episode records one internal `provider_hold_observed` event with an
 `auth` payload: account, machine and number of held inputs. It does not itself push a
@@ -274,6 +339,16 @@ sign-in repair for a held turn, but they do not prove a runnable local credentia
 Signing in through Accounts files a home but never adds it to claude-swap (adding copies the login,
 which dies the first time the original renews), so before 2026-11-03 such an account was missing from
 every reading: hey@tejas.nyc read as absent, and nothing that waits for room could see it.
+A provider runner's own reader (`runner-provider-account-readings.ts`, used once account custody moved
+to runners on 2026-11-05) follows the same rule: after claude-swap's list it reads every signed-in
+runner home it does not list from that home's own login, and shows "Usage could not be read." when
+that read fails; it still reads those homes when claude-swap is missing or fails. Until 2026-11-12 it
+skipped them, so hey@tejas.nyc vanished again (`docs/incidents/2026-11-12-runner-usage-reader-missed-account.md`).
+When a peer supplies newer usage for an account on both machines, the receiving machine keeps its
+own sign-in verdict. A server reading can fill the Mac's bars for a signed-out home, but cannot turn
+that Mac home into a signed-in profile. Dispatch rejects the local signed-out verdict before
+the selected account's usual attempt is allowed. The peer source and original read time remain
+visible on the usage reading.
 Record: `docs/incidents/2026-11-03-usage-reader-missed-new-account.md`. Each account read from its own login (also the fallback when claude-swap's copy has died) is asked at most every five minutes, inside the six minutes a reading counts as fresh, doubling the gap after a failure up to thirty minutes. If an idle home's access token has expired, the reader asks Claude Code's local `/usage` command to renew that home's own login without a model turn; the reader does not copy or refresh credentials itself. One renewal per account runs at a time, and an unsuccessful unchanged login backs off from five to thirty minutes. A changed credential file bypasses the earlier failed-read wait so the next usage pass can use it. Between reads or after a failure the reader keeps its last good windows with the time they were taken, so a 429 never blanks it.
 
 The cache above records refusals. Separately, `bot/src/provider-account-usage.ts` reads the
@@ -303,7 +378,7 @@ so the surface can name the state instead of leaving a gap. One pass runs at a t
 timer, a credential change and his Refresh press all share it.
 
 **Refresh reads.** A `fresh` read of `/auth/providers` starts
-`scheduleProviderAccountUsageRefresh()` alongside the identity reads (`claude auth status`,
+`scheduleProviderAccountUsageRefresh(true)` alongside the identity reads (`claude auth status`,
 the Codex sign-in state) and answers at once from the last known state with `checking` set;
 the Accounts page reads again every few seconds while any row or machine says `checking`
 or `refreshing` (a peer machine says `checking` only while a read of it is outstanding), so the numbers fetched for that press arrive on screen without a read waiting
@@ -312,7 +387,9 @@ half-hourly pass had last written, so pressing Refresh changed no percentage on 
 and read as a dead control: "I just pressed refresh and it doesn't seem to be working at
 all." From then until 2026-11-03 a fresh read waited for the whole check, 11 to 20 seconds
 around a sign-in, which held the account row's confirmation spinner that long. A press
-while a pass is already running joins that pass instead of starting a second.
+while an ordinary pass is already running queues one forced pass after it. The owner keeps
+`checking` true until the forced pass settles; the Accounts Refresh mark stays active while
+the page watches that state. A press during a forced pass joins that same pass.
 
 - **Codex**: the agents' home `~/.codex` plus one home per extra account under
   `~/.codex-accounts/<name>/`, each read by CodexBar (`/root/tools/codexbar-cli/codexbar`)
@@ -345,8 +422,28 @@ while a pass is already running joins that pass instead of starting a second.
   `cswap status --json` checks only the terminal-active account and is not used here:
   a Concierge turn may run on another saved home without changing terminal selection.
   When claude-swap returns `lastGoodUsage` instead of decision-grade `usage`, Concierge
-  pairs it with `lastGoodFetchedAt`, never the outer scan time. The Mac currently borrows
-  server readings with their source times; local sign-in and selection need local evidence.
+  pairs it with `lastGoodFetchedAt`, never the outer scan time. A Mac Refresh asks its
+  local Keychain logins for a new reading even inside the ordinary five-minute read gap;
+  it joins a running pass, then takes a fresh pass if that pass was periodic.
+  On the Mac, Claude Code keeps each account's only login in its GUI Keychain. Concierge
+  asks Claude Code to confirm each saved home's signed-in email and configuration directory,
+  then reads that home's local Keychain item and asks Anthropic's usage endpoint with its
+  access token. Keychain item presence alone does not prove that Claude still accepts the
+  login: a signed-out home is shown as needing sign-in and its usage is not requested or
+  renewed. An unanswered or mismatched identity check is shown as unverified and cannot
+  authorize work. Concierge never copies or writes the login; if a confirmed home's token
+  expires or Anthropic rejects it with 401, Claude Code's local `/usage` renews that same
+  home's Keychain item. A pressed Refresh waits for renewal, and a rejected-token read
+  retries once after renewal before it settles.
+  The same five-minute per-account read plan and failure backoff apply. A failed read keeps
+  the last good Mac value with its original source time. A signed-out home has no usage bars.
+  The Mac no longer substitutes a server reading for a missing local one; such a peer value
+  cannot prove that the Mac can run the account.
+  This replaces the Mac's former peer-only display, which omitted Mac-only accounts and
+  could show days-old server numbers after a Mac Refresh. On November 6 a Mac-local probe
+  found two saved homes whose initial usage requests returned 401; Claude Code renewed
+  each without a model turn, and subsequent usage and profile requests returned 200 with
+  matching account emails. A third saved home still reported signed out and was not renewed.
   The Mac's two-home continuation and concurrent use were proven on 2026-09-23;
   see [the shared-history design](../plans/2026-09-23-accounts-share-one-history.md).
 
@@ -438,20 +535,30 @@ Accounts no longer lists the main folder's login as an account and says nothing 
 sign-in is not his work, and the line naming it was removed on 2026-10-08 as news about nothing.
 The account line above the list is empty while the chosen account is in use; it speaks only when
 that account is at its limit, signed out, or none is selected.
-The Mac keeps logins in the Keychain, has no such homes, and is unchanged. A usage reading that
-fails or is missing for the selected account never stops its work: the usage reader (claude-swap)
-reads with its own copies of each login, so its failure says nothing about the login in the
-account's home, and a real limit still comes back from Claude as an ordinary usage hold. The last account is
+The Mac also keeps separate saved homes, with each login in the Keychain. A usage reading that
+fails or is missing for the selected account does not alone prove its login is unusable;
+the local reader confirms sign-in separately, and a real limit still comes back from Claude
+as an ordinary usage hold. The last account is
 recorded only when Claude reports that the process started. Each main-conversation response with
 usage also retains its account, conversation ID, response ID and receipt time in that session's
 metadata. The next ordinary turn stays on that account when its last response is within the
-main conversation's one-hour cache lifetime and the account still has usable room. Anthropic
-isolates prompt caches between organizations; in the 48 hours before this change, 133 account
-changes accompanied 68.2 million rewritten tokens, and all 14 sampled changes within 50 minutes
-were cold. Keeping an eligible warm account avoids sacrificing that prefix to spend a different
-weekly allowance. A fresh Accounts selection still wins the next turn, a banked turn stays bound
-to its saved account, and a cached usage refusal makes an account ineligible. When the prefix is
-cold, the chooser again ranks usable accounts by weekly allowance lapse pressure and uses the
+main conversation's one-hour cache lifetime, the account still has usable room, **and no other
+account's weekly allowance is clearly closer to lapsing** (its lapse pressure under twice the warm
+account's, `WARM_STAY_BAND`). Anthropic
+isolates prompt caches between organizations; in the 48 hours before the warm stay was added
+(2026-10-23), 133 account changes accompanied 68.2 million rewritten tokens, and all 14 sampled
+changes within 50 minutes were cold. Keeping an eligible warm account avoids sacrificing that
+prefix to spend a different weekly allowance. But an unconditional stay let every conversation
+active within the hour keep its account whatever the weeks' ends: on 2026-11-13 the ledger
+recorded 159 warm stays against 48 moves for room, and the week ending Sunday was spent while a
+week ending Wednesday kept its room (Tejas, 2026-11-15: "we should not be changing only when
+they're expiring, but actually based on what weekly windows are happening"; failure record
+[2026-11-15](../incidents/2026-11-15-warm-cache-kept-spending-the-later-week.md)). The band is
+hysteresis: a move pays one prefix rewrite and the new account is then warm, so staying is worth
+it only while the accounts are close, and two accounts cannot ping-pong unless their pressures
+swing fourfold. A fresh Accounts selection still wins the next turn, a banked turn stays bound
+to its saved account, and a cached usage refusal makes an account ineligible. Otherwise the
+chooser ranks usable accounts by weekly allowance lapse pressure and uses the
 previous account to break equal-room ties. That ranking preserves weekly room: at
 07:22 Eastern on 2026-10-10 Inbox stayed on an account with about 13% weekly room even though
 another launchable account had about 83%, because the older rule always preferred its last
@@ -469,7 +576,8 @@ The provider's response establishes a possible warm prefix, while a transcript u
 establishes what was actually read or rewritten. If a response is not recorded, a process restarts,
 the conversation ID changes, or the marker expires, dispatch uses the existing cold ranking.
 Older readers ignore the optional metadata. The falsifying sequence is a warm call on account A
-while account B has higher lapse pressure: A must win with room, B must win when A has no room,
+while account B has higher lapse pressure: A must win with room while B's pressure is under
+twice A's, B must win when it is more than twice or when A has no room,
 and a bound banked turn must remain bound. The focused chooser check exercises that sequence;
 installed usage figures measure the resulting cache behavior.
 "None has room" is a claim about readings and refusals only. A reading older than six minutes
@@ -508,8 +616,8 @@ provider granted early could never be noticed: on 2026-10-10 the Mac held every 
 11, 11 PM" for a chann.app refusal his 2:05 AM reset had already ended. Each reading now forgets an
 account's refusals when that account shows every window below 100% and some window lower than its last
 reading before the refusal (`usageFellSince`); usage only falls on a reset, so a reading that merely lags
-a refusal never clears it. Accounts read for this machine by its peer count like any other: the Mac's
-usage is read by the server. After a switch the owner re-reads usage at once, and the switch result says
+a refusal never clears it. Each machine's own Claude usage readings determine its room;
+the Mac reads its saved Keychain homes locally. After a switch the owner re-reads usage at once, and the switch result says
 whether the account answered its test request or refused it as out of usage; the app shows that sentence.
 
 **A conversation moves between accounts, because its history is shared.** It could not until
@@ -546,6 +654,15 @@ For Claude, the account is decided **fresh at every dispatch**:
 For Codex, every turn uses the shared App Server. A banked turn can select only its currently
 signed-in account; other Codex accounts still have usage readings and can be selected through
 Accounts, which moves the login after running turns finish. There is no per-turn Codex home.
+Ordinary turns and scheduled firings without a saved account binding use that current login at
+their next dispatch. A fresh reading with room, a completed account switch, or a confirmed reset
+therefore releases their queued usage holds; the queue still enforces each scheduled firing's
+original fire time. Banked turns remain bound to the account and allowance window they saved.
+On 2026-11-06 the hourly overnight checkpoint's 14:00 firing waited for a spent account's
+November 12 reset even after the shared App Server moved to a personal account with room:
+the release path excluded every saved turn, including an unbound schedule. The Accounts
+tool-free retry had a separate stale session-column name and could not recover that hold either.
+See [the failure record](../incidents/2026-11-06-unbound-schedule-stayed-usage-held.md).
 
 Running out mid-turn needs no new machinery: the turn fails with the provider's usage refusal
 carrying its reset instant and returns to its own queue. The next Claude attempt re-runs its
@@ -625,8 +742,12 @@ where Claude keeps logins in the Keychain rather than a file, this sign-in repor
 could not finish rather than filing anything.
 
 The Mac proof established both continuation across homes and simultaneous spending on two
-Claude accounts. This source change has not been activated or tested by an agent under the
-current delivery policy; Tejas owns live acceptance.
+Claude accounts. The sign-in itself has since run for real on the server: the runner's
+sign-in record carries a completed Claude sign-in at 2026-11-07T01:45:36Z, and
+`~/.claude-accounts/tejastej-dc-gmail-com/.credentials.json` was rewritten at that second
+with the previous login set aside as `.credentials.json.superseded-1794015936337`. So the
+independent-login design is observed, not only designed. Codex's equivalent is dated
+2026-11-06T18:09:41Z, the first credential filed into a newly created home.
 
 
 ## Seeing it coming
@@ -973,20 +1094,124 @@ removed from the owner's session view; thnkr.ing's banner, its component and its
 
 ## Who used the allowance
 
+Weekly subscription percentages have two meanings. The account's
+`weeklyAllowance.usedPercent` is the provider's latest weekly reading, with its
+reset and observation time, or `unavailable` when the reading is old or absent.
+The per-session, per-topic and repeating-routine `weeklyAllowance.usedPercent`
+is an **estimate**. The scanner splits each meter's readings at every weekly
+reset, because a seven-day report almost always spans one, and shares each reset
+period's percentage rise among the transcript usage inside that period, in
+proportion to published API-price weighted tokens. Fifteen-minute buckets keep
+raw provider calls on their runner until all runner reports have been merged; a
+provider percentage is allocated only once. Claude Fable calls are weighted into
+both the all-models weekly meter and the Fable-only meter, because Fable draws
+on both; their tokens are still counted once. A conversation outside Concierge
+keeps its own bucket key, so each such row on Accounts carries its own share. A
+full weekly bar stops allocating at the first observed saturation, because later
+calls may spend credits. Weekly readings are kept for eight days by age rather
+than by sample count, so the rolling week is covered at any reading cadence;
+history from before installation cannot be reconstructed. Each estimate's
+coverage reports its from and through instants, the observed percentage change,
+covered transcript weight, `uncoveredTranscriptWeighted` with `complete:false`
+when part of the work fell outside every measured period (thnkr.ing then shows
+the estimate as a lower bound), and the fact that other use of the same account
+(the Mac, claude.ai, the phone) is unknown. A missing reading, reset identity,
+matching transcript work, or fresh observation produces `unavailable`, never
+zero. Different account or model-specific meters remain separate components;
+their percentages are not added. A routine row counts only its own scheduled
+turns: work it hands to other sessions (the nightly review's fix requests) is
+counted under those sessions and threads. The full breakdown carries `byThread`,
+`byRoutine` with daily rows, `byDay` and an explicit `unassignedThread`; the
+per-id maps `sessionAllowanceById` (keyed by `concierge:<id>`) and
+`threadAllowanceById` (keyed by stable topic ID) stay in the cached report for
+the visible-row lookup and are left off the breakdown response to keep it under
+its size limit. Each estimated component also carries `currentPeriodPercent`, its share of the
+provider's current reset period alone (null when that period has no fresh measurement), which
+is what the Accounts bar divides: the account's reading restarts at each reset, so a seven-day
+estimate would describe the previous week's work. A call is assigned to a topic only when its exact turn input
+has a recorded request topic, attached thread link, or topic root; work without
+that evidence stays unassigned. Each account also carries `notInThread`: its unassigned
+use by what started it (`byTrigger`) and its 12 largest unassigned sessions (`bySession`,
+with title, address and the triggers behind each, plus `sessionCount`), because Tejas asked
+on 2026-11-16 which sessions make up "Not in a thread" and why they had no thread. A trigger
+is read from the turn's accepted input: the ID prefix names its door (request, capture,
+report-back, handoff, Inbox upkeep, …) and the recorded input author separates his messages
+from agents'; scheduled and saved turns are named as such; calls in a Concierge conversation
+that match no turn are `between turns`, and conversations Concierge does not own are
+`outside Concierge`. The overview carries the same `notInThread` per account. A turn
+the direct joins cannot place is resolved by the owner's own thread rule
+(`bot/src/work-thread-root.ts`, also behind `topicRootFor`): its input is followed back to the
+nearest request that carries a thread, otherwise through retained provenance to the human
+message behind it, so a report-back, watch wake or
+continuation of threaded work counts under that thread. Until 2026-11-16 the report stopped
+at the turn's request row and counted such work as "Not in a thread". Topic and routine rows carry optional display
+titles read from the existing owner ledger after runner merge. Existing token
+totals and price-proxy `share` fields remain for older clients.
+
+The main Threads and Sessions views read
+`GET /sessions/v1/usage/allowance?session=concierge:<id>&topic=<topic-id>` with
+repeated keys for up to 100 visible rows total; a larger or malformed request is refused with 400. It selects from the same cached
+weekly report and returns only those rows plus `computedAt` and `stale`, never a
+transcript scan per row. Accounts reads the same route with `overview=1`,
+which adds each account's measured reading and estimated use, the 50 threads
+with the largest estimated share (plus `threadCount`), the unassigned row,
+every routine with its days, and each day: about 130 KB on the live week. The
+complete week breakdown carries every session's token detail and is several
+megabytes, past the route's 1 MiB limit, so Accounts does not use it for the
+weekly allowance.
+
 The owner serves `GET /sessions/v1/usage/breakdown?period=today|week`; agents get the
 same read through `router-actions.sh sessions usage --by-session --period today|week`.
+The response also reports `implementation` handoffs, held turns and recorded
+reasons per session and in total; `researchRoutes` for declared research and
+design review by ChatGPT Pro versus alternate route and reason; direct top-model
+main-conversation web calls; and `escalations.unexplainedCalls` for Fable/Astra
+transcript calls without a matching recorded choice or escalation.
 The read now includes `callMix` for all calls, each account, and each session:
 total calls, helper and main calls, helper share, and each model's call share.
+Each provider response counts once. The reader scans each real transcript
+folder once, so account homes whose `projects/` or `sessions/` links to a
+shared folder do not repeat it, and the report counts a provider,
+conversation and response ID once when a genuine copy of a conversation sits
+under another home. Account attribution comes from the ledger's per-turn
+account, never from the home a transcript was found under. A forked
+conversation that copies parent responses into a new conversation ID is not
+merged; none appeared in the 2026-11-12 cache.
+It also includes `editMix` at those three levels: recognized code-editing tool
+calls split by model and helper versus main conversation. Claude transcript
+tool-use IDs and Codex completed-item IDs deduplicate repeated provider records
+across transcript copies in different account homes;
+Codex child conversations follow their root session. The edit count includes
+dedicated edit/write/file-change tools and recognized patch commands. It does
+not infer arbitrary writes from every shell command, so it is a lower bound on
+all code changes. Calls measure editing actions, not changed files or lines.
+For the Accounts dashboard, each account and session also carries `byModel` with
+the exact transcript token classes, a published-price weighted total, and the
+helper subset of both. Each session carries `byHelper`, keyed by the source
+subagent transcript identity and model. Codex child threads are followed to
+their root session; Claude Code nested subagent files retain their own helper
+identity. These measurements are additive across accounts and projects. The
+dashboard groups the existing session project labels across providers, keeps
+unknown attribution visible, and shows raw token totals beside the weighted
+comparison bars. A call count must never be presented as a token share.
 Codex helper transcripts identify their parent thread; nested helpers follow that
 chain back to the session. It also counts accepted Fable/Astra escalation events
 and accepted agent-shell Astra command starts from the owner's escalation log
 by model. This measures model calls, not price or task quality, and the transcript
 scanner's `computedAt` bounds freshness.
 Today starts at midnight in the owner's saved-work time zone; week means the last
-seven days. A separate worker reads provider transcripts incrementally and keeps its
-cursor and deduplicated usage records in `usage-breakdown.db` beside, never inside,
-the ledger. The ledger is read only for session titles, projects, and account choices.
-The worker does not copy or modify transcripts and does not hold the owner event loop.
+seven days. Each runner reads its provider transcripts incrementally and keeps its
+cursor and deduplicated usage records in its own usage cache, never in the owner ledger.
+The owner sends only the relevant one-week session, turn, account and prompt-cache facts to
+the runner for attribution. The runner computes the account/session report and cache diagnostics
+beside its cache; the owner combines runner reports. Raw provider records do not cross the relay
+on each refresh. Neither scanner modifies transcripts or holds the owner event loop.
+The Mac peer still runs its own native sessions without a configured provider runner. Its
+breakdown reader scans the existing local Claude and Codex transcript trees and joins those
+calls to a bounded snapshot of its own session ledger. Unknown local account homes remain
+unknown in the report; the account allowance reading and dispatch path are separate. Owners
+with configured runners continue to use the runner reports, and a non-Mac owner with no
+runner refuses the scan instead of silently reading the wrong machine's transcripts.
 It runs in the background: every usage reading starts a scan when the last one is over five
 minutes old, and a read answers from the latest result with its `computedAt` (only the first
 read ever waits for a scan). Until 2026-10-08 it was scanned per read; while the owner
@@ -996,7 +1221,9 @@ separate process, so the latest result is published to `usage-breakdown-latest.j
 the ledger and every process serves that file; until 2026-10-30 each worker kept its own empty
 copy and its reads each waited about 2 s for a scan. A reader scans itself only when no result
 exists or the file is more than fifteen minutes old. `usage_breakdown_refreshed` / `_refresh_failed` log
-each scan's duration.
+each scan's duration. Every response includes `computedAt` and `stale`; a result older than
+fifteen minutes is marked stale while a new scan is attempted, including when that attempt
+fails. The old report remains available for context without claiming it is current.
 
 Shares use published API token prices as an **allowance proxy**, not a claim that a
 subscription's five-hour meter is denominated in dollars. The response includes the

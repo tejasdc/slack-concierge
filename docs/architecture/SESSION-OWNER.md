@@ -6,6 +6,14 @@ Concierge owns one session catalogue and execution ledger. Thinkering provides t
 
 ## Identity and admission
 
+The exact `GET /operations/:id` receipt is built from current retained input, execution and
+admission history on every read. It authorizes cross-service provider checks and recovery;
+a failed operation can be reopened, so an earlier terminal projection is not current authority.
+Bulk receipt lists retain their existing settled-result cache. On November 15, two reader
+processes returned five versus six admissions for the same recovered ChatGPT operation because
+only the canonical process invalidated its own cache. The single-operation entrance now bypasses
+that process-local cache without changing the exact-admission guard or any stored receipt.
+
 The existing `sessions.id` is public as `concierge:<integer>`. An opaque address pins that row and its binding generation. Provider conversation IDs and original Slack roots remain exact bindings. A fork creates a distinct child with an exact boundary; a verified replacement binding advances the generation. Search ranking, a matching title, an import namespace or a provider UUID alone cannot establish ownership.
 
 Discovery matches current catalogue titles, summaries and project names alongside retained dialogue. A catalogue-only match has an empty dialogue evidence array and the exact current session view; it cannot fabricate a message or collapse equal titles. Context resolves the selected address before communication.
@@ -26,6 +34,20 @@ A surface input retained while its session is paused, archived or otherwise unab
 
 Thinkering's server authenticates its human session and origin, validates chosen workspace revisions, and submits through the root-private owner socket. The owner issues the accepted-input identity atomically with the immutable action payload. Agent tools instead prove an existing input and its exact admitted run. Browser/model actor claims cannot become human authority. Trusted server adapters share the existing root host boundary; the socket is not a security boundary against an arbitrary root process.
 
+Per-session agent Pause/Continue enters through the source-checked router command,
+not the human action route. The communication coordinator validates the exact live
+native run and its work authority, resolves a local discovered binding and invokes
+the ordinary owner action with retained agent provenance. The control, its source
+and acting session, and its event commit together under source/action idempotency;
+changing the target binding or action conflicts. Human controls keep their existing
+origin and namespace. Deliberate suspension and ordinary queue admission retain the
+same semantics for both authors: Pause has no automatic release and a receipt alone
+does not prove provider interruption. Verified marked-agent queue intent uses the same
+retained-admission recovery as human queue intent; Continue/Restore wakes that
+coordinator without creating a replacement input. Terminal state, prior delivery
+custody and Focus-review holds remain excluded
+([observed release gap](../incidents/2026-11-12-marked-paused-input-not-released.md)). See [per-session controls](../runbooks/ROUTER-ACTIONS.md#per-session-pause-and-continue).
+
 For ordinary native Codex/Claude execution, the host conveys the admitted origin through the existing provider application instructions and a per-input JSON identity header followed by the message as plain text. The header comes from `session_inputs`; the human task is not serialized inside a quoted JSON content field. The body contains the human message, agent request or service result, selected context and attachment guidance. Earlier stored JSON envelopes retain their original authors and evidence; they are not rewritten. Human origin means authenticated human instruction, regardless of the service transport. Agent requests and service returns can continue already-authorized work but grant no new human authority. Body actor claims and quoted envelopes cannot replace the owner-generated identity. Each steered input keeps its own origin, including a human follow-up after a service result in the same run. Ordinary Slack provider preparation includes the same identity-header contract so a later native input can enter its existing live execution. Claude receives the contract through `--append-system-prompt`, Codex through application additional context; it is not appended as purported user authority. Receipts retain the exact accepted text and replay retains the actual prepared message. Restricted consultation and ChatGPT retain their existing preparation/capability boundaries.
 
 The owner retains uploaded bytes and their hash before input preparation. Selected revision text is produced by the authenticated surface, checked against exact object references and hashes, then retained independently of the human message. No common owner reads Thinkering's workspace database. Human source evidence is one pinned source/version/event reference and never an implicit provider bind.
@@ -43,8 +65,11 @@ neither owns replay, queue promotion, Stop or recovery.
 `SessionExecutionHost` dispatches native inputs through the same `SessionTurnQueueCoordinator`, durable claims, `ActiveTurnDispatchRegistry`, `executeAgentTurn` and provider adapters as Slack. Explicit human queue/steer controls validate the observed run; agent requests leave that choice to the coordinator. Native fork controls serialize in their parent's existing FIFO, preserve the parent binding and create the child only from exact native evidence. There is no provider writer in the Thinkering consumer.
 
 Scheduled saved work keeps its fire time as a separate admission condition at the queue's atomic claim. A retry or recovery may move its next attempt time, but cannot start it before the fire time. The queue wakes at that fire time even when the retry time was cleared. An explicit manual start overrides the schedule. See the [early scheduled Inbox incident](../incidents/2026-11-04-scheduled-inbox-work-fired-early.md).
+Dropping Saved work names one queued turn. Its receipt retains the cancellation cause and the agent's exact source input and run when an agent did it; other queued turns in the same session retain their place. A request withdrawal revokes only its target and linked continuations, with the withdrawal cause on each revoked input. A scheduled turn that is still waiting at handoff acceptance moves to the successor with the same turn, input, due time, and repeating-firing identity, while its model and effort change to the successor's binding. This keeps the scheduler's one-firing-per-sequence constraint intact and prevents the successor from running a predecessor-only model. A proposed handoff leaves it on the predecessor. A queued scheduled turn with uncertain provider admission or unresolved dependencies still blocks acceptance rather than being replayed.
 
-Banked work may opt into **quiet only** at creation. The choice is stored on its turn and inherited when any continuation is queued, including a provider refusal, background release, interruption, startup recovery, or planned boundary. Generic banked work can still start near an allowance reset outside quiet hours. Quiet-only work requires the saved-work time zone's quiet band at forecast selection and the queue's atomic claim, including manual start. Admission closes five minutes before the quiet band's end, and the running-turn controller requests cancellation at that cutoff so unfinished work stops before morning. A continuation retains work without replaying its first input. A requester's cancellation revokes an ordinary or saved queued turn and follows its exact continuation lineage; each canceled input receipt and turn remain as history, and the saved-work list omits them. A withdrawn request cannot create a later continuation. The choice is explicit, never inferred from the project name.
+Daily local repeats retain a wall time and IANA zone on the existing repeat root and its one queued firing. Concierge is the sole writer; the stable root and sequence remain each firing's identity. The next queued instant is the first occurrence on the next eligible local date, not the prior UTC instant plus 24 hours. A late wake skips missed local dates and keeps one queued successor. The exact-turn `saved daily` control changes the root and queued instant in one ledger transaction. The acceptance ladder is: control receipt retained, queued turn updated, next firing admitted by the normal queue, and the scheduled session's answer delivered through its existing destination. Only the latter two prove a real daily delivery; a saved-work read proves the schedule but not the future answer. Older clients still read the UTC `startsAt` and daily repeat interval; `dailyLocal` names the wall-time recurrence beside those compatibility fields. The [router runbook](../runbooks/ROUTER-ACTIONS.md#standing-agents) gives the command and daylight-saving policy.
+
+Banked work may opt into **quiet only** at creation. The choice is stored on its turn and inherited when any continuation is queued, including a provider refusal, background release, interruption, startup recovery, or planned boundary. Generic banked work can still start near an allowance reset outside quiet hours. Quiet-only work requires the saved-work time zone's quiet band at forecast selection and the queue's atomic claim, including manual start. Unlike generic banking, it does not wait for an idle fleet or a lapse forecast: an account with room above the saved-work reserve is enough, and its run is bounded by the quiet cutoff rather than the allowance window's reset. Every queued banked turn stores why it is waiting (`waitingBecause` in `sessions saved list`; logged as `banked_work_wait` when it changes), and after each quiet window that passes without starting a quiet-only job the agent that banked it is woken once with that reason, the next window and the expiry ([failure record](../incidents/2026-11-12-quiet-only-banked-job-never-started.md)) Both owner compositions run the same saved-work upkeep (`bot/src/banked-upkeep.ts`): banked account selection, expiry alerts and the quiet cutoff. A planned banked pause (deployment, allowance or quiet boundary) is recorded on the turn before its run is cancelled, so the request it serves follows the continuation like a provider refusal and stays open; only a pause that cannot continue settles it ([failure record](../incidents/2026-11-12-banked-pause-closed-its-request.md)). Admission closes five minutes before the quiet band's end, and the running-turn controller requests cancellation at that cutoff so unfinished work stops before morning. A continuation retains work without replaying its first input. A requester's cancellation revokes an ordinary or saved queued turn and follows its exact continuation lineage; each canceled input receipt and turn remain as history, and the saved-work list omits them. A withdrawn request cannot create a later continuation. The choice is explicit, never inferred from the project name.
 
 Terminal observations may arrive before asynchronous executor cleanup releases the live registry. Both runtime compositions pass the registry's still-active sessions into the existing atomic queue claim; ordinary Slack admission defers through the same FIFO at that boundary. Registry settlement wakes promotion after releasing its owner. Native setup failures use the exact owned dispatch attempt: before admission or unsafe effects they fail the turn and release the cached session state together; after admission intent they retain ambiguity through the existing parked-turn path. Late failures cannot rewrite a settled result or another attempt, and no setup failure replays an input.
 
@@ -126,7 +151,28 @@ second naming store, backfill or transcript-title rewrite is involved.
 
 Every work request carries the earlier work on its problem, and its first reply says what came before; handed-off, archived and paused sessions still answer questions. See [What came before](EARLIER-WORK-IN-REQUESTS.md).
 
+### Quiet clock
+
+An open request that works for an Inbox thread (it names a thread root) and whose
+[standing](../contracts/native-inbox.md) is `waiting` or `quiet` wakes its holder after an hour of
+silence, without any agent or the router remembering to. The latest of the request's creation, its
+last progress or final reply, the holder's last turn end and the last wake starts the hour. The owner
+admits one service input to the holder under `request-quiet:<requestId>:<n>` (n counts up; an
+identity is never re-admitted) through the same carrier that follows handoffs for request
+reminders, and records `quiet_reminded_at_ms` on the request so the thread shows when the holder
+was woken. A request that is working or held is looked at again later; one stalled is left to the
+existing stalled path; a holder that cannot receive input is marked stalled so the Inbox router
+reassigns it. Wakes that bring no word do not go on for ever: after the third wake with no progress or final reply on the request since the first of them, the request is stalled with the reason "no word after three hourly reminders", so the Inbox router reassigns it; the count starts again only when the request is seen working or held for real (the wake's own turn does not count) or a request the holder was waiting on settles; a progress reply does not reset it, and the count sits on the request row so restarts and handoffs keep it (`quiet_streak_since_ms`, `quiet_streak_count`). A wait on something itself stuck (every request the holder sent is quiet or stalled, or its watch is gone) is woken at once and then every 15 minutes; only a wait on working or held work keeps the hour. Nothing is posted into the thread and no phone notice is sent. The hour is
+`QUIET_WAKE_MS`; the sweep runs inside the request reconciliation and re-arms its own timer.
+Design: [request standing](../plans/2026-11-16-request-standing.md).
+
 ### Provider-change handoff
+
+Native custody mutation clients use the existing communication owner's
+[current mutation admission](../contracts/session-owner-v1.md#current-mutation-admission)
+decision for their exact source input/run. Obligations reads intentionally remain
+available after handoff and must not substitute for mutation admission. The check
+reuses current actor validation and the existing handoff fence without inventory fan-out.
 
 A provider change creates a successor on the same Concierge instance; it never changes the
 predecessor's bound provider or replays work in progress. A source-bound `sessions handoff`
@@ -136,20 +182,34 @@ to `sessions context` for the predecessor's decisions, and references to worktre
 The predecessor still owns and can work on every obligation while the handoff is proposed.
 Only one proposal may be open per predecessor; the caller or predecessor can withdraw it.
 
-The inventory names open requests sent by and owed by the predecessor, queued inputs,
-active watches, open Lab roles where available, and referenced worktrees. Each item has
+The inventory names open requests sent by and owed by the predecessor, open ChatGPT
+answer duties, queued inputs, active watches, open Lab roles where available, and referenced worktrees. Each item has
 a stable kind and reference. Sent requests retain whether their target has acknowledged
-or started work; those and ChatGPT requests must not be dispatched again. A missing Lab
+or started work; those and ChatGPT requests must not be dispatched again. A sent request (local or to a peer)
+that has already settled is still listed while its final return has not reached the
+predecessor: not yet written, written but never started, or waiting in a queued turn.
+Acceptance moves its return destination to the successor; an unstarted return input
+moves in place with its ID, and a queued one moves with its queued item. A return
+already handed to a predecessor run stays there and is never replayed. A missing Lab
 read is stated as an omission. Worktrees, provider transcripts, past answers and Lab
 entries stay where they were and keep their original authors.
 
 Only a live successor run can accept with the inventory digest. The owner recomputes the
 inventory; a changed digest or an unsafe queued input refuses acceptance and returns the current inventory for
-acknowledgement. Acceptance transfers the open request return and reply ownership,
-safe never-started queued inputs, and watches in one ledger transaction, recording each
-moved item. A queued input's original acceptance and history stay with the predecessor;
-the successor receives a linked copy, and the request keeps its own ID. Sent request IDs
-and their targets do not change. An owed request's reply ownership moves to the
+acknowledgement. An answer with no acknowledged return receipt also holds acceptance until
+that exact return settles, unless that return still waits in a never-started queued turn the
+handoff moves; then the duty and the return move together and the successor acknowledges it. Acceptance transfers the open request return and reply ownership,
+ChatGPT answer handling and repair ownership, safe never-started queued inputs and inputs held by a
+terminal zero-work usage refusal, scheduled firings,
+and watches in one ledger transaction, recording each
+moved item. An ordinary queued input's original acceptance and history stay with the predecessor;
+the successor receives a linked copy. A scheduled input instead changes session custody in place,
+so its accepted input and firing IDs remain stable. The request keeps its own ID. Sent request IDs
+and their targets do not change. The original ChatGPT request and answer event retain
+their IDs; the successor handles that exact answer after its return is acknowledged.
+Older accepted handoffs that moved the request but left its answer duty with the
+predecessor are reconciled on owner startup without another ChatGPT send.
+An owed request's reply ownership moves to the
 successor. An outside request retains its unique accepted input as the custody key
 until that exact queued input is safely copied; several outside requests never collapse
 onto the same handoff brief. Repeating an outside ask after transfer returns its existing
@@ -160,14 +220,83 @@ same transaction, even if admission uncertainty makes the reminder unsafe to rep
 closed request's final receipt is authoritative; the reminder is not sent to the successor.
 If the request reopens before acceptance, the inventory changes and the handoff must be
 acknowledged again.
+A "no confirmed answer" reminder for a request the asker sent is admitted once under
+`request-reminder:<event>`; afterwards its delivery is read from the input carrying it now,
+following a handoff copy's `continuedAs`, and never admitted again under that identity
+(`request-reminder-carrier.ts`). When the asking session was handed off and its successor holds no
+copy, the successor gets one as `request-reminder:<event>:session:<successor>`; a reminder withdrawn
+on purpose is retired, not resent. Before 2026-11-12 re-admitting the predecessor's identity into
+the successor was refused about three times a minute, forever
+([failure record](../incidents/2026-11-12-handed-off-reminder-refused-forever.md)).
+A queued turn continuation on the predecessor is likewise retired in that same transaction.
+The handoff itself supersedes continuation on the predecessor, and the successor continues
+the conversation with its own brief and open obligations.
 The predecessor is then superseded: owner writes from its run and new requests to it
 are refused with the successor's address. Its live run receives a notice and can finish,
 but cannot write through the owner; its own outcome and reads remain allowed. Suspension
-prevents another turn. The session detail read exposes the canonical continuation chain,
+prevents another turn. In the same transaction the predecessor's standing role (the Inbox
+router role, or any `sessions agents` role such as the journal keeper) moves to the successor,
+so service wakes for that role reach the session that runs. The session detail read exposes the canonical continuation chain,
 successor ID and handoff ID to Thinkering. `sessions obligations` reports the
 outstanding inventory, lineage and current holder on either side of the transfer.
+A request that has not reached a run of its recipient carries `delivered:false` and
+`canReply:false` on both its sent and owed rows, with `waitingOn` and a plain `nextMove`:
+behind earlier requests, waiting for admission, or held for the requester's decision
+(`heldBy` names the prerequisite). The recipient cannot reply to such a request, so it is
+never presented as work the recipient can do; a handoff still moves it. The held test is
+shared with request delivery, and a held request's overdue notice goes to the requester
+as an explicit cancel-or-ask-again decision.
 `sessions cancel --reason provider-change` refuses with the handoff command. See
 [the router procedure](../runbooks/ROUTER-ACTIONS.md#provider-change-handoff).
+
+A queued input is safe to move when its accepted identity and provider receipt are valid, it has
+no unresolved dependency, steering, artifact, peer-delivery or continuation veto, and either no
+provider admission evidence or an owner-recorded replay-safe usage hold for that exact turn. The
+terminal zero-work hold can supersede earlier acknowledgement and provider-start history: both
+remain on the predecessor while the successor receives a linked copy of the accepted work. An
+acknowledgement or start without that exact usage hold stays ambiguous and blocks movement. A
+capture's `admissionIntent: live` marker is not a provider fact.
+Until 2026-11-11 the rule demanded a Claude admission, so no claimed Codex input could ever move
+([failure record](../incidents/2026-11-11-codex-held-work-could-not-move.md)).
+The terminal usage-hold acknowledgement exception and custody between the proposed handoff and
+automatic Claude recovery are recorded in the [2026-11-14 follow-up](../incidents/2026-11-14-acknowledged-usage-hold-could-not-move.md).
+
+#### Automatic failover of held work
+
+After each provider usage reading the owner runs one paced pass (`held-work-failover.ts`). It
+proposes this same handoff for a session whose queued work its provider cannot start (spent
+allowance, or a usage hold with no room) when another automatic provider has room. Every session
+moves unless Tejas himself chose its provider or model (`providerChosenBy: 'tejas'`, recorded where
+the owner verifies his choice: a human create or model control naming one, or a request whose
+provider choice is verified from his words; older sessions count as his when their human create
+named a provider or model). An agent-passed `--provider`, the owner's own Claude-allowance transfers
+and handoff successors are movable. The Inbox and standing roles (moved by the
+[standing-role failover](PROVIDER-STATE-FLOW.md#standing-role-provider-continuity) instead),
+paused and consultation-only sessions stay. The successor keeps the predecessor's model tier and
+reasoning effort (`aliasKeepingTier` in `aliases.ts`). Each skipped candidate is logged once per
+session and reason per 30 minutes as `held_work_failover_skipped` (`pinned`, `source_can_start`,
+`no_receiver`, `receiver_above_stop`, `busy`, `unmovable`).
+It proposes only when every queued input is already movable, so a proposal cannot strand on an
+unsafe input; a session that is not movable is skipped for six hours. Sessions the Inbox dispatched
+his open requests to go first, then the longest waiting. At most two moved sessions work at once
+(the 37-session burst of 2026-11-06 froze the owner for 51 s), and no new move starts once the
+receiving provider's measured use reaches 75%, so the last account with room is not spent dry; the
+rest keeps waiting for its own reset. A proposal not accepted within 30 minutes, with nothing left
+running on its successor, is withdrawn and the predecessor resumes its wait.
+
+#### Paced release of held work
+
+Every bulk release of held turns (an account switch, a reading that finds an account with room,
+a cleared usage cache, a proven model check, a continuation hold, a sign-in hold ending, or a usage hold simply reaching its reset time before the next claim pass) marks
+the released turns with their own `release_pace` hold and gives each session a start time: two
+sessions every 15 seconds, sessions owing one of his open Inbox requests first, then the longest
+waiting (`paceReleasedWork` in `state.ts`). Each release re-ranks every still-waiting released
+session of that provider from now, so overlapping releases share one pace and a later reading's
+release never collapses it. A release of one or two sessions starts at once. The status line says
+the provider can take work again and when this item starts. Before 2026-11-12 a Codex account
+switch made 37 held turns runnable in one instant
+([failure record](../incidents/2026-11-12-account-switch-released-held-work-at-once.md)).
+
 The authenticated Thinkering owner API also accepts proposal, acknowledgement and withdrawal
 at `/sessions/v1/handoffs` and `/sessions/v1/handoffs/<id>/<accept|withdraw>`, using the
 same exact live source input, run identity and stable action identity as request actions.
@@ -219,7 +348,7 @@ capture queue or session database exists.
 
 Unavailable creation retains a failed operation without a provider turn and returns that failure through the existing service input. An exact ChatGPT attempt parked by its execution owner may likewise settle the request as failed using its retained error once the owner release, ended timestamp and failure class are durable. The provider turn stays parked; this observation does not release its session lock, satisfy provider dependencies or authorize replay. Configured admission and capability evidence remain on the exact operation. No new queue, provider owner, recognizer or fallback is involved.
 
-One due time and one timer inspect unresolved work after 15 minutes (`STILL_WAITING_AFTER_MS` [decision: still-waiting-after-15-minutes]). While a Concierge update is draining, nothing is reported: the due time moves on, because work held only by an update is waiting, not stalled. It records health and a durable reminder to the asking agent, naming the request from its retained summary or words and telling that agent to inspect and follow up or cancel if needed. This agent-only reminder is never posted as a message in Tejas's Inbox thread. The request stays open; a later answer still reaches its chosen destination. The reminder does not infer success, override Stop or replay an ambiguous effect. Work still running under a live owner is not unresolved work: its due time moves to the next interval and nothing is reported, because a healthy investigation presented as a stall is what makes the whole signal untrustworthy. When a stall is real, the requests one recipient turn is holding report one notice between them, since they are one piece of work. No pending deadline means no timer. An empty queue scan emits no execution-change wake. There is no autonomous conversation quota, periodic repair scan or second scheduler. The [routed request architecture](ROUTED-REQUESTS.md) retains Slack publication and fixed `work/--after` semantics.
+One due time and one timer inspect unresolved work after 15 minutes (`STILL_WAITING_AFTER_MS` [decision: still-waiting-after-15-minutes]). While a Concierge update is draining, nothing is reported: the next inspection moves on, because work held only by an update is waiting, not stalled. It records health and a durable reminder to the asking agent, naming the request from its retained summary or words and telling that agent to inspect and follow up or cancel if needed. This agent-only reminder is never posted as a message in Tejas's Inbox thread. The request stays open; a later answer still reaches its chosen destination. The reminder does not infer success, override Stop or replay an ambiguous effect. Work still running under a live owner is not unresolved work: its next inspection moves to the next interval and nothing is reported, because a healthy investigation presented as a stall is what makes the whole signal untrustworthy. This optional postponement stays in owner memory and in the receipt's effective due time; it does not write the ledger or gate a durable command receipt. After restart, the still-due accepted request is inspected again, and only a genuinely stalled request creates the durable once-only reminder. When a stall is real, the requests one recipient turn is holding report one notice between them, since they are one piece of work. No pending deadline means no timer. An empty queue scan emits no execution-change wake. There is no autonomous conversation quota, periodic repair scan or second scheduler. The [routed request architecture](ROUTED-REQUESTS.md) retains Slack publication and fixed `work/--after` semantics.
 Each communication wake still reconciles unresolved accepted inputs and open requests for crash recovery. Its queries seek the narrow unresolved input and open-request indexes before applying receipt and due-time checks; retained resolved history must not be scanned on every execution change. Capture scopes use the canonical lowercase `capture:` prefix. The two recovery scans name their partial index with `INDEXED BY`, because Bun's bundled SQLite otherwise walks every input without a turn through the plain turn index, and a request's events are read through `session_communication_events_request`; before both, one wake re-read the events table about twenty times and the inputs table twice (2026-10-30, [record](../incidents/2026-10-30-communication-wake-scanned-events-and-inputs.md)).
 
 A request closes only through a command: the recipient's explicit final reply, the
@@ -328,7 +457,7 @@ This change does not import discarded Thinkering extraction bookkeeping or imple
 
 Selected workspace revisions reach provider preparation only through the authenticated surface's hash-verified `context` snapshots. Saved shared/workflow instruction files remain editable in Thinkering; the common owner does not read or apply those files, create workflow-folder outputs, or revive the held runner callbacks. The surface must not claim those execution effects while that path is held.
 
-The owner answers every read from one event loop, so a slow synchronous read delays all the others. Each owner request slower than 250 ms of the owner's own time logs `owner_request_slow` (route with query names only, duration, status, bytes). Time a request deliberately spends awaiting an answer from outside the owner, such as a side question's throwaway provider copy, a call over Thinkering's private capability socket (every `SessionCapabilityClient` call: source refresh, search, context, history, import, captures), or speech-job staging and worker completion, is recorded on its `owner_request_slow` and `owner_request_completed` lines as `awaited_ms` and left out of that judgement. Speech requests measure the asynchronous staging, worker startup, and result waits separately; synchronous attachment checks and result commits remain owner time. Waits that overlap, nested or side by side (a search fans its archive retention proofs out to Thinkering together), count once, as the time at least one of them was pending; on 2026-10-15 counting only the first sibling read a 29 s proof copy of the Inbox router's 383 MB transcript beside a 3 s one as 26 s of owner slowness and opened incident fa772103. `duration_ms` stays wall time, so a reader that judges the owner by these lines (remote-box's Concierge monitor) must subtract `awaited_ms`. A POST body is also awaited time: the owner's handler reads it from the gateway's stream, and a Mac agent's reply with screenshots crosses the Tailscale relay while it waits; on 2026-10-24 one 7.3 MB reply (two 2.7 MB PNGs as base64) took 13.7 s to arrive with 68 ms of ledger work, no loop lag and idle readers, and opened work-flow supervisor incident a8216a4c. On 2026-10-13 five side questions of 8-11 s each, with under half a millisecond of ledger work apiece and no loop lag during them, were counted as owner slowness and opened work-flow supervisor incident 838dfa4c; it reopened the same day on the 10:30 UTC ChatGPT transcript refresh, which waited 267 s for Thinkering behind a rate-limited ChatGPT browser with no ledger call and no loop lag, because only the side-question route recorded its wait. Also, a 250 ms tick that fires 200 ms or more late logs `owner_event_loop_lag` with the requests in flight and the owner's memory at that moment. Because that line is written after the loop runs again, the owner's work also carries a name (`owner-task-labels.ts`): every timer callback and owner request runs under a label that follows it through awaits, and the main thread stores the running label in shared memory when a callback or request starts and at every ledger statement, log line and JSON parse or stringify, clearing it when the callback's synchronous part returns. A watchdog thread (`owner-task-watchdog-worker.ts`) reads that memory every 50 ms. From 200 ms it publishes the block's label, which the next `owner_event_loop_lag` line carries as `task`/`task_marked`; from 500 ms it logs `owner_task_blocked` (the label at the start; `label_shares_ms`, each label's share of the block from 50 ms samples, so a stretch of several pieces of work names each one; `ledger_wait_ms`, ledger time inside the block, which tells a disk wait from computing; memory at start and peak). The routed-request API, runner routes included, runs under route labels with identifiers replaced by `:id`, from 5 s also `owner_task_still_blocked` while still blocked, and `owner_memory_jump` when the process grows 300 MB within a second. A block in awaited or event-driven work that passed no marking point is reported as `unmarked` with the label that ended last, never as another timer's label. JSC's sampling profiler is not used: starting it stalled this loop for seconds at the owner's code size (PR #484). Stand-in check with the production Bun and 40,000 compiled functions: a 2 s block after an await in a timer job was named exactly; no added loop blocks; about 0.7% of one core at 200 timer callbacks a second. A receipt that has settled for good is computed once and reused, the same invariant `changedAfter` relies on. On 2026-09-22 a full Inbox receipt read (2,124 receipts, 9.5 MB) took 2.8 s and held every read behind it while his phone opened from a notification.
+The owner answers every read from one event loop, so a slow synchronous read delays all the others. Each owner request slower than 250 ms of the owner's own time logs `owner_request_slow` (route with query names only, duration, status, bytes). Time a request deliberately spends awaiting an answer from outside the owner, such as a side question's throwaway provider copy, a call over Thinkering's private capability socket (every `SessionCapabilityClient` call: source refresh, search, context, history, import, captures), speech-job staging and worker completion, or a call to or job on an agent runner (every runner machine call, and project setup and placement waiting for their runner jobs), is recorded on its `owner_request_slow` and `owner_request_completed` lines as `awaited_ms` and left out of that judgement. Speech requests measure the asynchronous staging, worker startup, and result waits separately; synchronous attachment checks and result commits remain owner time. Waits that overlap, nested or side by side (a search fans its archive retention proofs out to Thinkering together), count once, as the time at least one of them was pending; on 2026-10-15 counting only the first sibling read a 29 s proof copy of the Inbox router's 383 MB transcript beside a 3 s one as 26 s of owner slowness and opened incident fa772103. `duration_ms` stays wall time, so a reader that judges the owner by these lines (remote-box's Concierge monitor) must subtract `awaited_ms`. A POST body is also awaited time: the owner's handler reads it from the gateway's stream, and a Mac agent's reply with screenshots crosses the Tailscale relay while it waits; on 2026-10-24 one 7.3 MB reply (two 2.7 MB PNGs as base64) took 13.7 s to arrive with 68 ms of ledger work, no loop lag and idle readers, and opened work-flow supervisor incident a8216a4c. On 2026-10-13 five side questions of 8-11 s each, with under half a millisecond of ledger work apiece and no loop lag during them, were counted as owner slowness and opened work-flow supervisor incident 838dfa4c; it reopened the same day on the 10:30 UTC ChatGPT transcript refresh, which waited 267 s for Thinkering behind a rate-limited ChatGPT browser with no ledger call and no loop lag, because only the side-question route recorded its wait. On 2026-11-13 a project request waited 16.8 s for its runner (12 ms of ledger work) and reopened incident 4b6c9a1f; the runner was also holding every finished project job until its next 15 s heartbeat, which it now ends as soon as the work does, and its finish line carries the failure reason. Also, a 250 ms tick that fires 200 ms or more late logs `owner_event_loop_lag` with the requests in flight and the owner's memory at that moment. Because that line is written after the loop runs again, the owner's work also carries a name (`owner-task-labels.ts`): every timer callback and owner request runs under a label that follows it through awaits, and the main thread stores the running label in shared memory when a callback or request starts and at every ledger statement, log line and JSON parse or stringify, clearing it when the callback's synchronous part returns. A watchdog thread (`owner-task-watchdog-worker.ts`) reads that memory every 50 ms. From 200 ms it publishes the block's label, which the next `owner_event_loop_lag` line carries as `task`/`task_marked`; from 500 ms it logs `owner_task_blocked` (the label at the start; `label_shares_ms`, each label's share of the block from 50 ms samples, so a stretch of several pieces of work names each one; `ledger_wait_ms`, ledger time inside the block, which tells a disk wait from computing; memory at start and peak). The routed-request API, runner routes included, runs under route labels with identifiers replaced by `:id`, from 5 s also `owner_task_still_blocked` while still blocked, and `owner_memory_jump` when the process grows 300 MB within a second. A block in awaited or event-driven work that passed no marking point is reported as `unmarked` with the label that ended last, never as another timer's label. JSC's sampling profiler is not used: starting it stalled this loop for seconds at the owner's code size (PR #484). Stand-in check with the production Bun and 40,000 compiled functions: a 2 s block after an await in a timer job was named exactly; no added loop blocks; about 0.7% of one core at 200 timer callbacks a second. A receipt that has settled for good is computed once and reused, the same invariant `changedAfter` relies on. On 2026-09-22 a full Inbox receipt read (2,124 receipts, 9.5 MB) took 2.8 s and held every read behind it while his phone opened from a notification.
 
 ## Executable authorities and acceptance
 
@@ -519,7 +648,13 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   tries to end a turn owing a reply: Claude gets it with `--settings` on every run, Codex as a
   managed hook from `/etc/codex/requirements.toml` (`scripts/install-codex-stop-hook.sh`, run by
   remote-box's deploy on the box and by `install-mac.sh` from a terminal on the Mac), because Codex
-  runs unreviewed hooks only from managed policy. There is no reminder turn and no weaker path for
+  runs unreviewed hooks only from managed policy. The hook finds its turn by the provider's
+  conversation id; Claude's hook also names the Concierge run it was launched for, so a new
+  session's first turn is checked even before the owner has recorded its conversation id
+  (`docs/incidents/2026-11-11-first-turn-stop-check-found-no-session.md`). A request counts as owed only once its words
+  reached that run: a request steered into a running turn is owed from the provider's send
+  acknowledgement (or an ambiguous send), not from its attachment to the turn, because preparing
+  its text takes seconds and the hook once demanded verdicts in that gap. There is no reminder turn and no weaker path for
   either provider; a request still stranded after the hook is reported stalled. Never put standing instructions into each input: the Inbox's 3,802-character preamble
   was prefixed to every input (1,019 copies, ~3.9 million characters, in one conversation) and now live in its per-run
   instructions; an input carries only its identity header and its own facts. The mechanism, its grounding (FIPA Request,
@@ -560,6 +695,9 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   reply for other requests without a wake. A renewing watch keeps that binding across watch IDs
   in its series, provided the active watch still belongs to the worker. An existing renewing
   watch can serve a later request too: the partial reply binds that request to the watch.
+  For a specific Concierge repair, the agent supplies the full target commit when registering
+  the server release watch. The owner checks the installed manifest, Git ancestry and successful
+  deployment receipt; other releases and lease renewals do not wake the agent.
   The stranded check requires that exact request-to-watch
   binding, so an unrelated watch cannot conceal a silent stop. While the watch is active,
   the check sees a live dependency; when the link points to another release, it sends one service input to the

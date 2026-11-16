@@ -10,13 +10,14 @@ import {createSessionPeerServices} from './session-peer-services';
 import { withRetry } from './retry';
 import { RETRY_POLICIES } from './retry-policies';
 import { SessionCommunicationCoordinator } from './session-communication';
-import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
+import { db, getTurnDependencies, recoverRoutedInputClaim, failUnacknowledgedClaudeParkedTurns } from "./state";
 import { prepareSavedWorkForClaims } from "./saved-work";
+import { createBankedUpkeep } from "./banked-upkeep";
 import toml from "@iarna/toml";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { isHintCommand, renderCommandHints } from "./command-hints";
 import {
   addDir,
@@ -249,7 +250,8 @@ import { claimAdoptableExecutions, forgetTrackedHostedExecutionsOfTurn, hostedTu
 import { beginRunnerTurnDrain } from "./runner-host-access";
 import { interruptOrphanedTurn, observeExecutionChanges } from "./state";
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
-import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
+import {moveStandingRolesOffSpentProviders} from './standing-role-provider-failover';
+import {moveHeldWork} from './held-work-failover';
 import {reconcileCoveredTasteRequest,recoverOctoberBudgetPauses} from './incident-budget-pause-recovery';
 import {
   ensureChannelList,
@@ -353,10 +355,10 @@ import { startMachineWatchWorker,wakeWatchWorker } from './watches';
 import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
-import {expireUnreadableReadingItems,fileServiceNotices,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,repairOctober21RepeatedAnswer,repairNovember4RepeatedThreadNotices,retireRecoveredBookkeepingRequests,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
+import {expireUnreadableReadingItems,fileServiceNotices,settleReadInboxAttention,keepThreadsCurrent,migrateInboxAttention,migrateInboxTopics,reconcileCarriedClosures,reconcileForwardedFinalAnswers,retireRecoveredBookkeepingRequests,rejoinThreadsSplitAtHandoff,retireTimedRequestPosts,wakeDeferredQuestions,closeQuestionsAnsweredByTodos,warmEntryIndex} from './session-topics';
 import {resolveRetryNotices} from './retry-breaker-notice';
 import {ownerEventMaxSequence,runStartupCatchUp,runStartupSweep,scheduleSessionPurposeRepair,startDeferredStartupRepairs} from './startup-repairs';
-import {CodexSessionObserver} from './codex-session-observer';
+import {bindCodexProviderSession,CodexSessionObserver} from './codex-session-observer';
 import {ensureSpeechWorker} from './speech-job-supervisor';
 
 recordModuleLoadStep(closeModuleLoadStorage());
@@ -443,6 +445,20 @@ function detectedRuntimeGitSha() {
 
 const runtimeGitSha = detectedRuntimeGitSha();
 let draining = false;
+// An error nothing caught ends the owner, as it always has; first it records what it was.
+// On 2026-11-11 at 05:33:45 UTC the owner exited with status 1 and Bun printed no error at all,
+// so the crash could not be named (a rejection with no value, as the old Slack socket gives,
+// prints nothing). The drain installs its own ignoring handlers, so these stand aside then.
+for (const kind of ["unhandledRejection", "uncaughtException"] as const) {
+  process.on(kind, (reason: unknown) => {
+    if (draining) return;
+    const fields = reason instanceof Error ? errorFields(reason)
+      : { reason_type: reason === null ? "null" : typeof reason, reason: String(reason).slice(0, 500) };
+    // Written synchronously too: the log stream may not flush before the exit below.
+    try { writeSync(2, `${JSON.stringify({ ts: new Date().toISOString(), level: "error", event: "owner_crashed_unhandled", kind, ...fields })}\n`); } catch { /* exit regardless */ }
+    process.exit(1);
+  });
+}
 let serviceOnline = false;
 let activeTurnCount = 0;
 let activeInputHandlerCount = 0;
@@ -501,6 +517,8 @@ function consumeParkedResumeGrant(sessionId: number) {
     });
   }
 }
+// Saved-work upkeep (banked admission, quiet cutoff, expiry alerts); shared with session-runtime.ts.
+const bankedUpkeep = createBankedUpkeep({ registry: () => activeTurnDispatch });
 const activeTurnDispatch = new ActiveTurnDispatchRegistry({
   onStarted: () => { activeTurnCount += 1; },
   onSettled: (turnId) => {
@@ -521,7 +539,7 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
     }
   },
 });
-const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve(),claudeAuthRefreshCommand:cfg.claude_code_auth_refresh_command});
+const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>bindCodexProviderSession(codexSessionObserver,uuid),claudeAuthRefreshCommand:cfg.claude_code_auth_refresh_command});
 if(process.platform==='linux'){
   // Results are small spool artifacts. Only this owner commits them to the attachment ledger;
   // a bounded pass also catches a result produced while Concierge was restarting.
@@ -549,6 +567,7 @@ catch(error) {log('error','session_purposes_fill_failed',errorFields(error));}
 // guarded by its own event and does nothing once it has run.
 try {runStartupStep('inbox_topics_migration',()=>migrateInboxTopics());} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
 try {runStartupStep('inbox_bookkeeping_repair',()=>retireRecoveredBookkeepingRequests());} catch(error) {log('error','inbox_bookkeeping_repair_failed',errorFields(error));}
+try {runStartupStep('inbox_handoff_split_rejoin',()=>rejoinThreadsSplitAtHandoff());} catch(error) {log('error','inbox_handoff_split_rejoin_failed',errorFields(error));}
 try {runStartupStep('forwarded_final_answers',()=>runStartupCatchUp('forwarded-final-answers',ownerEventMaxSequence,
   (afterSequence,throughSequence)=>reconcileForwardedFinalAnswers(undefined,{afterSequence,throughSequence}),20_000));}
 catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFields(error));}
@@ -558,14 +577,11 @@ catch(error) {log('error','inbox_request_answer_reconciliation_failed',errorFiel
 try {log('info','timed_request_posts_retired',{result:runStartupStep('timed_request_posts',()=>runStartupCatchUp('timed-request-posts',ownerEventMaxSequence,
   (afterSequence,throughSequence)=>retireTimedRequestPosts({afterSequence,throughSequence}),20_000))});}
 catch(error) {log('error','timed_request_post_retirement_failed',errorFields(error));}
-// These two look up fixed event ids; they are cheap and need no catch-up.
-try {log('info','repeated_answer_posts_collapsed',{count:runStartupStep('october21_repeated_answer',repairOctober21RepeatedAnswer)});}
-catch(error) {log('error','repeated_answer_repair_failed',errorFields(error));}
-try {log('info','repeated_thread_notices_collapsed',{count:runStartupStep('november4_repeated_thread_notices',repairNovember4RepeatedThreadNotices)});}
-catch(error) {log('error','repeated_thread_notice_repair_failed',errorFields(error));}
 try {runStartupStep('inbox_attention_migration',()=>migrateInboxAttention());} catch(error) {log('error','inbox_attention_migration_failed',errorFields(error));}
 // A reading item with nothing to read is ended with its reason; new ones are refused at the door.
 try {runStartupStep('unreadable_reading_items',()=>expireUnreadableReadingItems());} catch(error) {log('error','inbox_unreadable_reading_items_failed',errorFields(error));}
+// Reading items his read or seen mark already passed, and repeats of one capture's answer, end here.
+try {runStartupStep('read_inbox_attention',()=>settleReadInboxAttention());} catch(error) {log('error','inbox_read_attention_settle_failed',errorFields(error));}
 // A service notice has a thread from the moment it exists; those published while this process
 // was down, or by another process, get theirs here.
 try {runStartupStep('service_notices',()=>fileServiceNotices());} catch(error) {log('error','inbox_service_notices_failed',errorFields(error));}
@@ -610,7 +626,7 @@ function turnsThatEndWithThisProcess() {
 // A run that gains independent custody (its host is now recorded) no longer ends with this
 // process; a shutdown waiting on it re-evaluates at once rather than at the next settlement.
 // The queue also re-reads admission here: a Codex restart releases its admission hold this way.
-observeExecutionChanges(() => { resolveDrainIfIdle(); if(sessionTurnQueue)recoverExhaustedClaudeWork(); sessionTurnQueue?.wake(); });
+observeExecutionChanges(() => { resolveDrainIfIdle(); if(sessionTurnQueue){bankedUpkeep.onExecutionChange();recoverExhaustedClaudeWork();} sessionTurnQueue?.wake(); });
 
 function resolveDrainIfIdle() {
   // Checked first: execution changes call this often, and only a waiting shutdown needs the count.
@@ -2472,8 +2488,7 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
         ),
         scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
         providerSessionBound: async (providerThreadUuid) => {
-          await codexSessionObserver?.providerSessionBound(providerThreadUuid);
-          await codexRemoteObserver?.providerSessionBound(providerThreadUuid);
+          await bindCodexProviderSession(codexSessionObserver, providerThreadUuid, codexRemoteObserver);
         },
         startAgentProgress: startSlackAgentProgress,
         appendAgentProgress: appendSlackAgentProgress,
@@ -2487,6 +2502,12 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
 }
 
 async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
+  bankedUpkeep.started(claim.turn_id);
+  try { return await runPersistedQueuedTurnBody(claim); }
+  finally { bankedUpkeep.settled(claim.turn_id); }
+}
+
+async function runPersistedQueuedTurnBody(claim: QueuedTurnClaimRow) {
   if(claim.turn_kind==='native')return sessionExecutionHost.run(claim);
   const outcome = await executePersistedQueuedTurn(claim, {
     buildInput: (queuedClaim) => buildQueuedTurnInput(queuedClaim, {
@@ -3798,6 +3819,7 @@ async function reconcilePriorInstanceTurns() {
   const runAdopted = (adoption: Adoption) => {
     if (draining) return;
     adoptedTurnIds.add(adoption.claim.turn_id);
+    bankedUpkeep.started(adoption.claim.turn_id);
     // A Codex turn is already held by its App Server. Keep its adopted identity through recovery,
     // but do not contact that server until it has answered (after the request socket and any
     // runner relay channel exist).
@@ -3809,7 +3831,7 @@ async function reconcilePriorInstanceTurns() {
       if (draining) return;
       log("error", "execution_adoption_failed", { turn_id: adoption.claim.turn_id, execution_id: adoption.execution.execution_id, ...errorFields(error) });
       settleClaimedTurnSetupFailure(adoption.claim, error);
-    }).finally(() => { adoptedTurnIds.delete(adoption.claim.turn_id); sessionTurnQueue?.wake(); });
+    }).finally(() => { adoptedTurnIds.delete(adoption.claim.turn_id); bankedUpkeep.settled(adoption.claim.turn_id); sessionTurnQueue?.wake(); });
   };
   const executions = await claimAdoptableExecutions({ instanceId, isOwnerAlive: isProcessIdentityAlive });
   for (const adoption of executions.adopted) runAdopted(adoption);
@@ -3830,6 +3852,7 @@ async function reconcilePriorInstanceTurns() {
   parkedRecovery.unref?.();
   const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   sessionExecutionHost.recoverOutsideWaitingInputs();
+  sessionExecutionHost.recoverAntigravityUnsentInputs();
   if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
     log("warn", "unsettled_steering_recovered", recoveredSteering);
   }
@@ -4018,7 +4041,7 @@ async function reconcilePriorInstanceTurns() {
 // One in-flight pass is owned by the reader itself, so a credential change and this
 // watch cannot start competing reads of the same accounts. Each reading is followed by the
 // forecast check, which is what turns a number on a screen into a warning before the wall.
-startProviderUsageWatch({ stopped: () => draining, onReading: () => { void keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission)).catch(error => log('error','inbox_recovery_pass_failed',errorFields(error))); reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); maybeStartInboxProviderFailover(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); void closeQuestionsAnsweredByTodos((admission) => sessionExecutionHost.owner.admit(admission)).catch(() => {}); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
+startProviderUsageWatch({ stopped: () => draining, urgent: bankedUpkeep.hasActiveUnattendedBanked, onReading: () => { bankedUpkeep.onReading(); void keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission), (requestId, replacedBy) => sessionCommunication?.withdrawSupersededAttempt(requestId, replacedBy) ?? false).catch(error => log('error','inbox_recovery_pass_failed',errorFields(error))); reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); moveStandingRolesOffSpentProviders(); moveHeldWork(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); void closeQuestionsAnsweredByTodos((admission) => sessionExecutionHost.owner.admit(admission)).catch(() => {}); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
 const stopUpdateWaitWatch = startUpdateWaitWatch({admit: admission => sessionExecutionHost.owner.admit(admission), stateDir: process.env.CONCIERGE_STATE_DIR!});
 const stopWatchWorker = startMachineWatchWorker(admission => sessionExecutionHost.owner.admit(admission), () => draining);
@@ -4370,6 +4393,9 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         void runStartupPhase('provider_readiness', () => verifySharedCodexAppServerReady());
       },
       startQueue: () => {
+        // Turns parked because Claude never acknowledged their input fail now, so their requests return for a new owner.
+        try { const failed = failUnacknowledgedClaudeParkedTurns(); if (failed.length) log("warn", "unacknowledged_claude_parks_failed", { turn_ids: failed }); }
+        catch (error) { log("error", "unacknowledged_claude_park_repair_failed", errorFields(error)); }
         startSessionTurnQueue();
         sessionCommunication?.start();
         codexRemoteObserver?.start();

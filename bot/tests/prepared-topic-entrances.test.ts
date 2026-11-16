@@ -6,12 +6,16 @@ test('old topic HTTP entrances use bounded preparation and report missing covera
  const owner=new SessionOwner({available:()=>false,wake:()=>{},steer:()=>false,stop:async()=>false},'/tmp');
  // No Inbox or presentation has been created. Canonical reconstruction would throw;
  // these entrances must instead expose that preparation has not completed.
- for(const path of ['topics','topics/resolve?message=old-message','topics/old-topic','questions']){
-  const response=await owner.handle(new Request(`http://fixture/sessions/v1/inbox/${path}`));
+ for(const path of ['inbox/topics','presentation/topics?state=open','inbox/topics/resolve?message=old-message','inbox/topics/old-topic','inbox/questions']){
+  const response=await owner.handle(new Request(`http://fixture/sessions/v1/${path}`));
   expect(response?.status).toBe(200);
   const value=await response!.json() as any;
   expect(value.coverage.complete).toBe(false);
   expect(value.coverage.code).toBe('presentation_indexing');
+  if(path.endsWith('topics')||path.startsWith('presentation/topics')){
+   expect(value.topics).toEqual([]);
+   expect(value.nextCursor).toBeNull();
+  }
  }
 });
 

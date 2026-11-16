@@ -1,5 +1,7 @@
 import { providerDisplayName } from "./aliases";
 import { isModelCapacityRefusal } from "./model-capacity-refusal";
+import { holdIsStartPace, startPaceStatus } from "./start-pace";
+import { snoozeReason } from "./snooze";
 /** One explanation policy for the live owner and the read-only presentation worker.
  * All changing facts are supplied by the caller; this module never opens the ledger. */
 export type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
@@ -38,6 +40,18 @@ export function providerTroubleText(status:number|null,offer:OutageFact=null):st
 export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTurn|null;steering:StatusSteering|null;state:string},
   saved:any,context:StatusContext):InputStatusDetail|null {
   const {turn,steering,state}=observed;
+  if(saved.responseMode==='context'){
+    if(saved.contextDelivery?.state==='uncertain')return {code:'CONTEXT_DELIVERY_UNCONFIRMED',
+      message:'Saved here. Delivery to the recipient conversation is unconfirmed. Its original identity and context are retained for inspection.',
+      clearsAt:null,automaticRetry:false};
+    if(saved.contextDelivery?.state==='failed')return {code:'CONTEXT_DELIVERY_FAILED',
+      message:'Saved here. The other machine refused delivery to the recipient conversation. The original context is retained.',
+      clearsAt:null,automaticRetry:false};
+    if(saved.contextForward||saved.contextDelivery?.state==='pending')return {
+      code:'CONTEXT_DELIVERY_PENDING',message:'Saved here. Waiting for the other machine to confirm it is saved in the recipient conversation.',
+      clearsAt:null,automaticRetry:true};
+    return {code:'CONTEXT_SAVED',message:'Saved for the next conversation.',clearsAt:null,automaticRetry:false};
+  }
   const waitingWork=input.origin==='human'?'Your message':input.origin==='agent'?'The agent’s request':'The session instruction';
   if(steering?.status==='ambiguous'&&!steering.provider_sent_at){
     const outcome=turn?.status==='done'?'completed':turn?.status==='error'?'failed':turn?.status==='cancelled'?'was canceled':null;
@@ -80,6 +94,9 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     if(wait.after)return {code:'WAITING_FOR_DEPENDENCY',message:'This accepted request is waiting for an earlier request to settle before provider submission.',clearsAt:null,automaticRetry:true};
     return {code:'INPUT_HELD',message:'This accepted input has not been submitted to a provider.',clearsAt:null,automaticRetry:false};
   }
+  const snoozed=snoozeReason(turn.dispatch_hold);
+  if(snoozed!==null&&turn.status==='queued'&&turn.dispatch_next_attempt_ms)return {code:'SNOOZED',message:`Snoozed until ${context.formatTime(turn.dispatch_next_attempt_ms)}: ${snoozed}. Every open request stays open; it wakes by itself.`,
+    clearsAt:new Date(turn.dispatch_next_attempt_ms).toISOString(),automaticRetry:true};
   const deliberate=context.savedTurn(turn.id);
   const scheduledAt=deliberate?.saved_kind==='scheduled'&&deliberate.dispatch_failure_class!=='backoff'
     ?deliberate.dispatch_next_attempt_ms:null;
@@ -94,6 +111,10 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const next=turn.dispatch_next_attempt_ms>context.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
     const when=next?context.formatTime(turn.dispatch_next_attempt_ms):null;
     const product=providerDisplayName(context.session(input.session_id).providerId)??String(context.session(input.session_id).providerId);
+    if(holdIsStartPace(turn.dispatch_hold))return {code:'START_PACED',message:startPaceStatus(turn.dispatch_hold,when,waitingWork)!,clearsAt:next,automaticRetry:true};
+    if(turn.dispatch_hold==='release_pace')return {code:'RETRY_SCHEDULED',message:when
+      ?`${product} can take work again. Held work restarts a few sessions at a time so the server is not swamped; ${waitingWork.toLowerCase()} starts at ${when}.`
+      :`${product} can take work again, and ${waitingWork.toLowerCase()} is starting now.`,clearsAt:next,automaticRetry:true};
     if(turn.dispatch_hold==='usage'||context.continuationRefusal(turn.id)==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
       ?`No ${product} account available on this machine has room now. The earliest reported reset is ${when}; Concierge will check again then. ${waitingWork} is kept here and will run when an account on this machine is ready.`
       :`No ${product} account available on this machine has room now, and none has reported a reset time. ${waitingWork} is kept here and will run when an account on this machine is ready.`,clearsAt:next,automaticRetry:true};

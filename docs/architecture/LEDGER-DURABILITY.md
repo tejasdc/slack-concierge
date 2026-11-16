@@ -12,8 +12,21 @@ Provider tool updates and commentary are kept in a bounded owner-memory queue fo
 second, then written in one SQLite transaction. A queue also flushes at 512 events or 4 MiB,
 before an immediate provider message, and when a provider turn ends. Exact event IDs, versions,
 order and the accepted input to which each update belongs are captured before the wait; duplicate
-replays are ignored. A failed flush retains the queue and retries after one second; it is logged
-without holding an immediate provider answer or the final result behind optional progress. Accepted human
+replays are ignored. A flush reserves SQLite's writer up front (an immediate transaction), because
+each event reads before it writes: a deferred one was refused at once as "database is locked" when
+another connection committed in between, eleven seconds after the 2026-11-13 08:12 restart. A
+failed flush retains the queue and retries after one second; it is logged
+without holding an immediate provider answer or the final result behind optional progress.
+Every failed attempt logs `session_progress_batch_flush_failed` with the batch's event count,
+first and last event IDs, turn IDs and attempt number, and the attempt that finally saves it logs
+`session_progress_batch_recovered`. When the owner process exits on any path, a non-empty queue
+gets one more save; if the ledger still refuses, it is written atomically to
+`pending-progress-events.json` in the state directory (`session_progress_batch_spilled`). The next
+owner restores that file before projecting (`session_progress_batch_restored`), skips event IDs
+already in the ledger rather than replaying them, and deletes the file once its batch is saved.
+Only if both the save and the spill fail is a batch lost, and `session_progress_batch_dropped`
+names every event ID. A SIGKILL skips the exit path; queued progress lost that way is at most one
+second of tool updates and commentary, which an adopting run re-projects when it replays history. Accepted human
 input, requests, replies, final provider answers and run lifecycle changes are still written at
 their existing immediate durability boundaries. This chooses a short visibility delay for
 non-acknowledged activity in exchange for fewer WAL commits and repeated index-page writes;
@@ -44,6 +57,13 @@ Linux only) changes where the disk is waited for, not what is written or when it
 - `ledgerDurable()` (`ledger-durability-barrier.ts`) resolves once every commit made before the
   call is synced. Waiters resolve in call order. It samples the connection's `total_changes()` in a
   microtask, after any enclosing synchronous transaction has committed.
+- A slow-sync record joins up to 16 labelled released waiters to that successful sync. It keeps
+  the committed change target sampled by the barrier, sample time, the sync already in flight
+  when a later target arrived, the selected sync ID, worker notification time and owner delivery
+  time. The owner socket supplies its gateway admission ID; provider launch supplies its exact
+  accepted input ID. Other callers remain unlabelled. IDs are bounded, and no request body or
+  dialogue is logged. The record gives a caller-to-barrier timeline, not the filesystem work
+  responsible for a slow `fdatasync`; the host recorder owns that separate attribution.
 - **Nothing leaves the process before the rows it rests on are durable.** The barrier sits on the
   owner socket's non-GET answers (command receipts, for the gateway, Thinkering and router
   commands alike), on a provider run's start (Claude, Codex, ChatGPT), on every command to a Claude
@@ -56,7 +76,8 @@ Linux only) changes where the disk is waited for, not what is written or when it
   `PRAGMA wal_checkpoint(PASSIVE)`, which never takes the writer lock. It reads how much log is
   uncopied through `PRAGMA wal_checkpoint(NOOP)` (frames written minus frames copied) and
   `PRAGMA page_size`, and copies once 64 MB is waiting while `/proc/pressure/io` "some avg10" is at most 10%,
-  or at 256 MB regardless. It never copies a small log. It is the ledger's only checkpointer on
+  or at 256 MB regardless. It copies a small log only to finish a partly copied one (see
+  [log recycling](#log-recycling)). It is the ledger's only checkpointer on
   Linux: every ledger writer wrapped by `ledgerWriteResults`, including deployment controls,
   sets `wal_autocheckpoint=0` before preparing statements; the owner's connection also sets it
   explicitly. On 2026-10-12 the pressure gate rarely opened, the log reached 285 MB (the old
@@ -67,6 +88,42 @@ Linux only) changes where the disk is waited for, not what is written or when it
   not which process held the writer lock. SQLite invokes the auto-checkpoint hook
   [after releasing the write lock](https://www.sqlite.org/c3ref/wal_hook.html), and its
   [PASSIVE mode does not wait for writers](https://www.sqlite.org/c3ref/wal_checkpoint_v2.html).
+
+### Log recycling
+
+SQLite rewinds the log only when a writer begins with every committed frame already copied
+([WAL format](https://www.sqlite.org/walformat.html)). PASSIVE copies up to the frame it saw
+when it began, so owner commits made during the copy remain as an uncopied tail, even though the
+checkpoint reports `log == checkpointed` for its own snapshot. Until 2026-11-16 the thread then
+waited for another 64 MB before copying again, so the log rewound only when a copy happened to
+overlap no commit: on 2026-11-15 it ran from 04:56 to 20:41 UTC without rewinding and reached
+3,457,925 frames (about 14 GB), filling the root disk (AX41 rapid disk loss notice; diagnosis by
+concierge:9747 from 16,215 shared-memory header samples).
+
+The thread now finishes a generation already partly copied (`checkpointed > 0` with fewer than
+64 MB still uncopied) on its next tick, under the same pressure gate, still with PASSIVE on its
+`synchronous=FULL` connection. It never takes the writer lock, so the owner's commits never
+wait for a checkpoint. A tail copy can lose the race to a commit made while it runs; the next
+tick tries again. Recycling is therefore likely under the live write rate, not guaranteed:
+on a disposable ledger at 60 commits/s (thresholds scaled to 1 MB/4 MB, pressure gate off),
+PASSIVE tail copies never rewound in 191 attempts, while at 15 commits/s they rewound
+repeatedly and kept the log under 330 frames. Live after installation on 2026-11-16, the log
+rewound six times between 07:29 and 07:48 UTC, back to about 16,400 frames each time.
+
+From 07:17 to about 08:30 UTC on 2026-11-16 the installed release also had a FULL fallback after
+three fast lost races. FULL holds the writer lock through its copy and syncs, which puts a
+checkpoint back in the owner's synchronous write path; the original repair required owner
+writes not to wait on checkpoints, so it was removed. Its four live attempts all returned
+`busy=1` within 2–171 ms (owner mid-commit) and continued as PASSIVE; no FULL copy under the
+writer lock was observed. A guaranteed rewind needs a fixed tail, such as RESTART behind
+asynchronous writer admission; that design was drafted (held in the `wal9747-source` worktree)
+but never passed as a whole.
+
+Each tail attempt that copies something is logged in `ledger_checkpoint` with `tail: true`; one
+that copies nothing (an older reader holds it) is not logged. The live check is that series:
+`log` must fall back to a small value within minutes of each 64 MB copy. If it stops doing so,
+the race is being lost under the current write rate and the fixed-tail design is the next step.
+Rewinding reuses the log file; it does not shrink a file that already grew.
 
 On 2026-10-13 the owner accumulated 102 seconds of loop lag around an update, with one dispatch
 write reaching SQLite's five-second busy timeout. The first long stalls and slow WAL syncs started
@@ -261,7 +318,18 @@ rebuildable index) commits with `synchronous=OFF` and is rebuilt from the ledger
 opened after a crash; a power loss can leave it missing recent passages, which only narrows search
 until those passages are indexed again.
 
+Every ledger connection is opened through one wrapper that sets SQLite's lock wait before its
+first statement (five seconds; thirty for the service's pre-start recovery, which runs while
+nothing serves). A process that ends after a crash, or a retiring coordinator, can still hold
+the ledger for a few seconds; without the wait the next start failed at once with
+`database is locked` (2026-11-11: three failed starts after a crash, see
+`docs/incidents/2026-11-11-restart-after-crash-failed-on-ledger-lock.md`).
+
 ## Signals
+
+The [protected obligation observation](PROTECTED-DURABILITY-OBSERVATION.md) adds a
+bounded memory-only host view of receipt/provider barrier durations, outstanding
+ages and coverage. It is distinct from sync-worker timing and external response latency.
 
 - `GET /supervisor/ping` → `ledgerDurability`: mode, sync count, slow syncs, slowest and last sync
   time, last worker-queue, `fdatasync` and worker-to-owner delivery times, waiters, age of the sync

@@ -18,68 +18,89 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   The [capture](docs/runbooks/THINKERING-CAPTURE.md) and
   [native Inbox](docs/contracts/native-inbox.md) contracts own Thinkering delivery.
 - Implement a requested change as one whole through the normal Git and
-  [deployment path](docs/runbooks/DEPLOYMENT.md). Use an isolated task worktree
+  [sealed deployment path](docs/runbooks/DEPLOYMENT.md). Use an isolated task worktree
   when writers may overlap. Never hand-edit an installed release or host-owned
   service configuration in this repository. Check the installed behavior through
   the agent's own marked entrance before calling it done
   [decision: agents-check-real-end-to-end-behavior]. The
   [agent test delivery](docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries)
   is for capture paths; use a feature's own socket or route when appropriate.
-- Concierge service stops during a release go through the deployment controller's
-  [attributed systemd stop path](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
-- Planned drain stops Codex lifecycle observation before awaited shutdown work;
-  see the [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
-- Unanswered capture claims cancel on service stop under the existing claim and recovery
-  contract; see [capture ingress](docs/architecture/CAPTURE-INGRESS.md).
-- Operator-controlled offline releases stop the old owner before candidate activation;
-  see the [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
-- Owner startup timing and deferred history catch-up follow the
-  [deployment startup contract](docs/runbooks/DEPLOYMENT.md#owner-startup-and-history-catch-up).
-- Candidate schema comparison and its bounded read-only SQLite lock recovery
-  follow the [deployment runbook](docs/runbooks/DEPLOYMENT.md#candidate-schema-comparison).
-  Its offline migration phase timings and backup boundary are in the same
-  [deployment runbook](docs/runbooks/DEPLOYMENT.md#runtime-dependencies-and-service-shutdown).
-- Owner-loop pause evidence comes from the separate watchdog thread; interpret its
-  bounded Linux wait samples through [storage observation](docs/architecture/STORAGE-OBSERVATION.md#owner-loop-pause-evidence).
-- A repair-owned deployment run ends its old transient runner without reclaiming the repair;
-  see [automatic failure behavior](docs/runbooks/DEPLOYMENT.md#automatic-failure-behavior).
+- Stable runtime commands follow the verified sealed control selection through
+  [deployment dispatchers](docs/runbooks/DEPLOYMENT.md); preserve application-only
+  rollback's separate controller and the disposable installed-command acceptance.
+  Native release acceptance explicitly selects the host's GNU timeout dependency;
+  see [durability acceptance](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md#isolated-acceptance-and-live-gate).
+- Mac disk upkeep shares the existing automatic update job; log retention, identity staging,
+  finished-worktree proof, pressure notices and receipts live in
+  [Mac disk maintenance](docs/runbooks/MAC-DISK-MAINTENANCE.md).
+- Provider-change handoffs move accepted inputs only under the exact safety rules in
+  [session ownership](docs/architecture/SESSION-OWNER.md#provider-change-handoff).
+- Merge a checked pull request with `scripts/merge-pr.sh <number>`, which serialises
+  merges so concurrent fixes stop invalidating each other's required check; see
+  [merge lane](docs/runbooks/DEPLOYMENT.md#merge-lane).
+- For dirty task worktrees, use the
+  [guarded rebase command](docs/runbooks/DEPLOYMENT.md#worktree-rebases);
+  it preserves unpublished edits and refuses rewrites of pushed history.
 - Every commit carries an `Update-note:` sentence in product language and a
   `Failure-record:` trailer naming its replayable failure record or `none`.
   The [update-note rule](docs/runbooks/DEPLOYMENT.md#update-notes-for-every-commit) and
   [failure record guide](docs/incidents/README.md) own the formats. A pushed
   commit is not an installed release. Pushed history is never rewritten; the
   [deployment runbook](docs/runbooks/DEPLOYMENT.md) records the enforced path.
-- Protected agent code launches hide the live ledger and its disk image while allowing Thinkering's
-  phone-width release check to mount its read-only data view. The
-  [deployment runbook](docs/runbooks/DEPLOYMENT.md) owns the isolation contract.
-- Background command watches have Concierge ownership and deadlines; completed Codex turns
-  flag surviving server processes outside their owned execution unit by exact run identity
-  through an Inbox agent report.
-  See [execution host](docs/architecture/EXECUTION-HOST.md#agent-browser-process-ownership)
-  and [durable watches](docs/architecture/WATCHES.md).
-- Project creation validates organizer placement in the owner ledger and performs scaffold and
-  GitHub work as a replay-safe job on the configured project runner. See [runners](docs/architecture/RUNNERS.md).
-- Hosted run adoption, parked-run recovery, and shutdown custody decisions follow the
-  [execution host](docs/architecture/EXECUTION-HOST.md) contract; never reset their ledger status by hand.
-- Outside Codex repair sessions use a one-input command line and take follow-ups
-  in the next turn; a runner-hosted outside turn is adopted through that runner's
-  retained journal; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#outside-requests)
-  and [execution host](docs/architecture/EXECUTION-HOST.md#codex-runs-design-step-5).
 - Keep credentials and private dialogue out of unrelated prompts, logs and public
   artifacts. Preserve the authenticated data and capability boundaries in
   [session ownership](docs/architecture/SESSION-OWNER.md) and
   [agent security](docs/security/2026-10-07-agent-security-review.md).
-- Fresh agent-started Claude Code commands skip older Concierge wrappers in PATH and tolerate the package install's brief
-  missing-command window before account selection; see the
-  [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md#claude-code-started-by-an-agent).
-- Shared Codex turn recovery and its exact identity boundary follow
-  [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#codex-provider-turn-reconciliation).
-- Agent session command paths use each machine's installed wrapper, never a release's
-  helper directory; see [runners](docs/architecture/RUNNERS.md#agent-session-commands).
-- Agent-started top-model choices and helper defaults follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation);
-  model and helper call shares are in [usage](docs/architecture/PROVIDER-USAGE.md#who-used-the-allowance).
+- Agent session commands use each machine's installed wrapper, which selects
+  the current release; see [runner command paths](docs/architecture/RUNNERS.md#agent-session-commands).
+- Hosted-run shutdown custody follows the [execution host](docs/architecture/EXECUTION-HOST.md)
+  contract; preserve exact accepted input and provider-result ownership across releases.
+- Claude history payload retirement preserves full SDK rows and the runner
+  mirror until the [exact-generation maintenance gate](docs/runbooks/DEPLOYMENT.md#history-cache-maintenance)
+  proves production custody, recovery, and page/detail behavior. The
+  [object-backed history plan](docs/plans/2026-11-12-concierge-history-object-retirement.md)
+  owns the cutover invariants. Optional attempt recovery and the independent
+  release-reader compatibility fence and product-owned small-cache backup admission
+  are documented at that maintenance gate. Its diagnostic entrance records an
+  observer-only baseline and one unchanged guarded trial; preserve the production
+  hold and coordinate host archive validation before any live observation. The
+  disposable report retains byte digests and accepted snapshot/readback evidence
+  across owned cleanup; see that same maintenance gate for missing-proof semantics.
+  The [numeric durability observer](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md)
+  has a separate bounded lifetime; never extend maintenance to fit observation. Read cache
+  allocation through [router actions](docs/runbooks/ROUTER-ACTIONS.md#agent-session-communication).
+  The [protected durability observation](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md)
+  defines the private host read, lane boundaries and coverage gaps; it changes no
+  admission policy and authorizes no additional live trial.
+- Commit attribution resolves the current running accepted input, including Mac commits over SSH; see [peer commit identity](docs/runbooks/PEER-INSTANCES.md#commits-a-mac-session-makes-on-the-server).
+- Exact ChatGPT answer handling, peer version-hold reconciliation and attachment corrections preserve provider-return evidence and the still-open question; see [answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md#explicit-confirmation-after-a-supported-tool-read) and the [peer request wire contract](docs/contracts/session-owner-v1.md).
+- Managed native Codex helper edit identity and parent-turn retention follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md); the Nov 13 lifecycle failure and replay are [here](docs/incidents/2026-11-13-codex-helper-lifetime.md), preserving the earlier [Nov 12 attribution incident](docs/incidents/2026-11-12-codex-helper-edit-gate.md).
+- Marked messages held by per-session Pause retain their original admission identity;
+  see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
+- Owner-generated no-reply notices may finish without posting or automatic closing-text
+  relay; genuine agent questions and worker answers keep their thread obligation. See
+  [quiet service notices](docs/contracts/native-inbox.md#quiet-service-notices).
+- Exact operation reads used for provider admission and recovery read current retained state;
+  see [receipt freshness](docs/architecture/SESSION-OWNER.md#identity-and-admission).
+- Exact predecessor/successor file-watch inspection and quiet retirement use retained recovery
+  and work-delegation custody, not cross-session list/cancel; see
+  [watch custody](docs/architecture/WATCHES.md#exact-pair-recovery-custody).
 
 ## Session and Inbox obligations
+
+- Saved context is a settled input, never queued work. Preserve its exact attribution,
+  attachments and chosen recipient; only a later active message brings it to the provider.
+  See [passive session context](docs/contracts/session-owner-v1.md#passive-session-context).
+
+- New journal keeper processing requires a source-validated structured disposition and durable Inbox handoff for actionable portions; delivery and tracker observations alone cannot complete it. See [journal processing dispositions](docs/contracts/native-inbox.md#journal-processing-dispositions).
+
+- Source-verified cross-owner Lab publication uses the typed service post and immutable peer
+  intent in the [native Inbox contract](docs/contracts/native-inbox.md); publication never becomes
+  human input or a returned work answer.
+
+- Native custody mutation admission and its source-bound, inventory-free result use the
+  [current owner port](docs/contracts/session-owner-v1.md#current-mutation-admission);
+  ordinary obligations reads do not confer mutation authority.
 
 - Route agent issue reports through `router-actions.sh report`, which opens the
   Inbox thread and request before routing. See
@@ -91,50 +112,48 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   carry the live syntax and enforcement. The [request and return contract](docs/architecture/SESSION-OWNER.md#requests-and-returns)
   and [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md)
   own return position, partial answers and final disposition.
-- Held final returns retry delivery to their asker while completed Inbox answer
-  upkeep is retained once per exact event; the yielding open-thread sweep is
-  described in [native Inbox](docs/contracts/native-inbox.md#owner-upkeep-under-held-returns).
-- Thread upkeep admitted as no-reply service work can settle quietly after reconciliation;
-  the [native Inbox thread contract](docs/contracts/native-inbox.md) keeps agent answers
-  and ordinary service returns subject to their thread reply obligation.
-- ChatGPT questions carry an exact task and remain open through failed attempts,
-  return receipt, and explicit answer handling. See [ChatGPT answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md).
-- Preserve exact accepted input, run, action, source-message and target identity.
-  Continuation ancestry visits each source input once because valid service inputs
-  can point to themselves; see the [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
-  Do not replay ambiguous or acknowledged effects. Keep human authorship distinct
-  from agent and service inputs. The [session owner wire contract](docs/contracts/session-owner-v1.md),
+- Asked-question clocks, exact retained-answer recovery and owner-derived delay status follow
+  [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md); historical questions stay in the
+  one Inbox's [prepared global views](docs/architecture/PREPARED-TOPICS.md).
+- Preserve exact accepted input, run, action, source-message and target
+  identity; do not replay ambiguous or acknowledged effects. Keep human
+  authorship distinct from agent and service inputs. See the
+  [wire contract](docs/contracts/session-owner-v1.md),
   [human command custody](docs/architecture/HUMAN-COMMAND-INTAKE.md), and
-  [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md) own those boundaries.
-- Banked phone work that Tejas permits only overnight uses the explicit quiet-only saved-work choice; request cancellation also revokes a queued saved turn. See [session ownership](docs/architecture/SESSION-OWNER.md#one-execution-owner) and [router actions](docs/runbooks/ROUTER-ACTIONS.md#current-native-routing).
-- A device question can name an app startup when the physical device has no agent route;
-  the agent explains the failed route. Returned `needs_you` questions can be withdrawn
-  by exact event identity when they become stale. See [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md)
-  and the [session owner contract](docs/contracts/session-owner-v1.md).
-- The canonical owner, not agent memory, enforces Inbox placement, attention and
-  delivery. Unfiled human inputs prevent the Inbox router from ending its turn.
-  Direct human thread replies join the same topic request ledger on admission;
-  future-answer posts require recorded work for their exact source or request.
-  `sessions topics obligations` shows every open request, its current destination and age.
-  Failed, cancelled or stalled agent attempts leave his Inbox request open for
-  durable recovery; a routed human work message joins that request ledger atomically,
-  and an unverified completion stays open for a check. Checked completion, a live only-he-can question, or
-  Tejas's own withdrawal determines what happens next. See
-  [native Inbox](docs/contracts/native-inbox.md).
-  The router command refuses a native Codex helper's attempt to close or cancel
-  its parent session's task; see the [failure record](docs/incidents/2026-11-04-inbox-failed-attempts-closed-human-work.md).
-  See [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping),
-  [routing handoffs](docs/contracts/native-inbox.md#routing-handoffs-on-the-source-message),
-  [human questions](docs/architecture/HUMAN-QUESTIONS.md), and
-  [requested phone delivery](docs/contracts/requested-phone-notifications.md).
-- Closing a human Inbox request requires evidence for that exact obligation;
-  a shared thread, later message or shared source alone cannot withdraw or
-  supersede it. See [native Inbox](docs/contracts/native-inbox.md) and the
-  [closure failure record](docs/incidents/2026-11-04-unrelated-evidence-could-close-human-work.md).
-- A question linked to an exact to-do is rechecked before Inbox attention and
-  question reads; a Done or Dropped to-do settles that question. Its attention
-  event carries the to-do ID for thnkr.ing's final notification check. See
-  [requested phone notifications](docs/contracts/requested-phone-notifications.md).
+  [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
+- A Stop on adopted Codex work follows the original provider turn through exact
+  history reconciliation; missing identity or terminal evidence stays uncertain
+  and never resubmits the accepted input. See
+  [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#stop-while-taking-back-an-existing-codex-turn).
+  The one-time source-bound native recovery controls and post-release acceptance procedure are
+  documented in [the Codex recovery runbook](docs/runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md).
+  Custody-successor terminal continuation follows [exact recovery](docs/runbooks/ROUTER-ACTIONS.md#exact-codex-report-back-recovery);
+  transferred peer-duty status and final proof follow [the peer wire contract](docs/contracts/session-owner-v1.md#peer-instances).
+- Empty, unacknowledged service report-backs use a separate exact-input recovery with durable
+  deduplication and immutable result history; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#exact-codex-report-back-recovery)
+  and [the incident evidence](docs/runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md).
+  The [custody-successor mode](docs/runbooks/ROUTER-ACTIONS.md#custody-successor-recovery)
+  preserves a separate canonical attempt allowance, control state and obligation custody;
+  its current source-review holds are not satisfied by disposable fixture success.
+- The explicit Astra Medium custody-successor mode preserves the original reminder and
+  attempts, commits custody before native construction, and spends one shared allowance
+  before admission. It has no cold-resume fallback; see the [custody-successor contract](docs/runbooks/ROUTER-ACTIONS.md#custody-successor-recovery).
+- Final replies expire only questions linked to that dispatch; repair an older
+  sibling expiry through the exact-event restoration described in the
+  [native Inbox contract](docs/contracts/native-inbox.md).
+- Bug-button intake stays independent; later duplicate-report consolidation retains the
+  human correction and acting agent, while scoped secondary routing keeps the original
+  report in its primary topic. See [native Inbox](docs/contracts/native-inbox.md).
+- The canonical owner enforces Inbox placement, attention and delivery. Unfiled
+  human inputs prevent the Inbox router from ending its turn; human work
+  requests close only on evidence for their exact obligation. See
+  [native Inbox](docs/contracts/native-inbox.md),
+  [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping),
+  and [requested phone delivery](docs/contracts/requested-phone-notifications.md): explicit human notification requests
+  survive progress and dispatch acknowledgements until a substantive answer or quiet completion.
+- Cross-router filing displays and bounded repair follow [prepared topics](docs/architecture/PREPARED-TOPICS.md);
+  the existing [filing upkeep](docs/contracts/native-inbox.md#filing-before-stopping)
+  retains a thirty-minute inspection for a busy Inbox without replaying captures.
 
 ## Find the authority
 
@@ -144,18 +163,27 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Outside agent asks and exact unstarted withdrawal | [Session owner wire contract](docs/contracts/session-owner-v1.md), [router actions](docs/runbooks/ROUTER-ACTIONS.md#outside-agents) |
 | Inbox topics, routing, areas, thread replies, attention and prepared-worker catch-up | [Native Inbox](docs/contracts/native-inbox.md), [areas](docs/architecture/AREAS-OF-INTEREST.md), [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md), [prepared topics](docs/architecture/PREPARED-TOPICS.md) |
 | Provider binding, accounts, usage, fresh Claude commands from agent shells, history and external workers | [Provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md), [provider sessions](docs/architecture/PROVIDER-SESSIONS.md), [usage](docs/architecture/PROVIDER-USAGE.md), [history index](docs/architecture/PROVIDER-HISTORY-INDEX.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
-| Provider sign-in renewal through the Mac's saved browser account | [Sign-in approval](docs/runbooks/CLAUDE-SIGNIN-APPROVAL.md), [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md) |
-| Exact thnkr.ing Mac web-app Computer Use and human authorization | [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |
+| Google quota disagreement evidence, conflicting meter readings and current-input outcome attribution | [Google quota diagnostics](docs/architecture/PROVIDER-USAGE.md#google-quota-disagreement-evidence), [native input attribution](docs/architecture/PROVIDER-SESSIONS.md#antigravity-sessions) |
+| Explicit ChatGPT projects, custom GPT retirement and retained-run recovery | [ChatGPT requests](docs/runbooks/ROUTER-ACTIONS.md#agent-session-communication), [wire contract](docs/contracts/session-owner-v1.md) |
+| Provider sign-in renewal through the Mac's saved browser account, including its bounded pre-auth browser retry | [Sign-in approval](docs/runbooks/CLAUDE-SIGNIN-APPROVAL.md), [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md) |
+| Exact thnkr.ing Mac web-app inspection, native AX update recovery, human authorization and direct Codex update proof | [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |
+| Isolated headless Mac browser fallback and thnkr.ing's source-bound read ticket | [Peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Shared Codex App Server lifecycle, post-turn process audit and session observation | [Execution host](docs/architecture/EXECUTION-HOST.md), [Codex App Server](docs/runbooks/CODEX-APP-SERVER.md), [external Codex turns](docs/architecture/SESSION-OWNER.md#externally-submitted-codex-turns) |
+| Codex CLI project trust, 0.166/0.169 compatibility, and isolated launch exemptions | [Command-line project trust](docs/runbooks/CODEX-APP-SERVER.md#project-trust-for-command-line-work) |
 | Owner on its own app server, agents' network entrance and tokens, runner lease protocol | [Runners](docs/architecture/RUNNERS.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
 | Runner reads of report source chains and bounded report windows | [Runners](docs/architecture/RUNNERS.md) |
-| Runner-resolved project folders and bounded project file, TODO, worktree, Google and outside-run operations | [Runners](docs/architecture/RUNNERS.md#runner-machine-calls) |
+| Agent browser acceptance for one created provider session | [Agent browser acceptance](docs/architecture/AGENT-BROWSER-ACCEPTANCE.md) |
+| Explicit disposable native Codex test selection, deadline and source-bound fault controls | [Router actions](docs/runbooks/ROUTER-ACTIONS.md#disposable-native-codex-tests), [session-owner wire contract](docs/contracts/session-owner-v1.md), [native Codex acceptance](docs/runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md) |
+| Runner-resolved project folders, standing-agent schedule targets and bounded project file, TODO, worktree, Google and outside-run operations | [Runners](docs/architecture/RUNNERS.md#runner-machine-calls), [router actions](docs/runbooks/ROUTER-ACTIONS.md#standing-agents) |
 | Provider accounts, sign-in custody and account homes on runners | [Runners](docs/architecture/RUNNERS.md#provider-accounts-on-runners), [provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md) |
-| Bounded reads, SQLite ledger durability and diagnostic snapshots | [Storage observation](docs/architecture/STORAGE-OBSERVATION.md), [ledger durability](docs/architecture/LEDGER-DURABILITY.md), [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md), [diagnostic snapshot](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md) |
+| Bounded reads, owner-block I/O evidence, SQLite ledger durability and diagnostic snapshots | [Storage observation](docs/architecture/STORAGE-OBSERVATION.md), [ledger durability](docs/architecture/LEDGER-DURABILITY.md), [native read execution](docs/architecture/NATIVE-READ-EXECUTION.md), [diagnostic snapshot](docs/runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md) |
+| Stop-hook owed replies and isolated Inbox filing reads | [Native read execution](docs/architecture/NATIVE-READ-EXECUTION.md), [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping) |
 | Releases, autonomous repair, host alerts and Mac installation | [Deployment](docs/runbooks/DEPLOYMENT.md), [repair architecture](docs/architecture/DEPLOYMENT-REPAIR.md), [repair agent](docs/runbooks/REPAIR-AGENT.md), [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Project, session, Inbox and saved-work commands | [Router actions](docs/runbooks/ROUTER-ACTIONS.md), [saved work](docs/plans/2026-09-23-saved-work-scheduled-and-banked.md) |
+| Filtered Mac Messages reads, including bounded historical conversation windows and code withholding | [Router actions](docs/runbooks/ROUTER-ACTIONS.md#reading-his-texts-mac) |
 | Canvas project binding and current board title beside stable project folders | [Router actions](docs/runbooks/ROUTER-ACTIONS.md), [wire contract](docs/contracts/session-owner-v1.md#peer-instances) |
 | Mac and server Lab reads and writes | [Router actions](docs/runbooks/ROUTER-ACTIONS.md#discussing-in-the-lab); the server holds the Lab key and the peer channel carries Mac calls under their own source identity |
+| Selective Lab groups, revisioned rosters and original provider answers | [Lab conversations](docs/architecture/LAB-CONVERSATIONS.md); existing queue custody, immutable accepted conditions, explicit response targets and original-output publication |
 | Captures, audio, speech and Canvas observations | [Capture ingress](docs/architecture/CAPTURE-INGRESS.md), [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md), [speech](docs/architecture/SPEECH-FALLBACK-JOBS.md), [Workers AI speech and search embeddings](docs/architecture/WORKERS-AI.md), [Canvas think-aloud](docs/architecture/canvas-think-aloud.md) |
 | Current-versus-historical documentation | [Documentation index](docs/README.md); plans and incidents are evidence, not authority for current behavior |
 

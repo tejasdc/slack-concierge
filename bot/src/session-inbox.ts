@@ -3,8 +3,9 @@ import {db,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {log} from './log';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
-import {inboxRequestRoot,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
-import {firstInboxAcceptanceSql} from './inbox-message-identity';
+import {inboxRequestRoot,inboxSentRequest,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
+import {firstInboxAcceptanceSql,savedContextMessageSql} from './inbox-message-identity';
+import {inboxContextMessage} from './inbox-context-message';
 import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
@@ -16,6 +17,11 @@ import {answeredByPostResultSql,postedResultMarkerId} from './inbox-posted-resul
 import {unrequestedProgressPostSql} from './inbox-progress-post';
 import type {InboxProducerKind} from './inbox-producer-sources';
 import {answerClosingLine} from './answer-closing-line';
+import {inboxAttribution} from './inbox-attribution-read';
+import {activePostCollapseSql} from './inbox-collapse-visibility';
+import {readInboxThreadLink} from './inbox-thread-link-read';
+export type {InboxThreadLink} from './inbox-thread-link-read';
+import type {InboxThreadLink} from './inbox-thread-link-read';
 
 export type InboxCapture = {
   source:{kind:InboxProducerKind;id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -66,8 +72,8 @@ export function capturePresentation(input:InboxCapture) {
 }
 
 /**
- * A capture from his bug button (or its shortcut) is always a thread of its own, never a
- * reply inside a work thread [decision: inbox-button-always-new-request]. The Thinkering
+ * A capture from his bug button (or its shortcut) first enters its own Inbox thread, never
+ * a reply inside a work thread [decision: inbox-button-always-new-request]. The Thinkering
  * bug-report door is the one producer that marks a capture this way.
  */
 export function isBugReportInput(inputId:string) {
@@ -76,7 +82,7 @@ export function isBugReportInput(inputId:string) {
   const source=JSON.parse(input.payload_json)?.capture?.source;
   return source?.kind==='thinkering'&&source.metadata?.client==='thinkering-bug-report';
 }
-export const BUG_REPORT_OWN_THREAD='A bug report is always its own Inbox thread (decision inbox-button-always-new-request). Give it a thread of its own with topics create --root <it> --from <related thread>, and send the work to its owner with sessions ask --route-message <it>.';
+export const BUG_REPORT_OWN_THREAD='A new bug report first needs independent Inbox intake (decision inbox-button-always-new-request). Give it its own thread with topics create --root <it> --from <related thread>, and send its work with sessions ask --route-message <it>. After independent filing, consolidate same-issue bug-report topics with topics merge <duplicate> --into <survivor> --reason <why> --correction-source <retained human correction in survivor>, or add a secondary topics route <destination> --message <original capture> --reason <why> --side-scope <only the related concern>, leaving its primary root intact. Do not place a fresh bug report inside an existing work thread.';
 
 // The Inbox uses its accepted dialogue, including imports that never enter a
 // provider transcript. Event sequence is the existing durable pagination key.
@@ -94,12 +100,16 @@ const inboxRowsFrom=`SELECT event.*,input.payload_json AS input_json,input.origi
     JOIN sessions owner ON owner.id=event.session_id AND json_extract(owner.native_metadata_json,'$.inbox')=1
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id`;
-const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(event.kind='message' AND json_extract(event.payload_json,'$.message.role')='tool') OR ":''}event.kind='result' OR event.kind='inbox_capture' OR (event.kind='request' AND NOT EXISTS (
+const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE ((${savedContextMessageSql}) OR ${activity?"(event.kind='message' AND json_extract(event.payload_json,'$.message.role')='tool') OR ":''}event.kind='result' OR event.kind='inbox_capture' OR (event.kind='request' AND NOT EXISTS (
           SELECT 1 FROM session_communication_requests request WHERE request.request_id=json_extract(event.payload_json,'$.requestId')
             AND json_extract(request.payload_json,'$.routedMessage') IS NOT NULL
           UNION ALL SELECT 1 FROM session_peer_requests request WHERE request.request_id=json_extract(event.payload_json,'$.requestId')
             AND json_extract(request.payload_json,'$.routedMessage') IS NOT NULL)) OR event.kind='post' OR event.kind='topic_route'
-        ${closures?"OR event.kind='answer_closure'":''}
+        ${closures?`OR event.kind='answer_closure' OR (event.kind='receipt'
+          AND json_extract(event.payload_json,'$.change') GLOB 'context_*'
+          AND json_extract(input.payload_json,'$.responseMode')='context'
+          AND EXISTS(SELECT 1 FROM session_owner_events context WHERE context.event_id='context:'||input.id
+            AND context.session_id=input.session_id AND context.input_id=input.id AND context.kind='message'))`:''}
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL
             AND json_extract(input.payload_json,'$.alreadyPostedInThread') IS NOT 1))
     AND ${firstInboxAcceptanceSql}
@@ -115,8 +125,8 @@ const inboxRowsWhere=(closures:boolean,activity=false)=>` WHERE (${activity?"(ev
     -- than a sentence nobody wrote. A result that carries files is still a message.
     AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)
     AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed
-      WHERE collapsed.event_id='post:collapse:' || CASE WHEN event.kind='answer_closure'
-        THEN json_extract(event.payload_json,'$.postId') ELSE event.event_id END)`;
+      WHERE ${activePostCollapseSql('collapsed',`CASE WHEN event.kind='answer_closure'
+        THEN json_extract(event.payload_json,'$.postId') ELSE event.event_id END`)})`;
 export const inboxRows=`${inboxRowsFrom}${inboxRowsWhere(false)}`;
 const inboxDeltaRows=`${inboxRowsFrom}${inboxRowsWhere(true)}`;
 const inboxActivityRows=(closures:boolean)=>`${inboxRowsFrom}${inboxRowsWhere(closures,true)}`;
@@ -131,6 +141,10 @@ export function messageRouteForSource(sourceMessageId:string):{topicId?:string;s
 export function inboxMessage(row:any) {
   if(row.kind==='message'){
     const message=JSON.parse(row.payload_json).message as ProviderHistoryMessage;
+    if(message.responseMode==='context'&&row.input_id){
+      const context=inboxContextMessage(db,row.session_id,row.input_id,message);
+      if(context)return context;
+    }
     return {...message,sourceSessionId:row.session_id,...(row.input_id?{inputId:row.input_id}:{}),
       ...(message.createdAt?{}:{createdAt:row.created_at.replace(' ','T')+'Z',timestampSource:'received' as const})};
   }
@@ -141,11 +155,17 @@ export function inboxMessage(row:any) {
     const original=source?JSON.parse(source.payload_json):{};
     const originalPayload=original.firstInput??original;
     const attachments=(originalPayload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
-    return {id:row.event_id,sourceSessionId:row.session_id,role:source?.origin==='agent'?'assistant':'user',content:originalPayload.text??'',tool:null,phase:null,
+    const sideProjection=typeof route.sideScope==='string'&&!!route.sideScope.trim();
+    const sourceAuthor=source?inboxAttribution(db)({sourceSessionId:source.session_id,id:source.id,role:'user',content:originalPayload.text??''}).author:{kind:'unknown'};
+    // Scope is the routing agent's description, while the backlink and attachments retain
+    // the human report. Never present an agent's selection of work as Tejas's words.
+    const author=sideProjection?{kind:'agent',session:authorSessionOf(db,route.by.sessionId),inputId:route.by.inputId,runId:route.by.runId}:sourceAuthor;
+    return {id:row.event_id,sourceSessionId:row.session_id,role:author.kind==='agent'?'assistant':'user',
+      content:sideProjection?route.sideScope:originalPayload.text??'',tool:null,phase:null,
       inputId:row.event_id,submissionId:route.sourceMessageId,attachments,
-      ...(source?.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
+      author,
       routedFrom:{sessionId:source?`concierge:${source.session_id}`:undefined,topicId:route.sourceTopicId,root:route.sourceRoot,messageId:route.sourceMessageId,
-        title:routeTitle(db,route.sourceTopicId,null)},
+        title:routeTitle(db,route.sourceTopicId,null),...(sideProjection?{sideScope:route.sideScope}:{})},
       createdAt:source?.created_at?(source.created_at.includes('T')?source.created_at:source.created_at.replace(' ','T')+'Z')
         :row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:'submitted'};
   }
@@ -193,6 +213,7 @@ export function inboxMessage(row:any) {
       ...(displayedRoot!==row.event_id?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:displayedRoot}}:{})}:{}),
     ...(result&&typeof payload.messageThreadRootId==='string'&&row.input_id?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:row.input_id}}:{}),
     ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:displayedRoot}:eventPayload.replyToMessage,author:{kind:(eventPayload.postedBy==='service'?'service':'agent') as 'service'|'agent',communication:'post' as const,
+      ...(eventPayload.postSource??{}),
       ...(typeof eventPayload.requestId==='string'?{requestId:eventPayload.requestId}:{}),
       // An agent's reply posted into the thread it was asked from is that agent's, named as such; the router's posts stay the router's.
       ...(typeof eventPayload.postedBySession==='string'?{fromSession:eventPayload.postedBySession}:{})},...(eventPayload.relayed?{relayed:true}:{})}:{}),
@@ -208,17 +229,11 @@ export function inboxMessage(row:any) {
  * is an additive record: the retained input keeps its own bytes, the latest record wins,
  * and detaching returns the capture to its own row.
  */
-export type InboxThreadLink={inputId:string;root:string;thread:string;attached:boolean;routedBy:any;at:string};
 export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink|null {
   // An accepted input keeps its identity when the Inbox router changes provider.
   // Its next placement may be recorded by the successor, so the latest event for
   // that exact input wins across the handoff chain.
-  const row=db.query(`SELECT payload_json,created_at FROM session_owner_events
-    WHERE kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(inputId) as {payload_json:string;created_at:string}|null;
-  if(!row)return null;
-  const payload=JSON.parse(row.payload_json);
-  return {inputId,root:payload.root,thread:payload.thread,attached:payload.attached!==false,routedBy:payload.routedBy??null,
-    at:row.created_at.includes('T')?row.created_at:row.created_at+'Z'};
+  return readInboxThreadLink(db,inputId);
 }
 
 /**
@@ -236,6 +251,7 @@ export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|
   const scope=sessionId===null?'':` AND event.session_id IN (${INBOX_LINEAGE_SQL})`;
   const bind=sessionId===null?[messageId]:[sessionId,messageId];
   return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post','request','topic_route') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
+    ??db.query(`${inboxRows}${scope} AND (${savedContextMessageSql}) AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post','request','topic_route') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
     // A hidden closing result remains a valid historical reply target and thread anchor.
     ??db.query(`${inboxRowsFrom} WHERE event.kind='result'${scope} AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
@@ -246,8 +262,7 @@ export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<s
   if(row?.kind==='request'){
     const requestId=JSON.parse(row.payload_json).requestId;
     if(typeof requestId==='string'){
-      const request=(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)
-        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,row.session_id)) as {thread_root_input_id:string|null}|null;
+      const request=inboxSentRequest(db,requestId,row.session_id);
       const linked=request?.thread_root_input_id?inboxRequestRoot(db,requestId,request.thread_root_input_id):null;
       if(linked&&linked!==row.event_id)return linked;
     }
@@ -300,10 +315,8 @@ function returnedRequestSource(sessionId:number,inputId:string):string|null {
  * send this request, you have to tell me which thread it's for").
  */
 export function requestThreadSource(sessionId:number,requestId:string):string|null {
-  const local=db.query('SELECT source_input_id,thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
-  if(local)return inboxRequestRoot(db,requestId,local.thread_root_input_id??local.source_input_id);
-  const peer=db.query('SELECT source_input_id,thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
-  return peer?inboxRequestRoot(db,requestId,peer.thread_root_input_id??peer.source_input_id):null;
+  const sent=inboxSentRequest(db,requestId,sessionId);
+  return sent?inboxRequestRoot(db,requestId,sent.thread_root_input_id??sent.source_input_id):null;
 }
 /**
  * The thread an Inbox request works for, resolved at admission: the exact message the sender
@@ -331,9 +344,10 @@ function turnQuietReason(sessionId:number,turnId:number):string|null {
 export function turnThreadActions(sessionId:number,turnId:number,ownInputId:string|null):{mixedThreads:boolean;answeredByPost:boolean} {
   const own=ownInputId?inboxThreadRoot(sessionId,ownInputId):null;
   const named=new Set<string>();
-  for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_communication_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
+  // A turn id names one session's turn; a later router handoff moves its requests' custody.
+  for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_communication_requests WHERE source_turn_id=?').all(turnId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
-  for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
+  for(const row of db.query("SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND json_extract(payload_json,'$.responseMode') IS NOT 'context'").all(turnId) as {root:string|null}[])
     if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
   let answeredByPost=false;
   for(const row of db.query("SELECT event_id,input_id FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post'").all(sessionId,turnId) as {event_id:string;input_id:string|null}[]){
@@ -353,17 +367,39 @@ export const turnMixesThreads=(sessionId:number,turnId:number,ownInputId:string|
  * two hours: "either none of the protocols that we have built is working, or you've been
  * bushing me."
  */
+const NO_REPLY_SERVICE_PREFIXES = [
+  'thread-upkeep:', 'unfiled-wake:', 'request-reminder:', 'question-reminder:',
+  'question-todo-done:', 'direct-todo-done:', 'question-returned:', 'handoff-notice:',
+  'background-job:', 'update-wait:', 'area-theme:',
+] as const;
+
+/** Retained notices predate the explicit mark; prove their contract from owner identity,
+ * never from their words. Follow only the exact original of an owner-made handoff copy. */
+function serviceNoticeNeedsNoThreadReply(opening:AcceptedSessionInput):boolean {
+  const seen=new Set<string>();
+  let input:AcceptedSessionInput|null=opening;
+  while(input?.origin==='service'&&!seen.has(input.id)){
+    seen.add(input.id);
+    const payload=JSON.parse(input.payload_json);
+    if(payload.alreadyPostedInThread===true||payload.threadReplyNotRequired===true
+      ||NO_REPLY_SERVICE_PREFIXES.some(prefix=>input!.id.startsWith(prefix)))return true;
+    if(input.id.startsWith('return:')){
+      const eventId=input.id.slice('return:'.length);
+      for(const table of ['session_communication_events','session_peer_events']){
+        const event=db.query(`SELECT kind FROM ${table} WHERE event_id=? AND request_id=?`).get(eventId,input.request_id) as {kind:string}|null;
+        if(event?.kind==='overdue')return true;
+      }
+    }
+    input=input.scope.startsWith('handoff:')&&input.id.startsWith('handoff-input:')
+      ?getAcceptedSessionInput(input.action_id):null;
+  }
+  return false;
+}
 export function threadOwedByTurn(session:SessionRow,openingInputId:string|null):string|null {
   if(!openingInputId||!sessionMetadata(session).inbox)return null;
   const opening=getAcceptedSessionInput(openingInputId);
   if(!opening||opening.origin==='human')return null;
-  if(opening.origin==='service'){
-    const payload=JSON.parse(opening.payload_json);
-    // Older upkeep inputs were admitted before the explicit mark existed. Their
-    // service identity and owner-generated prefix still prove the no-reply contract.
-    if(payload.alreadyPostedInThread===true||payload.threadReplyNotRequired===true
-      ||opening.id.startsWith('thread-upkeep:'))return null;
-  }
+  if(serviceNoticeNeedsNoThreadReply(opening))return null;
   return inboxThreadRoot(session.id,openingInputId);
 }
 export function turnPostedInto(sessionId:number,turnId:number,root:string):boolean {
@@ -399,8 +435,8 @@ export async function backfillResultAnsweredByPost(stopped:()=>boolean):Promise<
     db.transaction(()=>{
       for(const row of rows){
         if(stopped())break;
-        const result=db.query('SELECT session_id AS sessionId,turn_id AS turnId,input_id AS inputId FROM session_owner_events WHERE event_id=? AND kind=\'result\'')
-          .get(`result:${row.turnId}`) as {sessionId:number;turnId:number;inputId:string}|null;
+        const result=db.query("SELECT session_id AS sessionId,turn_id AS turnId,input_id AS inputId FROM session_owner_events WHERE turn_id=? AND kind='result' ORDER BY sequence DESC LIMIT 1")
+          .get(row.turnId) as {sessionId:number;turnId:number;inputId:string}|null;
         if(result&&markResultAnsweredByPost(result))marked++;
       }
     }).immediate();
@@ -525,28 +561,19 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
         .get(answer.inboxSessionId,answer.requestId,answer.inboxSessionId,answer.requestId) as {event_id:string}|null;
       if(!earlier)throw new Error('A bodyless final has no prompt answer post for this request.');
       carriedBy=earlier.event_id;
-    } else if(answer.final&&!answer.stalled&&(answer.answerGroup||answer.answerSource)&&(text||answer.attachments.length)) {
+    } else if(answer.final&&!answer.stalled&&answer.answerGroup&&(text||answer.attachments.length)) {
       const topic=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(answer.root) as {topic_id:string}|null;
       const grouped=db.query(`SELECT post.event_id FROM session_owner_events post
         LEFT JOIN inbox_topic_roots roots ON roots.root_input_id=post.input_id
         WHERE post.session_id=? AND post.kind='post' AND ((? IS NOT NULL AND roots.topic_id=?) OR post.input_id=?)
-          AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed WHERE collapsed.event_id='post:collapse:' || post.event_id)
+          AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed WHERE ${activePostCollapseSql('collapsed','post.event_id')})
           AND json_extract(post.payload_json,'$.replyKind')='final'
           AND json_extract(post.payload_json,'$.postedBySession')=?
-          AND json_extract(post.payload_json,'$.text')=?
-          AND coalesce(json_extract(post.payload_json,'$.attachments'),'[]')=?
-          AND coalesce(json_extract(post.payload_json,'$.workDisposition'),'')=?
-          AND coalesce(json_extract(post.payload_json,'$.quiet'),'')=?
           AND coalesce(json_extract(post.payload_json,'$.messageThreadRootId'),'')=?
-          AND coalesce((SELECT json_extract(closure.payload_json,'$.closingLine') FROM session_owner_events closure
-            WHERE closure.event_id IN ('post:closure:' || substr(post.event_id,length('post:forward:')+1),
-              'post:closure:' || post.event_id) ORDER BY closure.sequence DESC LIMIT 1),'')=?
-          AND (json_extract(post.payload_json,'$.answerGroup')=? OR
-            json_extract(post.payload_json,'$.answerSource.runId')=?)
+          AND json_extract(post.payload_json,'$.answerGroup')=?
         ORDER BY post.sequence LIMIT 1`)
-        .get(answer.inboxSessionId,topic?.topic_id??null,topic?.topic_id??null,answer.root,answer.respondingSessionId,text,
-          JSON.stringify(answer.attachments),answer.workDisposition??'',answer.quiet??'',answer.messageThreadRootId??'',answer.closingLine??'',
-          answer.answerGroup??'',answer.answerSource?.runId??'') as {event_id:string}|null;
+        .get(answer.inboxSessionId,topic?.topic_id??null,topic?.topic_id??null,answer.root,answer.respondingSessionId,
+          answer.messageThreadRootId??'',answer.answerGroup) as {event_id:string}|null;
       if(grouped)carriedBy=grouped.event_id;
       else if(text||answer.attachments.length){
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
@@ -560,26 +587,6 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
         carriedBy=postId;
       }
     } else if(text||answer.attachments.length) {
-        const topic=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(answer.root) as {topic_id:string}|null;
-        const shared=answer.stalled?!!answer.noticeGroup:!!answer.answerSource?.runId;
-        const grouped=shared?db.query(`SELECT post.event_id FROM session_owner_events post
-          LEFT JOIN inbox_topic_roots roots ON roots.root_input_id=post.input_id
-          WHERE post.session_id=? AND post.kind='post' AND ((? IS NOT NULL AND roots.topic_id=?) OR post.input_id=?)
-            AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed WHERE collapsed.event_id='post:collapse:' || post.event_id)
-            AND json_extract(post.payload_json,'$.replyKind')='partial'
-            AND json_extract(post.payload_json,'$.postedBySession')=?
-            AND coalesce(json_extract(post.payload_json,'$.messageThreadRootId'),'')=?
-            AND ( (?=1 AND json_extract(post.payload_json,'$.noticeGroup')=?)
-              OR (?=0 AND json_extract(post.payload_json,'$.answerSource.runId')=?
-                AND json_extract(post.payload_json,'$.text')=?
-                AND coalesce(json_extract(post.payload_json,'$.attachments'),'[]')=?
-                AND coalesce(json_extract(post.payload_json,'$.answersQuestion'),0)=?) )
-          ORDER BY post.sequence LIMIT 1`)
-          .get(answer.inboxSessionId,topic?.topic_id??null,topic?.topic_id??null,answer.root,answer.respondingSessionId,
-            answer.messageThreadRootId??'',answer.stalled?1:0,answer.noticeGroup??'',answer.stalled?1:0,
-            answer.answerSource?.runId??'',text,JSON.stringify(answer.attachments),answersQuestion?1:0) as {event_id:string}|null:null;
-        if(grouped)carriedBy=grouped.event_id;
-        else {
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
           payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${answer.inboxSessionId}`,messageId:answer.inboxInputId},requestId:answer.requestId,
             ...(answer.messageThreadRootId?{messageThreadRootId:answer.messageThreadRootId}:{}),
@@ -589,7 +596,6 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
             ...(answer.final&&answer.workDisposition==='completed'&&answer.quiet?{quiet:answer.quiet}:{}),
             ...(answer.stalled?{postedBy:'service',postedBySession:answer.respondingSessionId}:{postedBy:'owner-forward',postedBySession:answer.respondingSessionId}),...(answer.attachments.length?{attachments:answer.attachments}:{})}});
         carriedBy=postId;
-        }
         if(!answer.final&&carriedBy&&!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`post:carry:${answer.eventId}`))
           recordSessionEvent({eventId:`post:carry:${answer.eventId}`,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'answer_carry',
             payload:{postId:carriedBy,requestId:answer.requestId,answersQuestion}});
@@ -654,13 +660,15 @@ export function inboxHistoryAfter(session:SessionRow,after:number,limit:number,a
   const rows=db.query(`${activity?inboxActivityRows(true):inboxDeltaRows}${notForwardedPastRouterSql} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(after,limit+1) as any[];
   if(rows.length>limit)return null;
   const projected=rows.map(row=>{
+    if(row.kind==='receipt')return inboxMessageById(row.session_id,`context:${row.input_id}`);
     if(row.kind!=='answer_closure')return inboxMessage(row);
     const postId=JSON.parse(row.payload_json).postId;
     const post=db.query(`${inboxRows} AND event.event_id=?`).get(postId) as any;
     if(!post)throw new Error('The answer closure refers to a missing post.');
     return inboxMessage(post);
   });
-  return [...new Map(projected.map(message=>[message.id,message])).values()];
+  return [...new Map(projected.filter((message):message is NonNullable<typeof message>=>message!==null)
+    .map(message=>[message.id,message])).values()];
 }
 
 const MAC_ROUTING_INSTRUCTION = `Website and verification browsers run on the always-on server first. An emailed approval or text code for a server sign-in stays with that server browser. If a website truly fails there, a Mac request may use --machine-need browser-fallback:specific reason with --server-attempt-url and --server-attempt-failure naming the observed failed attempt; the Mac then provides an isolated headless browser without asking Tejas. Other Mac needs are ios-native, mac-app, mac-file, mac-screen, messages or human-mac. Agent work never drives his signed-in Chrome or takes desktop focus. sessions open is only for Tejas's current direct request to open a link for him.`;

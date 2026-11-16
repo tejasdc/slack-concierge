@@ -26,7 +26,7 @@ import {classifyNativeReadRoute} from '../src/native-read-routes';
   db.query('INSERT INTO inbox_requests VALUES(?,?,?,?)').run('req:a','topic-a',JSON.stringify([{inputId:reportA}]),JSON.stringify([{requestId:dispatch}]));
   db.query('INSERT INTO inbox_requests VALUES(?,?,?,?)').run('req:b','topic-b',JSON.stringify([{inputId:reportB}]),JSON.stringify([{requestId:dispatch}]));
   db.query('INSERT INTO session_owner_events VALUES(NULL,?,?,?,?)').run('post-old','post','2026-11-03 10:00:00',JSON.stringify({requestId:dispatch}));
-  db.query('INSERT INTO session_owner_events VALUES(NULL,?,?,?,?)').run('post-1','post','2026-11-04 10:00:00',JSON.stringify({requestId:dispatch}));
+  db.query('INSERT INTO session_owner_events VALUES(NULL,?,?,?,?)').run('post-1','post','2026-11-04 10:00:00',JSON.stringify({requestId:dispatch,replyKind:'partial',answersQuestion:true}));
   const chain=reportSourceChain(db,dispatch);
   assert.equal(chain.resolvedCapture,unrelated);
   assert.equal(chain.hops.at(-1)?.text,`words of ${unrelated}`);
@@ -44,11 +44,27 @@ import {classifyNativeReadRoute} from '../src/native-read-routes';
   db.query('INSERT INTO session_communication_requests VALUES(?,?,?,?,?)').run(historical,
     JSON.stringify({attachments:['report-a']}),'answered',3,Date.parse('2026-11-04T11:00:00Z'));
   assert.equal(reportSourceChain(db,historical).resolvedCapture,reportA);
+  db.exec(`ALTER TABLE session_communication_requests ADD COLUMN source_input_id TEXT;
+    ALTER TABLE session_communication_requests ADD COLUMN target_input_id TEXT;
+    ALTER TABLE session_communication_requests ADD COLUMN thread_root_input_id TEXT;
+    ALTER TABLE session_communication_requests ADD COLUMN due_at_ms INTEGER;
+    ALTER TABLE session_communication_requests ADD COLUMN prompt_answered_at_ms INTEGER;
+    ALTER TABLE session_communication_requests ADD COLUMN prompt_reminded_at_ms INTEGER;
+    ALTER TABLE session_communication_requests ADD COLUMN overdue_at_ms INTEGER;
+    ALTER TABLE session_communication_requests ADD COLUMN result_json TEXT;
+    CREATE TABLE session_communication_events(event_id TEXT,request_id TEXT,kind TEXT,status TEXT,error TEXT,created_at_ms INTEGER,superseded_by_event_id TEXT);`);
+  db.query('INSERT INTO session_owner_events VALUES(NULL,?,?,?,?)').run('progress-only','post','2026-11-04 11:01:00',JSON.stringify({requestId:historical,replyKind:'partial'}));
+  db.query('INSERT INTO session_owner_events VALUES(NULL,?,?,?,?)').run('service-terminal','post','2026-11-04 11:02:00',JSON.stringify({requestId:historical,replyKind:'final',answersQuestion:true,postedBy:'service'}));
   const window=reportWindow(db,'2026-11-04T06:00:23Z','2026-11-05T06:00:21Z');
   assert.equal(window.reports.length,2);
   assert.equal(window.reports.every(report=>report.requests.some(request=>request.id===dispatch&&request.answeredInThread)),true);
   assert.equal(window.reports[0]?.requests.find(request=>request.id===dispatch)?.threadPosts[0]?.eventId,'post-1');
   assert.equal(window.reports[0]?.requests.find(request=>request.id===dispatch)?.threadPosts.length,1);
+  const unresolved=window.reports[0]?.requests.find(request=>request.id===historical);
+  assert.equal(unresolved?.answeredInThread,false,'Progress and a service terminal notice are not an agent answer');
+  assert.equal(unresolved?.threadPosts.length,2,'Progress remains available for investigation');
+  assert.equal(window.humanInputs.find(input=>input.id===reportB)?.requests.some(request=>request.id===dispatch),true,
+    'Exact obligation links apply to all human inputs, including a later rerouted/shared dispatch');
   db.close();
 }
 console.log('Agent report read check passed.');

@@ -1,5 +1,6 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
-import { codexAppServerReady, codexRelayRunner, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
+import {boundLabInvocation,labInvocationBindingMatches} from './lab-conversations';
+import { codexAppServerReady, codexRelayRunner, ownerCodexAppServerClient, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
 import {runnerMachineCall,RunnerUnreachableError} from './runner-machine-calls';
 import {resolveRunnerProjectLocation} from './runner-project-location';
@@ -9,8 +10,9 @@ import {thesaurusTurnContext} from './thesaurus-context';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
-import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,reserveCodexUnacknowledgedRecovery,codexUnacknowledgedRecovery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
+import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentAntigravityInputs,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {lastLaunchedConversationHome} from './session-runner-home';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
 import {recordResultTurnOutcome,recordUnsaidTurnOutcome} from './session-turn-outcome';
@@ -23,7 +25,7 @@ import {runOutsideCodexTurn,type OutsideRun} from './outside-codex';
 import {outsideCodexPromptContent} from './outside-codex';
 import type {ProviderId} from './state';
 import {thinkeringConfigured} from './thinkering-capability-target';
-import {SessionCapabilityClient,chatGptCapabilities,type ChatGptAdmission,type CapabilityEvidence,type ChatGptReceipt} from './session-capability-client';
+import {SessionCapabilityClient,ChatGptDispatchError,chatGptCapabilities,type ChatGptAdmission,type CapabilityEvidence,type ChatGptReceipt} from './session-capability-client';
 import {completeNativeFork,readNativeForkPin,type NativeForkPin} from './native-session-controls';
 import {readRetainedNativeResult} from './turn-recovery';
 import {isProcessIdentityAlive} from './runtime-identity';
@@ -31,10 +33,62 @@ import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {OwnerDrainBeforeProviderAdmissionError,ProviderDispatchError} from './provider-failures';
 import {providerRetryDelayMs} from './provider-failures';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
-import {maybeStartInboxProviderFailover} from './inbox-provider-failover';
+import {maybeStartStandingRoleFailover} from './standing-role-provider-failover';
 import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
+import {proveCodexInputNeverAcknowledged} from './codex-unacknowledged-proof';
+import {recoverCustodySuccessor,custodySuccessor,custodyPlacement,custodySuccessorSession,protectedCustodyRun} from './codex-custody-successor';
+import {custodyConnection} from './codex-custody-connection';
+import {installCodexCustodyForwardPolicy} from './codex-custody-forward-guard';
+import {CodexAppServerClient,type CodexAppServerClientLike} from './codex-app-server-client';
+import {nativeResultEventId} from './native-result-identity';
 import type {HostRunnerFile} from './host-access';
+
+export function agentCreatedCodexTestInput(input:AcceptedSessionInput,session:SessionRow) {
+  if(input.kind!=='create'||input.origin!=='agent'||session.provider_id!=='codex'||sessionMetadata(session).outside===true
+    ||!input.source_input_id||!input.source_run_id)return false;
+  const payload=JSON.parse(input.payload_json) as {codexNativeTestFaultDeadlineMs?:unknown};
+  if(typeof payload.codexNativeTestFaultDeadlineMs!=='number'||!Number.isSafeInteger(payload.codexNativeTestFaultDeadlineMs)
+    ||payload.codexNativeTestFaultDeadlineMs<=Date.now())return false;
+  const source=getAcceptedSessionInput(input.source_input_id);
+  if(!source||source.origin!=='agent'||source.turn_id===null)return false;
+  const sourceTurn=db.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?').get(source.turn_id,source.session_id) as {native_run_id:string|null}|null;
+  return !!sourceTurn&&sourceTurn.native_run_id===input.source_run_id;
+}
+
+type DedicatedCodexTestClient={executionId:string;dispatchAttempt:number;faultDeadlineMs:number;client:ReturnType<typeof ownerCodexAppServerClient>};
+export function codexTestFaultBindingMatches(expected:{executionId:string;dispatchAttempt:number;generation:number;faultDeadlineMs:number},
+  current:{executionId:string;dispatchAttempt:number;generation:number;faultDeadlineMs:number}|null) {
+  return !!current&&current.executionId===expected.executionId&&current.dispatchAttempt===expected.dispatchAttempt
+    &&current.generation===expected.generation&&current.faultDeadlineMs===expected.faultDeadlineMs;
+}
+export class DedicatedCodexTestClients {
+  private readonly clients=new Map<number,DedicatedCodexTestClient>();
+  private readonly retiring=new Map<number,Set<DedicatedCodexTestClient>>();
+  get(turnId:number){return this.clients.get(turnId);}
+  async replace(turnId:number,next:DedicatedCodexTestClient){
+    const prior=this.clients.get(turnId);
+    this.clients.set(turnId,next);
+    if(prior&&prior.client!==next.client)try{await prior.client.close();}catch(error){
+      const pending=this.retiring.get(turnId)??new Set<DedicatedCodexTestClient>();pending.add(prior);this.retiring.set(turnId,pending);throw error;
+    }
+  }
+  async closeIfTerminal(turnId:number,status:string|null){
+    const current=this.clients.get(turnId);
+    if(!current||!status||!['done','error','cancelled'].includes(status))return false;
+    const pending=this.retiring.get(turnId)??new Set<DedicatedCodexTestClient>();
+    const resources=new Set([...pending,current]);
+    let failure:unknown;
+    for(const resource of resources){
+      try{await resource.client.close();pending.delete(resource);}
+      catch(error){failure??=error;}
+    }
+    if(pending.size)this.retiring.set(turnId,pending);else this.retiring.delete(turnId);
+    if(this.clients.get(turnId)===current&&!failure)this.clients.delete(turnId);
+    if(failure)throw failure;
+    return true;
+  }
+}
 
 /**
  * A ChatGPT request that fails because the channel itself broke (the page changed, sign-in failed,
@@ -69,11 +123,13 @@ function noteChatgptChannelFailure(error:unknown,sessionId:number,dispatchAttemp
   // repair agent on 2026-11-03.
   if(dispatchAttempt<=1&&error instanceof ProviderDispatchError&&error.failureClass==='retryable')return;
   const text=error instanceof Error?error.message:String(error);
+  const suppressedCodes=['CHATGPT_RATE_LIMITED','CAPABILITY_OWNER_LOST','CAPABILITY_OBSERVATION_ABORTED','CHATGPT_OBSERVATION_STOPPED','CHATGPT_NOT_SENT'];
+  if(error instanceof ChatGptDispatchError&&suppressedCodes.includes(error.evidence.code))return;
   const code=/CHATGPT_[A-Z_]+|CAPABILITY_[A-Z_]+/.exec(text)?.[0]??'CHATGPT_FAILURE';
   // CHATGPT_NOT_SENT means Thinkering restarted while the request waited its turn: nothing reached
   // ChatGPT and the same run is sent again by itself, so it is a wait, not a channel fault. Eight
   // queued requests woke the repair agent at once after a release restart on 2026-10-13.
-  if(['CHATGPT_RATE_LIMITED','CAPABILITY_OWNER_LOST','CAPABILITY_OBSERVATION_ABORTED','CHATGPT_OBSERVATION_STOPPED','CHATGPT_NOT_SENT'].includes(code))return;
+  if(suppressedCodes.includes(code))return;
   // Only he can sign in to Google or pass a check the browser could not: tell him at once, with
   // its own Inbox thread and push, so nobody waits blind (Tejas, 2026-10-09: "I'm notified
   // immediately so the agents are like not waiting"). One notice per hour.
@@ -93,13 +149,15 @@ function noteChatgptChannelFailure(error:unknown,sessionId:number,dispatchAttemp
 }
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputIdentityContext,sessionInputInstructions,sessionTurnContext} from './session-input-context';
+import {passiveContextFor,passiveContextPrompt,passiveContextAttachments} from './session-passive-context';
 import {thinkAloudInstructions} from './think-aloud-instructions';
 import {INBOX_INSTRUCTIONS,markResultAnsweredByPost,minutesText,pebbleArrivalWaitMs,relayUnpostedAnswer} from './session-inbox';
 import {readClaudeCachedMessage,readCodexHistoryMessage,readClaudeHistory,readCodexHistory} from './provider-history';
 import {ProviderHistoryPageClient} from './provider-history-page-client';
 import {ATTENTION_INSTRUCTION,releaseFocusForPost,settleExitedProcessReport,topicPromptContext} from './session-topics';
-import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
+import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,reservePendingRunnerSignIn,clearPendingSignIn,pendingRunnerSignIn} from './state';
 import {log,errorFields} from './log';
+import {crowdingConfig,crowdingNotice,readCrowding,workIsHisToWaitOn} from './crowding';
 import {attachedRecordingWords,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
 import {codexSignInState,codexAccountInUse} from './codex-device-login';
@@ -119,13 +177,13 @@ import {storedUsage,withResetAdvice,accountAvailability} from './provider-usage-
 import {budgetBriefWithProviderRoom} from './provider-start-choice';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAnswer,runningCodexTurns,type ActivationReport} from './provider-activation';
-import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges} from './state';
+import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges,executionChanged} from './state';
 import {activateRunnerCodexAccount} from './runner-provider-account-owner';
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome,setRunnerAccountInUse} from './provider-accounts';
 import {providerRunnerTarget} from './provider-runner-target';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexOrdinaryUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
+import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexUnboundUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -134,6 +192,7 @@ import {pinCodexThreadHooks} from './hook-pins';
 import {HostedClaudeCodeTransport,HostUnavailableError,claudeExecutable,executionDirectory,executionHostsEnabled,newExecutionId,streamJournal} from './execution-host-client';
 import {RUNNER_SUPERVISOR,RunnerHostAccess} from './runner-host-access';
 import {agentRunEnvironment} from './agent-run-tokens';
+import {commitSessionIdentity} from './peer-identity';
 import {recordExecutionExited,recordExecutionLaunched,recordLiveAdoption,releaseExecution,retainExecutionIntent,trackOpenHostedExecutionsOfTurn,type Adoption,type ExecutionRow} from './executions';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex'|'antigravity';mode:'interactive'|'device'|'host-managed';pending:boolean;signInKeepsCurrent:true;pendingFor:string|null;pendingUrl:string|null;lastSignIn:{ok:boolean;detail:string|null}|null;message:string;signedIn?:boolean;checking?:boolean;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
@@ -172,10 +231,14 @@ function sameCanvasSpeechTurn(input:AcceptedSessionInput,turnId:number):boolean 
  */
 function canvasSpeechTurnJoiner(turnId:number):(input:AcceptedSessionInput)=>boolean {
   const opening=acceptedInputForTurn(turnId),active=opening?canvasSpeechContext(opening):null;
+  const openingContext=new Set(opening?passiveContextFor(opening).map(context=>context.id):[]);
   return input=>{
     const incoming=canvasSpeechContext(input);
     if(!incoming&&!active)return true;
-    return !!incoming&&!!active&&incoming.boardId===active.boardId&&incoming.pageId===active.pageId;
+    if(!incoming||!active||incoming.boardId!==active.boardId||incoming.pageId!==active.pageId)return false;
+    // Application context is fixed when the provider turn starts. A later saved note
+    // cannot be added to a same-page steering message without becoming stale/missing.
+    return passiveContextFor(input).every(context=>openingContext.has(context.id));
   };
 }
 
@@ -208,6 +271,10 @@ export class SessionExecutionHost {
   readonly owner:SessionOwner;
   readonly capabilityClient:SessionCapabilityClient|null;
   private readonly providerLoginManager:ProviderLoginManager;
+  private readonly testCodexClients=new DedicatedCodexTestClients();
+  // Native thread/start subscribes its connection. Keep that connection so an idle
+  // successor is not unloaded between construction and its exact selected admission.
+  private readonly custodyCodexClients=new Map<number,CodexAppServerClientLike & {close():Promise<void>}>();
   private readonly codexLogin:CodexAccountLogin;
   private readonly claudeLogin:ClaudeAccountLogin;
   // One Codex switch at a time: two moves sharing one restart would undo in the wrong order.
@@ -218,7 +285,8 @@ export class SessionExecutionHost {
   // How the last sign-in that finished on its own ended, for the screen that waited on it.
   private readonly lastSignIn=new Map<ProviderKey,{ok:boolean;detail:string|null}>();
   private readonly runnerSignIns=new Map<ProviderKey,RunnerSignInState>();
-  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;thesaurusContext?:(text:string)=>Promise<string>;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
+  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;thesaurusContext?:(text:string)=>Promise<string>;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string;custodyClientFactory?:()=>CodexAppServerClientLike & {close():Promise<void>};custodyObserveProcesses?:(threadId:string)=>Promise<CodexLeftoverProcess[]>}) {
+    installCodexCustodyForwardPolicy();
     for(const provider of ['codex','claude-code'] as const)if(providerRunnerTarget(provider))setRunnerAccountInUse(provider,null);
     for(const provider of ['codex','claude-code'] as const){
       const pending=pendingRunnerSignIn(provider);
@@ -256,8 +324,11 @@ export class SessionExecutionHost {
     // nothing here to activate — only parked work to release once the account is usable.
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
       steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionStop(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
+      prepareCodexTestConnectionLoss:(session,turn)=>this.prepareTestCodexConnectionLoss(session,turn),
+      codexTestConnectionLoss:(session,turn,binding)=>this.loseTestCodexConnection(session,turn,binding),
       safeStop:async(session,turn)=>{const stopped=options.registry.requestSafeSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
+      readJournalEntry:this.capabilityClient?root=>this.capabilityClient!.readJournalEntry(root):undefined,
       saveCaptureNote:this.capabilityClient?input=>this.capabilityClient!.saveCaptureNote(input):undefined,
       history:options.history??((session,cursor,limit)=>this.history(session,cursor,limit)),
       projectedHistory:options.history||Object.entries(options.providers).some(([provider,value])=>
@@ -269,6 +340,19 @@ export class SessionExecutionHost {
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
       requeueProvenUnsentChatGpt:(session,operation)=>this.requeueProvenUnsentChatGpt(session,operation),
+      recoverCustodySuccessor:async input=>{
+        const retained=custodySuccessor(`report-back:${input.requestId}`);
+        const existing=retained?this.custodyCodexClients.get(retained.successor_session_id):null;
+        if(existing)return recoverCustodySuccessor(input,existing,this.options.custodyObserveProcesses);
+        const client=this.custodyClient();
+        let keep=false;
+        try{
+          const result=await recoverCustodySuccessor(input,client,this.options.custodyObserveProcesses);
+          if(result.state==='constructed'&&retained?.construction_intended_at==null){this.custodyCodexClients.set(result.successor_session_id,client);keep=true;}
+          return result;
+        }finally{if(!keep)await client.close();}
+      },
+      requeueProvenUnacknowledgedCodex:(session,operation,input)=>this.requeueProvenUnacknowledgedCodex(session,operation,input),
       proveRejectedChatGptAttachment:(session,operation)=>this.proveRejectedChatGptAttachment(session,operation),
       auth:{ephemera:()=>this.authEphemera(),refreshEphemera:()=>this.refreshAuthEphemera(),status:(fresh?:boolean)=>this.providerAuthStatus(fresh===true),start:(provider,profileId)=>this.startProviderAuthRefresh(provider,profileId),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
         chooseClaudeLaunch:model=>chooseClaudeDispatch(null,0,undefined,model),
@@ -278,6 +362,30 @@ export class SessionExecutionHost {
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),proof:input=>this.capabilityClient!.sourceSearchProof(input),history:input=>this.capabilityClient!.sourceHistory(input),historyMessage:input=>this.capabilityClient!.sourceHistoryMessage(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
     // Each change to a Codex conversation's history tops up its kept window off the owner loop.
     this.stopCodexWindows=onCodexHistoryChanged((sessionId,thread)=>this.historyPages.prepareCodexWindow(sessionId,thread));
+  }
+  private custodyClient(){
+    if(process.env.CONCIERGE_CODEX_RUNNER?.trim())
+      throw new Error('Local custody construction cannot use a runner-selected native endpoint.');
+    return custodyConnection(this.options.custodyClientFactory?.()??new CodexAppServerClient(undefined,undefined,{manageDaemon:false}));
+  }
+  private prepareTestCodexConnectionLoss(sessionId:number,turnId:number) {
+    const turn=db.query(`SELECT status,dispatch_attempt,owner_instance_id,stop_requested_at FROM turns WHERE id=? AND session_id=?`).get(turnId,sessionId) as
+      {status:string;dispatch_attempt:number;owner_instance_id:string|null;stop_requested_at:string|null}|null;
+    const execution=db.query(`SELECT execution_id FROM executions WHERE turn_id=? AND dispatch_attempt=?
+      AND supervisor='codex-daemon' AND state IN ('intended','live') AND coordinator_instance_id=?
+      ORDER BY created_at_ms DESC LIMIT 1`).get(turnId,turn?.dispatch_attempt??-1,this.options.instanceId) as {execution_id:string}|null;
+    const tracked=this.testCodexClients.get(turnId);
+    const generation=tracked?.client.activeGeneration;
+    if(!turn||turn.status!=='running'||turn.stop_requested_at||turn.owner_instance_id!==this.options.instanceId||!execution||!tracked
+      ||tracked.executionId!==execution.execution_id||tracked.dispatchAttempt!==turn.dispatch_attempt||generation===null||generation===undefined
+      ||!Number.isSafeInteger(generation)||tracked.faultDeadlineMs<=Date.now())return null;
+    return {executionId:execution.execution_id,dispatchAttempt:turn.dispatch_attempt,generation,faultDeadlineMs:tracked.faultDeadlineMs};
+  }
+  private async loseTestCodexConnection(sessionId:number,turnId:number,binding:{executionId:string;dispatchAttempt:number;generation:number;faultDeadlineMs:number}):Promise<"observed"|"stale"> {
+    const current=this.prepareTestCodexConnectionLoss(sessionId,turnId);
+    if(!codexTestFaultBindingMatches(binding,current))return 'stale';
+    const tracked=this.testCodexClients.get(turnId)!;
+    return tracked.client.loseConnectionGeneration(binding.generation);
   }
   private runnerAuthTarget(provider:ProviderKey):string|null{
     return providerRunnerTarget(provider);
@@ -337,8 +445,9 @@ export class SessionExecutionHost {
     if(this.restoreRunnerSignIn(provider))return {status:'failed',detail:'A sign-in is already waiting on the runner. Refresh the Accounts page to continue it.'};
     const operationId=`signin:${randomUUID()}`;
     const operation:RunnerSignInState={runner,operationId,profileId:profileId??null,status:'starting'};
+    if(!reservePendingRunnerSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId}))
+      return {status:'failed',detail:'This machine is installing an update. No sign-in started; try again after the update finishes.'};
     this.runnerSignIns.set(provider,operation);
-    recordPendingSignIn(provider,this.options.instanceId,Date.now()+10*60_000,{runner,operationId,profileId});
     try{
       const answer=await runnerMachineCall<any>(runner,'accounts.signin.start',{operationId,provider});
       if(!answer||typeof answer.status!=='string')throw new Error('The runner returned no sign-in outcome.');
@@ -501,11 +610,28 @@ export class SessionExecutionHost {
   }
   private checkProviderAuth(fresh=false):void{
     const recent=Date.now()-this.providerAuthCheckedAt<30_000;
-    this.providerAuthCheck??=!fresh&&recent?null:Promise.all([
+    if(this.providerAuthCheck){
+      if(fresh){
+        const current=this.providerAuthCheck;
+        const forced=scheduleProviderAccountUsageRefresh(true).catch(()=>{});
+        this.trackProviderAuthCheck(Promise.all([current,forced]));
+      }
+      return;
+    }
+    if(!fresh&&recent)return;
+    this.trackProviderAuthCheck(Promise.all([
       providerRunnerTarget('claude-code')?Promise.resolve():refreshClaudeAccount(),
       providerRunnerTarget('codex')?Promise.resolve():codexSignInState().then(answer=>{this.codexSignIn=answer.state;if(answer.state==='signed-in')setCodexAccountInUse(answer);}).catch(()=>{}),
-      scheduleProviderAccountUsageRefresh().catch(()=>{})]).then(()=>undefined,()=>undefined)
-      .finally(()=>{this.providerAuthCheck=null;this.providerAuthCheckedAt=Date.now();});
+      scheduleProviderAccountUsageRefresh(fresh).catch(()=>{})]));
+  }
+  private trackProviderAuthCheck(work:Promise<unknown>):void{
+    const check=work.then(()=>undefined,()=>undefined);
+    this.providerAuthCheck=check;
+    void check.then(()=>{
+      if(this.providerAuthCheck!==check)return;
+      this.providerAuthCheck=null;
+      this.providerAuthCheckedAt=Date.now();
+    });
   }
   private async providerAuthStatus(fresh=false):Promise<readonly ProviderAuthView[]>{
     this.checkProviderAuth(fresh);
@@ -543,7 +669,7 @@ export class SessionExecutionHost {
       try {
         const cleared=clearCodexAccountUsage(outcome.accountId,outcome.verifiedReadStartedAtMs);
         if(cleared){
-          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexOrdinaryUsageHeldWork(outcome.accountId);this.options.wake();}
+          if(currentAccount('codex')?.id===outcome.accountId){releaseCodexUnboundUsageHeldWork(outcome.accountId);this.options.wake();}
         } else outcome={...outcome,status:'redeemed',detail:'The reset was redeemed, but a newer refusal prevents confirming launch availability. Work remains held.'};
       } catch(error) {
         log('error','codex_reset_cache_clear_failed',errorFields(error));
@@ -582,7 +708,7 @@ export class SessionExecutionHost {
       const waiting=db.query(`SELECT COALESCE(turns.provider_model,
           (SELECT earlier.provider_model FROM turns earlier WHERE earlier.session_id=turns.session_id
             AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model,
-          sessions.metadata_json
+          sessions.native_metadata_json AS metadata_json
         FROM turns JOIN sessions ON sessions.id=turns.session_id
         WHERE turns.status='queued' AND turns.dispatch_hold='usage'
           AND turns.dispatch_failure_class IN ('backoff','usage_wait')
@@ -915,6 +1041,8 @@ export class SessionExecutionHost {
   }
   async stop():Promise<void>{
     this.beginDrain();this.stopCodexMoves();this.stopCodexWindows();
+    await Promise.allSettled([...this.custodyCodexClients.values()].map(client=>client.close()));
+    this.custodyCodexClients.clear();
     const timedStop=async(name:string,stop:()=>Promise<void>)=>{
       const started=performance.now();
       try{await stop();}
@@ -994,7 +1122,7 @@ export class SessionExecutionHost {
     // The thread this input belongs to, or the instruction to file it first.
     prompt+=topicPromptContext(input.session_id,input.id,payload);
     if(payload.context?.length)prompt+=`\n\n<selected-workspace-revisions>\n${JSON.stringify(payload.context)}\n</selected-workspace-revisions>`;
-    return prompt;
+    return prompt+passiveContextPrompt(input);
   }
   private pullWaitingInputs(sessionId:number) {
     try {
@@ -1055,6 +1183,11 @@ export class SessionExecutionHost {
     for(const row of sessions)this.pullWaitingInputs(row.session_id);
     if(sessions.length)log('info','outside_unsent_human_sessions_scanned',{sessions:sessions.length});
   }
+  recoverAntigravityUnsentInputs() {
+    const queued=recoverUnsentAntigravityInputs();
+    if(queued)this.options.wake();
+    return queued;
+  }
   private steer(input:AcceptedSessionInput):boolean {
     const body=JSON.parse(input.payload_json);
     const session=getSessionById(input.session_id);
@@ -1092,10 +1225,14 @@ export class SessionExecutionHost {
         // of showing it queued until their next periodic check.
         const deliveryChanged=(state:'sent'|'ambiguous'|'failed')=>recordSessionEvent({eventId:steeringAttemptEventId(`delivery:${input.id}:${state}`,input.id,steeringId),
           sessionId:input.session_id,inputId:input.id,turnId:target.turnId,kind:'delivery',payload:{state}});
-        const accepted=target.controller.enqueue({clientMessageId:input.id,text:this.prompt(attached),
+        // prepareText always supplies the actual provider words. Preparing them here would
+        // synchronously finish the Inbox history index before the message even enters its queue.
+        const accepted=target.controller.enqueue({clientMessageId:input.id,text:'',
           prepareText:async root=>{
-            const attachments=this.owner.attachments(body.attachments);
+            const canvasSpeech=!!canvasSpeechContext(attached);
+            const attachments=this.owner.attachments([...new Set([...(body.attachments??[]),...(canvasSpeech?[]:passiveContextAttachments(attached))])]);
             let text=this.prompt(attached);
+            if(canvasSpeech)text=String(body.text??'');
             if(attachments.length) {
               if(!root)throw new Error('The active turn has no owned attachment root.');
               const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)text+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!body.text?.includes(item.text)));text+=transcript?`\n\n${transcript}`:'';
@@ -1162,10 +1299,18 @@ export class SessionExecutionHost {
     // waiting the busy timeout: the finished answer of turn 5924 failed retention and reached him
     // only after the next restart adopted it. Reserving the writer up front waits instead.
     db.transaction(()=>{
-      const eventId=`result:${result.turnId}`;
-      const payload={...result,runId:nativeRunId(result.turnId)};
+      const dispatchAttempt=(db.query('SELECT dispatch_attempt FROM turns WHERE id=?').get(result.turnId) as {dispatch_attempt:number}).dispatch_attempt;
+      const eventId=nativeResultEventId(result.turnId,dispatchAttempt);
+      const custody=custodyPlacement(result.turnId);
+      const payload={...result,runId:nativeRunId(result.turnId),dispatchAttempt,
+        ...(custody?{canonicalInputId:custody.canonical_input_id,basis:'codex_successor_custody_v1'}:{})};
       const existed=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(eventId) as {payload_json:string}|null;
-      if(existed){if(stablePayload(JSON.parse(existed.payload_json))!==stablePayload(payload))throw new Error('Retained native result identity conflict.');}
+      if(existed){
+        const retained=JSON.parse(existed.payload_json);
+        const comparable={...payload};
+        if(dispatchAttempt===1&&retained.dispatchAttempt===undefined)delete comparable.dispatchAttempt;
+        if(stablePayload(retained)!==stablePayload(comparable))throw new Error('Retained native result identity conflict.');
+      }
       else {
         const attentionAdvanced=recordSessionInputAttention(result.inputId);
         if(!attentionAdvanced&&db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`terminal:${result.turnId}:${(db.query('SELECT dispatch_attempt FROM turns WHERE id=?').get(result.turnId) as {dispatch_attempt:number}).dispatch_attempt}`))
@@ -1195,7 +1340,10 @@ export class SessionExecutionHost {
         trackOpenHostedExecutionsOfTurn(claim.turn_id);
         if(input.kind==='fork'){closeSteering(new Error('A native fork control has no model input channel.'));return this.runFork(claim,input,session);}
         if(sessionMetadata(session).outside)steeringController.close(new Error('An independent Codex command has no live input channel.'));
-        if(adoption)await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+        if(adoption){
+          await this.settleUnsentSteering(claim.turn_id,adoption.execution);
+          if(session.provider_id==='antigravity')this.recoverAntigravityUnsentInputs();
+        }
         const outcome=await this.runModel(claim,input,session,steeringController,closeSteering,cancellationController,adoption);
         // Only here is the run's outcome durably settled; a crash before this leaves the host's
         // record for the next coordinator to settle from.
@@ -1211,9 +1359,14 @@ export class SessionExecutionHost {
         ?`recovered-terminal:${claim.turn_id}:${claim.dispatch_attempt}:${count}`
         :`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
       // A drain's proven-unsent requeue is a handoff, not a provider failure.
-      if(!this.draining&&sessionMetadata(session).inboxRole==='project-router')maybeStartInboxProviderFailover(session);
+      // Any standing role (the Inbox, the repair agent, …) whose provider just refused it can move.
+      if(!this.draining)maybeStartStandingRoleFailover(getSessionById(session.id));
       if(session.provider_id==='codex'&&(process.platform==='linux'||process.env.CONCIERGE_CODEX_RUNNER))await this.auditCodexTurn(claim.turn_id).catch(error=>
         log('warn','codex_process_audit_failed',{turn_id:claim.turn_id,...errorFields(error)}));
+      const ownedClient=this.testCodexClients.get(claim.turn_id);
+      const terminal=db.query('SELECT status FROM turns WHERE id=?').get(claim.turn_id) as {status:string}|null;
+      if(ownedClient&&terminal)await this.testCodexClients.closeIfTerminal(claim.turn_id,terminal.status).catch(error=>
+        log('warn','codex_test_client_close_failed',{turn_id:claim.turn_id,...errorFields(error)}));
     }
   }
   /**
@@ -1327,11 +1480,22 @@ export class SessionExecutionHost {
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`codex-process-audit-done:${turnId}`))return;
     this.codexProcessAudits.add(turnId);
     try {
-      const row=db.query(`SELECT turn.session_id,turn.accepted_input_id,turn.native_run_id,session.agent_session_uuid,session.native_metadata_json
+      const row=db.query(`SELECT turn.session_id,turn.accepted_input_id,turn.native_run_id,session.agent_session_uuid,session.native_metadata_json,
+          session.provider_id
         FROM turns turn JOIN sessions session ON session.id=turn.session_id
-        WHERE turn.id=? AND session.provider_id='codex'`)
-        .get(turnId) as {session_id:number;accepted_input_id:string;native_run_id:string|null;agent_session_uuid:string|null;native_metadata_json:string|null}|null;
+        WHERE turn.id=?`)
+        .get(turnId) as {session_id:number;accepted_input_id:string;native_run_id:string|null;agent_session_uuid:string|null;
+          native_metadata_json:string|null;provider_id:string}|null;
       if(!row)throw new Error('Codex process audit intent has no turn.');
+      // A Codex refusal (model capacity or allowance) moves a new session's first turn to another
+      // provider and clears its Codex thread, so nothing here names a thread to check; both reroutes
+      // run only after an attempt with no tool use or output. Its intent is settled with that cause; before 2026-11-12 it failed every minute for days.
+      if(row.provider_id!=='codex'){
+        recordSessionEvent({eventId:`codex-process-audit-done:${turnId}`,sessionId:row.session_id,
+          inputId:row.accepted_input_id,turnId,kind:'process_audit',payload:{reason:'session-left-codex',provider:row.provider_id}});
+        log('info','codex_process_audit_settled_off_codex',{turn_id:turnId,session_id:row.session_id,provider:row.provider_id});
+        return;
+      }
       // A terminal event records the coordinator's attempt, including one that parks because
       // provider completion is uncertain. Only a settled turn proves its tools have stopped.
       if(!this.codexProcessAuditReady(turnId,row.session_id))return;
@@ -1421,6 +1585,7 @@ export class SessionExecutionHost {
       turnId:row.turn_id,kind:'delivery',payload:{state:outcome==='acknowledged'?'sent':'ambiguous'}});
   }
   private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController,adoption?:Adoption) {
+    const successor=custodySuccessorSession(session.id);
     const saved=savedTurn(claim.turn_id);
     const metadata=sessionMetadata(session);
     const runnerTarget=chooseTurnRunner(session,metadata);
@@ -1458,23 +1623,43 @@ export class SessionExecutionHost {
       cwd=resolved.cwd;
     }
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
-    const attachments=this.owner.attachments(payload.attachments);
+    const canvasSpeech=!!canvasSpeechContext(input);
+    const passiveAttachments=canvasSpeech?this.owner.attachments(passiveContextAttachments(input)):[];
+    const attachments=this.owner.attachments([...new Set([...(payload.attachments??[]),...(canvasSpeech?[]:passiveContextAttachments(input))])]);
     // An adopted run continues exactly what was started: the same words, files and folders, never
     // a re-preparation that could differ from what the agent already read.
     let prompt=adoption?String(adoption.processor.replayPrompt):this.prompt(input),staging:string|null=adoption?.processor.staging??null;
+    const originalProviderPrompt=prompt;
     const additionalDirs=adoption?[...adoption.processor.runAdditionalDirs as string[]]:[...(metadata.additionalDirs??parseAdditionalPaths(channel))];
     // A new Claude turn may run on a runner machine (RUNNERS.md, "Turns on a runner"): it then
     // carries its files' bytes and a run token, and nothing in it relies on this machine.
     const sharedCodex=!adoption&&session.provider_id==='codex'&&metadata.outside!==true&&executionHostsEnabled();
-    // Hosted transports sync the intent before launch. Direct and capability runs retain
-    // their original pre-barrier admission ordering.
-    const hostedAdmission=onRunner||(executionHostsEnabled()&&session.provider_id!=='chatgpt');
     const stagedFiles:{path:string;base64:string}[]=[];
+    const canvasPassiveFileContext:string[]=[];
     try {
       if(attachments.length&&metadata.interactionPolicy==='consultation-only')throw new ProviderCapabilityUnavailableError('attachments','Information-only consultation cannot read attached files.');
-      if(!adoption&&attachments.length&&session.provider_id!=='chatgpt') {
+      if(!adoption&&(attachments.length||passiveAttachments.length)&&session.provider_id!=='chatgpt') {
         staging=await mkdtemp(join(tmpdir(),`concierge-native-${claim.turn_id}-`));additionalDirs.push(staging);
         const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});if(onRunner)stagedFiles.push({path,base64:attachment.base64});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/')){if(attachment.transcriptText)transcripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});else{const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});if(heard.transcript)transcripts.push(heard.transcript);if(heard.note)prompt+=`\n${heard.note}`;}}}const transcript=transcriptionPrompt(transcripts.filter(item=>!payload.text?.includes(item.text)));prompt+=transcript?`\n\n${transcript}`:'';
+        if(canvasSpeech) {
+          const savedTranscripts=[];
+          for(const attachment of passiveAttachments) {
+            const path=join(staging,`${attachment.id}-${attachment.name}`);
+            await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});
+            if(onRunner)stagedFiles.push({path,base64:attachment.base64});
+            canvasPassiveFileContext.push(JSON.stringify({id:attachment.id,name:attachment.name,contentType:attachment.contentType,path}));
+            if(attachment.contentType.startsWith('audio/')) {
+              if(attachment.transcriptText)savedTranscripts.push({slackFileId:attachment.id,title:attachment.name,text:attachment.transcriptText,source:'local' as const});
+              else {
+                const heard=await attachedRecordingWords({slackFileId:attachment.id,title:attachment.name,path});
+                if(heard.transcript)savedTranscripts.push(heard.transcript);
+                if(heard.note)canvasPassiveFileContext.push(JSON.stringify({id:attachment.id,note:heard.note}));
+              }
+            }
+          }
+          const savedTranscript=transcriptionPrompt(savedTranscripts);
+          if(savedTranscript)canvasPassiveFileContext.push(savedTranscript);
+        }
       }
       const nativeContext=metadata.interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt';
       let canvasApplicationContext:string|null=null;
@@ -1482,13 +1667,18 @@ export class SessionExecutionHost {
         const runId=nativeRunId(claim.turn_id);
         // His meanings for his own terms in these words, so no agent guesses at one (thesaurus-context.ts).
         const thesaurus=await (this.options.thesaurusContext??thesaurusTurnContext)(prompt);
+        // On a machine configured for it (the Mac), a start while the machine is crowded says so, unless
+        // the work is one he is waiting on. The notice comes at turn start; running turns are never steered.
+        const crowdConfig=crowdingConfig(),crowding=crowdConfig?readCrowding(db,crowdConfig):null;
+        const crowdNotice=crowding?.crowded&&!workIsHisToWaitOn(db,claim.turn_id)?crowdingNotice(crowding):null;
         canvasApplicationContext=canvasSpeechApplicationContext(input,runId,session.id);
-        if(canvasApplicationContext)canvasApplicationContext=`${canvasApplicationContext}\n\n${thesaurus}`;
+        if(canvasApplicationContext)canvasApplicationContext=`${canvasApplicationContext}\n\n${thesaurus}${passiveContextPrompt(input)}${canvasPassiveFileContext.length?`\n\n<saved-context-files>\n${canvasPassiveFileContext.join('\n')}\n</saved-context-files>`:''}`;
         else {
           const turnContext=sessionTurnContext(input,runId,{unnamed:!metadata.title?.trim(),thesaurus,
             budget:session.provider_id==='codex'?budgetBriefWithProviderRoom('codex',Date.now()):null,
-            notice:saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null});
-          prompt=sessionInputEnvelope(input,runId,[prompt,turnContext].filter(Boolean).join('\n\n'));
+            notice:[crowdNotice,saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null].filter(Boolean).join('\n\n')||null});
+          if(successor)canvasApplicationContext=`${sessionInputIdentityContext(input,runId)}\n\n${turnContext}\n\n${prompt.slice(originalProviderPrompt.length)}`;
+          else prompt=sessionInputEnvelope(input,runId,[prompt,turnContext].filter(Boolean).join('\n\n'));
         }
       }
       const replayPrompt=prompt,runAdditionalDirs=[...additionalDirs];
@@ -1507,12 +1697,11 @@ export class SessionExecutionHost {
       const provider:AgentProvider={id:session.provider_id,capabilities:underlying?.capabilities,
         fork:async()=>{throw new Error('Native fork uses its exact control turn.');},
         run:async prepared=>{
-          // The claimed turn and its input are durable before admission. The execution intent
-          // is recorded below, before any hosted provider is started or told anything.
-          await ledgerDurable();
-          // A fresh admission and its execution intent must not cross a completed drain.
-          // Put the check after the durability wait, immediately before either is recorded.
-          if(!adoption&&hostedAdmission){
+          // The claimed turn, its execution record and its input are on disk before any provider
+          // (Claude, Codex or ChatGPT) is started or told anything.
+          await ledgerDurable({kind:'provider_input',id:input.id});
+          if(boundLabInvocation(input)&&!labInvocationBindingMatches(input))throw new ProviderCapabilityUnavailableError('send','The Lab participant’s provider, model or effort changed; no replacement execution was submitted.');
+          if(!adoption&&(onRunner||session.provider_id==='claude-code'&&executionHostsEnabled())){
             if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
             if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
               throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
@@ -1545,13 +1734,30 @@ export class SessionExecutionHost {
           } else if(privateCodex) {
             actual=this.adoptedRun(prepared,adoption!,MANAGED_CODEX);
           } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
-            // Admission and execution intent remain in one synchronous segment after readiness.
+            // The readiness wait ended before provider admission. Keep admission and execution
+            // intent adjacent, with no await between them, so drain can requeue a waiting turn.
+            if(!adoption){
+              if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
+              if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+                throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+            }
             // The shared daemon already outlives Concierge; recording the run lets the next Concierge follow it.
-            actual=adoption?this.adoptedCodexRun(prepared,adoption,session):this.trackedCodexRun(prepared,claim,session,kept);
+            actual=adoption?this.adoptedCodexRun(actual,adoption,session):this.trackedCodexRun(actual,claim,session,kept,input);
           }
           // An adopted run's admission was retained when it started, and a Stop requested meanwhile
           // must still reach its process, so it is not re-checked here.
           // A ChatGPT run taken back after a restart uses the admission its send was made under.
+          if(successor){
+            let client=this.custodyCodexClients.get(session.id);
+            if(!client){client=this.custodyClient();this.custodyCodexClients.set(session.id,client);}
+            const protectedRun=protectedCustodyRun(claim.turn_id,this.options.instanceId,claim.dispatch_attempt,
+              {client,observeProcesses:this.options.custodyObserveProcesses})!;
+            custodyConnection(client).protect(protectedRun.plan.nativeConnection);
+            if(!adoption)await custodyConnection(client).assert(protectedRun.plan.nativeConnection);
+            actual={...actual,...(custodyPlacement(claim.turn_id)?{prompt:JSON.parse(input.payload_json).text}:{}),cwd:protectedRun.plan.cwd,
+              additionalDirs:[...protectedRun.plan.runtimeWorkspaceRoots].filter(path=>path!==protectedRun.plan.cwd),
+              custodySuccessor:protectedRun,appServerClient:client};
+          }
           const followed=adoption&&session.provider_id==='chatgpt'?JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}').admission??null:null;
           const admission=adoption?followed:this.retainAdmission(claim,input,session,actual,attachments);
           if(adoption&&session.provider_id==='chatgpt'&&!admission)throw new ProviderDispatchError({message:'The ChatGPT send this run made has no retained admission; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
@@ -1562,7 +1768,7 @@ export class SessionExecutionHost {
           if(session.provider_id==='chatgpt'&&admission) {
             // Only a person's or an asking agent's own words are ever typed into ChatGPT. Concierge's
             // service notices (cancellations, returns, reminders) are for agents and stop here.
-            if(input.origin==='service')throw new ProviderCapabilityUnavailableError('send','ChatGPT receives only the words of a person or an asking agent; a service notice is not sent.');
+            if(input.origin==='service'&&!boundLabInvocation(input))throw new ProviderCapabilityUnavailableError('send','ChatGPT receives only a person’s request, an asking agent’s request, or an exact bound Lab invocation; a service notice is not sent.');
             if(!this.capabilityClient)throw new ProviderCapabilityUnavailableError('send','ChatGPT capability is not configured.');
             if(admission.purpose!=='chat'||admission.policy!=='standard')throw new ProviderCapabilityUnavailableError('send','ChatGPT does not support this purpose or consultation policy.');
             // The send and its answer live in Thinkering's ChatGPT capability, keyed by this run id;
@@ -1600,11 +1806,14 @@ export class SessionExecutionHost {
       baseSystemPrompt:nativeContext?[sessionInputInstructions({
         standing:[metadata.inbox?`${INBOX_INSTRUCTIONS}\n\n${ATTENTION_INSTRUCTION}`:null,
           isWritingSession(session)?WRITING_SESSION_STANDING:null].filter(Boolean).join('\n\n')||null}),canvasApplicationContext].filter(Boolean).join('\n\n'):undefined,
-      exactProviderInput:!!canvasSpeechContext(input),
+      exactProviderInput:!!canvasSpeechContext(input)||!!successor,
       unreplayableAttachmentCount:attachments.length,
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,
       providerEnvironment:{CONCIERGE_SOURCE_INPUT_ID:input.id,CONCIERGE_SOURCE_RUN_ID:nativeRunId(claim.turn_id),
+        // Commit provenance under names nothing else reads, so the Mac's SSH to the server
+        // can carry them and a commit made there still names its real session.
+        CONCIERGE_COMMIT_SESSION:commitSessionIdentity(session.id),CONCIERGE_COMMIT_INPUT:input.id,
         ...(onRunner?{CONCIERGE_PROVIDER_RUNNER:runnerTarget!}:{
           CONCIERGE_ROUTER_ACTIONS:installedRouterActionsPath(),
           CONCIERGE_CODEX_CLI:Bun.which('codex')||join(homedir(),'.local','bin','codex')}),
@@ -1616,9 +1825,7 @@ export class SessionExecutionHost {
       ...(adoption?{adopted:true,beforeProviderAdmission:()=>{}}
         :onRunner
           // The runner finds the Claude CLI on its own machine; a missing one is its definite refusal.
-          ?{beforeProviderAdmission:()=>{
-            if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
-          }}
+          ?{beforeProviderAdmission:()=>{}}
         :session.provider_id==='claude-code'&&executionHostsEnabled()
           ?{beforeProviderAdmission:()=>{
             try{launchClaudeExecutable=claudeExecutable();}
@@ -1627,16 +1834,11 @@ export class SessionExecutionHost {
               throw new ProviderDispatchError({message:error.message,failureClass:'retryable',terminalConfirmed:true,
                 toolsUsed:[],localPrerequisiteUnavailable:true});
             }
-            if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           }}
-        :sharedCodex?{beforeProviderAdmission:()=>{
+        :sharedCodex&&!successor?{beforeProviderAdmission:()=>{
           if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           return waitForCodexAppServerOrDrain(codexAppServerReady(),this.drainStarted,()=>this.draining);
-        }}:{beforeProviderAdmission:()=>{
-          if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
-          if(!hostedAdmission&&!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-            throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
-        }}),
+        }}:{}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.
@@ -1682,20 +1884,30 @@ export class SessionExecutionHost {
         adoption.execution.supervisor===RUNNER_SUPERVISOR?[]:undefined)} as any;
   }
   private trackedCodexRun(prepared:Parameters<AgentProvider['run']>[0],claim:QueuedTurnClaimRow,session:SessionRow,
-    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null}):Parameters<AgentProvider['run']>[0] {
+    kept:{replayPrompt:string;runAdditionalDirs:string[];staging:string|null;account:{account:string;home:string|null}|null},input:AcceptedSessionInput):Parameters<AgentProvider['run']>[0] {
     const {onProgress,onProviderMessage,onProviderThreadStarted,onProviderTurnStarted,onSteeringReady,onCancellationReady,onProviderTerminal,
       onBackgroundWait,onBackgroundReportMissing,onBackgroundReleaseReady,onProviderRetry,onRetryRestartReady,onInputAcknowledged,onPreferredModel,onRateLimits,...data}=prepared as any;
     const executionId=newExecutionId();
+    const testDedicated=agentCreatedCodexTestInput(input,session);
+    const createPayload=JSON.parse(input.payload_json) as {codexNativeTestFaultDeadlineMs?:number};
+    const faultDeadlineMs=createPayload.codexNativeTestFaultDeadlineMs;
+    const appServerClient=testDedicated?ownerCodexAppServerClient():undefined;
     retainExecutionIntent({executionId,turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'codex',
-      directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'codex-daemon',processor:{...kept,run:data}});
+      directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'codex-daemon',processor:{...kept,agentTestDedicatedCodex:testDedicated,
+        ...(testDedicated&&faultDeadlineMs?{agentTestFaultDeadlineMs:faultDeadlineMs}:{}),run:data}});
+    if(appServerClient&&faultDeadlineMs)void this.testCodexClients.replace(claim.turn_id,{executionId,dispatchAttempt:claim.dispatch_attempt,faultDeadlineMs,client:appServerClient})
+      .catch(error=>log('warn','codex_test_client_replace_close_failed',{turn_id:claim.turn_id,execution_id:executionId,...errorFields(error)}));
     // The daemon's hooks carry no run of their own: file this release's helpers under the Codex
     // conversation before its turn starts, so they stay the same if an update installs mid-turn.
     // Through a runner's relay the runner also pins its own helpers at the turn's start (runner.ts);
     // an App Server started by this owner's unit (the AX41's until its next restart) reads these.
     const stateDir=realpathSync(process.env.CONCIERGE_STATE_DIR!),botDir=providerOwnerEnvironment().CONCIERGE_ROUTER_BOT_DIR;
-    return {...prepared,onProviderThreadStarted:(threadId:string)=>{
+    return {...prepared,custodyOwnerSessionId:session.id,...(appServerClient?{appServerClient}:{}),onProviderThreadStarted:(threadId:string)=>{
       try{if(botDir)pinCodexThreadHooks(stateDir,threadId,executionId,botDir);}
-      catch(error){log('warn','codex_hook_pin_failed',{execution_id:executionId,...errorFields(error)});}
+      catch(error){
+        if(custodySuccessorSession(session.id))throw error;
+        log('warn','codex_hook_pin_failed',{execution_id:executionId,...errorFields(error)});
+      }
       onProviderThreadStarted?.(threadId);
     }} as any;
   }
@@ -1731,7 +1943,11 @@ export class SessionExecutionHost {
     if(!current.agent_session_uuid)throw new ProviderDispatchError({message:'The Codex thread this run started is unknown; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
     const sending=(db.query(`SELECT input.id FROM turn_steering_messages steering JOIN session_inputs input ON input.steering_id=steering.id
       WHERE steering.turn_id=? AND steering.status='sending'`).all(adoption.claim.turn_id) as {id:string}[]).map(row=>row.id);
-    return {...prepared,...adoption.processor.run,
+    const appServerClient=adoption.processor.agentTestDedicatedCodex===true?ownerCodexAppServerClient():undefined;
+    if(appServerClient)void this.testCodexClients.replace(adoption.claim.turn_id,{executionId:adoption.execution.execution_id,dispatchAttempt:adoption.claim.dispatch_attempt,
+      faultDeadlineMs:Number(adoption.processor.agentTestFaultDeadlineMs),client:appServerClient}).catch(error=>
+        log('warn','codex_test_client_replace_close_failed',{turn_id:adoption.claim.turn_id,execution_id:adoption.execution.execution_id,...errorFields(error)}));
+    return {...prepared,...adoption.processor.run,custodyOwnerSessionId:session.id,...(appServerClient?{appServerClient}:{}),
       adoptTurn:{threadId:current.agent_session_uuid,turnId:turn?.provider_turn_id??null},
       recoveredSteeringClientIds:sending,
       onAdoptedLive:()=>recordLiveAdoption(adoption.execution.execution_id),
@@ -1763,16 +1979,28 @@ export class SessionExecutionHost {
     const owned=db.query("SELECT provider_admission_intended_at FROM turns WHERE id=? AND session_id=? AND owner_instance_id=? AND dispatch_attempt=? AND status='running' AND stop_requested_at IS NULL")
       .get(claim.turn_id,session.id,this.options.instanceId,claim.dispatch_attempt) as any;
     if(!owned?.provider_admission_intended_at||current.binding_generation!==session.binding_generation||current.status==='archived'||metadata.suspended)throw new ProviderCapabilityUnavailableError('send','The exact owner admission is no longer current.');
-    const saved=JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}');
-    const admission={provider:session.provider_id,purpose:metadata.purpose??'chat',inputId:input.id,runId:nativeRunId(claim.turn_id),bindingGeneration:session.binding_generation??1,
+    if(boundLabInvocation(input)&&(!labInvocationBindingMatches(input)||(actual.model??null)!==(metadata.model??null)||(actual.reasoningEffort??null)!==(metadata.reasoningEffort??null)))throw new ProviderCapabilityUnavailableError('send','The prepared Lab execution differs from the selected provider, model or effort; no replacement was sent.');
+    const admission=db.transaction(()=>{
+      const saved=JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}');
+      const value={provider:session.provider_id,purpose:metadata.purpose??'chat',inputId:input.id,runId:nativeRunId(claim.turn_id),bindingGeneration:session.binding_generation??1,
       admittedAt:saved.admission?.admittedAt??new Date().toISOString(),promptHash:createHash('sha256').update(actual.prompt).digest('hex'),model:actual.model??null,
       // A file's pin is its custody identity: id, name, type and digest. An audio transcript is the
       // owner's own derived text, not part of the file, and Thinkering's ChatGPT capability refuses
       // any field outside the pin, so every ChatGPT send with a file failed once transcripts were
       // added to attachment rows (found 2026-10-09).
-      attachments:attachments.map(({base64,transcriptText,...pin})=>pin),policy:metadata.interactionPolicy??'standard',nativeBinding:metadata.nativeBinding??null};
-    if(session.provider_id==='chatgpt'&&saved.admission&&stablePayload(saved.admission)!==stablePayload(admission))throw new ProviderCapabilityUnavailableError('send','Prepared input changed from its immutable provider admission.');
-    db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...saved,admission}),input.id);
+      attachments:attachments.map(({base64,transcriptText,...pin})=>pin),policy:metadata.interactionPolicy??'standard',nativeBinding:metadata.nativeBinding??null,
+      ...(actual.custodySuccessor?{basis:'codex_successor_custody_v1',canonicalInputId:custodyPlacement(claim.turn_id)?.canonical_input_id??input.id,
+        reasoningEffort:'medium',handoffId:actual.custodySuccessor.plan.operationId}:{} )};
+      if(session.provider_id==='chatgpt'&&saved.admission&&stablePayload(saved.admission)!==stablePayload(value))throw new ProviderCapabilityUnavailableError('send','Prepared input changed from its immutable provider admission.');
+      recordSessionEvent({eventId:`provider_admission:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'provider_admission',payload:{dispatchAttempt:claim.dispatch_attempt,admission:value}});
+      if(boundLabInvocation(input))recordSessionEvent({eventId:`lab-binding:${input.id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'lab_binding_verified',
+        payload:{provider:session.provider_id,model:actual.model??null,reasoningEffort:actual.reasoningEffort??null,project:metadata.project??null,projectPath:metadata.projectPath??null,generation:session.binding_generation??1}});
+      // Keep the established receipt field as the first immutable admission. Later Codex
+      // dispatches are retained by attempt identity above instead of replacing its custody.
+      if(!saved.admission)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...saved,admission:value}),input.id);
+      return value;
+    })();
+    this.owner.invalidateReceipt(input.id);
     return admission;
   }
   private async runFork(claim:QueuedTurnClaimRow,operation:AcceptedSessionInput,session:SessionRow) {
@@ -1882,6 +2110,127 @@ export class SessionExecutionHost {
       inputId:operation.id,turnId:turn.id,kind:'run',payload:{reason:'exact_provider_receipt_proved_no_send',runId:run.runId}});
     this.options.wake();
     return {status:'requeued',runId:run.runId};
+  }
+  private async requeueProvenUnacknowledgedCodex(session:SessionRow,operation:AcceptedSessionInput,input:{requestId:string;actionId:string;sourceInputId:string;sourceRunId:string;validateSource?:()=>void}):
+    Promise<{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]}> {
+    const reserved=codexUnacknowledgedRecovery(operation.id);
+    if(reserved){
+      if(reserved.request_id!==input.requestId||reserved.turn_id!==operation.turn_id)
+        throw new Error('This accepted Codex input already has a recovery reservation for another request.');
+      const proof=JSON.parse(reserved.proof_json) as {attempts?:Array<{providerTurnId:string}>};
+      return {status:'already_recovered',runId:nativeRunId(reserved.turn_id),providerTurnIds:(proof.attempts??[]).map(attempt=>attempt.providerTurnId)};
+    }
+    const metadata=sessionMetadata(session),runner=providerRunnerForSession(session);
+    if(session.provider_id!=='codex'||!session.agent_session_uuid||operation.session_id!==session.id||operation.turn_id===null
+      ||operation.origin!=='service'||operation.request_id!==input.requestId
+      // Historical sessions can carry a null runner pin. The exact thread must still be
+      // found on this owner App Server below; a non-null foreign runner pin always refuses.
+      ||(runner.status==='bound'&&runner.runner!==null&&runner.runner!==codexRelayRunner())||metadata.outside===true
+      ||metadata.interactionPolicy==='consultation-only'||metadata.suspended||session.status==='archived')
+      throw new Error('Exact Codex recovery needs the same bound native conversation, machine, and active send controls.');
+    const turn=db.query(`SELECT id,session_id,status,native_run_id,dispatch_attempt,provider_admission_intended_at,
+      provider_started_at,provider_turn_id,provider_input_acknowledged_at,agent_text,outbound_text,stop_requested_at,owner_instance_id
+      FROM turns WHERE id=? AND session_id=? AND accepted_input_id=? AND turn_kind='native'`)
+      .get(operation.turn_id,session.id,operation.id) as any;
+    const historical=turn?.status==='done';
+    if(!turn||!['parked','done'].includes(turn.status)||!turn.native_run_id||turn.owner_instance_id!==null
+      ||turn.provider_input_acknowledged_at!==null||(!historical&&turn.provider_turn_id===null)
+      ||(!historical&&!String(turn.agent_text??'').startsWith('CODEX_INPUT_NOT_ACKNOWLEDGED:'))
+      ||turn.stop_requested_at!==null||turn.dispatch_attempt<1)
+      throw new Error('The selected failed continuation is not the exact completed empty-input Codex error.');
+    const attemptEvents=db.query(`SELECT event_id,input_id,session_id,payload_json,kind FROM session_owner_events
+      WHERE turn_id=? AND kind IN ('provider_turn_attempt','attention','result','prompt_cache_identity') ORDER BY sequence`)
+      .all(turn.id) as {event_id:string;input_id:string|null;session_id:number;payload_json:string;kind:string}[];
+    let attempts=attemptEvents.filter(event=>event.kind==='provider_turn_attempt').map(event=>JSON.parse(event.payload_json) as
+      {provider?:string;providerTurnId?:string;dispatchAttempt?:number});
+    if(!attempts.length&&historical){
+      const retainedResult=attemptEvents.find(event=>event.kind==='result'&&event.event_id===`result:${turn.id}`);
+      const retainedAttention=attemptEvents.find(event=>event.kind==='attention'&&event.input_id===operation.id);
+      const effortIdentity=attemptEvents.find(event=>event.kind==='prompt_cache_identity');
+      const result=retainedResult?JSON.parse(retainedResult.payload_json):null;
+      const attention=retainedAttention?JSON.parse(retainedAttention.payload_json):null;
+      const effort=effortIdentity?JSON.parse(effortIdentity.payload_json):null;
+      const expectedRun=nativeRunId(turn.id);
+      if(!retainedResult||!retainedAttention||retainedResult.input_id!==operation.id||retainedResult.session_id!==session.id
+        ||retainedAttention.session_id!==session.id
+        ||attention?.dispatchAttempt!==turn.dispatch_attempt||result?.inputId!==operation.id||result?.sessionId!==session.id
+        ||result?.turnId!==turn.id||result?.runId!==expectedRun||result?.sessionUUID!==session.agent_session_uuid
+        ||result?.providerTurnId!==turn.provider_turn_id
+        ||(result?.dispatchAttempt!==undefined&&result.dispatchAttempt!==attention?.dispatchAttempt)
+        ||result?.model!=='gpt-6-astra'||result?.text!==''||!Array.isArray(result?.toolsUsed)||result.toolsUsed.length!==0
+        ||typeof result?.providerTurnId!=='string'||!result.providerTurnId||effort?.effort!=='xhigh'
+        ||sessionMetadata(session).model!=='gpt-6-astra')
+        throw new Error('The retained historical attempt/result does not prove this exact Astra xhigh service input had an empty native result.');
+      const envelope=JSON.parse(turn.outbound_text??'null');
+      const {inputId:_inputId,sessionId:_sessionId,turnId:_turnId,runId:_runId,dispatchAttempt:_dispatchAttempt,...providerResult}=result;
+      if(envelope?.version!==1||stablePayload(envelope.result)!==stablePayload(providerResult))
+        throw new Error('The retained native delivery envelope does not exactly match the immutable empty provider result.');
+      attempts=[{provider:'codex',providerTurnId:result.providerTurnId,dispatchAttempt:attention.dispatchAttempt}];
+    }
+    if(attempts.length!==turn.dispatch_attempt||attempts.some((attempt,index)=>attempt.provider!=='codex'
+      ||attempt.dispatchAttempt!==index+1||typeof attempt.providerTurnId!=='string'||!attempt.providerTurnId))
+      throw new Error('The owner cannot map every provider attempt of this accepted continuation; it remains unrecoverable and in custody.');
+    if(db.query(`SELECT 1 FROM executions WHERE turn_id=? AND state IN ('intended','live','exited') LIMIT 1`).get(turn.id))
+      throw new Error('A prior Codex execution still has an open host record; reconcile it before recovery.');
+    const client=ownerCodexAppServerClient();
+    await client.connect();
+    let nativeTurns:any[]=[];let turnCursor:string|null=null;
+    do {
+      const page=await client.request('thread/turns/list',{threadId:session.agent_session_uuid,cursor:turnCursor,limit:50,
+        sortDirection:'desc',itemsView:'notLoaded'});
+      if(!Array.isArray(page?.data))throw new Error('Codex did not return a complete native turn list for exact recovery.');
+      nativeTurns.push(...page.data);
+      const next=typeof page.nextCursor==='string'?page.nextCursor:null;
+      if(next&&next===turnCursor)throw new Error('Codex repeated a native turn cursor during exact recovery.');
+      turnCursor=next;
+    } while(turnCursor);
+    const byId=new Map(nativeTurns.filter(turn=>typeof turn?.id==='string').map(turn=>[turn.id,turn]));
+    const selectedTurns:any[]=[];
+    for(const attempt of attempts){
+      const nativeTurn=byId.get(attempt.providerTurnId) as any;
+      if(!nativeTurn)throw new Error('Codex history does not contain the exact native turn retained for this attempt.');
+      const items:any[]=[];let itemCursor:string|null=null;
+      do {
+        const page=await client.request('thread/items/list',{threadId:session.agent_session_uuid,turnId:attempt.providerTurnId,
+          cursor:itemCursor,limit:100,sortDirection:'asc'});
+        if(!Array.isArray(page?.data)||page.data.some((entry:any)=>entry?.turnId!==attempt.providerTurnId))
+          throw new Error('Codex did not return the exact native attempt item page.');
+        items.push(...page.data.map((entry:any)=>entry.item));
+        const next=typeof page.nextCursor==='string'?page.nextCursor:null;
+        if(next&&next===itemCursor)throw new Error('Codex repeated an item cursor during exact recovery.');
+        itemCursor=next;
+      } while(itemCursor);
+      selectedTurns.push({...nativeTurn,items});
+    }
+    const native={thread:{id:session.agent_session_uuid,turns:selectedTurns}};
+    const proof=proveCodexInputNeverAcknowledged({thread:native,threadId:session.agent_session_uuid,
+      attempts:attempts.map(attempt=>({dispatchAttempt:attempt.dispatchAttempt!,providerTurnId:attempt.providerTurnId!}))});
+    if(!proof)throw new Error('The complete native transcript does not prove every attempt was empty, terminal, and unacknowledged; preserve the input and reconcile without replay.');
+    const current=getSessionById(session.id)!;
+    const currentRunner=providerRunnerForSession(current);
+    if(current.agent_session_uuid!==session.agent_session_uuid||current.binding_generation!==session.binding_generation
+      ||stablePayload(currentRunner)!==stablePayload(runner)
+      ||(currentRunner.status==='bound'&&currentRunner.runner!==null&&currentRunner.runner!==codexRelayRunner())
+      ||sessionMetadata(current).model!=='gpt-6-astra'||sessionMetadata(current).suspended||current.status==='archived')
+      throw new Error('The Codex conversation binding or send controls changed during exact-history inspection.');
+    input.validateSource?.();
+    const completeProof={provider:'codex',threadId:session.agent_session_uuid,ownerRunId:turn.native_run_id,
+      ownerTurnId:turn.id,acceptedInputId:operation.id,dispatchAttemptCount:turn.dispatch_attempt,
+      attempts:proof.attempts,unmappedEmptyTurns:proof.unmappedEmptyTurns,observedAt:new Date().toISOString()};
+    const requeued=reserveCodexUnacknowledgedRecovery({sessionId:session.id,inputId:operation.id,turnId:turn.id,
+      requestId:input.requestId,providerThreadId:session.agent_session_uuid,bindingGeneration:session.binding_generation,
+      proof:completeProof,actionId:input.actionId,sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,nowMs:Date.now()});
+    if(!requeued){
+      const raced=codexUnacknowledgedRecovery(operation.id);
+      if(raced?.request_id===input.requestId){const saved=JSON.parse(raced.proof_json) as {attempts?:Array<{providerTurnId:string}>};
+        return {status:'already_recovered',runId:turn.native_run_id,providerTurnIds:(saved.attempts??[]).map(attempt=>attempt.providerTurnId)};}
+      throw new Error('The exact Codex turn changed, later work was admitted, or another recovery reserved this input; no replay was queued.');
+    }
+    recordSessionEvent({eventId:`codex-unacknowledged-recovery:${turn.id}`,sessionId:session.id,inputId:operation.id,
+      turnId:turn.id,kind:'run',payload:{reason:'complete_native_evidence_proved_all_attempts_unacknowledged',requestId:input.requestId,
+        actionId:input.actionId,providerTurnIds:proof.attempts.map(attempt=>attempt.providerTurnId)}});
+    this.options.wake();
+    return {status:'requeued',runId:turn.native_run_id,providerTurnIds:proof.attempts.map(attempt=>attempt.providerTurnId)};
   }
   /** A corrected attachment is a new immutable input. Only the original provider receipt can
    * authorize linking that input to the unanswered question; a generic failed turn cannot. */
@@ -2067,11 +2416,7 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     // A bound native conversation keeps the machine that last ran it. Current deployment
     // settings cannot recover that fact: use the durable execution and lease that actually
     // launched its latest turn, and refuse if that evidence is incomplete or ambiguous.
-    const prior=db.query(`SELECT execution.supervisor,attempt.runner FROM executions execution
-      LEFT JOIN runner_attempts attempt ON attempt.job_id='turn:'||execution.execution_id
-      WHERE execution.session_id=? AND execution.provider=?
-      ORDER BY execution.created_at_ms DESC,attempt.started_at_ms DESC LIMIT 1`).get(session.id,session.provider_id) as
-      {supervisor:string;runner:string|null}|null;
+    const prior=lastLaunchedConversationHome(db,session.id,session.provider_id);
     if(!prior){
       // Older local copies predate the explicit local binding. A fork inherited its parent's
       // machine; a local resurrection copied the transcript into this machine's provider home.
@@ -2088,8 +2433,9 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     }
     return null;
   }
-  if(session.provider_id==='claude-code'&&!turnRunsOnRunner(metadata))return null;
-  if(session.provider_id==='antigravity'&&(process.env.CONCIERGE_TURN_RUNNERS?.trim()||'marked')==='off')return null;
+  // Claude and Google share one placement setting: a machine without runners (the Mac peer's
+  // default `marked`) runs unmarked work itself instead of refusing for a missing target.
+  if(!turnRunsOnRunner(metadata))return null;
   const selected=process.env.CONCIERGE_TURN_RUNNER?.trim()||codexRelayRunner();
   if(!selected)throw new Error(`${session.provider_id} runner placement is enabled, but no runner target is configured.`);
   return selected;

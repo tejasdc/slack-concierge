@@ -248,7 +248,10 @@ export class ProjectSetup {
       if(!row)throw new Error('Project setup job record disappeared.');
       if(row.result_json){
         const previous=JSON.parse(row.result_json);
-        if(previous.failureClass==='transient'){
+        // A refusal is the runner's answer about this name and stays. A failure is an error the next
+        // release may have fixed: replaying a recorded "Choose a template" failure kept refusing the
+        // thread-gardener project in 58 ms after the fix installed (2026-11-13). The job is replay-safe.
+        if(previous.state==='failed'){
           const attempt=row.attempt+1,jobId=projectSetupJobId(`${orderId}:${attempt}`);
           db.query(`UPDATE project_setup_runner_jobs SET attempt=?,job_id=?,state='queued',result_json=NULL,updated_at_ms=? WHERE creation_key=?`)
             .run(attempt,jobId,Date.now(),creationKey);
@@ -271,12 +274,13 @@ export class ProjectSetup {
         }
         if(job.state==='unconfirmed')throw new Error('Project setup has uncertain runner custody; retry the same project request to reconcile its durable job.');
         if(Date.now()>=deadline)throw new Error(`Project setup is still ${job.state} on runner ${targetRunner}; retry the same request to receive its recorded result.`);
-        await new Promise(resolve=>setTimeout(resolve,500));
+        // Waiting for the runner is awaited time, never owner slowness (incident 4b6c9a1f).
+        await awaitingOutside(()=>new Promise(resolve=>setTimeout(resolve,500)));
       }
     };
     let result=await enqueueAttempt();
-    // A definite transient failure has an immutable job result. A fresh job identity retries the
-    // same order's filesystem and repository checks; at most one such retry is started per call.
+    // A recorded failure gets a fresh job identity on each new call; within one call a transient
+    // failure is retried at most once more.
     if(result.failureClass==='transient')result=await enqueueAttempt();
     if(result.state==='done'||result.state==='already_present')return result as {state:'done'|'already_present';relativePath:string;commit:string};
     throw new Error(result.reason??`Project setup on runner ${targetRunner} ended as ${result.state??'unknown'}.`);
@@ -300,7 +304,8 @@ export class ProjectSetup {
         }
         if(job.state==='unconfirmed')return null;
         if(Date.now()>=deadline)return null;
-        await new Promise(resolve=>setTimeout(resolve,500));
+        // Waiting for the runner is awaited time, never owner slowness (incident 4b6c9a1f).
+        await awaitingOutside(()=>new Promise(resolve=>setTimeout(resolve,500)));
       }
     }
     return {state:'failed',failureClass:'transient',reason:'The project runner could not confirm placement yet.'};

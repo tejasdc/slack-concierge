@@ -7,12 +7,12 @@ for(const count of [100,1000,10_000]){
  const db=new Database(':memory:');
  try{
   db.exec(`CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,event_id TEXT,session_id INTEGER,
-    turn_id INTEGER,kind TEXT,payload_json TEXT);
+    turn_id INTEGER,kind TEXT,payload_json TEXT,input_id TEXT);
    CREATE INDEX session_owner_events_message_delta ON session_owner_events(session_id,sequence) WHERE kind='message';
    CREATE INDEX session_owner_events_message_version ON session_owner_events(turn_id,json_extract(payload_json,'$.message.id'),sequence) WHERE kind='message';
    CREATE INDEX session_owner_events_history_turn_delta ON session_owner_events(session_id,sequence) WHERE kind<>'message' AND turn_id IS NOT NULL;
    CREATE INDEX session_owner_events_history_action_delta ON session_owner_events(session_id,sequence) WHERE kind='message-action';`);
-  const insert=db.query('INSERT INTO session_owner_events VALUES(?,?,?,?,?,?)');
+  const insert=db.query('INSERT INTO session_owner_events(sequence,event_id,session_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)');
   for(let n=1;n<=count;n++)insert.run(n,`m-${n}`,1,n,'message',JSON.stringify({message:{id:`message-${n}`}}));
   const held=Array.from({length:Math.min(200,count)},(_,index)=>`message-${count-index}`);
   assert.equal(boundedChangedMessageIds(db,1,count,count,held)?.size,0);

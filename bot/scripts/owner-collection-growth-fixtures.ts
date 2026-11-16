@@ -19,6 +19,7 @@ function source(count:number){
     provider_turn_id TEXT,provider_input_acknowledged_at TEXT,stop_requested_at TEXT,native_run_id TEXT,
     accepted_input_id TEXT,queue_priority INTEGER NOT NULL DEFAULT 0,saved_at_ms INTEGER NOT NULL DEFAULT 1,
     saved_expires_at_ms INTEGER,saved_account TEXT,saved_window TEXT,saved_repeat_ms INTEGER,saved_sequence INTEGER,
+    saved_daily_time TEXT,saved_time_zone TEXT,
     dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER);
   CREATE TABLE session_inputs(id TEXT PRIMARY KEY,origin TEXT,kind TEXT,steering_id INTEGER,receipt_json TEXT,payload_json TEXT,created_at TEXT);
   CREATE INDEX saved_message_page ON session_saved_messages(created_at DESC,session_id DESC,message_id DESC);
@@ -148,6 +149,7 @@ async function standingAgentsGrowth(){
    database.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,native_metadata_json TEXT,provider_id TEXT,binding_generation INTEGER);
     CREATE INDEX standing_session_role ON sessions(json_extract(native_metadata_json,'$.standingRole'),id DESC) WHERE status!='archived';
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,saved_kind TEXT,saved_repeat_ms INTEGER,
+      saved_daily_time TEXT,saved_time_zone TEXT,
       saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,dispatch_next_attempt_ms INTEGER,
       ended_at TEXT,agent_text TEXT);
     CREATE INDEX standing_queued_repeats ON turns(id) WHERE status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL;

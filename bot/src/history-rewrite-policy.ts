@@ -74,7 +74,9 @@ export function parseShell(source: string): Simple[] {
       continue;
     }
     let text = '', raw = '';
-    while (i < source.length && !/[\s;&|<>()]/.test(source[i]!)) {
+    // Shell token separators are ASCII space, tab and newline. Other Unicode
+    // whitespace is literal word text and must still advance the scanner.
+    while (i < source.length && !/[ \t\n;&|<>()]/.test(source[i]!)) {
       const ch = source[i]!;
       if (ch === "'") { const end = source.indexOf("'", i + 1); const stop = end < 0 ? source.length : end; text += source.slice(i + 1, stop); raw += source.slice(i, stop + 1); i = stop + 1; continue; }
       if (ch === '"') {
@@ -127,7 +129,7 @@ function gitRefusal(sub: string, args: string[], dir: string, probe: RepositoryP
     return null;
   }
   if (sub === 'commit' && args.includes('--amend')) {
-    return probe.headPushed(dir) ? `Refused: \`git commit --amend\` would rewrite a commit that is already pushed.${REFUSAL_TAIL}` : null;
+    return probe.headPushed(dir) ? `Refused: \`git commit --amend\` in ${dir} would rewrite a commit that is already pushed.${REFUSAL_TAIL}` : null;
   }
   if (sub === 'rebase') {
     if (args.some(arg => ['--continue', '--abort', '--skip', '--quit', '--edit-todo', '--show-current-patch'].includes(arg))) return null;
@@ -142,7 +144,7 @@ function gitRefusal(sub: string, args: string[], dir: string, probe: RepositoryP
       positional.push(arg);
     }
     const rewritesPushed = probe.rebaseRewritesPushed(dir, positional[0] ?? null, positional[1] ?? null, root);
-    return rewritesPushed ? `Refused: this rebase would rewrite commits that are already pushed.${REFUSAL_TAIL}` : null;
+    return rewritesPushed ? `Refused: this rebase in ${dir} would rewrite commits that are already pushed.${REFUSAL_TAIL}` : null;
   }
   return null;
 }

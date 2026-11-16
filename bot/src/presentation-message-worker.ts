@@ -6,6 +6,8 @@ import {readFileSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {canceledRequestNotice,inboxRootResolver,sourceMessagePage} from './presentation-message-source';
 import {PreparedSearchIndex} from './prepared-search';
+import {installThreadText,writeThreadText,threadMessageText,backfillThreadText} from './prepared-thread-text';
+import {PreparedSearchUpkeep} from './prepared-search-upkeep';
 import {sessionCatalogueLabels} from './session-labels';
 import {preparedInboxDisplay} from './presentation-inbox-display';
 import {routedTurnResultSql} from './inbox-routing-result';
@@ -17,6 +19,7 @@ import {PreparedTopics} from './prepared-topics';
 import {PreparedAreas} from './prepared-areas';
 import {PreparedLabRequests} from './prepared-lab-requests';
 import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
+import {postIsCollapsed} from './inbox-collapse-visibility';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
 if(!directory)throw new Error('Presentation worker requires CONCIERGE_STATE_DIR.');
@@ -24,6 +27,7 @@ const stateDir=realpathSync(directory);
 const source=new Database(join(stateDir,'state.db'),{readonly:true});
 source.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000');
 const prepared=new Database(join(stateDir,'presentation.db'),{create:true});
+const preparedPath=join(stateDir,'presentation.db');
 prepared.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL');
 const schemaStarted=performance.now();
 writeLogLine('info',JSON.stringify({event:'presentation_worker_schema',phase:'starting',worker_pid:process.pid}));
@@ -45,8 +49,21 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
       entry_kind TEXT NOT NULL DEFAULT 'other',
       PRIMARY KEY(generation,event_sequence)
     );
+    CREATE TABLE IF NOT EXISTS presentation_message_root_work(
+      generation INTEGER NOT NULL,root_input_id TEXT NOT NULL,after_sequence INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(generation,root_input_id)
+    );
+    CREATE TABLE IF NOT EXISTS presentation_inbox_lineage_work(
+      generation INTEGER PRIMARY KEY,phase TEXT NOT NULL DEFAULT 'messages',
+      message_after INTEGER NOT NULL DEFAULT 0,root_after TEXT NOT NULL DEFAULT '',
+      examined INTEGER NOT NULL DEFAULT 0,moved INTEGER NOT NULL DEFAULT 0,topics_updated INTEGER NOT NULL DEFAULT 0,
+      pages INTEGER NOT NULL DEFAULT 0,root_summaries_examined INTEGER NOT NULL DEFAULT 0,
+      orphan_roots_removed INTEGER NOT NULL DEFAULT 0,root_pages INTEGER NOT NULL DEFAULT 0,started_at_ms INTEGER NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS presentation_messages_root_page
       ON presentation_messages(generation,session_id,root_input_id,event_sequence DESC);
+    CREATE INDEX IF NOT EXISTS presentation_messages_global_root_page
+      ON presentation_messages(generation,root_input_id,event_sequence);
     CREATE INDEX IF NOT EXISTS presentation_messages_topic_page
       ON presentation_messages(generation,topic_id,event_sequence DESC);
     CREATE INDEX IF NOT EXISTS presentation_messages_topic_identity
@@ -112,6 +129,17 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
     .some(column=>column.name==='routing_result_visibility_version');
   if(!hadRoutingResultVisibility)
     prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN routing_result_visibility_version INTEGER NOT NULL DEFAULT 0');
+  const hadDuplicateVisibility=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='duplicate_visibility_version');
+  if(!hadDuplicateVisibility)
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN duplicate_visibility_version INTEGER NOT NULL DEFAULT 0');
+  const hadThreadTime=(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='thread_time_version');
+  if(!hadThreadTime)
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN thread_time_version INTEGER NOT NULL DEFAULT 0');
+  if(!(prepared.query('PRAGMA table_info(presentation_message_meta)').all() as {name:string}[])
+    .some(column=>column.name==='inbox_lineage_roots_version'))
+    prepared.exec('ALTER TABLE presentation_message_meta ADD COLUMN inbox_lineage_roots_version INTEGER NOT NULL DEFAULT 0');
   // A lineage upgrade builds into the next generation. Keep the complete active generation readable
   // until that shadow generation is atomically activated, including after an interrupted upgrade.
   const markedReplyState=prepared.query(`SELECT generation,ready,marked_reply_roots_version AS version
@@ -121,6 +149,7 @@ const {search,cards,receipts,topics,areas,labRequests}=prepared.transaction(()=>
   prepared.exec(`CREATE INDEX IF NOT EXISTS presentation_messages_root_kind_latest
     ON presentation_messages(generation,root_input_id,entry_kind,event_sequence DESC);`);
   const search=new PreparedSearchIndex(prepared);
+  installThreadText(prepared);
   const cards=new PreparedSessionCards(source,prepared,(db,row)=>sessionCatalogueLabels(db,
     {...row,native_metadata_json:row.native_metadata_json??'{}'}));
   const receipts=new PreparedReceipts(source,prepared);
@@ -157,8 +186,8 @@ const withoutHeader=(text:string)=>{
   const end=text.indexOf('\n\n');return end<0?'':text.slice(end+2);
 };
 
-const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready,agent_request_visibility_version,routing_result_visibility_version FROM presentation_message_meta WHERE singleton=1')
-  .get() as {generation:number;event_watermark:number;source_head:number;ready:number;agent_request_visibility_version:number;routing_result_visibility_version:number};
+const meta=()=>prepared.query('SELECT generation,event_watermark,source_head,ready,agent_request_visibility_version,routing_result_visibility_version,duplicate_visibility_version FROM presentation_message_meta WHERE singleton=1')
+  .get() as {generation:number;event_watermark:number;source_head:number;ready:number;agent_request_visibility_version:number;routing_result_visibility_version:number;duplicate_visibility_version:number};
 const head=()=>Number((source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_change_log').get() as {n:number}).n);
 const observation=new PresentationWorkerObservation(()=>({...meta(),target:head()}));
 let lastSearchMaintenance=0;
@@ -180,6 +209,8 @@ function writeDisplay(generation:number,sequence:number,sessionId:number,message
   const result=preparedInboxDisplay(source,sessionId,sequence,messageId);
   if(!result)return;
   insertDisplay.run(generation,sequence,JSON.stringify(result.preview));
+  // Thread search reads every word of the message, not the 1 KB preview a long one displays.
+  writeThreadText(prepared,generation,sequence,threadMessageText(result.detailJson?JSON.parse(result.detailJson):result.preview));
   prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=? AND event_sequence=?').run(generation,sequence);
   if(result.detailJson){const digest=hash(result.detailJson);
     for(let index=0,part=0;index<result.detailJson.length;index+=4096,part++)
@@ -240,6 +271,20 @@ async function upgradeAnswerClosures(generation:number){
   prepared.transaction(()=>{keepLease();topics.apply(generation,[],changedRoots);})();
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
   prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET answer_closures_version=2 WHERE singleton=1').run();})();
+}
+/** Thread time stopped counting agent upkeep (inbox-thread-time.ts); every prepared thread was
+ * dated by its newest message of any kind, so each one is recomputed once, in bounded pages.
+ * Version 2 also stops counting owner recovery notices filed as a thread's opening message;
+ * version 3 the router's working output under such a notice. */
+const THREAD_TIME_VERSION=3;
+async function upgradeThreadTime(generation:number){
+  const version=(prepared.query('SELECT thread_time_version AS version FROM presentation_message_meta WHERE singleton=1')
+    .get() as {version:number}).version;
+  if(version>=THREAD_TIME_VERSION)return;
+  prepared.transaction(()=>{keepLease();prepared.query(`INSERT OR IGNORE INTO presentation_topic_dirty
+    SELECT generation,topic_id FROM presentation_topics WHERE generation=?`).run(generation);})();
+  while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+  prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET thread_time_version=? WHERE singleton=1').run(THREAD_TIME_VERSION);})();
 }
 /** Reproject handoffs and attributed answers after their display changes. */
 async function upgradeRequestRoots(generation:number){
@@ -312,14 +357,20 @@ const upsertOwnerMessage=prepared.query(`INSERT INTO presentation_owner_messages
 function writeOwnerVersion(generation:number,row:{sessionId:number;messageId:string;sequence:number;eventId:string}) {
   insertOwnerVersion.run(generation,row.sessionId,row.messageId,row.sequence,row.eventId);
   upsertOwnerMessage.run(generation,row.sessionId,row.messageId,row.sequence,row.sequence);
-  const event=source.query('SELECT payload_json,created_at FROM session_owner_events WHERE sequence=?').get(row.sequence) as
+  indexOwnerMessage(row.sessionId,row.messageId,row.sequence);
+}
+function indexOwnerMessage(sessionId:number,messageId:string,sequence:number) {
+  const event=source.query('SELECT payload_json,created_at FROM session_owner_events WHERE sequence=?').get(sequence) as
     {payload_json:string;created_at:string}|null;
+  // Ledger bytes read count toward a backfill's pace even when nothing is indexed.
+  if(event)search.indexedBytes+=event.payload_json.length;
   const message=event?JSON.parse(event.payload_json)?.message:null;
   if(!message||typeof message.content!=='string'||!['user','assistant','tool'].includes(message.role))return;
+  // A tool version still reaches upsert, which removes an older dialogue version of the message.
   const text=withoutHeader(message.content);
-  search.upsert({key:`message:${row.sessionId}:${row.messageId}`,sessionId:row.sessionId,kind:'message',eventId:row.messageId,
-    sourceId:`native:${row.sessionId}`,sourceVersion:hash(stable(message)),textHash:hash(message.content),role:message.role,
-    text,at:event?.created_at??null,ordinal:row.sequence,...(typeof message.detailKey==='string'?{detailKey:message.detailKey}:{})});
+  search.upsert({key:`message:${sessionId}:${messageId}`,sessionId,kind:'message',eventId:messageId,
+    sourceId:`native:${sessionId}`,sourceVersion:hash(stable(message)),textHash:hash(message.content),role:message.role,
+    text,at:event?.created_at??null,ordinal:sequence,...(typeof message.detailKey==='string'?{detailKey:message.detailKey}:{})});
 }
 function writeInput(inputId:string) {
   const row=source.query('SELECT id,session_id,kind,payload_json,created_at FROM session_inputs WHERE id=?')
@@ -344,37 +395,153 @@ function writeSession(sessionId:number) {
 function topicOf(root:string):string|null {
   return (source.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(root) as {topic_id:string}|null)?.topic_id??null;
 }
-async function reassignLinkedInput(generation:number,inputId:string,resolveRoot:ReturnType<typeof inboxRootResolver>) {
-  const changedRoots=new Set<string>();
-  const roots=prepared.query(`SELECT DISTINCT root_input_id AS root FROM presentation_messages
-    WHERE generation=? AND input_id=?`).all(generation,inputId) as {root:string}[];
-  for(const {root} of roots){
-    changedRoots.add(root);
-    let after=0;
-    while(true){
-      const rows=prepared.query(`SELECT event_sequence AS sequence,session_id AS sessionId,message_id AS messageId,input_id AS inputId
-        FROM presentation_messages WHERE generation=? AND root_input_id=? AND event_sequence>?
-        ORDER BY event_sequence LIMIT 100`).all(generation,root,after) as
-          {sequence:number;sessionId:number;messageId:string;inputId:string}[];
-      if(!rows.length)break;
-      prepared.transaction(()=>{
-        keepLease();
-        for(const row of rows){
-          const nextRoot=resolveRoot(row.sessionId,row.messageId);
-          if(nextRoot&&nextRoot!==root){
-            changedRoots.add(nextRoot);
-            prepared.query(`UPDATE presentation_messages SET root_input_id=?,topic_id=?
-              WHERE generation=? AND event_sequence=?`).run(nextRoot,topicOf(nextRoot),generation,row.sequence);
-          }
-          if(nextRoot!==root||row.inputId===inputId)writeDisplay(generation,row.sequence,row.sessionId,row.messageId);
+/** Original roots remain durable until every member has been reconsidered. Once the linked
+ * input itself moves, retrying from only its current mapping cannot find its old descendants. */
+async function drainRootReassignments(generation:number,resolveRoot:ReturnType<typeof inboxRootResolver>){
+  while(true){
+    const work=prepared.query(`SELECT root_input_id AS root,after_sequence AS after FROM presentation_message_root_work
+      WHERE generation=? ORDER BY root_input_id LIMIT 1`).get(generation) as {root:string;after:number}|null;
+    if(!work)break;
+    const rows=prepared.query(`SELECT event_sequence AS sequence,session_id AS sessionId,message_id AS messageId
+      FROM presentation_messages WHERE generation=? AND root_input_id=? AND event_sequence>?
+      ORDER BY event_sequence LIMIT 100`).all(generation,work.root,work.after) as
+      {sequence:number;sessionId:number;messageId:string}[];
+    prepared.transaction(()=>{
+      keepLease();
+      const roots=new Set([work.root]);
+      for(const row of rows){
+        const root=resolveRoot(row.sessionId,row.messageId);
+        if(root){
+          roots.add(root);
+          prepared.query(`UPDATE presentation_messages SET root_input_id=?,topic_id=?
+            WHERE generation=? AND event_sequence=?`).run(root,topicOf(root),generation,row.sequence);
         }
-      })();
-      after=rows.at(-1)!.sequence;
-      await yieldProgress();
-    }
+        writeDisplay(generation,row.sequence,row.sessionId,row.messageId);
+      }
+      // Mappings, sorting summaries, durable topic invalidation and continuation are one
+      // commit. A worker loss can repeat a page, never forget the rest of its old root.
+      topics.apply(generation,[],roots);
+      if(rows.length===100)prepared.query(`UPDATE presentation_message_root_work SET after_sequence=?
+        WHERE generation=? AND root_input_id=?`).run(rows.at(-1)!.sequence,generation,work.root);
+      else prepared.query('DELETE FROM presentation_message_root_work WHERE generation=? AND root_input_id=?').run(generation,work.root);
+    })();
+    await yieldProgress();
   }
-  return changedRoots;
 }
+async function reassignLinkedInput(generation:number,inputId:string,resolveRoot:ReturnType<typeof inboxRootResolver>) {
+  prepared.transaction(()=>{
+    keepLease();
+    prepared.query(`INSERT OR IGNORE INTO presentation_message_root_work(generation,root_input_id)
+      SELECT generation,root_input_id FROM presentation_messages WHERE generation=? AND input_id=?`)
+      .run(generation,inputId);
+  })();
+  await drainRootReassignments(generation,resolveRoot);
+}
+/** Existing rows may predate a successor router filing their input. Re-resolve in bounded
+ * pages rather than replaying any filing command or rebuilding unrelated prepared indexes. */
+type InboxLineageWork={generation:number;phase:'messages'|'roots'|'drain'|'complete';message_after:number;root_after:string;
+  examined:number;moved:number;topics_updated:number;pages:number;root_summaries_examined:number;
+  orphan_roots_removed:number;root_pages:number;started_at_ms:number};
+/**
+ * The upgrade shares each catch-up pass with live changes instead of running to completion first.
+ * On 2026-11-15 the full pass (21k messages, 7k thread summaries) took over 23 minutes each time
+ * three releases restarted it, and thnkr.ing showed no new message for more than an hour. Its cursor
+ * commits with every page, so stopping at the budget and resuming on the next pass loses nothing;
+ * live changes already use the corrected lineage, so they need not wait for old rows to be repaired.
+ */
+const INBOX_LINEAGE_PASS_BUDGET_MS=2_000;
+let inboxLineageLastProgress=-Infinity,inboxLineageReported=false;
+async function upgradeInboxLineageRoots(generation:number){
+  const version=(prepared.query('SELECT inbox_lineage_roots_version AS version FROM presentation_message_meta WHERE singleton=1')
+    .get() as {version:number}).version;
+  if(version>=2)return;
+  const deadline=performance.now()+INBOX_LINEAGE_PASS_BUDGET_MS;
+  const readWork=()=>prepared.query('SELECT * FROM presentation_inbox_lineage_work WHERE generation=?').get(generation) as InboxLineageWork;
+  const resumed=!!readWork();
+  prepared.transaction(()=>{keepLease();prepared.query(`INSERT OR IGNORE INTO presentation_inbox_lineage_work(generation,started_at_ms)
+    VALUES(?,?)`).run(generation,Date.now());})();
+  const reportProgress=(force=false)=>{
+    if(!force&&Date.now()-inboxLineageLastProgress<10_000)return;
+    inboxLineageLastProgress=Date.now();
+    const work=readWork();
+    writeLogLine('info',JSON.stringify({event:'presentation_inbox_lineage_progress',version:2,resumed,...work,
+      elapsed_wall_ms:Date.now()-work.started_at_ms}));
+  };
+  reportProgress(!inboxLineageReported);inboxLineageReported=true;
+  // A page cursor commits with its mappings, root maintenance and dirty dependencies.
+  // Finish those durable dependencies before continuing from that cursor after a restart.
+  while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+  while(readWork().phase==='messages'){
+    const work=readWork();
+    const rows=prepared.query(`SELECT event_sequence AS sequence,session_id AS sessionId,message_id AS messageId,
+      root_input_id AS root,topic_id AS topic FROM presentation_messages WHERE generation=? AND event_sequence>?
+      ORDER BY event_sequence LIMIT 100`).all(generation,work.message_after) as
+      {sequence:number;sessionId:number;messageId:string;root:string;topic:string|null}[];
+    if(!rows.length){
+      prepared.transaction(()=>{keepLease();prepared.query(`UPDATE presentation_inbox_lineage_work SET phase='roots' WHERE generation=?`).run(generation);})();
+      reportProgress(true);break;
+    }
+    const resolveRoot=inboxRootResolver(source),changedRoots=new Set<string>();
+    prepared.transaction(()=>{
+      keepLease();
+      let moved=0,topicsUpdated=0;
+      for(const row of rows){
+        const root=resolveRoot(row.sessionId,row.messageId),topic=root?topicOf(root):null;
+        changedRoots.add(row.root);
+        if(root&&(root!==row.root||topic!==row.topic)){
+          if(root!==row.root)moved++;
+          if(topic!==row.topic)topicsUpdated++;
+          changedRoots.add(root);
+          prepared.query(`UPDATE presentation_messages SET root_input_id=?,topic_id=?
+            WHERE generation=? AND event_sequence=?`).run(root,topic,generation,row.sequence);
+        }
+        writeDisplay(generation,row.sequence,row.sessionId,row.messageId);
+      }
+      topics.apply(generation,[],changedRoots);
+      prepared.query(`UPDATE presentation_inbox_lineage_work SET message_after=?,examined=examined+?,
+        moved=moved+?,topics_updated=topics_updated+?,pages=pages+1 WHERE generation=?`)
+        .run(rows.at(-1)!.sequence,rows.length,moved,topicsUpdated,generation);
+    })();
+    reportProgress();
+    while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+    await yieldProgress();
+    if(performance.now()>deadline)return;
+  }
+  // Empty old summaries cannot be discovered from current message mappings. This sweep
+  // has its own durable keyset, including when the last visited row was deleted.
+  while(readWork().phase==='roots'){
+    const work=readWork();
+    const rows=prepared.query(`SELECT root_id AS root,session_id AS sessionId,unfiled,his,
+      NOT EXISTS(SELECT 1 FROM presentation_messages m WHERE m.generation=r.generation AND m.root_input_id=r.root_id) AS empty
+      FROM presentation_topic_roots r WHERE generation=? AND root_id>? ORDER BY root_id LIMIT 100`)
+      .all(generation,work.root_after) as {root:string;sessionId:number;unfiled:number;his:number;empty:number}[];
+    if(!rows.length){
+      prepared.transaction(()=>{keepLease();prepared.query(`UPDATE presentation_inbox_lineage_work SET phase='drain' WHERE generation=?`).run(generation);})();
+      reportProgress(true);break;
+    }
+    prepared.transaction(()=>{
+      keepLease();topics.apply(generation,[],rows.map(row=>row.root));
+      prepared.query(`UPDATE presentation_inbox_lineage_work SET root_after=?,root_summaries_examined=root_summaries_examined+?,
+        orphan_roots_removed=orphan_roots_removed+?,root_pages=root_pages+1 WHERE generation=?`)
+        .run(rows.at(-1)!.root,rows.length,rows.filter(row=>row.empty).length,generation);
+    })();
+    for(const row of rows)if(row.empty&&row.unfiled&&row.his)
+      writeLogLine('info',JSON.stringify({event:'presentation_inbox_empty_root_removed',
+        generation,version:2,root:row.root,resolved_root:inboxRootResolver(source)(row.sessionId,row.root)}));
+    reportProgress();await yieldProgress();
+    if(performance.now()>deadline)return;
+  }
+  while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
+  prepared.transaction(()=>{
+    keepLease();
+    prepared.query(`UPDATE presentation_inbox_lineage_work SET phase='complete' WHERE generation=?`).run(generation);
+    prepared.query('UPDATE presentation_message_meta SET inbox_lineage_roots_version=2 WHERE singleton=1').run();
+  })();
+  const completed=readWork();
+  writeLogLine('info',JSON.stringify({event:'presentation_inbox_lineage_upgrade',version:2,resumed,...completed,
+    duration_ms:Date.now()-completed.started_at_ms}));
+}
+
 /** Reproject only marked surface replies and their descendants after their trusted lineage rule changes. */
 function upgradeMarkedReplyRoots(generation:number){
   const version=(prepared.query('SELECT marked_reply_roots_version AS version FROM presentation_message_meta WHERE singleton=1')
@@ -452,30 +619,50 @@ async function refreshAreaProjection(generation:number){
   prepared.transaction(()=>{keepLease();areas.activate(generation);})();
 }
 
-/** Receipt policy changes rebuild only receipts. Every other prepared view keeps its own generation. */
-async function refreshReceiptProjection(){
-  const generation=receipts.nextGeneration(),startHead=head();
-  prepared.transaction(()=>{keepLease();receipts.beginRebuild(generation);})();
-  let after=0;
-  while(true){
-    const page=prepared.transaction(()=>{keepLease();return receipts.rebuildPage(generation,after,20);})();
-    after=page.lastRowid;
-    if(!page.hasMore)break;
+/** Receipt policy changes rebuild only receipts, beside live catch-up. The projection revision is
+ * this bundle's digest, so every release rebuilds receipts; running that rebuild before catch-up
+ * applied no change for two to five minutes after each restart, and every Inbox list answered
+ * not-ready meanwhile (Nov 11, 2026). Now each catch-up pass fills one bounded slice of the next
+ * generation, every applied change goes to both generations, and the old generation stays readable
+ * and current until the new one activates at the change position both have reached. */
+let receiptRebuild:{generation:number;after:number}|null=null;
+const RECEIPT_REBUILD_SLICE_MS=200;
+async function advanceReceiptRebuild(appliedHead:number){
+  if(receipts.isCurrent(receiptProjectionRevision)){receiptRebuild=null;return;}
+  if(!receiptRebuild){
+    const generation=receipts.nextGeneration();
+    prepared.transaction(()=>{keepLease();receipts.beginRebuild(generation);})();
+    receiptRebuild={generation,after:0};
+  }
+  const rebuild=receiptRebuild,until=performance.now()+RECEIPT_REBUILD_SLICE_MS;
+  while(performance.now()<until){
+    const page=prepared.transaction(()=>{keepLease();return receipts.rebuildPage(rebuild.generation,rebuild.after,20);})();
+    rebuild.after=page.lastRowid;
+    if(!page.hasMore){
+      // Rows rebuilt read the current source and every applied change reached this generation too,
+      // so it covers at least the position the shared views have applied.
+      prepared.transaction(()=>{keepLease();receipts.activate(rebuild.generation,appliedHead,receiptProjectionRevision);})();
+      receiptRebuild=null;
+      return;
+    }
     await yieldProgress(5);
   }
-  prepared.transaction(()=>{keepLease();receipts.activate(generation,startHead,receiptProjectionRevision);})();
 }
 
 /** Full re-rooting occurs off the interactive owner. The old generation stays readable until commit. */
 async function rebuild() {
   if(rebuilding)return;
   rebuilding=true;
+  // A full rebuild replaces every receipt generation, including one being filled beside catch-up.
+  receiptRebuild=null;
   try {
     const previous=meta(),generation=previous.generation+1,receiptGeneration=receipts.nextGeneration(),startHead=head();
     const eventHead=(source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM session_owner_events').get() as {n:number}).n;
     prepared.transaction(()=>{
       keepLease();
       prepared.query('DELETE FROM presentation_messages WHERE generation=?').run(generation);
+      prepared.query('DELETE FROM presentation_message_root_work WHERE generation=?').run(generation);
+      prepared.query('DELETE FROM presentation_inbox_lineage_work WHERE generation=?').run(generation);
       prepared.query('DELETE FROM presentation_message_display WHERE generation=?').run(generation);
       prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation=?').run(generation);
       prepared.query('DELETE FROM presentation_topic_events WHERE generation=?').run(generation);
@@ -551,7 +738,7 @@ async function rebuild() {
     await rebuildAreaPages(generation);
     prepared.transaction(()=>{
       keepLease();
-      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2 WHERE singleton=1')
+      prepared.query('UPDATE presentation_message_meta SET generation=?,event_watermark=?,source_head=?,ready=1,request_roots_version=8,answer_closures_version=2,marked_reply_roots_version=1,agent_request_visibility_version=1,routing_result_visibility_version=2,duplicate_visibility_version=1,inbox_lineage_roots_version=2 WHERE singleton=1')
         .run(generation,after,startHead);
       cards.activate(generation,startHead);
       receipts.activate(receiptGeneration,startHead,receiptProjectionRevision);
@@ -559,6 +746,8 @@ async function rebuild() {
       areas.activate(generation);
       labRequests.activate(generation,startHead);
       prepared.query('DELETE FROM presentation_messages WHERE generation<?').run(generation);
+      prepared.query('DELETE FROM presentation_message_root_work WHERE generation<?').run(generation);
+      prepared.query('DELETE FROM presentation_inbox_lineage_work WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_message_display WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_message_detail_chunks WHERE generation<?').run(generation);
       prepared.query('DELETE FROM presentation_topic_events WHERE generation<?').run(generation);
@@ -631,8 +820,8 @@ async function upgradeRoutingResultVisibility(generation:number){
 /** Changes to lineage request a new generation. New messages append without rereading history. */
 async function catchUp() {
   const current=meta();
-  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)){await rebuild();return;}
-  if(!receipts.isCurrent(receiptProjectionRevision)){await refreshReceiptProjection();return;}
+  if(!current.ready||!topics.isReady(current.generation)||!labRequests.isReady(current.generation)||!current.duplicate_visibility_version){await rebuild();return;}
+  await advanceReceiptRebuild(current.source_head);
   const receiptGeneration=receipts.activeGeneration();
   if(!current.agent_request_visibility_version){await upgradeAgentRequestVisibility(current.generation);return;}
   if(current.routing_result_visibility_version<2){await upgradeRoutingResultVisibility(current.generation);return;}
@@ -640,6 +829,11 @@ async function catchUp() {
   if(!areas.isReady(current.generation))await refreshAreaProjection(current.generation);
   await upgradeRequestRoots(current.generation);
   await upgradeAnswerClosures(current.generation);
+  await upgradeThreadTime(current.generation);
+  await upgradeInboxLineageRoots(current.generation);
+  await drainRootReassignments(current.generation,inboxRootResolver(source));
+  // Persisted topic dirtiness may outlive its remap page even with no new source changes.
+  while(prepared.transaction(()=>{keepLease();return topics.drain(current.generation,20);})().hasMore)await yieldProgress();
   const changes=source.query(`SELECT sequence,source_table,row_key,session_id,input_id,turn_id,request_id,topic_id,target_session_id,target_input_id FROM presentation_change_log
     WHERE sequence>? ORDER BY sequence LIMIT 500`).all(current.source_head) as
       {sequence:number;source_table:string;row_key:string;session_id:number|null;input_id:string|null;
@@ -666,6 +860,9 @@ async function catchUp() {
       if(request?.sourceMessageId)routedSources.add(request.sourceMessageId);
     }
     if(change.source_table==='session_inputs'){
+      const context=source.query("SELECT 1 FROM session_inputs WHERE id=? AND json_extract(payload_json,'$.responseMode')='context'")
+        .get(change.row_key);
+      if(context)correctedInputs.add(change.row_key);
       const input=source.query("SELECT CASE WHEN json_extract(receipt_json,'$.forwardedTo') IS NOT NULL THEN id END AS sourceMessageId FROM session_inputs WHERE id=?")
         .get(change.row_key) as {sourceMessageId:string|null}|null;
       if(input?.sourceMessageId)routedSources.add(input.sourceMessageId);
@@ -706,12 +903,12 @@ async function catchUp() {
       }
       if(row?.kind==='post_collapse'){
         const postId=JSON.parse(row.payload_json).postId;
-        if(typeof postId==='string')collapsedPosts.add(postId);
+        if(typeof postId==='string'&&postIsCollapsed(source,postId))collapsedPosts.add(postId);
       }
       if(row?.turn_id&&['post','turn_outcome','result_posted'].includes(row.kind))turnsToRefresh.add(row.turn_id);
     }
   }
-  for(const inputId of linkedInputs)for(const root of await reassignLinkedInput(current.generation,inputId,resolveRoot))changedRoots.add(root);
+  for(const inputId of linkedInputs)await reassignLinkedInput(current.generation,inputId,resolveRoot);
   for(const inputId of correctedInputs)await refreshCorrectedInputDisplay(current.generation,inputId,changedRoots);
   for(const root of movedRoots){await relocateRoot(current.generation,root);changedRoots.add(root);}
   let eventAfter=current.event_watermark;
@@ -834,6 +1031,7 @@ async function catchUp() {
       change.session_id&&(change.source_table==='slack_agent_session_title_projections'||change.source_table==='slack_agent_session_status_projections')
         ?{...change,source_table:'sessions',row_key:String(change.session_id)}:change));
     receipts.apply(receiptGeneration,changes);
+    if(receiptRebuild)receipts.apply(receiptRebuild.generation,changes);
     receipts.refreshDue(receiptGeneration);
     topics.apply(current.generation,changes,changedRoots);
     areas.apply(current.generation,changes);
@@ -880,7 +1078,15 @@ async function catchUp() {
     topic_context_build_ms:Math.round(topicContextBuildMs)}));
 }
 
-let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false;
+const searchUpkeep=new PreparedSearchUpkeep(prepared,preparedPath,search,{
+  generation:()=>meta().generation,
+  indexMessage:indexOwnerMessage,
+  inputsAfter:(after,limit)=>source.query('SELECT rowid,id FROM session_inputs WHERE rowid>? ORDER BY rowid LIMIT ?').all(after,limit) as {rowid:number;id:string}[],
+  indexInput:writeInput,
+  sessionsAfter:(after,limit)=>(source.query('SELECT id FROM sessions WHERE id>? ORDER BY id LIMIT ?').all(after,limit) as {id:number}[]).map(row=>row.id),
+  indexSession:writeSession,
+},keepLease,(event,fields)=>writeLogLine('info',JSON.stringify({event,...fields})));
+let checkedDisplay=false,lastTopicCollection=0,touchBackfilled=false,lastFailureDetailAt=0,threadTextBackfilled=-1;
 while(true){
   try {if(claimLease()){
     observation.emit();
@@ -895,13 +1101,30 @@ while(true){
     }
     await catchUp();observation.succeeded();
     maintainSearchIfDue();
+    searchUpkeep.step();
+    {
+      // Messages prepared before thread search read every word: indexed a page per pass.
+      const current=meta();
+      if(current.ready&&threadTextBackfilled!==current.generation&&prepared.transaction(()=>{keepLease();
+        return backfillThreadText(prepared,current.generation);})())threadTextBackfilled=current.generation;
+    }
     if(!touchBackfilled){
       const current=meta();
       if(current.ready)touchBackfilled=!prepared.transaction(()=>{keepLease();
         return cards.backfillTouch(current.generation,head());})();
     }
-  }}
-  catch(error){observation.failed();writeLogLine('error',JSON.stringify({event:'presentation_message_worker_failed',error:String(error)}));}
+  }else receiptRebuild=null;}
+  catch(error){
+    // Another worker may have refilled or abandoned the receipt shadow meanwhile; start it afresh.
+    receiptRebuild=null;
+    observation.failed();
+    const failure=error instanceof Error?error:new Error(String(error));
+    const now=Date.now(),includeDetail=now-lastFailureDetailAt>60_000;
+    if(includeDetail)lastFailureDetailAt=now;
+    writeLogLine('error',JSON.stringify({event:'presentation_message_worker_failed',error:String(error),
+      ...(includeDetail?{code:typeof (error as {code?:unknown})?.code==='string'?(error as {code:string}).code:null,
+        stack:failure.stack?.split('\n').slice(0,8).join('\n')??null}:{})}));
+  }
   // A retained message should appear in a warm thread inside the interactive read budget;
   // the idle check is one indexed change-journal seek in this child, outside the owner loop.
   await Bun.sleep(100);

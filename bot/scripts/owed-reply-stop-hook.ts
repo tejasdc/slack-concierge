@@ -99,7 +99,10 @@ function closeRunBrowsers(runId: string | null) {
 }
 
 // The hook itself has 20 seconds (claude-code.ts), so a restart is waited out only within that.
-const ask = (extra: object) => requestApiResponse('/session-communication/owed', { provider, provider_session_id: conversation, ...extra }, RETRY_POLICIES.ownerRestartInHook);
+// Claude runs one process per Concierge run, so its environment names that run even before the
+// owner has learned a new conversation's id. Codex's shared App Server environment is not per run.
+const launchedRun = provider === 'claude-code' ? process.env.CONCIERGE_SOURCE_RUN_ID?.trim() || undefined : undefined;
+const ask = (extra: object) => requestApiResponse('/session-communication/owed', { provider, provider_session_id: conversation, ...(launchedRun ? { run_id: launchedRun } : {}), ...extra }, RETRY_POLICIES.ownerRestartInHook);
 
 try {
   const response = await ask(hook.stop_hook_active && !background ? { remind: true } : {});
@@ -108,14 +111,15 @@ try {
   const unfiled=pending.filter(input=>!input.request_id);
   const reports=pending.filter(input=>!!input.request_id);
   const source: { input_id: string; run_id: string } | null = response.ok ? response.result?.source ?? null : null;
-  if ((owed.length || pending.length) && source) {
+  const journalProcessing:string|null=response.ok?response.result?.journalProcessing??null:null;
+  if ((owed.length || pending.length || journalProcessing) && source) {
     const tool = join(homedir(), '.local', 'bin', 'router-actions.sh');
     const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
     const identity = `--source-input ${quote(source.input_id)} --source-run ${quote(source.run_id)}`;
     const filing = unfiled.flatMap(input => [
       `- Unfiled input ${input.input_id} (${input.at}): ${JSON.stringify(input.text)}`,
       ...(input.bug_report
-        ? [`  This is a bug report: it always gets a thread of its own (add --from '<related-topic-id>' to the create command below to link a related thread).`]
+        ? [`  This new bug report first gets independent Inbox intake in its own thread (add --from '<related-topic-id>' to the create command below to link a related thread). After filing, same-issue bug-report topics can be consolidated with topics merge <duplicate> --into <survivor> --correction-source '<retained-human-correction-in-survivor>' --reason '<why>'; a scoped secondary topics route <destination> --message '<original-capture>' --reason '<why>' --side-scope '<only-the-related-concern>' keeps its primary root intact.`]
         : [`  File in an existing topic: ${tool} sessions topics place '<topic-id>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`file-${input.root_id}`)}`]),
       `  Or find its area with ${tool} sessions areas suggest --title '<topic title>' ${identity}, then create its topic: ${tool} sessions topics create --title '<topic title>' --area '<area-id>' --root ${quote(input.root_id)} ${identity} --action-id ${quote(`create-${input.root_id}`)}`,
       `  If it is noise, create its own topic above, then explicitly close the returned topic: ${tool} sessions topics close '<returned-topic-id>' --scope ${quote(input.input_id)} ${identity} --action-id ${quote(`noise-${input.root_id}`)} -- 'Noise: <specific reason no work is needed>'`,
@@ -131,6 +135,7 @@ try {
         'You cannot end this Inbox turn while an agent issue report has no owner or explicit resolution. Route or resolve each report below; an open thread alone does not track its work.',
         ...routing,
       ] : []),
+      ...(journalProcessing ? [journalProcessing] : []),
       ...(owed.length ? [
       `You are ending your turn while you still owe a final reply to ${owed.length === 1 ? 'this request' : 'these requests'}. Your turn's text is never read as a reply. Send it now:`,
       ...lines,

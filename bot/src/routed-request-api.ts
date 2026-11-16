@@ -1,3 +1,4 @@
+import {withContentReader,LabDisclosureError} from './lab-content-disclosure';
 import {routeLabel,withTaskLabel} from './owner-task-labels';
 import {readFileSync} from "node:fs";
 import { finishedTodoRefusal, namedTodo } from './question-todos';
@@ -12,8 +13,9 @@ import {unopenableLinksWithReader} from './workspace-files';
 import {usageBreakdown} from './usage-breakdown';
 import {startPresentationWorker} from './presentation-worker-supervisor';
 import {log,logSinkCounters} from './log';
-import {ledgerDurable} from './ledger-durability-barrier';
+import {protectedOwnerReceipt} from './protected-owner-receipt';
 import {ledgerDurabilityCounters,startLedgerDurability} from './ledger-durability';
+import {protectedDurability} from './protected-durability-observation';
 import {isTransientDatabaseError} from './database-retry';
 import {BoardError} from './commons-board-service';
 import {getAcceptedSessionInput} from './session-inputs';
@@ -25,9 +27,12 @@ import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
   failDeploymentRun,recordPreservedCheckout} from './deployment-state';
 import {resolveDeploymentReactionTargets} from './deployment-reaction-provenance';
 import {releaseFilesInUse} from './executions';
+import {defaultReleaseEnvironment,TrustedRootReleaseManager} from './deployment-release';
 import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from './native-pipeline-continuation-owner';
 import {runnerRoutes} from './runner-routes';
+import {listReadHead} from './presentation-topic-reader';
 import {activeGrafanaAlerts,type GrafanaFiringEvidence,type GrafanaRecoveryEvidence} from './grafana-alerts';
+import type {unfiledReceivedInputs} from './session-topics';
 
 function requestFailure(request:Request,error:unknown):Response {
   const transient=isTransientDatabaseError(error);
@@ -38,7 +43,7 @@ function requestFailure(request:Request,error:unknown):Response {
     const stack=error instanceof Error?error.stack?.split('\n').filter(line=>/^\s+at /.test(line)).slice(0,5).map(line=>line.trim().slice(0,300)):undefined;
     log('error','native_command_database_failed',{operation,code:/^SQLITE_[A-Z_]+$/.test(code)?code:'SQLITE_BUSY',transient,stack});
   }
-  const boardStatus=error instanceof BoardError&&error.status>=400&&error.status<500?error.status:400;
+  const boardStatus=error instanceof LabDisclosureError?error.status:error instanceof BoardError&&error.status>=400&&error.status<500?error.status:400;
   return Response.json({error:error instanceof Error?error.message:'Request API failed.'},{status:transient?503:boardStatus});
 }
 
@@ -82,7 +87,7 @@ async function withTodoState(input:any):Promise<any>{
 }
 
 export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
-  return async function fetch(request: Request): Promise<Response> {
+  const handle=async function handleRoutedRequest(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
       const native=await owner?.handle(request);
@@ -93,7 +98,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         const sourceInput=typeof input?.source?.input_id==='string'?getAcceptedSessionInput(input.source.input_id):null;
         const successor=sourceInput?supersededBy(sourceInput.session_id):null;
         const withdrawn=sourceInput?withdrawnSuccessor(sourceInput.session_id):false;
-        const readOnly=operation==='search'||operation==='projects'||operation==='agents'||operation==='peers'||operation==='usage'
+        const readOnly=operation==='search'||operation==='projects'||operation==='agents'||operation==='peers'||operation==='usage'||operation==='history-storage'
           ||operation==='pause'&&input.verb==='status'
           ||operation==='get'||operation==='context'||operation==='obligations'
           ||operation==='board'&&input.verb==='read'||operation==='watch'&&input.verb==='list'
@@ -118,9 +123,12 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
           return Response.json(input.by_session
             ? await usageBreakdown(input.period==='week'?'week':'today') : current);
         }
+        if (operation === 'history-storage') return Response.json(sessions.historyStorage(input));
         if (operation === 'auth-switch') return Response.json(await sessions.switchCodexAccount(input));
         if (operation === 'saved') return Response.json(sessions.saved(input));
+        if (operation === 'snooze') return Response.json(sessions.snooze(input));
         if (operation === 'pause') return Response.json(await sessions.pause(input));
+        if (operation === 'control') return Response.json(sessions.control(input));
         if (operation === 'watch') {
           // A runner's own token names its machine for certain: that wins over what the helper sent.
           // A run token or the local socket carries no machine, so the helper's runner name stands
@@ -131,10 +139,31 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'handoff') return Response.json(await sessions.handoff(input));
         if (operation === 'obligations') return Response.json(await sessions.obligations(input));
+        if (operation === 'agent-test-scope') return Response.json(sessions.agentTestScopeDiagnostic(input));
+        if (operation === 'mutation-admission') return Response.json(sessions.mutationAdmission(input));
         if (operation === 'open') return Response.json(await sessions.openLink(input));
         if (operation === 'board') return Response.json(await sessions.board(input));
-        if (operation === 'owed') return Response.json(sessions.owed(input));
+        if (operation === 'owed') {
+          const stateDir=process.env.CONCIERGE_STATE_DB?dirname(process.env.CONCIERGE_STATE_DB)
+            :process.env.CONCIERGE_STATE_DIR||'/root/.local/state/concierge';
+          const result=await sessions.owed(input,async(sessionId,turnId,signal)=>{
+            const query=new URLSearchParams({sessionId:String(sessionId),turnId:String(turnId)});
+            const response=await fetch(`http://localhost/internal/owed-unfiled?${query}`,{
+              unix:join(stateDir,'requests.sock'),signal,
+            } as RequestInit);
+            if(!response.ok)throw new Error('The Inbox filing read is unavailable.');
+            const body=await response.json() as {unfiled?:unknown};
+            if(!Array.isArray(body.unfiled))throw new Error('The Inbox filing read returned an invalid result.');
+            return body.unfiled as ReturnType<typeof unfiledReceivedInputs>;
+          },request.signal);
+          if(!result.ok)return Response.json({error:{code:result.code,message:result.message}},{status:result.status});
+          return Response.json(result.value);
+        }
         if (operation === 'mac-need') return Response.json(sessions.macNeed(input));
+        if (operation === 'edit-gate') return Response.json(sessions.editGate(input));
+        if (operation === 'model-start-gate') return Response.json(sessions.modelStartGate(input));
+        if (operation === 'edit-reason') return Response.json(sessions.editReason(input));
+        if (operation === 'journal-review') return Response.json(await sessions.journalReview(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
         if (operation === 'move') return Response.json(await sessions.move(input));
@@ -143,9 +172,14 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'answer') return Response.json(sessions.handleChatGptAnswer(input));
         if (operation === 'legacy-link') return Response.json(sessions.classifyLegacyChatGpt(input));
         if (operation === 'chatgpt-recover') return Response.json(await sessions.recoverChatGptNeverSent(input));
+        if (operation === 'codex-recover') return Response.json(await sessions.recoverCodexNeverAcknowledged(input));
         if (operation === 'attention-withdraw') return Response.json(sessions.withdrawAttention(input));
         if (operation === 'thread') return Response.json(sessions.thread(input));
-        if (operation === 'topics') { await refuseFinishedTodoQuestions(input); return Response.json(sessions.topics(input)); }
+        if (operation === 'topics') {
+            await refuseFinishedTodoQuestions(input);
+            const listHead=input.verb==='list'?await listReadHead(typeof input.cursor==='string'?input.cursor:null,request.signal):undefined;
+            return Response.json(sessions.topics(input,listHead));
+        }
         if (operation === 'context') return Response.json(await sessions.context(input));
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
         if (operation === 'reply') return Response.json(await withLinkCheck(await sessions.reply(await withTodoState(input)),input,owner));
@@ -169,10 +203,11 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
       return requestFailure(request,error);
     }
   };
+  return (request:Request)=>withContentReader(request,()=>handle(request));
 }
 
 /** Capabilities installed only on the root-private Unix socket, never on the peer listener. */
-function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>,sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
+export function localOwnerRequestApiHandler(shared:(request:Request)=>Promise<Response>,sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
   const handle=localOwnerRequest(shared,sessions,owner);
   // Runner routes and the other local capabilities are owner work too: a block in them is named
   // by route (2026-11-05: a 6.6 s runner-route transaction ran unlabelled inside a 10.9 s block).
@@ -192,6 +227,10 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
         return Response.json(await owner.refreshAuthEphemera());
       if(request.method==='GET'&&url.pathname==='/supervisor/ping')
         return Response.json({ok:true,pid:process.pid,startedAt,release,logging:logSinkCounters(),ledgerDurability:ledgerDurabilityCounters()});
+      if(request.method==='GET'&&url.pathname==='/internal/deployment-release-capabilities'&&owner)
+        return Response.json({publication:1,pid:process.pid,release});
+      if(request.method==='GET'&&url.pathname==='/supervisor/durability')
+        return Response.json(protectedDurability.snapshot());
       // The outside Grafana reconciler (remote-box) reads retained firing episodes and submits
       // recoveries and new episodes Grafana recorded but whose notification this receiver never accepted.
       if(url.pathname==='/grafana/v1/firing'||url.pathname==='/grafana/v1/recoveries'||url.pathname==='/grafana/v1/firings'){
@@ -222,7 +261,36 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
       }
       if(request.method==='POST'&&url.pathname==='/internal/deployment-release'&&owner){
         const input=await request.json() as any;
-        if(!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
+        const operation=String(input?.operation??'');
+        const filePublication=['activate-files','activate-control-files','restore-files'].includes(operation);
+        if(!filePublication&&!/^[0-9a-f-]{36}$/.test(input?.runId??''))throw new Error('Invalid deployment run.');
+        if(operation==='promote-and-activate-control'){
+          if(typeof input.artifactPath!=='string'||!input.artifactPath.startsWith('/')
+            ||typeof input.artifactDigest!=='string'||!/^[a-f0-9]{64}$/.test(input.artifactDigest))
+            throw new Error('A verified release artifact and digest are required.');
+          const repositoryRoot=process.env.CONCIERGE_REPO||'/var/lib/slack-concierge-deployment/source';
+          const manager=new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
+          const release=manager.verify(input.artifactPath);
+          if(release.artifact_digest!==input.artifactDigest)throw new Error('Promoted artifact path and digest disagree.');
+          // Preflight before the ledger promotion, then keep promotion and pointer publication
+          // in this owner turn. No recovery marker can appear between this gate and the rename.
+          manager.verifyControlActivation(input.artifactPath);
+          const promoted=promoteDeploymentRelease(input.runId,input.artifactDigest);
+          const manifest=manager.activateControl(input.artifactPath);
+          return Response.json({promoted,manifest});
+        }
+        // Pointer checks and publication stay in this synchronous owner turn. Recovery publishes
+        // its reader requirement in the same event loop, so no stale cross-process precheck can
+        // survive a requirement publication.
+        if(filePublication){
+          if(typeof input.artifactPath!=='string'||!input.artifactPath.startsWith('/'))
+            throw new Error('A verified release artifact path is required.');
+          const repositoryRoot=process.env.CONCIERGE_REPO||'/var/lib/slack-concierge-deployment/source';
+          const manager=new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
+          if(operation==='activate-files')return Response.json(manager.activate(input.artifactPath));
+          if(operation==='activate-control-files')return Response.json(manager.activateControl(input.artifactPath));
+          return Response.json(manager.restore(input.artifactPath));
+        }
         if(input.operation==='resolve-reaction-tokens'){
           if(!Array.isArray(input.tokens)||!input.tokens.every((token:unknown)=>
             typeof token==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(token)))
@@ -325,9 +393,8 @@ export async function startRoutedRequestApi(stateDir: string, coordinator: Route
     // Reads answer at once: the supervisor's liveness ping must never wait for the disk.
     fetch: async request=>{
       try {
-        const response=await handle(request);
-        if(request.method!=='GET')await ledgerDurable();
-        return response;
+        return request.method==='GET'?await handle(request):await protectedOwnerReceipt(()=>handle(request),
+          request.headers.get('x-concierge-admission-id')??undefined);
       } catch(error) {return requestFailure(request,error);}
     },
   });

@@ -1,4 +1,6 @@
+import {recordCustodyNativeTerminal} from './codex-custody-terminal';
 import { createHash, randomUUID } from "node:crypto";
+import {nativeInputClientMessageId} from './native-result-identity';
 import { clearRetryBreaker, recordRetryFailure } from './retry-breaker';
 import {currentAccount} from './provider-accounts';
 import {AUTOMATIC_PROVIDER_ALIASES,resolveProviderAlias} from './aliases';
@@ -35,11 +37,13 @@ import {
 import { errorFields, log } from "./log";
 import { noticeCodexResumeWait } from "./codex-resume-health";
 import {
+  isGoogleQuotaRefusal,
   isRefreshableAuthFailure,
   providerRefusalContinuationReason,
   providerInterruptionDetail,
   providerDispatchError,
   providerRetryDelayMs,
+  ProviderDispatchError,
   ProviderTurnCancelledError,
   OwnerDrainBeforeProviderAdmissionError,
 } from "./provider-failures";
@@ -133,7 +137,7 @@ import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-re
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
 import { noticeUsageHold, noticeAuthHold, noticeTurnContinuation, useResetIfWorkStopped } from "./provider-usage-notice";
 import { useCodexResetCredit } from "./codex-reset-credit";
-import { releaseCodexOrdinaryUsageHeldWork,resolveUsageHoldNoticesForSettledTurn } from "./provider-usage";
+import { releaseCodexUnboundUsageHeldWork,resolveUsageHoldNoticesForSettledTurn } from "./provider-usage";
 import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
 import type { ProgressCb, RunResult } from "./codex";
 
@@ -326,7 +330,7 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
     input.providerId==='chatgpt')return false;
   let other: keyof typeof AUTOMATIC_PROVIDER_ALIASES;
   try {
-    other=chooseProviderForNewWork(provider=>provider!==input.providerId,input.inputId,Date.now(),false,
+    other=chooseProviderForNewWork(provider=>provider!==input.providerId,input.inputId,Date.now(),null,
       !!sessionMetadata(input.session).automaticSmallTask);
   } catch { return false; }
   const capacity=newWorkCapacity(other);
@@ -719,7 +723,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       model: input.providerId === "claude-code" ? claudeLaunchModel??undefined : input.model,
       onPreferredModel: (model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model),
       reasoning_effort: input.reasoningEffort,
-      clientUserMessageId: `slack-concierge:turn:${input.turnId}:attempt:${dispatchAttempt}`,
+      clientUserMessageId: nativeInputClientMessageId(input.turnId,dispatchAttempt),
       environment: {
         AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_MS),
         ...input.providerEnvironment,
@@ -743,7 +747,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       },
       ...(input.boundAccount?{accountLabel:input.boundAccount.account}:claudeChoice?{accountLabel:claudeChoice.account}:{}),
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
-      onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
+      onProviderTurnStarted: (providerTurnId) => {
+        recordTurnProviderTurnId(input.turnId, providerTurnId);
+        recordSessionEvent({eventId:`provider-turn-attempt:${input.turnId}:${dispatchAttempt}`,
+          sessionId:input.session.id,inputId:input.inputId,turnId:input.turnId,kind:'provider_turn_attempt',
+          payload:{provider:input.providerId,providerTurnId,dispatchAttempt}});
+      },
       onResumeUnanswered: (wait) => noticeCodexResumeWait(db, { sessionId: input.session.id, turnId: input.turnId }, wait),
       onInputAcknowledged: () => acknowledgeTurnProviderInput(
         input.turnId, input.ownerInstanceId, dispatchAttempt, preparedTurn.contextTurnIds,
@@ -829,6 +838,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         }
       },
       onProviderTerminal: () => {
+        if(input.providerId==='codex')recordCustodyNativeTerminal(input.turnId,input.ownerInstanceId,dispatchAttempt);
         try { flushPendingProviderProgressEvents(); }
         catch(error){log('error','session_progress_terminal_flush_failed',{turn_id:input.turnId,...errorFields(error)});}
         input.closeSteering(new Error("The provider turn completed."));
@@ -1227,7 +1237,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     // release its held turns into the same refusal once a minute. Its refusal is remembered like
     // a model at capacity: automatic placement skips it and the reading cannot release it meanwhile.
     const googleQuotaRefusal=input.providerId==='antigravity'
-      &&/RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(String(error));
+      &&isGoogleQuotaRefusal(String(error));
     if((structuredFailure?.modelAtCapacity||googleQuotaRefusal)&&capacityModel)
       rememberModelCapacityRefusal(input.providerId,capacityModel);
     const providerIdentityCompatible = !structuredFailure?.providerSessionId
@@ -1278,7 +1288,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         recordProviderSession(input, structuredFailure.providerSessionId);
       }
       if (structuredFailure?.providerTurnId) recordTurnProviderTurnId(input.turnId, structuredFailure.providerTurnId);
-      const message = String(error);
+      const message = error instanceof ProviderDispatchError&&error.message.startsWith('CODEX_INPUT_NOT_ACKNOWLEDGED:')
+        ?error.message:String(error);
       const replaySafe = !dispatchBoundary.unsafeSteering
         && (!dispatchBoundary.admissionIntended
           || Boolean(structuredFailure?.terminalConfirmed && providerIdentityCompatible));
@@ -1327,7 +1338,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // A zero-work Google quota refusal can have no readable reset. Hold it until a
       // later fresh allowance reading proves room; a guessed timer could replay it early.
       const googleUsageWait=replaySafe&&input.providerId==='antigravity'&&heldUntilMs===null
-        &&/RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(message);
+        &&isGoogleQuotaRefusal(message);
       const runnerAccountReadingWait=replaySafe&&structuredFailure?.accountReadingWait===true;
       // A first turn the owner placed on this provider by itself, refused for allowance before any
       // work, goes to a provider with room instead of waiting for this one's reset. On 2026-10-31 his
@@ -1363,6 +1374,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       let retryable = replaySafe
         && (authWait || googleUsageWait || runnerAccountReadingWait || chatgptNeverSent || localPrerequisiteWait || structuredFailure?.failureClass === "retryable" ||
           structuredFailure?.modelAtCapacity === true || heldUntilMs !== null || switchClaudeAccount);
+      if(db.query('SELECT 1 FROM codex_custody_successors WHERE placement_turn_id=? AND attempt_spent_at IS NOT NULL').get(input.turnId))retryable=false;
       let policyRetryAtMs: number | null = null;
       // A rejected model is a property of this session's binding, not of the Google
       // account. The request below fails with the provider's reason, but it must not
@@ -1433,6 +1445,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
               ? `Status: parked - provider outcome is ambiguous; input preserved as turn ${input.turnId}, but replay is blocked until reconciled`
               : structuredFailure?.failureClass === "parked_access"
               ? undefined
+              : (error instanceof Error?error.message:String(error)).startsWith('CODEX_INPUT_NOT_ACKNOWLEDGED:')
+              ? `Status: parked - Codex completed without acknowledging this accepted input or producing work; the original input is preserved for exact transcript-verified recovery with sessions codex-recover <original-request-id>`
               : `Status: parked - provider dispatch failed; input preserved as turn ${input.turnId} until resumed`,
           });
       if (!preserved) throw new Error("Provider dispatch failure could not be durably preserved.");
@@ -1486,9 +1500,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         // 2026-09-23: "You don't have to wait for me to reset the usage."
         void useResetIfWorkStopped(hold, recordSessionEvent,
           (account,idempotencyKey,beforeConsume)=>useCodexResetCredit(account,idempotencyKey,true,beforeConsume), async (accountId) => {
-          // Count the exact ordinary releases before the asynchronous Accounts refresh.
-          // That refresh uses the same ordinary-only Codex wake contract.
-          const released=releaseCodexOrdinaryUsageHeldWork(accountId);
+          // Count unbound releases before the asynchronous Accounts refresh.
+          const released=releaseCodexUnboundUsageHeldWork(accountId);
           void scheduleProviderAccountUsageRefresh().catch(()=>{});
           return released;
         }).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
@@ -1586,7 +1599,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         &&claudeAccountWithRoomBesides(runningClaudeAccount,runningClaudeModel)?{...refused,elsewhere:true}:refused;
       const workedOn=observedAssistantOutput || observedToolCount>0 || !!structuredFailure?.assistantOutput
         || (structuredFailure?.toolsUsed.length??0)>0 || artifactActivity;
-      const interruption=!refusal && input.providerId==='codex' && workedOn ? providerInterruptionDetail(String(error)) : null;
+      const claudeExit=input.providerId==='claude-code' && providerIdentityCompatible
+        ? structuredFailure?.processExit : null;
+      const interruption=!refusal && workedOn
+        ? claudeExit ? `Claude Code exited without a terminal result (code ${claudeExit.code ?? 'none'}, signal ${claudeExit.signal ?? 'none'})`
+          : input.providerId==='codex' ? providerInterruptionDetail(String(error)) : null
+        : null;
       let continuationTurnId:number|null=null;
       if (!failRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, String(error),undefined,
         refusal?()=>{continuationTurnId=queueTurnContinuation(input.turnId,refusal)?.turn_id??null;}

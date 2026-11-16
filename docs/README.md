@@ -18,6 +18,8 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Architecture
 
+- [Selective Lab conversations](architecture/LAB-CONVERSATIONS.md) — independent initial answers, revisioned add/remove rosters, explicit selected follow-ups, participant conditions and original provider-output custody.
+
 - [Unified session ownership](architecture/SESSION-OWNER.md) — the sole session/input/request ledger, authenticated Thinkering surface, removable Slack adapter, native controls, source custody and consultation policy.
 - [Runners and the owner on its own app server](architecture/RUNNERS.md) — what ties the owner to the agents' machine, the agents' network entrance with signed tokens, the runner lease protocol and the cut that moves turns onto runners.
 - [Turn lifecycle and durable projections](architecture/TURN-LIFECYCLE.md) — runtime ownership, Slack-visible terminal projections, recovery, and provider-process liveness.
@@ -36,7 +38,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 - [Deployment and autonomous repair](runbooks/DEPLOYMENT.md) — drain-aware rollout, root repair, service shutdown, and restore boundaries.
 - [Peer instances](runbooks/PEER-INSTANCES.md) — the Mac Concierge under launchd, the token-guarded tailnet owner API, and cross-instance `sessions ask --peer`.
-- [ChatGPT answer obligations](architecture/CHATGPT-ANSWER-OBLIGATIONS.md) — exact task custody, acknowledged returns, handling, and retained repair.
+- [ChatGPT answer obligations](architecture/CHATGPT-ANSWER-OBLIGATIONS.md) — exact task custody, acknowledged native returns, source-bound tool-read confirmation, handling, and retained repair.
 - [Historical Slack sandbox testing](runbooks/SANDBOX-TESTING.md) — disabled procedure retained for provenance; do not run its lanes or tests for current work.
 - [Historical Slack integration acceptance](runbooks/LIVE-ACCEPTANCE.md) — disabled procedure retained for provenance; do not use it as a release gate.
 - [Codex App Server lifecycle](runbooks/CODEX-APP-SERVER.md) — shared-daemon ownership, updater restart semantics, version inspection, non-disruptive staging, and repair.
@@ -83,6 +85,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Incidents
 
+- [Codex empty service report-back (2026-11-13)](incidents/2026-11-13-codex-empty-report-back.md) — native effort routing, same-session authority, exact no-acknowledgement evidence, preserved result identity, and the parent-controlled recovery entrance.
 - [Agent workloads saturate the host and block the owner loop (2026-10-09)](incidents/2026-10-09-agent-workloads-saturate-the-host.md) — an Android emulator and a six-browser look gate started by two agent sessions at equal scheduler weight; commits waiting on disk and CPU; the status route's whole-table scan corrected; weighting and durability options left to their owners.
 - [Linked message rendered as thread context (2026-09-15)](incidents/2026-09-15-linked-message-subject.md) — exact wrong-subject incident, cross-provider exposure, historical audit, and permalink identity semantics.
 - [Cancelled audio input missing from native continuation (2026-09-15)](incidents/2026-09-15-cancelled-audio-input.md) — saved transcription, a Stop before native user-message acceptance, and the exact resume gap; corrects the later DM screenshot's mistaken incident identity.

@@ -1,9 +1,12 @@
 import {questionDisplay} from './topic-display-rules';
-import {topicCurrentWorkers} from './topic-current-workers';
+import {askedAnswerPostIds,askedAnswerStatus,routeForMessage} from './asked-answer';
+import {openRequestStandings,standingFinder,workerWork} from './request-standing';
+import {closedRequestDispatches,openRequestDeliveries,topicCurrentWorkers,workingThrough} from './topic-current-workers';
 import {topicReplyTargets} from './reply-target-rules';
 import type {Database} from 'bun:sqlite';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import {inboxRootResolver} from './presentation-message-source';
+import {movesThreadForHimSql} from './inbox-thread-time';
 import {preparedInboxDisplay} from './presentation-inbox-display';
 import {awaitingHim,missingFor,preparingForHim,questionReadiness,toReadByHim,OPEN_QUESTION_STATES} from './topic-attention-rules';
 
@@ -15,7 +18,7 @@ export type TopicContext={source:Database;prepared:Database;generation:number;se
   sessionIds:number[];
   root:ReturnType<typeof inboxRootResolver>;humanReplies:Map<string,{inputId:string;at:string;reviews:string[];replyTo:string|null}[]>;
   queued:{inputId:string;root:string|null;position:number}[];
-  dispatches:{root:string|null;sessionId:string|null;title:string;requestId:string}[];
+  dispatches:{root:string|null;sessionId:string|null;title:string;requestId:string;through?:string[]}[];
   focus:any;focusTitle:string|null};
 
 function sessionTitle(source:Database,id:number):string|null{
@@ -51,16 +54,18 @@ export function topicContext(source:Database,prepared:Database,generation:number
    AND json_extract(COALESCE(receipt_json,'{}'),'$.state') IS NULL AND kind IN ('input','create','inbox-capture') ORDER BY rowid`)
    .all(sessionId) as {id:string}[]).map((row,index)=>({inputId:row.id,root:root(sessionId,row.id),position:index+1}));
  const dispatches:TopicContext['dispatches']=[];
- for(const row of source.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,target_session_id
-    FROM session_communication_requests WHERE source_session_id=? AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]){
-  if(!source.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering','queued')").get(row.target_session_id))continue;
-  dispatches.push({root:root(sessionId,row.input_id),sessionId:`concierge:${row.target_session_id}`,
-   title:sessionTitle(source,row.target_session_id)||'Agent session',requestId:row.request_id});
+ for(const row of source.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,target_session_id
+    FROM session_communication_requests WHERE source_session_id IN (${INBOX_LINEAGE_SQL}) AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]){
+  const chain=workingThrough(source,row.target_session_id);
+  if(!chain)continue;
+  dispatches.push({root:root(row.source_session_id,row.input_id),sessionId:`concierge:${row.target_session_id}`,
+   title:sessionTitle(source,row.target_session_id)||'Agent session',requestId:row.request_id,through:chain.map(id=>`concierge:${id}`)});
  }
- for(const row of source.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,peer,remote_session_id
-   FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL`).all(sessionId) as any[]){
+ for(const row of source.query(`SELECT request_id,source_session_id,COALESCE(thread_root_input_id,source_input_id) AS input_id,peer,remote_session_id
+   FROM session_peer_requests WHERE source_session_id IN (${INBOX_LINEAGE_SQL}) AND outcome IS NULL
+     AND json_extract(payload_json,'$.responseMode') IS NOT 'context'`).all(sessionId) as any[]){
   const peer=source.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
-  dispatches.push({root:row.input_id?root(sessionId,row.input_id):null,sessionId:peerAddress(row.peer,row.remote_session_id),
+  dispatches.push({root:row.input_id?root(row.source_session_id,row.input_id):null,sessionId:peerAddress(row.peer,row.remote_session_id),
    title:parse(peer?.view_json,{})?.title||`${row.peer} session`,requestId:row.request_id});
  }
  return {source,prepared,generation,sessionId,sessionIds,root,humanReplies,queued,dispatches,focus:focused,focusTitle};
@@ -92,52 +97,12 @@ function messageById(context:TopicContext,id:string):{content:string;at:string;r
 const readingValue=(id:string,message:NonNullable<ReturnType<typeof messageById>>)=>({messageId:id,text:message.content,at:message.at,
  ...(message.detailRef?{detailRef:message.detailRef,contentCoverage:message.contentCoverage}:{})});
 
-function routeForMessage(source:Database,messageId:unknown):{destinationMessageId?:string;sourceMessageId?:string}|null{
- if(typeof messageId!=='string'||!messageId.trim())return null;
- const id=messageId.trim();
- let row:{payload_json:string}|null=null;
- if(id.startsWith('topic-change:')||id.startsWith('session-route:')){
-  row=source.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind IN ('topic_route','session_route')").get(id) as {payload_json:string}|null;
- }
- if(!row&&id.startsWith('request:')){
-  row=source.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND kind='session_route'").get(`session-route:${id.slice('request:'.length)}`) as {payload_json:string}|null;
- }
- if(!row){
-  const routes=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.sourceMessageId')=? ORDER BY sequence DESC LIMIT 2")
-   .all(id) as {payload_json:string}[];
-  if(routes.length>1)return null;
-  row=routes[0]??null;
- }
- if(!row){
-  row=source.query("SELECT payload_json FROM session_owner_events WHERE kind IN ('topic_route','session_route') AND json_extract(payload_json,'$.destinationMessageId')=? ORDER BY sequence DESC LIMIT 1").get(id) as {payload_json:string}|null;
- }
- return row?JSON.parse(row.payload_json):null;
-}
-
 function readsFor(context:TopicContext,question:any,roots:Set<string>){
  if(question.kind==='asked'){
-  const requestId=question.owner?.dispatchRequestId;
-  const sources=Array.isArray(question.sources)?question.sources:[];
-  const followups=typeof requestId==='string'&&requestId?sources.slice(1):sources;
-  const expandedFollowups:string[]=[];
-  for(const id of followups){
-   expandedFollowups.push(id);
-   const route=routeForMessage(context.source,id);
-   if(route){
-    if(route.destinationMessageId)expandedFollowups.push(route.destinationMessageId);
-    if(route.sourceMessageId)expandedFollowups.push(route.sourceMessageId);
-   }
-  }
-  const posts=context.source.query(`SELECT event_id FROM session_owner_events
-   WHERE session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND kind='post' AND (
-    (?<>'' AND json_extract(payload_json,'$.requestId')=?)
-    OR json_extract(payload_json,'$.replyToMessage.messageId') IN (SELECT value FROM json_each(?))
-   ) AND (
-    json_extract(payload_json,'$.answersQuestion')=1
-    OR (json_extract(payload_json,'$.replyKind')='final' AND json_extract(payload_json,'$.workDisposition')='completed')
-   ) ORDER BY sequence`).all(...context.sessionIds,typeof requestId==='string'?requestId:'',typeof requestId==='string'?requestId:'',JSON.stringify([...new Set(expandedFollowups)])) as {event_id:string}[];
-  return posts.flatMap(post=>{const message=messageById(context,post.event_id);
-   return message&&(message.content.trim()||message.detailRef)?[readingValue(post.event_id,message)]:[];});
+  return askedAnswerPostIds(context.source,question,context.sessionIds).flatMap(id=>{
+   const message=messageById(context,id);
+   return message&&(message.content.trim()||message.detailRef)?[readingValue(id,message)]:[];
+  });
  }
  if(question.kind!=='reading')return [];
  const {source,sessionId,root}=context;
@@ -162,7 +127,8 @@ function readsFor(context:TopicContext,question:any,roots:Set<string>){
   if(values.length)return values;
   const result=source.query(`SELECT e.event_id,e.input_id,e.created_at,${context.boundedReads?"''":"COALESCE(json_extract(e.payload_json,'$.text'),t.agent_text,'')"} AS text
     FROM session_owner_events e LEFT JOIN turns t ON t.id=e.turn_id
-    WHERE e.session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND e.turn_id=? AND e.kind='result' LIMIT 1`).get(...context.sessionIds,turnId) as any;
+    WHERE e.session_id IN (${context.sessionIds.map(()=>'?').join(',')}) AND e.turn_id=? AND e.kind='result'
+    ORDER BY e.sequence DESC LIMIT 1`).get(...context.sessionIds,turnId) as any;
   if(result&&result.input_id&&roots.has(root(sessionId,result.input_id)??'')){
    const message=context.boundedReads?messageById(context,result.event_id):{content:String(result.text??''),at:iso(result.created_at)!,root:result.input_id};
    if(message&&(message.content.trim()||message.detailRef))return [readingValue(result.event_id,message)];
@@ -197,7 +163,9 @@ function questionValue(context:TopicContext,row:any,roots:string[],replies:{inpu
   .get(question.topicId,question.id,question.revision),
   context.source.query("SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? AND kind='acknowledged' ORDER BY at DESC LIMIT 1")
   .get(question.topicId,question.id)].filter(Boolean);
- return questionDisplay({...question,questionId:question.id},replies,reading,readsFor(context,question,new Set(roots)));
+ const reads=readsFor(context,question,new Set(roots));
+ return {...questionDisplay({...question,questionId:question.id},replies,reading,reads),
+  ...(question.kind==='asked'?{answerStatus:askedAnswerStatus(context.source,question,reads.length>0)}:{})};
 }
 
 export type TopicItemSink={question:(value:any)=>void;request:(value:any)=>void};
@@ -234,11 +202,13 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
   else if(open(question.state)||question.state==='deferred')questions.push({id:question.id,state:question.state,owner:question.owner,
    brief:{decision:question.brief?.decision},sources:question.sources});
  }
+ const requestStates:{state:string;dispatches:any[]}[]=[];
  for(const request of topicRows(source,'inbox_requests',topicId)){
   const value={requestId:request.request_id,topicId:request.topic_id,title:request.title,brief:request.brief,
   state:request.state,disposition:request.disposition,revision:request.revision,sources:parse(request.sources_json,[]),
   dispatches:parse(request.dispatches_json,[]),closure:parse(request.closure_json),createdAt:iso(request.created_at)!,updatedAt:iso(request.updated_at)!};
   sink?.request(requestView(context,value));
+  requestStates.push({state:value.state,dispatches:value.dispatches});
   if(value.state==='open')requestCounts.open++;else if(value.state==='closed')requestCounts.closed++;
   if(!sink)requests.push(value);
   else if(value.state==='open')requests.push({requestId:value.requestId,title:value.title,state:value.state,sources:value.sources,dispatches:value.dispatches});
@@ -248,12 +218,12 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
  let foundEntry=false;
  for(const root of roots){
   const latest=prepared.query(`SELECT event_sequence AS sequence,created_at AS at FROM presentation_messages
-   WHERE generation=? AND root_input_id=? ORDER BY event_sequence DESC LIMIT 1`).get(generation,root) as {sequence:number;at:string}|null;
+   WHERE generation=? AND root_input_id=? AND ${movesThreadForHimSql} ORDER BY event_sequence DESC LIMIT 1`).get(generation,root) as {sequence:number;at:string}|null;
   if(!latest)continue;
   lastSequence=Math.max(lastSequence,latest.sequence);
   const at=iso(latest.at)!;if(!foundEntry||at>lastAt)lastAt=at;foundEntry=true;
  }
- const work=topicWorkValue(context,topic,roots);
+ const work=topicWorkValue(context,topic,roots,requestStates);
  const summary={id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,
   revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
   lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,pinnedAt:topic.pinnedAt,
@@ -294,7 +264,8 @@ function latestReturnAndPost(context:TopicContext,roots:string[]){
  return found;
 }
 
-function topicWorkValue(context:TopicContext,topic:any,roots:string[]){
+function topicWorkValue(context:TopicContext,topic:any,roots:string[],requests:readonly {state:string;dispatches:any[]}[]){
+ const closed=closedRequestDispatches(requests);
  if(context.focus?.topicId===topic.topicId)return {kind:'router_working' as const,text:context.focus.summary??'',
   runId:context.focus.runId,sessionId:`concierge:${context.sessionId}`};
  const queued=context.queued.find(item=>item.root&&roots.includes(item.root));
@@ -309,23 +280,29 @@ function topicWorkValue(context:TopicContext,topic:any,roots:string[]){
  const unrelayed=latestReturnAndPost(context,roots);
  if(unrelayed)return {kind:'result_waiting' as const,text:"An agent's answer came back and has not been relayed to you",
   returnInputId:unrelayed.inputId,since:unrelayed.at};
- const working=context.dispatches.filter(item=>item.root&&roots.includes(item.root));
- if(working.length){const workers=topicCurrentWorkers(context.source,working);
-  return {kind:'worker_working' as const,text:workers.length===1?`With ${workers[0]!.title}`:`With ${workers.length} agents`,
-   sessionId:workers[0]!.sessionId,workers};}
+ const working=context.dispatches.filter(item=>item.root&&roots.includes(item.root)&&!closed.has(item.requestId));
+ // The thread's own open requests name their deliveries directly, whoever sent them.
+ for(const live of openRequestDeliveries(context.source,requests))if(!working.some(item=>item.requestId===live.requestId))
+  working.push(live.targetSessionId!==null
+   ?{root:null,sessionId:`concierge:${live.targetSessionId}`,title:sessionTitle(context.source,live.targetSessionId)||'Agent session',requestId:live.requestId,through:live.through.map(id=>`concierge:${id}`)}
+   :{root:null,sessionId:peerAddress(live.peer!,live.remoteSessionId!),title:`${live.peer} session`,requestId:live.requestId});
+ const now=Date.now(),standings=openRequestStandings(context.source,requests,now);
+ const value=workerWork(topicCurrentWorkers(context.source,working,standingFinder(context.source,standings,now)),standings);
+ if(value)return value;
  return {kind:'idle' as const,text:''};
 }
 
 function requestView(context:TopicContext,request:any){
  const {source}=context;
  const dispatches=request.dispatches.map((dispatch:any)=>{
-  const local=source.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json FROM session_communication_requests WHERE request_id=?')
+  const local=source.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json,target_session_id FROM session_communication_requests WHERE request_id=?')
    .get(String(dispatch.requestId)) as any;
   const peer=local?null:source.query('SELECT source_input_id,outcome,status,created_at_ms,payload_json,peer,remote_session_id FROM session_peer_requests WHERE request_id=?')
    .get(String(dispatch.requestId)) as any;
   const row=local??peer;if(!row)return dispatch;
   const words=String(parse(row.payload_json,{})?.text??'').replace(/\s+/g,' ').trim();
-  return {...dispatch,...(peer?{targetSessionId:peerAddress(peer.peer,peer.remote_session_id)}:{}),outcome:row.outcome??null,
+  // The request's current holder after any accepted handoff; the thread depends on its turns.
+  return {...dispatch,...(peer?{targetSessionId:peerAddress(peer.peer,peer.remote_session_id)}:local?.target_session_id?{targetSessionId:`concierge:${local.target_session_id}`}:{}),outcome:row.outcome??null,
    state:row.status??dispatch.state,...(row.source_input_id?{sourceInputId:row.source_input_id}:{}),
    ...(typeof row.created_at_ms==='number'?{at:new Date(row.created_at_ms).toISOString()}:{}),
    ...(words?{text:words.slice(0,240)}:{})};

@@ -5,6 +5,8 @@ import {accountsWithRoom} from './provider-usage-forecast';
 import {claudeAccountAwaitingSignIn} from './provider-account-dispatch';
 import {sessionAddress} from './session-address';
 import {log} from './log';
+import {automaticMoveRefusal} from './automatic-move-kind';
+import {aliasKeepingTier,resolveProviderAlias} from './aliases';
 
 export type WaitingTurn={id:number;session_id:number;accepted_input_id:string;status:string;dispatch_attempt:number;
   dispatch_hold:string|null;provider_admission_intended_at:string|null;provider_started_at:string|null;
@@ -22,11 +24,22 @@ function waitingTurns(sessionId:number):WaitingTurn[] {
 
 export function safeTurn(turn:WaitingTurn,input:AcceptedSessionInput):boolean {
   if(turn.status!=='queued'||turn.saved_kind!==null||input.turn_id!==turn.id||input.session_id!==turn.session_id
-    ||!['input','create','inbox-capture'].includes(input.kind)||input.steering_id!==null
-    ||turn.provider_input_acknowledged_at!==null)return false;
+    ||!['input','create','inbox-capture'].includes(input.kind)||input.steering_id!==null)return false;
+  // The owner's terminal zero-work usage hold can supersede a retained provider acknowledgement.
+  // The hold is written only after replaySafe classification; preserve the acknowledgement
+  // itself and keep every other provider-effect veto below.
+  const terminalZeroWorkUsageHold=turn.dispatch_hold==='usage';
+  if(turn.provider_input_acknowledged_at!==null&&!terminalZeroWorkUsageHold)return false;
   const receipt=input.receipt_json?JSON.parse(input.receipt_json):{};
-  if(Object.keys(receipt).some(key=>key!=='admission')
-    ||(receipt.admission&&(receipt.admission.provider!=='claude-code'||receipt.admission.inputId!==input.id)))return false;
+  // The admission a receipt records is the owner preparing a send on the session's own provider; the
+  // hold and turn columns below say whether anything reached it. Until 2026-11-11 this demanded a
+  // Claude admission, written when only Claude work moved, so every Codex input the owner had ever
+  // claimed was unmovable: the Diwali session's handoff to Claude (concierge:7992 → 9328) was refused
+  // for an input Codex never received. A capture's `admissionIntent: 'live'` only says it was not held
+  // for review; it is not a provider fact.
+  const provider=getSessionById(turn.session_id)?.provider_id;
+  if(Object.keys(receipt).some(key=>key!=='admission'&&!(key==='admissionIntent'&&receipt.admissionIntent==='live'))
+    ||(receipt.admission&&(receipt.admission.provider!==provider||receipt.admission.inputId!==input.id)))return false;
   // A usage hold is written only after the provider's refusal was classified replay safe.
   // Admission intent alone is not proof of execution; a fresh untouched queued turn has none.
   // A held refusal is replay safe by its classification. Other retries are movable
@@ -65,9 +78,12 @@ function contextPrompt(sourceAddress:string,sourceInputId:string,original:string
     `Do not repeat effects already recorded in that conversation. The exact original accepted message follows:\n\n${original}`;
 }
 
-function transferSession(sessionId:number):number {
+export function transferSession(sessionId:number):number {
   const source=getSessionById(sessionId);
   if(!source||source.provider_id!=='claude-code'||source.status==='archived')return 0;
+  // A proposed provider-change handoff is the source's active custody path. The automatic
+  // usage recovery sweep must not create a competing successor before that proposal settles.
+  if(db.query("SELECT 1 FROM session_handoffs WHERE predecessor_session_id=? AND state='proposed' LIMIT 1").get(sessionId))return 0;
   const meta=sessionMetadata(source);
   if(meta.inbox||meta.suspended||meta.repairAgent||meta.interactionPolicy==='consultation-only')return 0;
   const turns=waitingTurns(sessionId);
@@ -97,7 +113,8 @@ function transferSession(sessionId:number):number {
   const current=previous?getSessionById(previous.successor_session_id):null;
   let successor=current&&current.status!=='archived'&&!sessionMetadata(current).suspended?current:null;
   if(!successor){
-    successor=createNativeSession('codex',{title:`${meta.title??'Claude work'} (continued on Codex)`,
+    const tierModel=resolveProviderAlias(aliasKeepingTier('codex',meta.model));
+    successor=createNativeSession('codex',{model:tierModel.model,...(meta.reasoningEffort?{reasoningEffort:meta.reasoningEffort}:{}),title:`${meta.title??'Claude work'} (continued on Codex)`,
       summary:meta.summary??`Continues “${meta.title??'Claude work'}” on Codex while Claude's allowance is used up.`,
       purpose:meta.purpose??'develop',cwd:meta.cwd,project:meta.project??null,
       additionalDirs:meta.additionalDirs,origin:'native',recovery:{sourceAddress,reason:'claude_usage_exhausted'}});
@@ -171,6 +188,9 @@ export function recoverExhaustedClaudeWork():number {
       GROUP BY turn.session_id ORDER BY oldest_turn_id LIMIT 20`).all(scanAfterTurnId) as
       {id:number;oldest_turn_id:number}[];
     for(const session of sessions){
+      // The same rule as held-work failover: only coding work moves by itself.
+      const row=getSessionById(session.id);
+      if(!row||automaticMoveRefusal(row))continue;
       try{moved+=db.transaction(()=>transferSession(session.id)).immediate();}
       catch(error){log('error','provider_recovery_failed',{source_session_id:session.id,
         error:error instanceof Error?error.message:String(error)});}

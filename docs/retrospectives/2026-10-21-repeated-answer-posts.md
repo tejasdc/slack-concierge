@@ -47,3 +47,12 @@ second post or changing the first closure's identity.
 After installation, also verify the historical topic shows one copy and one open reading item,
 all six original requests remain answered, and a marked agent test through `test-capture`
 demonstrates the same behavior on the installed owner.
+
+## November 2026 correction
+
+The October repair violated [decision: fix-protocols-never-hide-duplicates]. It grouped
+separately accepted final replies by their words and hid five posts in the Inbox view. The
+accepted replies and collapse events remain in the ledger. The current protocol shows each
+separate reply again and uses only one explicit multi-request command to share an answer.
+The superseded reading items remain historical topic state; they are not reconstructed from
+the answer text.

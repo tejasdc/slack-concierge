@@ -136,7 +136,11 @@ Taking back:
    process, so adoption records none (on 2026-11-05 re-recording it logged an identity conflict
    for every adopted turn).
    While Concierge stays online, it rechecks parked host custody each minute without touching
-   already running executions. A superseded parked host is signalled to stop; after its provider
+   already running executions. The same sweep takes back a Codex turn followed through the shared
+   daemon that parked as uncertain within the last day, though its record was released when it
+   parked: two per minute, oldest first, at most three times each. It is followed from its exact
+   thread history, and a turn that history never shows is retried as never sent
+   ([failure record](../incidents/2026-11-12-codex-connection-loss-parked-unsent-turns.md)). A superseded parked host is signalled to stop; after its provider
    exits, the older turn is marked interrupted and the later turn stays in place.
    A recovered closing answer advances attention again even if the parking notice was already
    read; the answer is a new arrival in his thread.
@@ -186,6 +190,9 @@ are command hooks in `--settings`, held by the unchanged process).
   An outside turn launched on a runner keeps that runner as its host location during adoption.
   Its finished journal and exit receipt are read through the runner even if the coordinator
   restarts; a local host socket is not a substitute for that retained custody.
+  Project trust is explicit when the host CLI supports it; the
+  [command-line trust contract](../runbooks/CODEX-APP-SERVER.md#project-trust-for-command-line-work)
+  preserves older CLI compatibility and intentionally isolated answer/probe paths.
 - **Every other new Codex turn** uses the shared Codex App Server daemon, which already outlives Concierge.
   Each such run is recorded as an execution with supervisor `codex-daemon` (no host, live at once).
   After a restart the next coordinator follows the turn by its exact thread (the session's bound
@@ -313,6 +320,16 @@ A running turn holds an update only if it would end with the coordinator. One ru
   are installed the Mac starts no hosts (`CONCIERGE_AGENT_HOST_LAUNCHER` is left empty), so its
   updates keep waiting for agents as before. A rebuilt agent-host app moves the previous one to
   `$STATE/app-retired/`.
+- The installed machine command preflight runs before each run's pinned semantic hook.
+  It refuses an agent's direct Thinkering release prune, activation, rollback or
+  policy upgrade from a checkout or a direct deployment module, and permits the installed release entrance only when
+  `/srv/thinkering/current` resolves to the separately pinned retention policy
+  release. Each of these actions can invoke retention. It leaves `npm run ship` to Thinkering's release controller, which owns
+  activation-triggered retention and rollback behavior. This catches managed
+  Claude and Codex shell calls, including runs started before the guard release;
+  it cannot intercept arbitrary root code or an old script's internal calls.
+  Thinkering's [deployment runbook](/root/workspace/thinkering/docs/runbooks/deployment.md#release-and-verification-run-retention)
+  owns the installed retention policy and the manual cleanup route.
 - Restarting the Mac's Concierge belongs to the gated update. `update-mac.sh` (automatic or
   requested) checks running work, holds the gate, checks compatibility for one fetched revision and
   installs exactly it; `install-mac.sh` restarts a running Concierge only with that gate's proof
@@ -441,6 +458,11 @@ also recheck drain after their awaits, leaving already claimed work for the next
 coordinator once this one exits. Until the update gate is removed (design
 step 7) the deployment still waits for idle, so this matters for restarts outside deployments now and
 for every update after step 7.
+The runner's queued-turn lookup begins with the existing queued-job index and uses the job's
+encoded execution ID for a primary-key lookup. Its exact `turn:` identity check remains after
+the lookup. A drain with no queued runner turns therefore does not scan all retained execution
+records on the accepting owner's event loop. This bounds rows examined by queued jobs, not the
+elapsed time of a cold SQLite page read or a required ledger write.
 
 ## Compatibility and releases
 

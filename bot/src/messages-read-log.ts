@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * One line per agent read of his texts that withheld something, and per direct read of the
+ * One line per completed agent read of his texts, and per direct read of the
  * Messages databases that was refused, in this machine's Concierge diagnostics. It never holds
  * message words: who asked, what was asked, and how many texts of which kind were withheld, so a
  * run of attempts to fish for codes is visible afterwards.

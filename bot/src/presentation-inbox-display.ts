@@ -6,6 +6,8 @@ import {messageDeliveryReceipts} from './message-route-receipts';
 import {authorSessionOf} from './session-presence';
 import {threadRequestDisplay} from './thread-request-display';
 import {answerClosingLine} from './answer-closing-line';
+import {readInboxThreadLink} from './inbox-thread-link-read';
+import {inboxContextMessage} from './inbox-context-message';
 
 const CONTENT_BYTES=8192;
 const bounded=(value:string,max=CONTENT_BYTES)=>{
@@ -39,11 +41,14 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     const source=JSON.parse(original.payload_json),sourcePayload=source.firstInput??source;
     const ids=Array.isArray(sourcePayload.attachments)?sourcePayload.attachments.filter((id:unknown):id is string=>typeof id==='string'):[];
     const attachments=ids.map(id=>database.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
-    const full={id:row.event_id,sourceSessionId:sessionId,role:original.origin==='agent'?'assistant':'user',content:String(sourcePayload.text??''),tool:null,phase:null,
+    const sideProjection=typeof event.sideScope==='string'&&!!event.sideScope.trim();
+    const author=sideProjection?{kind:'agent',session:authorSessionOf(database,event.by.sessionId),inputId:event.by.inputId,runId:event.by.runId}
+      :inboxAttribution(database)({sourceSessionId:original.session_id,id:event.sourceMessageId,role:'user',content:String(sourcePayload.text??'')}).author;
+    const full={id:row.event_id,sourceSessionId:sessionId,role:author.kind==='agent'?'assistant':'user',content:sideProjection?event.sideScope:String(sourcePayload.text??''),tool:null,phase:null,
       inputId:row.event_id,submissionId:event.sourceMessageId,attachments,
-      ...(original.origin==='agent'?{author:{kind:'agent',outsideAgent:{name:'agent test',label:'Agent test'}}}:{}),
+      author,
       routedFrom:{sessionId:`concierge:${original.session_id}`,topicId:event.sourceTopicId,root:event.sourceRoot,messageId:event.sourceMessageId,
-        title:routeTitle(database,event.sourceTopicId,null)},
+        title:routeTitle(database,event.sourceTopicId,null),...(sideProjection?{sideScope:event.sideScope}:{})},
       createdAt:stamp(original.created_at),timestampSource:'submitted'};
     if(Buffer.byteLength(JSON.stringify(full))<=8192)return {preview:full,detailJson:null};
     return {preview:{...full,content:bounded(full.content,1024).text,attachments:[],
@@ -63,9 +68,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
   const outsideAgent=payload.capture?.source?.kind==='outside-agent'?payload.capture.source.metadata?.outsideAgent:undefined;
   let link:{thread:string;routedBy:unknown;attached:boolean}|null=null;
   if(!agent&&row.input_id){
-    const found=database.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='thread_link'
-      AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(sessionId,row.input_id) as {payload_json:string}|null;
-    if(found){const value=JSON.parse(found.payload_json);link={thread:value.thread,routedBy:value.routedBy??null,attached:value.attached!==false};}
+    link=readInboxThreadLink(database,row.input_id);
   }
   let mixedThreads=false,answeredByPost=false;
   if(result&&row.turn_id!==null){
@@ -100,13 +103,15 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
       ...(displayedRoot!==row.event_id?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:displayedRoot}}:{})}:{}),
     ...(result&&typeof payload.messageThreadRootId==='string'&&row.input_id?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:row.input_id}}:{}),
     ...(post?{replyToMessage:displayedRoot!==row.input_id?{kind:'message',sessionId:`concierge:${sessionId}`,messageId:displayedRoot}:event.replyToMessage,author:{kind:event.postedBy==='service'?'service':'agent',communication:'post',
+      ...(event.postSource??{}),
       ...(typeof event.requestId==='string'?{requestId:event.requestId}:{}),
       ...(typeof event.postedBySession==='string'?{fromSession:event.postedBySession}:{})},...(event.relayed?{relayed:true}:{})}:{}),
     ...(link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${sessionId}`,messageId:link.thread},routedBy:link.routedBy}:{}),
     ...(agent?(attachments.length?{attachments}:{}):{submissionId:row.input_id,attachments}),
     createdAt:stamp(row.created_at),timestampSource:agent?'received':'submitted',
   };
-  const full=inboxAttribution(database)(raw as typeof raw&{id:string});
+  const context=row.kind==='message'&&row.input_id?inboxContextMessage(database,sessionId,row.input_id,event.message):null;
+  const full=context??inboxAttribution(database)(raw as typeof raw&{id:string});
   const text=bounded(full.content);
   // A caption, filename or routing note can itself be large. Bound the entire prepared row,
   // not only its principal text; the exact retained item remains available by detailRef.
@@ -117,6 +122,7 @@ export function preparedInboxDisplay(database:Database,sessionId:number,sequence
     content:bounded(full.content,1024).text,tool:null,phase:null,...(full.inputId?{inputId:full.inputId}:{}),
     ...(full.mixedThreads?{mixedThreads:true}:{}),...(full.answeredByPost?{answeredByPost:true}:{}),
     ...(full.answersQuestion?{answersQuestion:true}:{}),
+    ...(full.responseMode==='context'?{responseMode:'context',contextDelivery:full.contextDelivery}:{}),
     ...(typeof full.closingLine==='string'?{closingLine:bounded(full.closingLine,512).text}:{}),
     ...(full.communicationKind==='suggestion'?{communicationKind:'suggestion'}:{}),
     ...(full.replyToMessage?{replyToMessage:full.replyToMessage}:{}),

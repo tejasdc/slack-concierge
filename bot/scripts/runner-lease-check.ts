@@ -2,6 +2,7 @@
 import {strict as assert} from 'node:assert';
 import {Database} from 'bun:sqlite';
 import {initializeRunnerSchema,RunnerLeases,LEASE_MS} from '../src/runner-leases';
+import {lastLaunchedConversationHome} from '../src/session-runner-home';
 
 const db=new Database(':memory:');
 initializeRunnerSchema(db);initializeRunnerSchema(db);
@@ -85,4 +86,20 @@ assert.equal(leases.extendLiveLeases(),1,'A runner heard from within the lease k
 assert.equal(leases.job('turn-3')!.state,'leased');
 void quiet;
 
-console.log('runner leases: claim, contiguous events, commands, epoch fencing, computed expiry, idempotent finish and bounded restart extension hold');
+// An unstarted execution intent cannot replace the last host of a bound conversation.
+db.exec('CREATE TABLE executions (execution_id TEXT PRIMARY KEY, session_id INTEGER, provider TEXT, supervisor TEXT, unit TEXT, created_at_ms INTEGER)');
+const homeLeases=new RunnerLeases(db,()=>now);
+homeLeases.enqueue({jobId:'turn:launched',kind:'turn',payload:{}});
+homeLeases.claim('ax41',['turn']);
+db.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('launched',42,'claude-code','runner','concierge-exec-launched',1);
+db.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unclaimed',42,'claude-code','runner',null,2);
+assert.deepEqual(lastLaunchedConversationHome(db,42,'claude-code'),{supervisor:'runner',runner:'ax41'});
+db.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('local',42,'claude-code','systemd','concierge-exec-local',3);
+db.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unstarted-runner',42,'claude-code','runner',null,4);
+assert.deepEqual(lastLaunchedConversationHome(db,42,'claude-code'),{supervisor:'systemd',runner:null},
+  'An unstarted runner intent cannot move a conversation that last ran locally.');
+db.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unproven-runner',42,'claude-code','runner','concierge-exec-unproven',5);
+assert.deepEqual(lastLaunchedConversationHome(db,42,'claude-code'),{supervisor:'runner',runner:null},
+  'A launched runner execution with a missing lease must remain unknown, not fall back to an older host.');
+
+console.log('runner leases: claim, contiguous events, commands, epoch fencing, computed expiry, idempotent finish, bounded restart extension and launched conversation home hold');

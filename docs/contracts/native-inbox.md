@@ -63,6 +63,41 @@ ledger event, and the Inbox page and its `history?after=` delta both include it,
 they share one query. It appears as an assistant message with `author.communication:
 "post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
 
+Lab publications use `POST /sessions/v1/inbox/posts`, a version-1 trusted-service command.
+Network run/runner principals are refused; the root-only service socket and authenticated peer
+listener carry it. Fields are `version:1`, `source:{input_id,run_id}`, `action_id`, `sourceOwner`,
+`destinationOwner`, `targetSessionId`, `thread`, and `text`. Unknown fields are refused.
+Thinkering derives both owners from configured federation and the verified source session,
+and hashes the existing Lab key to the canonical action alphabet.
+
+The destination requires its own machine identity and atomically checks the exact current Inbox
+and message-to-thread binding beside the post. A local source uses canonical `sessions post`.
+A foreign source is proved by a direct authenticated call to its configured peer's
+`POST /sessions/v1/peers/inbox-post-source`, carrying the entire immutable publication.
+That owner validates live exact input/run admission and the handoff fence before retaining
+the new intent in its existing action journal. Identical intent reads remain valid after the run
+ends; different text, run, destination or thread conflicts. No caller-supplied actor is trusted.
+The receiver retains proof and foreign author metadata beside one post event; both live and
+prepared Inbox histories show the source pair and peer author. There is no executable input,
+provider turn, request, attention duty or return obligation.
+
+Existing protected owner receipts and peer-client durability barriers remain in force; no network
+wait occurs inside a transaction. After a lost response, the exact retained post returns before
+contacting the peer; concurrent identical deliveries converge inside the transaction. There is no
+new queue, timer or service. An unavailable/older peer leaves filing unconfirmed and the Lab record
+intact; retry the same publication, never a replacement or human-input route. Install owner support
+on source and destination before the corrected Thinkering caller. Generic communication routes
+remain private to their existing entrances.
+
+The incident-specific canonical replay is `bun bot/scripts/lab-publication-acceptance.ts
+--output /tmp/<owned-result>.json`. It sets only `LAB_PUBLICATION_TEST_AUTHORIZATION`
+(`lab-publication-85ee7a4e`), creates two exclusively owned temporary ledgers, and keeps the
+existing canonical-home/symlink production guards. General test entry points remain disabled.
+Its synthetic inputs, inert provider runtime and authenticated loopback listener are explicit
+substitutes; real owner HTTP responses, peer source proof and both Inbox projections are exercised.
+It is not an installed-app, gateway-authentication, browser, or physical-Mac acceptance claim.
+The independent tester and pre-opened application observer supply those separate evidence layers.
+
 ### Direct messages to the Inbox router
 
 A human-surface message addressed to the Inbox router joins its running turn through the
@@ -154,17 +189,42 @@ split control is the `unthread` message action on the same surface, recorded as 
 detach. The Inbox agent decides placement, only for a thread where it asked and is still
 waiting; everything else stays a new row.
 
-A bug report (a capture from the bug button or its shortcut, marked by the Thinkering
-bug-report door) is always a thread of its own [decision: inbox-button-always-new-request].
+A new bug report (a capture from the bug button or its shortcut, marked by the Thinkering
+bug-report door) first gets a thread of its own [decision: inbox-button-always-new-request].
 The owner refuses, with `BUG_REPORT_OWN_THREAD`, an agent's `sessions thread` of a bug
 report, `topics place` of one into a topic that holds any other root, `topics create` with
-it beside other roots, `topics route` of it into another thread, and `topics merge` of a
-topic that holds one. The router gives it its own topic (`topics create --root <it> --from
+it beside other roots, and a merge from a bug-report topic into a non-bug work topic.
+The router gives it its own topic (`topics create --root <it> --from
 <related topic>` links the related thread) and sends the work to the owning agent with
 `sessions ask --route-message`. The placement prompt and the Stop hook's filing commands
 offer only that. Other captures may still join a bug report's thread, and Tejas's own moves
 are not restricted. Before this (Nov 5, 2026) the router placed his bug report about a
 worker's answer into that worker's thread, and its instructions were the only guard.
+
+Initial placement and later organization are separate owner operations. After two reports
+have their own topics, `topics merge <duplicate> --into <survivor> --reason <why>
+--correction-source <input>` may consolidate the same concern
+[decision: related-captures-share-one-thread]. For a source holding a bug-report root,
+the destination must also hold one;
+the correction must be a retained, human-authored, non-bug message already in the surviving
+topic. The Inbox judges whether the reports concern the same issue; the owner checks source
+custody, records the exact pair, survivor, correction and reason under the acting agent's
+source/run/action, and retains every root, request, question and existing dispatch. No
+content matching, reason-string override, human impersonation or worker redispatch occurs.
+An ordinary source topic may still merge into a bug-report topic without a correction source,
+as before: this moves ordinary captures into their concern, not a new bug into a work thread.
+The bug-report consolidation checks apply when the source contains a bug-report root.
+
+`topics route <destination> --message <original bug capture> --reason <why>
+--side-scope <the concern to investigate>` adds a scoped secondary projection only after
+the report is independently filed as its primary root. The original payload and attachments
+remain intact in its primary topic. The secondary message displays the routing agent's scope
+under that agent's authorship, with the exact source backlink and attachments; it does not
+present that scope as the human's words. Existing ordinary routes retain their full-message
+behavior. Both merge and route retain their existing source/action idempotency: replay returns
+the first receipt, while changed parameters conflict. The disposable
+`bot/scripts/notification-topic-correction-acceptance.ts` exercises these agent operations,
+initial-placement refusals, shared dispatch preservation, and page/detail attribution.
 
 Every Inbox message resolves to one thread root, and attention needs are keyed by it: a
 capture or request is its own root; a routed capture follows its link; his reply follows
@@ -280,9 +340,14 @@ the existing Thinkering capability socket with `{captureId,text,title,capturedAt
 command) and becomes the note; the original bytes become its Source, which the agent cannot
 supply or change. A note he already edited keeps his words (`summary:"kept-edited-note"`).
 The summary is required (Tejas, 2026-10-01: "you should not dump my whole transcript here").
-`--add-to <earlier captureId>` makes a follow-up capture a new section of the note that earlier
-capture already has, keeping the follow-up as that section's Source, so a thread's follow-ups land
-in the one note he reads on his Timeline (`addTo` on `/captures/note`).
+`--add-to <earlier captureId>` revises the note that earlier capture already has: the summary is the
+whole note as it should now read, with the follow-up woven into the right section and repeats merged.
+thnkr.ing replaces the outline agents wrote there, keeps every line he wrote himself (after the
+outline), and pins the follow-up capture as one of the note's sources, listed in its Source window
+(`addTo` on `/captures/note`). It used to append a section, and an agent sending whole rewritten
+notes stacked 16 copies of one party-ideas note (Tejas, 2026-11-13: "I don't want a fucking
+append-only log. I want a synthesized thread of all of the fucking ideas I'm talking about").
+`--journal entry --add-to <earlier captureId>` omits `--summary-file` and forwards `{captureId,text,title,capturedAt,addTo,journal:"entry"}` so the capture's exact words, original recorded time and human source append to the earlier Journal entry; independent `--journal entry|checkin` notes still require `--summary-file`.
 `--person <name>` instead files the capture under that person's one note (`person` on
 `/captures/note`): thnkr.ing makes the note the first time anyone names the person, keyed by the
 name, and adds each capture as a section with the capture as its Source. A capture naming several
@@ -334,13 +399,38 @@ or scan other threads while the owner holds its write transaction.
 Routing one accepted message to a second thread checks earlier routes through the retained
 source-message index before it writes another destination; the query uses the index's
 two-kind predicate and then selects topic routes, preserving the independent-route rule.
+The routed destination address is an event in the Inbox session that created the route, while
+its retained input is the foreign-key anchor for posts. When a later Inbox session files an
+answer into that historical routed thread, anchor lookup follows the shared Inbox lineage;
+ordinary sessions can resolve only routes in their own accepted-handoff lineage. This keeps
+the route address out of input columns while preserving the same thread across Inbox handoffs.
+Every route projects the source message's current author, including an authorship correction,
+service origin and named agent session. The routed copy and any request that carries it must not
+derive authorship from the source's historical origin alone or default a missing author to Tejas.
+When the destination is on the other Concierge instance, the authenticated peer request carries
+the full author object and validates its kind against the route marker; the recipient keeps that
+identity instead of rebuilding an anonymous agent. Session IDs in that author are translated to
+the receiving instance's peer namespace before the message is retained. The original accepted
+input and the correction record remain intact.
 
 The owner keeps one in-memory index of every Inbox message and its thread root
 (`entryIndex` in `session-topics.ts`), built once per process and extended only over new
 rows. After a restart it is filled by `warmEntryIndex` in bounded steps that yield the
 owner between them, started once the owner is online in both runtime compositions, and
-logged as `inbox_entry_index_warmed`; a read or human action that arrives before the warm
-finishes completes only what is left. Before this (2026-10-12) the whole build ran inside
+logged as `inbox_entry_index_warmed`. A provider prompt reads its own topic's retained
+request, return and post identities to decide whether a returned answer still needs
+relaying. It does not wait for the global entry index. The accepted input keeps its
+identity and durability fence; the owner can serve other requests between warm-up
+steps. General topic reads and actions that arrive first still finish the remaining
+index synchronously. On 2026-11-06, a prompt arriving during restart warm-up had
+forced 115,370 ledger calls and an 18.5-second owner-loop block; the installed statement
+observer measured about two million read calls in its longest sampled statement. This
+change removes that synchronous prompt-path join, not the cost of the index build itself.
+The index state, including its row watermark, is stored before each extension so later
+yielding steps resume from the last processed row. A missing state assignment previously
+restarted every step at the first row, leaving prompt dispatch waiting indefinitely;
+the persisted watermark remains necessary for topic reads and background catch-up.
+Before the original warm-up (2026-10-12) the whole build ran inside
 whichever read came first after each restart, which was his first tap on a thread: about
 3 s and 157 MB inside that action's own write transaction, with every other read behind
 it; see [the incident](../incidents/2026-10-12-thread-index-rebuilt-in-his-first-tap.md).
@@ -397,9 +487,20 @@ human source cannot be checked, is refused. This lets a request such as “Open.
 object he meant while its original request remains open; it does not authorize an agent
 to open a guessed object.
 
+The quoted words are checked against, in order: the human message behind this work; every
+human message on the work's own source chain, at any age; every retained human input that an
+agent or service hop on that chain cites by exact ID (the owner reads the cited input from the
+ledger, never the citing text); and his messages from the last thirty days. The cited-ID step
+covers forwards that quoted his messages as records instead of linking them: on 2026-09-16 a
+usage-reset wake request carried seven of his failed messages that way, so the screenshot-drag
+work's human source became the wake message and, in November, upkeep's drag question quoting
+his September report was refused.
+
 ### Agent issue reports
 
 `router-actions.sh report --source-input <id> --source-run <id> --action-id <stable id> --title "<issue>" [--file <path> ...] -- <observation, expected behavior, impact>` sends a likely bug or concerning issue the agent noticed outside its task. The local owner verifies the reporting run. A Mac report crosses the authenticated Concierge peer link to the server Inbox; no Mac Inbox is created. The server gateway marks only authenticated peer traffic, and the owner requires that mark before accepting Mac attribution; a local caller cannot assert it in a request header. The server retains the exact text and files under the agent's authorship, and atomically creates an Inbox thread in Agent reports with one open request before admitting it to the router. The receipt names the capture, thread and request. Repeating the action ID with the same text returns the same receipt; changing the text under that ID is refused. The router dispatches work from the report's capture root and links the dispatch to the existing request. Its stop check refuses an Inbox turn that received a report whose open request still has no linked dispatch; the router must check for a prior unlinked dispatch before sending another, or explicitly resolve the report. A settled answer closes the request under the normal thread upkeep rules; an uncertain end leaves it open for the router to resolve. The report cannot be imported silently or attributed to Tejas. A peer connection loss before a receipt is ambiguous; the caller retries the same action ID, and the owner returns the one retained report if it arrived.
+
+Admission recovery checks the exact accepted capture and live intent before starting a router turn. A locally authored report also has to match its retained source input and run; a verified Mac report has no local source-input relationship. This check applies both immediately after acceptance and during the owner's recovery sweep. It never releases a Focus review hold or replays a report that already has a turn.
 
 The server Codex turn-exit audit has one narrowly scoped report group for surviving non-browser processes. A repeated sighting while its agent-report request remains open appends the new process evidence to that request and returns the first report's receipt, preserving its original agent attribution and Inbox work item. The group is recorded on the capture, so older ungrouped reports with the same title cannot absorb new evidence. The owner closes the grouped request itself, as completed, once every process recorded on it has exited (rechecked by PID and start time each minute); a sighting whose processes exit within ten minutes of its turn is never reported. Once the request closes, a newly observed survivor can open a fresh report. Ordinary agent reports keep their source-and-action identity above.
 
@@ -409,7 +510,13 @@ and refuses, before anything is sent, an Inbox ask with no thread, one naming a 
 is not in the Inbox, or one whose thread is not yet placed in a topic; other sessions have
 no threads and name none. The root is recorded on the request (`thread_root_input_id`, local
 and peer rows), so progress and final returns file under that thread and its Timeline lists
-the dispatch, whatever input started the turn that sent it. When the dispatch itself is placed
+the dispatch, whatever input started the turn that sent it. The thread is fixed when the request
+is sent: a router handoff moves an open request's custody (its source session) to the successor
+Inbox, and every thread lookup finds the request by its exact id among the Inbox's sessions, never
+by its current custodian. Before 2026-11-16 the lookup asked only the session whose transcript
+recorded the send, so twelve of his forwarded replies became threads of their own; a one-time start
+repair merges any such recovered thread back
+(`docs/incidents/2026-11-16-forwarded-replies-became-threads.md`). When the dispatch itself is placed
 as a topic root, that placement owns the request and every answer to it, even if `--thread`
 named an older topic. The Conversation shows the original request text as its root message;
 the answer keeps its exact source and author. One dispatch may serve several explicit Inbox
@@ -525,6 +632,15 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   Linked attempts are evaluated in admission order, including when an older failed
   attempt is discovered and linked after its checked successor. The old failure remains
   visible without becoming current merely because it was linked last.
+  A later shared check can fail for one sibling request after another request's repair
+  was answered. The router may close only the individually checked request by naming
+  two exact unsuperseded final events: an earlier answered final that completed its
+  work, and the later shared failed final whose retained words show this request's
+  check passed. The owner verifies each event belongs to its linked dispatch and
+  records both as closure evidence. The failed final alone cannot close a request,
+  and a sibling without its own completed answer stays open. This avoids redoing a
+  completed check or treating one aggregate failure as every request's result; the
+  router still judges the check's scope and states any untested device behavior.
   A failed,
   cancelled, handed-back or otherwise unfinished attempt leaves his request open. The owner
   gives the Inbox router a retained recovery input with the exact request and latest attempt.
@@ -541,10 +657,23 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   prepared (`agent_checking` or missing fields) is not shown to him, so it does not quiet the
   request; its recovery input names the question and its missing fields so the router finishes
   it. A declaration carrying `onlyHeCan` with missing fields and no explicit `context` is
-  refused (`QUESTION_NOT_ANSWERABLE`) instead of being parked out of his sight. If the router's input ends without a replacement dispatch or checked completion, upkeep
+  refused (`QUESTION_NOT_ANSWERABLE`) instead of being parked out of his sight.
+  An unanswered attempt whose agent can do nothing until a provider hold lifts (nothing of its own
+  running, its earliest queued turn held for allowance or sign-in, not a saved wait he chose) counts
+  as live work for one hour (`HELD_ATTEMPT_RECOVERY_MS`); after that it comes back to the router
+  like a stall, saying which agent is held and since when, so the router can wait for a near reset
+  or send the work to an agent that can run now. On 2026-11-12 a Codex account switch released 37
+  turns held since Nov 5-7; their requests had counted as live the whole week and reached the router
+  together. When a newer linked attempt replaces one that is still held, upkeep withdraws the held
+  one (`withdrawSupersededAttempt`): a never-started queued turn is revoked, otherwise its agent is
+  told the request was cancelled, so the work is not done twice when the hold lifts. An attempt that
+  is still the newest work of another open request stays. If the router's input ends without a replacement dispatch or checked completion, upkeep
   sends another attempt after a bounded delay, starting at fifteen minutes and capped at one
   day. Upkeep admits at most five recovery inputs on one reading pass, leaving the rest
-  eligible on the next pass. The input and flag have stable identities across restart. After
+  eligible on the next pass. Stuck requests whose latest attempt is the same dispatch share one
+  recovery input that lists all of them and asks for one combined request to the owning agent,
+  linked to each; on 2026-11-09 one shared attempt came back once per request and its agent got
+  about a dozen copies ([record](../incidents/2026-11-09-shared-attempt-recovery-fanned-out.md)). The input and flag have stable identities across restart. After
   two recovery turns without a linked next attempt, the thread gets one notice that the task
   is still open and Concierge is continuing to try. A request with no certain linked human
   source still reaches the router for provenance investigation without inheriting authority
@@ -557,7 +686,17 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   routed copy or original ID. The quote is retained with the closure.
   His Close control withdraws the requests it names; Stop ends the current attempt
   and leaves the human request open for reconciliation. An agent issue report may be
-  declined with its reason when it needs no work. An agent cannot supersede a human
+  declined with its reason when it needs no work. Concierge never makes a second open copy of one
+  of his messages: when his forwarded reply is already an open request in another thread, the
+  forward joins that request instead of opening a "Follow-up in …" copy, and when the router files
+  a message whose automatic "Follow-up in …" copy is open elsewhere (`request add`, or routed work
+  for that exact message), the new request takes the copy's attempts and the copy closes
+  `superseded` with `mergedInto`. On 2026-11-12 his Kindle replies existed both ways and each copy
+  was recovered separately. The router may still file one message with two different asks in two
+  threads (three such deliberate splits were open that day). Copies already made are joined with
+  `topics request merge <duplicate> --into <keeper>`, which needs a shared source, different threads
+  and no open question on the duplicate; the keeper takes every source, attempt and the duplicate's
+  brief. An agent cannot supersede a human
   request because another request shares its source message: both stay open until
   their work is individually checked. When one agent answer is linked to several
   requests, none closes automatically: the recovery input names the shared answer,
@@ -584,7 +723,8 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
 - A thread closes itself (`topic-autoclose:<topic>:<revision>`, closure `automatic:true`, by the
   owner) at the moment its last request or question ends or an agent's final answer arrives,
   when no request is open, nothing waits on him (an unread answer counts, as does a question set
-  aside until a time), no work for its roots is running and it is not set aside. It is decided
+  aside until a time), no work for its roots is running and it is neither set aside nor pinned
+  (a pinned thread closes only by his own Close; he pins it to keep it in front of him). It is decided
   only at such an ending, never by a pass over quiet threads, so a thread reopened by hand stays
   open until something in it ends again.
 - A closed thread reopens when he writes in it (`topic-reopen:his:<input>`), when new work is
@@ -604,6 +744,7 @@ A post's `--topic` must be the
 topic its thread is in. A turn's result is marked `mixedThreads` when its asks or posts named
 a thread other than its own input's, and `answeredByPost` when it posted into its own thread.
 Thinkering keeps either closing text out of that thread's conversation. **A turn another agent opened owes its thread a post** (`threadOwedByTurn`): a worker's return or an agent's request filed in a thread is answered only by a post, because the closing text of such a turn is never shown there. `sessions outcome` is refused for that turn until it has posted into the thread (`failed` excepted); a turn that ends without posting has its closing text relayed into the thread by the owner as the router's reply (`post:relay:<turnId>`, payload `relayed:true`, projected `relayed:true` on the message), releasing the router's focus like any post, so an answer can reach the thread or be refused, never vanish. A service admission explicitly marked `threadReplyNotRequired` carries reconciliation work only: it may declare `done` without posting or relaying, even when its source request belongs to a thread. The trusted owner accepts that mark only on service inputs; already retained service upkeep inputs are recognized by their owner-generated identity. Agent requests and service returns without either fact retain the owed-post rule. On 2026-09-24 a worker's result was answered only in closing text and Tejas found nothing in the thread for two hours. **A turn that answers his own message cannot end in unexplained silence** (`answersHisOwnMessage`): `sessions outcome done` on it is refused unless `--quiet-because "<why he need not read this>"` is given, and a turn that ends by marker or without declaring is raised to `response` so he is notified; the stated reason is recorded on the turn outcome (`quiet`) and projected on the reply message as `quiet`, which thnkr.ing shows under it. Nothing is inferred from the text (Tejas, 2026-09-25: "if you make a field mandatory … then you are forced to answer it. That's a system … we are not relying on good intention"). Both facts come
+Release-watch deliveries carry the no-reply mark because their service message only reports an observation; it still records any watch observation gaps. The agent reconciles the release and can close the turn quietly. The watch's terminal delivery remains a distinct retained input.
 from that turn's recorded requests and posts, rather than comparing the post's root input
 with a later reply's distinct input ID. A source input with a retained handoff is the
 narrow exception to the `done` silence and owed-post rules: its receipt tells him where
@@ -624,7 +765,35 @@ is refused when that thread belongs to another one). Focus belongs to the run th
 it, so a run that ended, errored or was stopped stops claiming a topic without any timer.
 A topic's `work` is `router_working` (its focus), else `router_queued` with its 1-based
 position among queued Inbox inputs, else `worker_working` naming the target session of an
-unsettled dispatch from this topic, else `idle`.
+unsettled dispatch from this topic whose work is live, else `idle`. A dispatch from this topic
+is one sent by any session in the Inbox lineage, so a thread routed before an Inbox handoff
+keeps its working agent. A dispatch listed only under the topic's closed requests is not its work:
+closing a request settles the thread's work on it even when the agent never settled that delivery,
+so the agent being busy on other threads does not make this one look worked on. Conversely, a
+live delivery listed under one of the topic's open requests is always its work, whoever sent it
+and whatever message started it. A dispatch's work is live
+while its target has a running or queued turn, or while the target holds an unsettled request
+to another session whose work is live by the same rule (bounded depth, cycle-safe; an open
+peer request counts as live). An agent that ends its turn to wait for a ChatGPT answer or
+another agent's build is still working on the thread (bug report ce2b8b10, 2026-11-11:
+threads showed green while agents still worked). The prepared topic depends on every session
+in that chain, so a turn starting or ending anywhere down it rebuilds the thread's work.
+
+Every open request in a thread has one displayed holder and one standing, computed once by
+`requestStanding` (`bot/src/request-standing.ts`) and used by both the live topic list and the
+prepared worker, so the two copies cannot disagree. A standing is `{requestId, holder, movedFrom,
+state, text, since, until, progress, remindedAt}`: `state` is `working` (something down the
+holder's chain is running), `held` (its next turn is held by usage, a snooze, a schedule, a chosen
+time or a sign-in; `until` is when it clears), `waiting` (on a request the holder sent, or a watch its
+partial reply named), `stalled` (the request carries its stalled mark) or `quiet` (none of those:
+nothing will wake it). `movedFrom` lists the predecessors an accepted provider handoff moved the
+request from, oldest first. `text` is plain words with no ids and no clock times; times travel in
+`since`, `until` and `remindedAt` and the web app composes them. A topic's `work` is `worker_working`
+while any open request's standing is `working`, else the new `worker_waiting` (text: the first
+holder's title and its state words), and `idle` only when no request is open. Each `workers[]` entry
+keeps `sessionId`, `title` and `progress` for older builds and adds `requestId` and `standing`. `workers[]` holds one entry per open request: the current workers plus every open request's standing not already among them, so a waiting request is not dropped while another one works, and a routed request the thread does not list as its own is given its standing too. A
+session view (live and prepared card) adds `heldRequests: {count, oldestAt} | null`: open requests
+whose current target is that session.
 
 **In the Inbox, the only thing that can wait on him is a question record in its topic**
 (design: `docs/plans/2026-09-23-attention-that-ends.md`). A question has a `kind`:
@@ -668,15 +837,33 @@ design; Tejas, 2026-09-22). Exposure is never an answer.
 Every end is an explicit signal, recorded with its reason, and nothing ends on a clock:
 `answered` (his mapped reply), `read` (his Read on a reading item — the human `question`
 action with `state:'read'`, `acknowledge --item <questionId>` on a reading item, or his
-"mark seen" `dismiss` on the Inbox session up to a generation; opening the thread is a
-reading position, never an end), `superseded` (a replacement), `withdrawn`/`declined`
+"mark seen" `dismiss` or session `read` mark on the Inbox up to a generation, reason `Marked
+seen` or `Read`; opening a single thread is a reading position, never an end), `superseded`
+(a replacement; a thread's newer answer or decision also supersedes its earlier open reading
+items for the same capture, so one capture shows one item, and a startup pass applies both
+rules to what was filed before 2026-11-11), `withdrawn`/`declined`
 (whoever asked, or him), `deferred` (him), and `expired`: `topics close` and his Close end
 every open question in the thread with "Thread closed: <reason>"; his Close also withdraws
 the open requests named on its confirmation. `request close` ends only
 the questions whose `owner.requestId` or `owner.dispatchRequestId` names that request, and a
 worker's final reply with `completed` or `failed` ends the questions it declared for that
-request (a `needs_decision` final keeps them; that reply is the question). `brief.endedBecause`
-carries the reason and History shows it.
+dispatch (a `needs_decision` final keeps them; that reply is the question). Session identity does
+not establish task scope: request-only, thread-level and legacy questions without an explicit
+dispatch link remain open until their exact human request closes or the Inbox settles them.
+The owner never guesses from a worker session match. `brief.endedBecause` carries the reason and
+History shows it.
+
+If an older final-reply expiry swept a sibling dispatch's question, the Inbox can restore the same
+question with `topics question restore <questionId> --dispatch <erroneous finishing dispatch>
+--expected-revision <revision> --action-id <stable id> -- <reason>`. The owner accepts this only
+when the exact retained expiry event contains the unchanged expired snapshot, its immediately
+preceding topic question event proves the original open/partial record, and that question's own
+explicit dispatch still belongs to an open request. Answered, replaced, changed, closed-topic,
+closed-request, correctly scoped and unproven legacy questions are refused. The event records the
+restoration and both source events; replay restores the same identity without a new notification
+or generation. Its original revision and timestamp remain intact so exposure, acknowledgment and
+pending-reply comparisons keep their meaning. A retry with the same action ID returns its saved
+receipt.
 
 **An end-of-turn `needs_you`/`response` marker in the Inbox never files itself.** When the
 run declared or revised a question (`topics questions`), the marker adds nothing. Otherwise
@@ -731,6 +918,12 @@ reply and its carrier request: the router never received either, and listing the
 every thread's replies look delivered to the router (Tejas, 2026-11-05). Threads keep both.
 
 ### Routing handoffs on the source message
+
+When a later Inbox session files an answer under a routed thread root made by
+an earlier session, it resolves that root's accepted input through retained
+Inbox lineage. The thread root alone does not establish the current session's
+input anchor; see the
+[foreign-key failure record](../incidents/2026-11-12-final-answer-routed-root-foreign-key.md).
 
 The accepted human message owns the visible routing handoff. A session route, a route into
 another thread, and a direct reply forwarded to a working agent retain distinct delivery
@@ -840,8 +1033,8 @@ root, so replying inside an existing topic does not require another placement.
 
 Each unplaced input carries the existing `<topic-placement>` reminder when delivered.
 The router can inspect the sorting pile with `sessions topics list`; that display includes
-queued messages too and previews only five. There is no periodic “pile nonempty” agent
-notification. The shared owed-reply Stop hook now asks the owner on every normal Stop
+queued messages too and previews only five. The overdue wake below is the only periodic
+notification, and only for captures unfiled for 10 minutes. The shared owed-reply Stop hook now asks the owner on every normal Stop
 attempt for all unfiled human message inputs that this Inbox session received, including
 earlier turns. Initial delivery is evidenced by provider acknowledgment (or the exact
 currently stopping turn); steering requires its sent receipt. Merely queued, imported,
@@ -849,7 +1042,39 @@ corrected agent authorship, service returns, worker requests and topic actions d
 Outside-agent captures delivered into router turns follow the same filing check, providing
 the live agent-marked acceptance path without claiming human authorship.
 
+The current router (the session holding the `inbox` role) answers for the whole Inbox, not only
+what it received itself. Its Stop check also lists every root another Inbox session received
+that no topic holds, in any delivery state, marked with `received_by`; and every input it
+receives carries an `<unfiled-from-earlier-routers>` block listing them oldest first. Both read
+the same entry index as the sorting pile thnkr.ing shows as "Not in a thread yet", so a capture
+left behind by a failover or stand-in bind cannot drop out of view (failure record
+`docs/incidents/2026-11-11-captures-stranded-on-former-inbox-router.md`).
+
+Because the Stop check only runs when the router ends a turn, the owner's thread-upkeep pass
+(the provider-usage reading cadence, about every three minutes) wakes an idle router with one
+`unfiled-wake:` service input per set of captures unfiled for 10 minutes, the age thnkr.ing
+labels "Never filed". At the first upkeep pass after 30 minutes, a separate inspection input
+reaches the current router even while it has running or queued work. A running turn may have
+started before those captures arrived, so waiting for its eventual Stop check is insufficient.
+The input is retained once per current router, milestone and exact overdue-root set; another
+pass or restart reuses that identity, while a successor router receives its own inspection.
+It asks the router to check current filing and work receipts, never to replay accepted work.
+Thirty minutes uses the earlier threshold Tejas requested instead of waiting an hour; this
+reuses the existing upkeep cadence and adds no timer, agent schedule or notification to him.
+A capture still unfiled at 30 minutes while the router is not running a turn also records a
+`stuck_work` repair notice (`inbox-unfiled:<root>`) for the repair agent, since the router is
+then evidently unable to file; filing it resolves the notice. The existing wake log records
+the milestone, running state and count; a retained inspection input proves admission, not
+that the router has processed it. See the
+[repeated waiting failure](../incidents/2026-11-15-filed-inputs-still-waiting-in-inbox.md).
+
 `/session-communication/owed` returns `unfiled` beside its existing reply obligations.
+For Inbox runs, its retained filing projection runs in the existing private read
+executor pool, including the current router's check of former routers. The
+canonical owner revalidates the exact running turn after the read before
+computing reply obligations and recording reminder offers. An unavailable read
+is an explicit failure, never an empty filing list or a synchronous fallback;
+see [native read execution](../architecture/NATIVE-READ-EXECUTION.md).
 The hook names every input, a short data-only preview, its resolved root and ready-to-fill
 `sessions topics place/create` commands with the current source pair and stable action IDs.
 There is no five-item display limit. Repeated `stop_hook_active`, background jobs and
@@ -908,3 +1133,35 @@ upkeep leaves no receipt, so the same exact event can finish safely on retry. Th
 usage watch checks open work in short, yielding owner turns; its per-thread transactions and
 recovery identities remain the same. A recovery admission rechecks current work and his
 answers after any yield, and a new reading joins an already running pass.
+
+## Quiet service notices
+
+Owner-generated reminders and reconciliation notices carry `threadReplyNotRequired:true`
+at admission. This covers unanswered-request and prompt reminders, overdue/stalled returns
+on either machine, still-open upkeep, handoff notices, background-job and update-wait
+notices, theme-area filing prompts, and question to-do/defer reconciliation. The mark
+waives only the notice's own thread reply: it neither closes the underlying request nor
+suppresses a later genuine answer or question.
+
+Retained inputs admitted before that mark existed use the same owner-generated identity
+contract: dedicated maintenance prefixes, or an exact `return:<event>` whose request and
+recorded local/peer event identify an `overdue` notice. Owner-made handoff copies follow
+their exact original input. No wording, including “You do not need to reply,” grants an
+exemption. An ordinary service return, genuine worker final answer, or agent question
+keeps its owed-post rule; a human message keeps its explicit quiet-reason requirement.
+
+Both `sessions outcome done` and automatic closing-text relay use this classification.
+The disposable `bot/scripts/inbox-quiet-service-notices-fixture.ts` exercises quiet
+outcome/no relay, retained local and peer overdue notices, handoff copies, genuine final
+answers, agent questions and the human silence guard. See the
+[failure record](../incidents/2026-11-16-no-reply-notice-forced-thread-post.md).
+
+## Journal processing dispositions
+
+Observation requests with additive `processingVersion:1` carry a versioned processing obligation bound to their source root. Unversioned requests retain legacy tracker filing; unsupported versions refuse. Install Concierge support before the Thinkering change that sends version 1 together with reader provenance. An old owner rejects the new field, leaving Thinkering’s existing queue pending. Queued jobs freeze their original protocol version: a legacy job with no version retries without a version, even after the caller upgrades. The exact owner retry returns the old admission without adding a processing claim; changing that same job to version 1 remains a refused body conflict. Older admissions remain unchanged. Tracker filing and delivery receipts do not satisfy it. The authenticated command is `sessions journal-review --review-file <JSON-path> --source-input <id> --source-run <id> --action-id <stable-id>`. It uses the existing private capability transport to read `/journal/entry?objectId=...`; missing root or line revision/actor proof refuses processing. Both review dispositions must match the canonical complete-entry version, so a new child command invalidates an older review even when the root revision is unchanged. The active source/fence is rechecked after this read. It never changes journal access, saving, friction policy or journal meaning.
+
+Review JSON contains `rootId`, current root `revision`, complete-entry `sourceVersion` from the private reader, `disposition` (`context-only` or `actionable`), nonempty `reason`, and `items`. Context-only has empty items and creates no Inbox topic. Each actionable item has `lineId`, exact nonempty `quote` substring, optional zero-based character `offset` (required when the quote occurs more than once), `classification` (`explicit-request` or `actionable-reason`), `title`, and `reason`. Agent/imported source cannot be classified as a human explicit request. Every report remains agent-authored assessment rather than authority to execute source text. Only the selected quote enters the report; source revision, actor, capture time, arrival time and classification remain retained.
+
+Each portion uses root + stable line identity + exact quote as its durable identity. The first occurrence keeps the original unique-quote identity; later repeated occurrences add their zero-based matching-occurrence ordinal. Current character offsets validate the selected location and remain in the frozen source proof, while prefix edits that shift offsets leave occurrence identities unchanged. Neither whole-entry version nor character offset owns work identity. Identities are independent of reviewer and run. Its original attribution and immutable report intent survive restarts and response loss. Existing admitted or uncertain requests can instead be linked with optional `existingRequestId` and the item reasoning; the exact retained Inbox/communication request and outcome are recorded without another dispatch. Existence alone is insufficient: either retained journal metadata must match root/line/quote, or the existing bounded report-source chain must reach an uncorrected human source containing the exact quote. The receipt preserves the matching source input, payload digest and association path. Missing relation remains explicitly unconfirmed and never authorizes replay. Keeper instructions distinguish saved source event time from unproven spoken time and require existing-work reconciliation before a new handoff. Changed review contents under the same source/action refuse. Multiple portions create separate durable open Inbox requests through agent-report intake before router execution. A completed processing receipt records the source version, disposition and request for every portion. New processing inputs cannot declare success or Stop without this receipt; an explicit failed outcome first creates one durable open Inbox recovery request carrying only the source pointer and failure reason. The failed outcome receipt links that request; processing remains failed rather than completed. If Inbox admission fails, the outcome is refused. A source-stable immutable failure intent preserves attribution and returns the same request after response loss or retry, without replaying uncertain effects. Only then may the failed turn stop. No historical replay or live journal mutation is part of this mechanism.
+
+Disposable acceptance: `cd bot && bun run scripts/journal-processing-fixture.ts` exercises the real owner, retained-input contracts and Inbox admission against scratch storage, including cross-run deduplication and Stop during the canonical read. It does not prove an installed keeper turn or physical product behavior.

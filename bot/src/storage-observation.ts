@@ -25,8 +25,13 @@ export type StorageReadBudget={maxCalls:number;maxRows:number;maxResultBytes:num
 const readBudgets=new AsyncLocalStorage<StorageReadBudget>();
 export class StorageReadBudgetError extends Error {
   readonly code='READ_BUDGET_EXCEEDED';
-  constructor(readonly reason:'unbounded_collection'|'write_in_reader'|'calls'|'rows'|'bytes'){
+  /** The refused statement, when one is known: on Nov 12 162 Threads reads were refused for an
+   * unbounded collection and nothing recorded which statement, so the cause could not be named. */
+  readonly statement:{fingerprint:string;method:string;sql:string}|null;
+  constructor(readonly reason:'unbounded_collection'|'write_in_reader'|'calls'|'rows'|'bytes',statement?:{sql:string;method:string}){
     super(`Interactive read refused: ${reason}.`);
+    this.statement=statement?{fingerprint:createHash('sha256').update(statement.sql).digest('hex').slice(0,16),
+      method:statement.method,sql:statement.sql.replace(/\s+/g,' ').trim().slice(0,240)}:null;
   }
 }
 export function withStorageReadBudget<T>(budget:StorageReadBudget,read:()=>T):T {
@@ -38,10 +43,10 @@ function admitRead(sql:string,method:string,work:StorageWork){
   const budget=readBudgets.getStore();if(!budget)return;
   // WITH can prefix UPDATE/DELETE ... RETURNING as well as SELECT. Prepared readers
   // currently need only SELECT; extending this grammar needs an engine-backed check.
-  if(!/^\s*SELECT\b/i.test(sql)||method==='run'||method==='exec')throw new StorageReadBudgetError('write_in_reader');
+  if(!/^\s*SELECT\b/i.test(sql)||method==='run'||method==='exec')throw new StorageReadBudgetError('write_in_reader',{sql,method});
   if(method==='iterate'||(['all','values'].includes(method)&&!/\bLIMIT\s+(?:\?|\$[\w]+|[0-9]+)(?:\s+OFFSET\s+(?:\?|[0-9]+))?\s*;?\s*$/i.test(sql)))
-    throw new StorageReadBudgetError('unbounded_collection');
-  if(work.db_calls>=budget.maxCalls)throw new StorageReadBudgetError('calls');
+    throw new StorageReadBudgetError('unbounded_collection',{sql,method});
+  if(work.db_calls>=budget.maxCalls)throw new StorageReadBudgetError('calls',{sql,method});
 }
 function checkRead(work:StorageWork){
   const budget=readBudgets.getStore();if(!budget)return;

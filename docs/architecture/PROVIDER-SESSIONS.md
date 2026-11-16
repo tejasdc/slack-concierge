@@ -11,7 +11,31 @@ binding; removing Slack does not remove a persisted provider session. Native
 provider policy preserves explicit ChatGPT intent and visible unavailable/start
 failure without substituting a different provider.
 
+## Codex model and effort on native starts
+
+The bound session model is sent when the App Server thread starts or resumes. Reasoning effort is
+per turn: Concierge sends the retained requested value as `turn/start.effort`; it does not send an
+unsupported effort field on `thread/start` or `thread/resume`. A service-authored continuation can
+keep the exact session's verified model only when the owner links it to its preceding run in that
+same conversation and to the same still-open work request. The service remains service-authored;
+the link carries existing authority and does not create a new human choice. Unrelated agent inputs
+and agent-supplied authority claims remain outside this path.
+
+An empty completed native turn with no matching input acknowledgement, assistant output or tool use
+parks the accepted input with a precise failure. The exact recovery contract and current boundary
+are documented in [turn lifecycle](TURN-LIFECYCLE.md#empty-codex-completion-without-input-acknowledgement)
+and [the November 13 incident](../incidents/2026-11-13-codex-empty-report-back.md).
+
 ## Selection and binding
+
+Claude information-only consultations retain the selected account through their restricted
+environment. Local launches carry `CLAUDE_CONFIG_DIR`; runner launches carry only
+`CONCIERGE_PROVIDER_ID` and `CONCIERGE_PROVIDER_ACCOUNT`, which the runner resolves to its
+credential-verified local home before applying the no-inheritance policy. These two identity
+fields come only from the selected turn environment, never the owner's ambient account.
+Run capability tokens and competing API credentials remain excluded, and consultation tools
+remain disabled. The release's runner-account check guards this identity boundary. See the
+[consultation login failure](../incidents/2026-11-12-consultation-used-default-login.md).
 
 ### Antigravity sessions
 
@@ -26,7 +50,16 @@ The CLI emits structured `init`, `step_update`, and terminal `result` events. It
 `conversation_id` is the provider session binding. Each later turn starts a new
 headless process with `--conversation` and that exact ID, so it resumes the right
 Google conversation without using the CLI's mutable most-recent conversation.
-Only a `SUCCESS` result with the bound ID completes work. Stop sends `SIGINT`
+The terminal result can retain errors from earlier turns in that conversation. The
+owner binds each accepted input to its completed `user_input` step and uses only
+the steps after that boundary to judge the current input. A current `error_message`
+step remains a failure, even if tools ran or a later answer appeared. Otherwise a
+completed final response counts only when its indexed response step is `DONE`, no
+tool remains active, and the accumulated response exactly matches the terminal
+response. This also permits recovery of an adopted stream without sending the input
+again. An aggregate terminal error with no matching current completion is reported
+as unconfirmed; its historical error text is not used for quota classification.
+Stop sends `SIGINT`
 through the durable host; a result that confirms cancellation or interruption
 closes it as stopped. A success that raced Stop remains a success, and an exit
 without a final result stays unconfirmed. A `SUCCESS` result with no final reply
@@ -42,7 +75,16 @@ therefore leaves the turn unconfirmed instead of reporting completion.
 Antigravity currently supports sequential native turns and Stop. Its CLI has a
 streaming input protocol, but live steering is disabled until its pickup and
 recovery semantics are proven. Native human replies during a run queue as the
-next turn. Historical pages, forks, and information-only consultation are also
+next turn. Earlier releases advertised steering despite that limit: they attached
+accepted follow-ups to the running answer even when the CLI never wrote them to
+Google. After a restart, the owner recovers only failed, never-written attempts
+whose exact request remains open, preserving each accepted input's identity and
+order in the durable turn queue. Sent or ambiguous attempts and settled requests
+are not replayed. If an accepted provider handoff has already moved the Inbox,
+recovery continues the proven unsent input in the successor and updates its exact
+open return target. The old input's nonterminal receipt fields are retained and
+marked canceled with its continuation, so capture status does not stay live.
+Historical pages, forks, and information-only consultation are also
 disabled because their provider contracts are not yet established. The CLI must
 be installed on the machine running the provider and must have that machine's
 own Google sign-in. Credentials are never copied into a Concierge session.
@@ -62,8 +104,17 @@ Google's `/usage` reply keeps Gemini 4 Argon in its own allowance group (bucket 
 selected model's own buckets as extra windows, so an Argon limit makes Google ineligible for
 new work and gives a refused turn its real reset. Until 2026-11-01 only the shared group was
 read: Argon's weekly limit was spent for days while the reading showed 0.75% used, and small
-tasks kept being sent to Google and refused. A quota refusal while the reading shows room
-files one `usage_reading_disagrees` repair notice per day.
+tasks kept being sent to Google and refused. After a zero-turn quota refusal, Concierge
+finishes any in-progress allowance check and takes a new one before selecting the reset
+time; the earlier check may predate the refusal. A post-refusal reading that still shows
+room files one `usage_reading_disagrees` repair notice per day. A small reported balance
+does not prove enough room for the next turn.
+Only a Google `tool` step counts as agent work; `error_message`, `system_message` and
+`checkpoint` steps are Google's bookkeeping. A quota refusal is a confirmed provider end at any
+point, so a refusal after work continues at the reset. Before launching, a turn whose model's
+allowance the fresh reading shows spent (Argon windows for Argon, the shared Gemini windows for
+Flash and Pro) is refused with that reset without calling Google, and takes the same
+move-or-wait path. See the [2026-11-12 record](../incidents/2026-11-12-google-quota-refusals-ended-for-good.md).
 The earlier Gemini
 3.1 Pro choice was removed from that live list, so its headless start returned a
 structured zero-turn model refusal before `init`; the provider now carries that
@@ -133,13 +184,13 @@ Model aliases:
 | Alias | Provider | Model |
 | --- | --- | --- |
 | `cc`, `cc-opus` | Claude Code | `claude-opus-5-5` |
-| `cc-fable` | Claude Code | `claude-fable-5-1` |
+| `cc-fable` | Claude Code | `claude-fable-5-2` |
 | `cc-opus-1m` | Claude Code | `opus[1m]` (Claude Code's latest Opus with extended context) |
-| `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5` |
-| `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-4-5-20251001` |
-| `cx`, `cx-sol` | Codex | `gpt-6-sol` |
+| `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5-5` |
+| `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-5-5` |
+| `cx`, `cx-sol` | Codex | `gpt-6.1-sol` |
 | `cx-astra` | Codex | `gpt-6-astra` |
-| `cx-terra`, `cx-medium` | Codex | `gpt-5.6-terra` |
+| `cx-terra`, `cx-medium` | Codex | `gpt-6.1-terra` |
 | `cx-luna`, `cx-fast` | Codex | `gpt-6-luna` |
 | `google` | Antigravity | `gemini-4-argon-medium` |
 | `google-high` | Antigravity | `gemini-4-argon-high` |
@@ -158,13 +209,24 @@ their 5.6 counterparts at half the price. `cx-terra` stays on GPT-5.6 Terra
 because GPT-6 Terra does not exist — OpenAI shipped only Sol and Luna in that
 generation.
 
+**The 2026-11-11 move.** Fable 5.2 (cheaper than 5.1: $8/$40 against $10/$50 per
+million tokens), Sonnet 5.5 and Haiku 5.5 replaced Fable 5.1, Sonnet 5 and Haiku 4.5
+after each answered a live turn through the server's Claude Code 2.1.322. GPT-6.1 Sol
+and GPT-6.1 Terra replaced GPT-6 Sol and GPT-5.6 Terra, which Codex no longer
+recommends; both names were in the model catalogue Codex downloads for Tejas's accounts,
+but no live turn ran because both accounts' weekly allowance was spent that day. Claude's
+"Weekly · Fable only" cap is scoped to the Fable family rather than one version, so 5.2
+spends the same cap; Concierge treats every `claude-fable-*` name as Fable. Sessions
+already bound to an older name keep it, keep their readable name, and keep their place
+in the Claude usage fallback chain.
+
 Each side has a client-version floor, and below it the model is unreachable no
 matter what this table says:
 
 | Tool | Floor | What the old version did |
 | --- | --- | --- |
-| Claude Code | 2.1.280 | 2.1.278 refused `claude-opus-5-5` against its own catalog, and the API refused it too, naming the required version. |
-| Codex CLI | 0.156 | 0.153.4 refused every `gpt-6-*` name except Astra. |
+| Claude Code | 2.1.320 | Fable 5.2 support arrived in 2.1.320; 2.1.278 had refused `claude-opus-5-5` against its own catalog. |
+| Codex CLI | 0.159 | GPT-6.1 Terra requires 0.159; 0.153.4 refused every `gpt-6-*` name except Astra. |
 
 Codex's refusal text is worth knowing, because it lies about the cause: "The
 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account"
@@ -229,6 +291,32 @@ excluded and stays bound to Claude. No provider or account is switched inside a 
 conversation.
 The owner scans held sessions in bounded pages and yields between pages. An ineligible
 session cannot keep later sessions out of recovery indefinitely.
+
+The owner's transfer successor takes the Codex model of the Claude tier it leaves (Opus or Fable to
+Sol, Sonnet to Luna, Haiku to Terra) and keeps its reasoning effort; the mapping lives beside the
+alias tables (`aliasKeepingTier`).
+
+#### Automatic moves of held work
+
+Only coding work moves by itself (`automatic-move-kind.ts`, used by held-work failover and the
+Claude-allowance transfer). A session stays on its provider and waits when it is Lab work, a chat or
+writing session, in a brainstorm/writing/design template project, or one Tejas writes in himself;
+otherwise it moves only with evidence of code work (counted code edits in it or a session it
+continues, or having been started by `sessions implement`). Unknown kinds stay. Tejas, 2026-11-16:
+"if it's like a regular coding section, obviously, can be moved. If it's like a discussion of
+[brainstorming] section, I'm having ... It's not something you can automatically move."
+
+A Codex turn that is accepted and then ended with the provider's usage-limit message, with no
+assistant output and no tools, did nothing. The Codex runner re-throws it with the account's reset
+(from Codex's own rate-limit report, else the spent window of the stored usage reading; the
+"try again at" text is never parsed), so the existing hold keeps the input queued for usage and its
+request open, and the next turn on that account is refused before sending. Outside Codex runs (the
+command line in its own unit) follow the same rule through the same function (`codexUsageRefusalWait`)
+and are refused before launch while the account's limit is recorded; on 2026-11-16 they still failed
+their requests after the App Server path was fixed. Held work then moves to
+a provider with room through the provider-change handoff
+([automatic failover](SESSION-OWNER.md#automatic-failover-of-held-work)) unless Tejas himself chose
+the session's provider or model; the successor keeps the predecessor's model tier and effort.
 
 Eligibility is deliberately narrower than a usage hold. The source session must be active
 and unsuspended, with no running or unresolved execution, outgoing helper, dependency,
@@ -354,10 +442,21 @@ five-hour limits should be "limiting our judgment"). Anthropic removes the five-
 from verified Ultra (formerly Max 20x) accounts, so a Claude reading without one is complete:
 only the weekly windows are required. The owner first uses candidates below the existing 90% warning level;
 the others are eligible only when every candidate has crossed it. A stable hash of the
-accepted request identity then distributes starts in proportion to each candidate's
-remaining allowance. That mixes providers even when their readings are equal without
+accepted request identity then distributes starts in proportion to **each provider's total
+remaining weekly room across the accounts it can run on** (`providerTotalRoom` in
+`provider-start-choice.ts`: Claude counts every account with its own home, Codex the signed-in
+account plus every kept account with a fresh reading because the owner moves the login to one
+with room by itself, Google its one account; a cached refusal counts as spent, a stale reading
+as nothing). Until 2026-11-16 the share was the roomiest single account's remaining room, so
+three Claude accounts at 14% weighed the same as one, and Codex at 100% on its signed-in
+account read as out while its other account had room (Tejas: "It has to look at aggregated
+usage per provider, not existing usage per single account"; failure record
+[2026-11-16](../incidents/2026-11-16-new-work-choice-weighed-one-account-per-provider.md)).
+Whether a provider can start now is still its roomiest account; the total decides only the
+share. The held-work and Inbox failovers prefer the receiver with the most total room the same
+way. That mixes providers even when their readings are equal without
 storing a second rotation counter or delaying the request. As usage changes, the mix
-shifts toward the roomier account. No selection promises that a running turn cannot
+shifts toward the roomier provider. No selection promises that a running turn cannot
 consume the last of a five-hour allowance. If all verified candidates are spent, the
 owner binds to the earliest verified reset under the existing hold protocol. Unknown
 or stale room never becomes a guessed start.
@@ -516,13 +615,13 @@ new Concierge session defaults to Automatic. On the server, an agent whose run p
 an update still uses the current installed request helper for a *new* outbound ask; its
 run hooks and recovery helpers remain pinned to their original release.
 
-For an independent helper requested by a Claude session, Automatic also sees the source
-session. When a fresh provider reading puts the selected Claude account at or above 90%
-in a named window and the signed-in Codex account has more launchable room,
-the owner starts that helper on Codex. The decision is repeated at request creation, so
-a previously started Claude run gets the current choice without a router message. A
-provider named by the agent remains explicit; the source session and its admitted work
-stay on Claude. Provider-native child tools still use their parent's provider.
+For independent work requested by a Claude or Codex session, Automatic also sees the
+source session. When a fresh provider reading puts its selected account at or above 90%
+in a lasting window and the other provider has more launchable room, the owner starts
+that work on the other provider. The decision is repeated at request creation, so a
+previously started run gets the current choice without changing its own binding. A
+provider named by the agent remains explicit. Provider-native child tools still use
+their parent's provider.
 
 The usage watch tells a running session about a provider-measured window only at
 or above 90% when that account's provider observation is at most one minute old. The brief names the machine, account, window, measured percentage and
@@ -531,10 +630,12 @@ that run, so a later selection change cannot relabel an older run. An unreadable
 reading, earlier provider refusal, or rate forecast cannot create a threshold brief.
 Dispatch still treats a prior refusal as an operational hold and rechecks account room
 when a helper is requested; its effective capacity is not displayed as a measured usage
-percentage. Under Claude pressure, the same room decision adds
-an instruction to delegate bounded implementation through a new session request, while
-the Claude agent keeps the approach and reviews the result. A change from no Codex
-delegation room to verified room creates one new brief in that allowance episode. New
+percentage. When the other provider has verified launchable room and the current
+provider has less, the brief tells the agent that independent work can start there
+through Automatic. This works in both directions: Claude to Codex and Codex to Claude.
+Provider-native helpers still inherit their parent, and the running agent chooses
+what to delegate while keeping its own work and model. A change from no verified
+other-provider room to verified room creates one new brief in that allowance episode. New
 turns receive the same brief in their opening context. These are service notices to
 the agent, not human Inbox alerts or a provider switch for an active run.
 
@@ -593,6 +694,110 @@ for the same selected model. Each accepted
 top-model start records its reason for the usage report.
 
 A running provider turn decides for itself when to hand work to another model.
+For a fixed implementation that needs its own checkout, `sessions implement`
+creates an `impl-<request-key>` worktree on the project's runner and starts a
+Sonnet session from a Claude designer or a Luna session from a Codex designer.
+The caller may select Haiku, Sonnet, Luna, Terra or Sol within its own provider.
+Sonnet is the conservative Claude coding default because the task may span
+files; Haiku is an explicit choice for mechanical work. Luna is the lowest
+listed Codex coding tier; Terra and Sol are explicit choices for harder bounded
+work. These defaults are judgment calls, not measured task-quality rankings.
+The worker's request returns to the designer, who reviews it before answering
+Tejas. The command and its return obligation are in each run's request protocol
+and `sessions --help`. Repeating the same source and action key reuses the
+worktree. The worker's session metadata identifies that it is implementation
+work, so it does not receive a top-model edit reminder.
+
+For other top-model main turns, the owner counts distinct recognized editing
+tool calls before they run. It holds the fifth edit until the agent hands the
+fixed design to `sessions implement` or records one specific reason for staying
+on the thinking model with `sessions edit-reason`, then retries the edit. An
+implementation worker and a session using Tejas's explicit model choice are
+exempt. A handoff releases the retry only when its accepted target execution
+belongs to a request from that exact turn and has not failed or been canceled.
+Codex supplies the parent session ID, active model and execution turn to its
+edit hook. An outside Codex CLI turn has no turn ID in its JSON event stream;
+its prompt hook binds the provider turn ID to the one owner turn named by its
+run-scoped environment before tool calls. A mismatched or unidentified outside
+execution is still refused. Hooks run by the shared Codex App Server carry no
+owner turn ID, so a helper's own turn ID cannot be matched to its parent by
+identity. On the first mismatched edit, the owner records an immutable binding
+from the exact parent session and child provider turn to the uniquely resolved
+running parent turn, including the reported model, before applying the model
+policy. Later edits from that same child execution continue to use the original
+parent turn after normal completion and across owner restarts. A new parent
+turn never takes over an existing child binding. Every Codex helper edit is
+recorded against that parent with the helper's active model and child execution
+identity. A thinking-model helper has its own fifth-edit count, so its edits
+neither consume the parent's main-turn allowance nor inherit a cheap parent's
+exemption. The parent can release a held helper edit with its turn's accepted
+implementation handoff or one stated reason. An explicit human choice of that
+helper model and an implementation worker retain their exemptions. Missing or changed
+model evidence, conflicting owner hints, unknown child turns, and first edits
+without one valid running parent remain held. A Stop marker, failed or uncertain
+execution, paused session or archived session refuses both first binding and
+later edits. A child turn first seen after its parent is no longer running is
+not inferred from transcript history and remains held. The binding uses the
+existing owner event ledger and its event identity key, so lookup is a bounded
+primary-key seek and the accepted input remains attached to the helper receipt.
+Claude Code identifies a helper by its hook's agent ID; the owner records
+its edits against the parent turn separately without inventing a helper model,
+which the edit hook does not supply. If an accepted worker later fails or is
+canceled, the next edit is held again; repeated checks of the same hold are
+idempotent. The owner records held turns and reasons for the usage report. In a sample of 189
+recent Opus/Fable turns with editing calls, the median was two, the 75th
+percentile four, and 35 turns (18.5%) had five or more. Five catches extended
+implementation while leaving short design edits alone. Claude Code and Codex
+use their managed `PreToolUse` hooks to ask the owner before a recognized edit;
+Codex sends a shell write as one `Bash` hook call for the command, including an
+`apply_patch` invoked inside that shell; it does not send one hook per file.
+The guard inspects executable shell words, not mentions in arguments or quoted
+text. [Codex's hook contract](https://learn.chatgpt.com/docs/hooks) documents
+specialized tool paths that may bypass hooks, so its gate is a guardrail rather
+than a complete edit boundary. A completed hook that
+cannot reach the owner returns a valid denial, but Codex can proceed if the
+hook crashes, times out or returns malformed output. The report counts
+transcript edits and gate decisions separately as a coarse coverage signal; it
+does not yet reconcile every executed edit with a hook decision.
+
+A new ask declaring `--purpose research|design-critique|design-review` resolves
+to ChatGPT Pro on the asking machine before peer forwarding. An explicit other
+provider needs `--provider-reason`; the owner validates both fields and retains
+them with the request. Pro effort applies only to the ChatGPT route; an alternate
+provider uses its own default effort unless a compatible effort was explicitly
+supplied. Tejas's explicit provider, model or ChatGPT thinking-level
+choice is derived from the retained human source and carried over a peer hop.
+Existing addressed requests and implementation handoffs
+retain their own routes. The usage report counts declared routes and reasons,
+and direct web research in top-model main conversations. Purpose is a declared
+request field; free-text inference would misclassify ordinary work.
+
+The server installs a managed Codex prompt hook from the release. Before an
+outside turn's first model request, it binds that turn's provider identity to
+the accepted Concierge run. For Astra, the hook asks the owner to authorize
+this exact accepted turn. Tejas's own input into a session already bound to
+Astra is recorded as his choice to continue there. An agent or automatic input
+does not inherit a prior human choice: it needs a qualifying escalation reason
+on its request, including an addressed `sessions ask --escalation-reason`.
+Refusal names Sol; neither case switches the session's model. A direct native
+run uses its stated `CODEX_ESCALATION_REASON`.
+An environment string cannot establish Tejas's choice: direct starts must give
+the qualifying escalation reason even if the string claims he chose Astra.
+An owner-verified human choice remains exempt on the Concierge path.
+The human-facing model picker retains an explicit thinking-model choice when it
+creates or changes a session, and records an explicit Astra/Fable choice before
+the next provider start. A later model change replaces that exemption; the
+native Astra prompt check compares the current session model with its recorded
+authorization so an older selection cannot authorize a new prompt after a
+change away from Astra.
+It rejects an unexplained Astra prompt; the wrapper still checks command-line
+starts. The usage report flags transcript Fable/Astra calls that lack a matching
+record, including a newly discovered bypass.
+The edit classifier inspects executable shell command words; quoted tool names
+inside a report, note or other argument do not count as edits. Named edit tools
+remain the primary enforcement path, while arbitrary scripted writes remain
+outside the recognized-tool boundary.
+
 The rule lives in the catalog `model-selection` skill, which the global AGENTS.md
 points to; project AGENTS.md files point to it rather than restating it. In short:
 work whose acceptance criterion is
@@ -609,11 +814,11 @@ the session then codes from its findings itself. The big guns for second opinion
 deep research and building expertise are ChatGPT Pro on Tejas's own subscription,
 reached with `sessions ask --provider chatgpt --effort pro` and the evidence attached
 as files, because it spends no Claude or Codex allowance (October 9, 2026
-[decision: chatgpt-pro-is-the-big-guns]). GPT-6 Sol remains the read-only
+[decision: chatgpt-pro-is-the-big-guns]). GPT-6.1 Sol remains the read-only
 investigator when the second opinion must read the repository itself. GPT-6 Astra is
 brought in only when the same issue has come back three or more times and ChatGPT Pro
 is unavailable or its answer did not hold (Tejas, September 23, 2026, replacing his
-September 22 Astra-first rule). Fable 5.1 stands in only when the named model is
+September 22 Astra-first rule). Fable 5.2 stands in only when the named model is
 unavailable. Outside that repeat threshold, Astra still needs his explicit choice. Tonight's audit that motivated the escalation half is in
 [the incident note](../incidents/2026-09-22-no-escalation-audit.md).
 
@@ -622,9 +827,9 @@ Model roles for both directions:
 | Alias | Model | Role |
 | --- | --- | --- |
 | `cc-opus` | `claude-opus-5-5` | Default parent: judgment, design, diagnosis, and review of delegated output. |
-| `cc-fable` | `claude-fable-5-1` | Fallback investigator only when the named GPT model is unavailable, or Tejas explicitly chose it. |
-| `cx`, `cx-sol` | `gpt-6-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
-| `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |
+| `cc-fable` | `claude-fable-5-2` | Fallback investigator only when the named GPT model is unavailable, or Tejas explicitly chose it. |
+| `cx`, `cx-sol` | `gpt-6.1-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
+| `cx-medium` | `gpt-6.1-terra` | Balanced quality, latency, and cost. |
 | `cx-fast` | `gpt-6-luna` | Mechanical edits, reproductions, and checking stated claims. |
 | `cx-astra` | `gpt-6-astra` | Read-only investigator after three reports or failed fixes and an unavailable or unhelpful ChatGPT Pro answer, or by Tejas's explicit choice. |
 
@@ -639,8 +844,8 @@ not an explicit choice. The ordinary full-path `~/.local/bin/codex` command has 
 through command-line-tools; the package binary beneath that entry is the audit
 boundary. Accepted command-line Astra starts append
 their reason to the owner state's escalation log; the usage report counts that
-log alongside session events. A direct command-line start names Tejas's explicit
-choice in its reason when he made one. The direct human session picker preserves his
+log alongside session events. A direct command-line start cannot attest a human
+choice by naming it in the reason. The direct human session picker preserves his
 explicit model choice. The owner sends this policy again in every turn's context.
 
 **How the rule reaches running sessions.** Claude Code rereads the global file
@@ -672,6 +877,9 @@ only carries the text. A lookup that fails or outlasts its bound (1.5 s here, 6 
 never holds the turn; it starts with a line saying the thesaurus could not be read.
 Native-turn focused tests supply fixed thesaurus context to the execution host, so their
 stub providers never read the live Thinkering capability entrance while prompts are built.
+Behind that, the test preload (`bot/tests/preload.ts`) points every Thinkering capability
+lookup at a scratch socket nothing listens on and removes the network entrance variables, so a
+test that forgets the fixed context gets the "could not be read" line, never his live entries.
 
 ### Resuming with a selected provider
 
@@ -754,6 +962,8 @@ every watch tick. Other admission failures remain visible and retryable.
 Once App Server accepts a turn, transport failure is not a terminal provider outcome. The controller reconnects, resumes the exact provider thread, and identifies the daemon-owned turn by provider turn ID or the stable user-message client ID. It pages turn summaries to establish the exact identity and terminal status. While the turn runs, it observes live notifications without assuming persisted item pages are complete. After a terminal status, it replays only that turn's persisted item pages in order and settles the outcome. This keeps earlier turns out of the owner's recovery response and avoids losing live output from paginated Codex conversations. An explicit reconciliation RPC error, including an unsupported history method, or a failed consultation-policy check parks the same turn as ambiguous. The saved failure includes the initiating error and failed reconciliation with their RPC method, message, and numeric code when supplied; start RPC failures are also logged with exact thread/client-input identity. Repeating an unsupported operation cannot establish the missing proof. The existing parked-turn FIFO fence blocks successors and replay without another owner or daemon change.
 
 A lost `thread/start` or `thread/resume` response before `turn/start` is a different boundary: no user input has been submitted, so the accepted Concierge turn safely retries. The October 16 lyrics build was parked after a 30-second `thread/start` timeout while the App Server was also timing out historical observer resumes during a restart. That timeout did not prove that the build had begun. The retry retains its input identity and does not replay an admitted turn.
+
+A lost connection before `turn/start` (while connecting, or while `thread/start` or `thread/resume` waits) is waited out on the same attempt, 1 s doubling to 30 s with Stop still ending the wait, and then the thread is asked for again. Only a transport loss counts: an answer carrying a JSON-RPC error code, a client Concierge closed, or an unanswered resume on a live connection keeps its counted retry. The wait spends no retry budget, so an App Server restart under many connecting turns cannot exhaust the provider's budget or park them. On 2026-11-12 a connect lost during an account switch escaped as a possible send and parked 36 unsent turns ([failure record](../incidents/2026-11-12-codex-connection-loss-parked-unsent-turns.md)). A parked uncertain Codex turn is then taken back by the minute parked-run sweep ([execution host](EXECUTION-HOST.md)). When its thread's full history still has no turn carrying its client message ID and it never received a provider turn ID, it never reached Codex and is retried; otherwise it is settled or followed from that history.
 
 Codex cancellation is registered before provider submission. A Stop before submission prevents model input; after submission, a missing provider turn ID or unconfirmed interrupt response remains an uncertain outcome, not a successful cancellation. Stop interrupts an exact known turn without waiting behind an in-flight recovery read. A confirmed terminal provider event still owns cancellation completion; an interrupt acknowledgement alone does not. Late recovery responses cannot attach provider identity, input acknowledgement, or results after the local controller has settled. Consultation restrictions and request/inactivity timeout budgets are unchanged.
 
@@ -874,7 +1084,7 @@ Authority: `bot/src/fork-requests.ts`, fork transitions in `bot/src/state.ts`, `
   daily refresh and explicit refresh use the common owner; no competing browser or index.
   The browser is remote-box's always-running real Chrome, which Thinkering keeps signed in
   (remote-box `docs/chatgpt-browser.md`). `sessions ask --provider chatgpt` takes `--effort`
-  as ChatGPT's thinking level (default `pro`, stored as the session's model; `--gpt` instead opens one GPT from the GPT Store) and any `--file`;
+  as ChatGPT's thinking level (default `pro`, stored as the session's model; `--chatgpt-project` selects a native ChatGPT project separately from a development project; `--gpt` refuses new work ahead of the December 11, 2026 retirement) and any `--file`;
   agents send research and second opinions there first [decision: chatgpt-pro-is-the-big-guns].
   A ChatGPT attachment carries only its custody pin (id, name, type, digest, bytes): Thinkering
   refuses any other field, and an added transcript field broke every ChatGPT file send.

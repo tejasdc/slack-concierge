@@ -1,5 +1,6 @@
 import type {Database} from 'bun:sqlite';
 import {OPEN_QUESTION_STATES} from './topic-attention-rules';
+import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 
 /**
  * Who a reply inside an Inbox thread can go to, and the default: the one rule, used by the live
@@ -58,15 +59,17 @@ function sessionTitle(source:Database,sessionId:string):string|null {
 
 export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyTargets {
  const {router,roots,about}=input;
+ const inboxSessions=new Set((source.query(INBOX_LINEAGE_SQL).all(input.inboxSessionId) as {id:number}[]).map(row=>`concierge:${row.id}`));
  const choices=new Map<string,ReplyTarget>();
  // Choices named by a predecessor that answered here: its name is the one on the answer he read.
  const namedByAnswer=new Set<string>();
  const add=(named:string|null|undefined,why:string,owns:readonly string[],answered=owns.length>0):string|null=>{
-  if(!named||named===router)return null;
+  if(!named)return null;
   // Older records spelt a peer session `mac:concierge:84`; the catalogue and the app say `mac:84`.
   const written=named.replace(/^([\w-]+):concierge:([1-9]\d*)$/,'$1:$2');
   const sessionId=liveEndOfHandoffs(source,written);
-  if(sessionId===router)return null;
+  // Every Inbox role holder in this conversation is the router, not another agent choice.
+  if(inboxSessions.has(written)||inboxSessions.has(sessionId))return router;
   const predecessorName=written===sessionId?null:sessionTitle(source,written);
   const existing=choices.get(sessionId);
   if(existing){
@@ -118,8 +121,10 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
   const written=named.replace(/^([\w-]+):concierge:([1-9]\d*)$/,'$1:$2');
   return sessionTitle(source,written)??input.resolve(written)?.title??null;
  };
+ // Topics keep posts from earlier Inbox sessions after the router role moves. The thread read
+ // already follows that lineage; its reply choices must read the same messages.
  if(roots.length)for(const row of source.query(`SELECT event_id,json_extract(payload_json,'$.postedBySession') AS from_session,json_extract(payload_json,'$.postedBy') AS posted_by FROM session_owner_events
-  WHERE session_id=? AND kind='post' AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id) IN (${roots.map(()=>'?').join(',')}) ORDER BY sequence DESC`).all(input.inboxSessionId,...roots) as {event_id:string;from_session:string|null;posted_by:string|null}[]){
+  WHERE session_id IN (${INBOX_LINEAGE_SQL}) AND kind='post' AND coalesce(json_extract(payload_json,'$.threadRoot'),input_id) IN (${roots.map(()=>'?').join(',')}) ORDER BY sequence DESC`).all(input.inboxSessionId,...roots) as {event_id:string;from_session:string|null;posted_by:string|null}[]){
   if(row.posted_by==='service')continue;
   // A post with no writing session is the Inbox agent's own reply in the thread.
   const speaker=row.from_session?add(row.from_session,'answered here',[row.event_id]):router;
@@ -129,7 +134,7 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
  for(const dispatch of input.workDispatches)if(dispatch.root&&roots.includes(dispatch.root))busy(add(dispatch.sessionId,'working on this thread now',[dispatch.root]));
  for(const question of input.questions)if(OPEN_QUESTION_STATES.some(state=>state===question.state)||question.state==='deferred')
   busy(add(question.ownerSessionId,question.decision?`asked you: ${question.decision}`:'asked you a question here',[question.id,...question.sources]));
- if(about&&input.spokenBy)add(input.spokenBy,'answered here',[about]);
+ const selectedSpeaker=about&&input.spokenBy?add(input.spokenBy,'answered here',[about]):null;
  for(const [sessionId,title] of signedAs){const choice=choices.get(sessionId);if(choice&&title)choice.title=title;}
  const list=[...choices.values()];
  // The one invariant (Tejas, 2026-11-05: "It's finding the right one to respond to quickly"): the
@@ -138,5 +143,5 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
  // here is first only in a thread where nobody has spoken yet, as the one agent at work on it.
  const owning=about?list.find(choice=>choice.owns.includes(about)):undefined;
  const atWork=list.filter(choice=>working.has(choice.sessionId));
- return {router,default:owning?.sessionId??newestSpeaker??(atWork.length===1?atWork[0]!.sessionId:router),choices:list};
+ return {router,default:selectedSpeaker??owning?.sessionId??newestSpeaker??(atWork.length===1?atWork[0]!.sessionId:router),choices:list};
 }

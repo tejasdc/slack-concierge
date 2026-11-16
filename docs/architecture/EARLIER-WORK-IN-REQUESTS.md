@@ -1,6 +1,6 @@
 # What came before: earlier work in every work request
 
-Current state as of 2026-11-04. Source: `bot/src/request-history.ts`, the `ask` and `reply`
+Current state as of 2026-11-12. Source: `bot/src/request-history.ts`, `bot/src/earlier-records.ts`, the `ask` and `reply`
 paths in `bot/src/session-communication.ts`, and `answersQuestionsOnly` in `bot/src/session-owner.ts`.
 
 ## Why
@@ -27,17 +27,45 @@ and a recipient that already has a request in the same thread (a follow-up, not 
    from the owner's meaning index (the one session search uses; no word search and no archive
    retention), meaning score at least 0.55, up to six, each with the latest request it was given
    and how that ended.
-3. **Diagnosed failures** in thnkr.ing's failure ledger
-   (`thinkering/docs/retrospectives/agent-failure-ledger.md`), compared by meaning through the
-   owner's meaning index (cached per case), up to three.
+3. **His requirements closest to the work**, from his taste profile
+   (`skills/interface-decisions-skill/references/taste-profile.md`, cut into one passage per
+   principle opening and per bolded rule), up to three, with an instruction to build to them and
+   say which were followed. Most of what he has asked for a kind of feature (search, loading
+   signs, notices, flow) lives here.
+4. **His decisions closest to the work**, from his decision record
+   (`decision-record/decisions/*.md`, permanent and for-now, not superseded), up to four, each
+   with its status, date and his words, and an instruction to cite `[decision: <id>]`.
+5. **Diagnosed failures** in thnkr.ing's failure cases
+   (`thinkering/docs/retrospectives/failure-cases/*.md`, one file per case; later reports of one
+   incident are left out), up to three.
+
+Items 3-5 are compared by meaning through the owner's meaning index. A failure case is included
+only at the same 0.55 meaning score as sessions (the same problem); his requirements and decisions
+are included as the closest few by rank, because some of his rules always apply and they score
+lower than a same-problem match (measured 2026-11-13: the search passage scored 0.45 against the
+Threads search request, the notification passages 0.38-0.41 against a duplicate-notification
+complaint, so a 0.55 cutoff handed out none). Each record's vector is kept
+by key and exact words, so only new or edited records are embedded. The folders are re-read only
+when a file is added, removed or edited. `bot/src/earlier-records.ts` reads them without touching
+the ledger. Paths can be moved with `CONCIERGE_TASTE_PROFILE`, `CONCIERGE_DECISIONS` and
+`CONCIERGE_FAILURE_CASES`.
+
+From November 5 to 12, 2026 item 5 read the old single ledger file, which had become a pointer,
+so every brief said "The failure ledger was not found" and carried no lessons; and items 3 and 4
+did not exist, so an agent building Threads search was handed none of his earlier search
+requirements. Tejas, 2026-11-12: "When there's a requirement that was already present for a
+search, how can you come back and implement a search which has no reference to the older one that
+was done? ... Why are the lessons not captured automatically and transferred to future sessions?"
 
 Each earlier session states whether and how it can be asked now. The block is prepended to
 the request's words under `WHAT CAME BEFORE`. The request's retained payload records the counts
 (`history`). A first-time problem simply has no block.
 
 **Speed and failure.** The thread history is an indexed ledger read. The question is embedded
-once, at search priority, and compared against both the session index and the failure ledger
-within one 10 s bound (measured 2026-11-04: the embedding takes 1.3 s at the median and 4.5-7 s
+once, at search priority, and compared against the session index and the three written records
+within one 10 s bound (the first lookup after a record set changes embeds the new records, about a
+thousand on the first release; if that misses the bound it is named as not consulted and the
+vectors it finished are kept for the next request) (measured 2026-11-04: the embedding takes 1.3 s at the median and 4.5-7 s
 while the index catches up after a restart; 1.5 s and 4 s bounds missed the live tests). What has
 not answered is named under "Not consulted" rather than waited on. Any error in the lookup becomes a line telling the agent to search itself
 (`request_history_failed`); it never refuses the request. The lookup runs once, when the request is first accepted; an idempotent retry
@@ -53,19 +81,27 @@ otherwise, the same way completed work needs `--checked`. A hand-back is exempt.
 is folded into the reply's words as "What came before: …", so the requester, and Tejas in an
 Inbox thread, read it. Peer-delivered requests are not gated on the replying machine.
 
-## Every earlier session can answer a question
+## Earlier sessions show how they can answer
 
 - **Handed off** (provider-change handoff accepted): an ask to the predecessor's address is
   forwarded to the successor, following the chain; the request records `forwardedFrom`.
 - **Archived or paused** Claude or Codex session Concierge started: work asks are refused (its
   work stays as it was left); a question is answered synchronously by a side copy of its
-  conversation, the same throwaway copy thnkr.ing's side questions use (no tools, never saved,
-  the session is not woken). No request is opened; the answer is the command's result, and an
+  conversation, the same reusable final-answer copy thnkr.ing's side questions use (no tools,
+  the question turn is never saved, and the session is not woken). No request is opened; the answer is the command's result, and an
   answer that takes over 90 s is collected by repeating the same command and action ID. Such an
   ask cannot name a thread, a return or prerequisites, since nothing is delivered later.
-- **Conversations from outside Concierge** (imported Claude/Codex transcripts): already
-  answered questions through a consultation copy; their capability reason now says so instead
-  of only "Archive evidence is read-only".
+- **Conversations from outside Concierge** (imported Claude/Codex transcripts): answer through a
+  consultation copy only when the exact retained source version and branch boundary are pinned
+  and the retained-source reader is available. Otherwise they remain searchable and readable but
+  expose a read-only reason and are not suggested for consultation.
 
-The capability `reason` of each such session says how it answers, so search no longer reads as
-"cannot answer".
+The capability `reason` says whether a question can be answered and how. Search preserves the
+distinction between readable historical evidence and evidence that can be consulted.
+
+## The same matching for a change
+
+`GET /sessions/v1/requirements?text=<words>` returns the taste-profile passages, decisions and failure
+cases closest to any words, chosen exactly as a brief chooses them (`requirementsFor`). thnkr.ing's commit
+design check sends a change's message and file list and reads his rules from it, so the matching has one
+home. It runs in the owner, beside the meaning index.

@@ -3,7 +3,7 @@ import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunI
 import {inboxThreadRoot} from './session-inbox';
 import {questionsDeclaredByRun,readsForTurn,type ReadingText} from './session-topics';
 import {log} from './log';
-import {consumeThreadNotification,dispatchedFromInput,messageAlreadyNotified} from './thread-notifications';
+import {consumeThreadNotification,dispatchedFromInput,messageAlreadyNotified,threadRangThisRun} from './thread-notifications';
 import {sessionAuthor} from './session-message-author';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
 import {hasOpenDirectChatGptOutcomeDuty,requireDirectChatGptOutcomeReady} from './chatgpt-obligations';
@@ -48,8 +48,17 @@ export function turnDeclared(turnId:number):boolean {
   return !!db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='turn_outcome' LIMIT 1").get(turnId);
 }
 
-export function turnDeclaredByAction(turnId:number):boolean {
-  return !!db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='turn_outcome' AND substr(event_id,1,20)='turn_outcome:action:' LIMIT 1").get(turnId);
+/**
+ * Whether an outcome action already declared this input's outcome in this turn. The identity is
+ * the turn and the input it answers, not the turn alone: a run that takes new work by steering
+ * answers several inputs, and each settles its own. Keyed on the turn alone, a needs_you on the
+ * first request refused the done for the steered work that replaced it, so the finished session
+ * kept its obsolete question (concierge:9581, 2026-11-13).
+ */
+export function turnDeclaredByAction(turnId:number,sessionId:number,inputId:string):boolean {
+  return !!db.query(`SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='turn_outcome'
+    AND substr(event_id,1,20)='turn_outcome:action:' AND json_extract(payload_json,'$.inputId')=? LIMIT 1`)
+    .get(turnId,outcomeInputFor(sessionId,inputId));
 }
 
 /** A worker's decision becomes the requester's own attention when its exact return is admitted. */
@@ -154,20 +163,26 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   const inputColumn=getAcceptedSessionInput(inputId)?inputId:null;
   db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
     .run(input.eventId,input.sessionId,inputColumn,input.turnId,'turn_outcome',JSON.stringify(payload));
+  if(quiet&&meta.inbox){
+    const answer=readsForTurn(input.sessionId,input.turnId,new Set([inputId])).at(-1);
+    if(answer)consumeThreadNotification(input.sessionId,inputId,answer.messageId,true);
+  }
   if(question) {
     const answer=meta.inbox
       ?readsForTurn(input.sessionId,input.turnId,new Set([inputId])).at(-1):null;
+    const rang=threadRangThisRun(input.sessionId,inputId,runId);
     const notificationInputId=outcome==='response'&&answer&&!dispatchedFromInput(input.inputId)
-      ?consumeThreadNotification(input.sessionId,inputId,answer.messageId):null;
+      ?consumeThreadNotification(input.sessionId,inputId,answer.messageId,false,runId):null;
     const alreadyNotified=returnedDecision||!!answer&&messageAlreadyNotified(input.sessionId,answer.messageId)
-      ||!!runId&&!!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND json_extract(payload_json,'$.inputId')=? AND kind='needs_you'
-        AND json_extract(payload_json,'$.blockingNotification')=1 AND json_extract(payload_json,'$.runId')=? LIMIT 1`).get(input.sessionId,inputId,runId);
+      ||!notificationInputId&&!!runId&&!!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND json_extract(payload_json,'$.inputId')=? AND kind='needs_you'
+        AND json_extract(payload_json,'$.blockingNotification')=1 AND json_extract(payload_json,'$.runId')=? LIMIT 1`).get(input.sessionId,inputId,runId)
+      ||rang&&!notificationInputId;
     const author=sessionAuthor(`concierge:${input.sessionId}`);
     // The attention event is what a client lists: the question and the input (in the
     // Inbox, the thread) it opens.
     if(!alreadyNotified)db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
       .run(`needs_you:${input.eventId}`,input.sessionId,inputColumn,input.turnId,'needs_you',JSON.stringify({outcome:outcome,
-        question:notificationInputId?answer!.text.trim().slice(0,2000):question,inputId,generation,
+        question:notificationInputId?answer!.text.trim().slice(0,2000):question,inputId,generation,runId,
         ...(outcome==='needs_you'&&input.todoId?{todoId:input.todoId}:{}),
         ...(author?.agentName?{agentName:author.agentName}:{}),...(author?.title?{taskTitle:author.title}:{}),
         ...(answer?{postId:answer.messageId}:{}),
@@ -197,13 +212,13 @@ function answeredInput(turnId:number,openingInputId:string):string {
  * without a question on its line keeps the answer itself as the question.
  */
 export function recordResultTurnOutcome(result:{turnId:number;sessionId:number;inputId:string;text:string;turnOutcome?:TurnOutcomeMark}) {
-  if(turnDeclaredByAction(result.turnId))return;
   const session=getSessionById(result.sessionId);
   if(!session||sessionMetadata(session).interactionPolicy==='consultation-only')return;
-  const declared:{outcome:DeclaredTurnOutcome;question?:string;message:string}|undefined=session.provider_id==='chatgpt'?{outcome:'done',message:result.text}:result.turnOutcome;
-  if(!declared)return;
   // Recording the outcome must never fail delivery of the answer it came with.
   const inputId=answeredInput(result.turnId,result.inputId);
+  if(turnDeclaredByAction(result.turnId,session.id,inputId))return;
+  const declared:{outcome:DeclaredTurnOutcome;question?:string;message:string}|undefined=session.provider_id==='chatgpt'?{outcome:'done',message:result.text}:result.turnOutcome;
+  if(!declared)return;
   // A turn that answers his own message and ends `done` by marker, with no stated reason, is
   // raised to `response`: silence about his message needs the reason the action demands, and
   // a turn that has already ended cannot be refused, so it is told to him instead.

@@ -5,13 +5,14 @@ import {inboxRootResolver} from './presentation-message-source';
 import {gram,shortTokens} from './prepared-search';
 import {topicEventDisplay} from './topic-event-display';
 import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
+import {askedDispatch} from './asked-answer';
 
 const PAGE=20,CHUNK_BYTES=16*1024;
 type State='open'|'closed'|'background'|'all';
 const orderKey=(band:number,at:string,id:string)=>`${band}:${String(9999999999999-Date.parse(at)).padStart(13,'0')}:${id}`;
 /** A pinned thread's key: '-' sorts before every unpinned '0:' key, newest pin first, so rows prepared before pins existed keep their place. */
 const listKey=(band:number,pinnedAt:string|null|undefined,at:string,id:string)=>band<0&&pinnedAt?`-${String(9999999999999-Date.parse(pinnedAt)).padStart(13,'0')}:${orderKey(0,at,id)}`:orderKey(band,at,id);
-type Meta={generation:number;source_head:number;ready:number;retained_after:number;inbox_session:number};
+type Meta={generation:number;source_head:number;ready:number;retained_after:number;inbox_session:number;asked_answers_version?:number};
 const json=(value:unknown)=>JSON.stringify(value);
 /** Owner times have two spellings ('2026-09-23 18:46:23' and ISO); keep one in prepared rows. */
 const instant=(at:string)=>at.includes('T')?at:at.replace(' ','T')+'Z';
@@ -110,6 +111,41 @@ export class PreparedTopics {
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN newest_speaker_reply INTEGER NOT NULL DEFAULT 1');
    prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
   })();
+  // The visible conversation has always kept posts from earlier Inbox sessions. Recipient
+  // choices learned to follow that lineage on 2026-11-16, so refresh already prepared threads.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='reply_post_lineage'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN reply_post_lineage INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
+  // A worker waiting on another agent counts as working since 2026-11-11; threads prepared under the
+  // older rule stay idle until they change, so recompute each once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_through_waits'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_through_waits INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
+  // Requests sent by an earlier Inbox session in the lineage count as the thread's work since
+  // 2026-11-11 (a thread routed before an Inbox handoff showed green while its agent ran); recompute once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_across_inbox_lineage'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_across_inbox_lineage INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
+  // A request's dispatch names its current holder after a handoff since 2026-11-11, so the thread
+  // depends on the successor's turns; recompute once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='dispatch_current_holder'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN dispatch_current_holder INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
+  // A dispatch that belongs only to the thread's closed requests no longer counts as its work since
+  // 2026-11-11 (closed threads pulsed while their agent worked elsewhere); recompute once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_ignores_closed_requests'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_ignores_closed_requests INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
+  // A thread's own open requests count their live deliveries directly since 2026-11-12; recompute once.
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='work_from_own_open_requests'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN work_from_own_open_requests INTEGER NOT NULL DEFAULT 1');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
   // Each choice is named as its newest message in the thread is signed since 2026-11-05; recompute once.
   if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='choice_named_as_signed'))prepared.transaction(()=>{
    prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN choice_named_as_signed INTEGER NOT NULL DEFAULT 1');
@@ -174,6 +210,10 @@ export class PreparedTopics {
     INSERT INTO presentation_inbox_attention_counts VALUES(new.generation,new.scope,1) ON CONFLICT(generation,scope) DO UPDATE SET count=count+1; END;
    CREATE TRIGGER IF NOT EXISTS presentation_inbox_attention_removed AFTER DELETE ON presentation_inbox_attention BEGIN
     UPDATE presentation_inbox_attention_counts SET count=count-1 WHERE generation=old.generation AND scope=old.scope; END;`);
+  if(!(prepared.query('PRAGMA table_info(presentation_topics_meta)').all() as {name:string}[]).some(column=>column.name==='asked_answers_version'))prepared.transaction(()=>{
+   prepared.exec('ALTER TABLE presentation_topics_meta ADD COLUMN asked_answers_version INTEGER NOT NULL DEFAULT 0');
+   prepared.exec('INSERT OR IGNORE INTO presentation_topic_dirty SELECT generation,topic_id FROM presentation_topics');
+  })();
  }
  isReady(generation:number){const current=meta(this.prepared);return !!current.ready&&current.generation===generation;}
  writeEvent(generation:number,sequence:number){
@@ -325,6 +365,7 @@ export class PreparedTopics {
  write(context:TopicContext,topicId:string){
   const generation=context.generation;
   const owner=(this.source.query('SELECT session_id FROM inbox_topics WHERE topic_id=?').get(topicId) as {session_id:number}|null)?.session_id??context.sessionId;
+  const questionScope=context.sessionIds.includes(owner)?context.sessionId:owner;
   this.retainedBy={generation,owner:`topic:${topicId}`};
   const previous=this.prepared.query('SELECT summary_json,detail_hash,session_id,search_text,projection_hash FROM presentation_topics WHERE generation=? AND topic_id=?')
    .get(generation,topicId) as {summary_json:string;detail_hash:string;session_id:number;search_text:string;projection_hash:string}|null;
@@ -350,12 +391,13 @@ export class PreparedTopics {
    question:question=>{
     const compact=writeItem(question,'questions');
     if(question.owner?.sessionId)depend('session',question.owner.sessionId);
-   if(question.kind==='asked'&&question.owner?.dispatchRequestId)depend('request',question.owner.dispatchRequestId);
+   const askedRequest=askedDispatch(this.source,question);
+   if(askedRequest)depend('request',askedRequest);
     if(question.waiting)attentions.push({inputId:question.sources[0]??topicId,
      outcome:question.kind==='reading'?'response':'needs_you',question:question.brief?.decision??'',generation:question.generation??0,
      at:question.createdAt,runId:question.owner?.runId??'',eventId:question.id,...(question.reads.length?{reads:question.reads}:{})});
     for(const selected of ['asked','open','reading','checking','deferred','history'])if(questionSet(question,selected))
-     questions.push([generation,topicId,question.id,selected,question.createdAt,json(compact),orderKey(selected==='asked'&&question.reads.length?1:0,question.createdAt,question.id),owner]);
+     questions.push([generation,topicId,question.id,selected,question.createdAt,json(compact),orderKey(selected==='asked'&&question.reads.length?1:0,question.createdAt,question.id),questionScope]);
    },
    request:request=>{
     writeItem(request,'requests');
@@ -405,6 +447,11 @@ export class PreparedTopics {
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
   for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);
   if('sessionId' in value.summary.work&&value.summary.work.sessionId)depend('session',value.summary.work.sessionId);
+  for(const worker of ('workers' in value.summary.work?value.summary.work.workers??[]:[]))if(worker.sessionId)depend('session',worker.sessionId);
+  // A worker waiting on another agent stays working until someone down that chain stops, so the
+  // thread is rebuilt when any of them starts or ends a turn, not only its direct worker.
+  for(const dispatch of context.dispatches)if(dispatch.root&&value.summary.roots.includes(dispatch.root))
+   for(const session of dispatch.through??[])depend('session',session);
   const row=[generation,topicId,context.sessionId,value.summary.state,
    value.summary.state==='open'&&!value.summary.needsYou.count&&value.summary.work.kind!=='idle'?1:0,
    value.band,value.summary.lastEntryAt,value.summary.closedAt??value.summary.lastEntryAt,json(summary),ref.hash,value.search,listKey(value.band,value.summary.pinnedAt,value.summary.lastEntryAt,topicId),
@@ -462,8 +509,8 @@ export class PreparedTopics {
     need_generation=excluded.need_generation,order_key=excluded.order_key,value_json=excluded.value_json`)
    .run(generation,scope,need.eventId,topicId,need.generation??0,`${String(need.generation??0).padStart(16,'0')}:${need.eventId}`,json(value));
  }
- activate(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET generation=?,source_head=?,ready=1,retained_after=0,inbox_session=? WHERE singleton=1').run(generation,sourceHead,this.inboxSession());}
- checkpoint(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET source_head=?,inbox_session=? WHERE singleton=1 AND generation=?').run(sourceHead,this.inboxSession(),generation);}
+ activate(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET generation=?,source_head=?,ready=1,retained_after=0,inbox_session=?,asked_answers_version=1 WHERE singleton=1').run(generation,sourceHead,this.inboxSession());}
+ checkpoint(generation:number,sourceHead:number){this.prepared.query('UPDATE presentation_topics_meta SET source_head=?,inbox_session=?,asked_answers_version=1 WHERE singleton=1 AND generation=?').run(sourceHead,this.inboxSession(),generation);}
  private retain(value:unknown){
   const text=json(value),hash=createHash('sha256').update(text).digest('hex');
   if(!this.retainedBy)throw new Error('Topic detail has no retaining projection');
@@ -519,9 +566,9 @@ export class PreparedTopics {
  }
 }
 
-function meta(db:Database){return db.query('SELECT generation,source_head,ready,retained_after,inbox_session FROM presentation_topics_meta WHERE singleton=1').get() as Meta;}
-function coverage(current:Meta,head:number){return {complete:!!current.ready&&current.source_head>=head,
- code:!current.ready||current.source_head<head?'presentation_indexing':null,appliedSequence:current.source_head};}
+function meta(db:Database){return db.query('SELECT * FROM presentation_topics_meta WHERE singleton=1').get() as Meta;}
+function coverage(current:Meta,head:number){const complete=!!current.ready&&current.source_head>=head&&(current.asked_answers_version??0)>=1;return {complete,
+ code:complete?null:'presentation_indexing',appliedSequence:current.source_head};}
 function reset(current:Meta){return {topics:[],nextCursor:null,coverage:{complete:false,code:'reset_required',appliedSequence:current.source_head}};}
 
 export function readPreparedTopics(db:Database,options:{state?:State;order?:'updated'|'started';query?:string|null;cursor?:string|null;limit?:number;canonicalHead:number}){
@@ -567,27 +614,88 @@ export function readPreparedIncoming(db:Database,options:{cursor?:string|null;li
  return {items,nextCursor:rows.length>limit&&last?cursor({g:current.generation,inbox:current.inbox_session,sequence:last.first_sequence,root:last.root_id}):null,
   coverage:coverage(current,options.canonicalHead)};
 }
+/**
+ * Threads search: every thread, open and closed, by any word in its title, his messages or the
+ * agents' answers, read from indexes written as each thread changes (thnkr.ing docs/architecture/threads-search.md).
+ *
+ * A thread matches when each word he typed appears somewhere in it; only when no thread holds every
+ * word are threads with some of them offered, marked partial. Threads whose name holds the words lead,
+ * then threads where they appear only in the conversation; each group newest activity first, and a
+ * conversation match carries the line it was found in. The old search took the first hundred index
+ * hits in storage order and filtered them by the tab, so "anil" on Open answered "No open threads
+ * yet" while the thread sat in Closed (2026-11-12).
+ *
+ * The per-word thread sets, their intersection, the ranking and the page are one SQL statement, so
+ * an interactive read returns only the page (the owner's read budget refuses unbounded result sets).
+ */
+const LITTLE_WORDS=new Set(['a','an','and','are','as','at','be','by','for','from','i','in','is','it','me','my','of','on','or','the','to','was','with','this','that']);
+const SEARCH_PAGE_LIMIT=20,SEARCH_WORDS=6;
 function searchPreparedTopics(db:Database,options:{state:State;query:string;cursor?:string|null;limit:number;canonicalHead:number}){
  const current=meta(db),old=options.cursor?decode(options.cursor):null;
  if(options.query.length>2000)throw new Error('Topic query is too long');
- if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||old.query!==options.query||old.state!==options.state||!Number.isSafeInteger(old.row)))return reset(current);
- const table=[...options.query].length>=3?'presentation_topic_search':'presentation_topic_short';
- const expression='"'+(table==='presentation_topic_short'?gram([...options.query]):options.query).replaceAll('"','""')+'"';
- // A finite postings window prevents a common term from sorting the entire collection.
- // Continuation is explicit even if filtering yields an empty page; no match is silently lost.
- const candidates=db.query(`SELECT rowid AS id FROM ${table} WHERE ${table} MATCH ? AND rowid>? ORDER BY rowid LIMIT 101`)
-  .all(expression,old?.row??0) as {id:number}[];
- const topics:any[]=[];let consumed=old?.row??0,examined=0;
- for(const candidate of candidates.slice(0,100)){
-  consumed=candidate.id;examined++;
-  const row=db.query('SELECT state,background,summary_json FROM presentation_topics WHERE rowid=? AND generation=? AND session_id=?')
-   .get(candidate.id,current.generation,current.inbox_session) as {state:string;background:number;summary_json:string}|null;
-  if(!row||options.state==='background'&&!row.background||!['all','background'].includes(options.state)&&row.state!==options.state)continue;
-  topics.push(JSON.parse(row.summary_json));if(topics.length===options.limit)break;
- }
- const more=candidates.length>examined;
- return {topics,nextCursor:more?cursor({g:current.generation,inbox:current.inbox_session,state:options.state,query:options.query,row:consumed}):null,
-  coverage:{...coverage(current,options.canonicalHead),searchOrder:'indexed',examined,more}};
+ if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||old.query!==options.query||old.state!==options.state||!Number.isSafeInteger(old.offset)))return reset(current);
+ const typed=[...new Set(options.query.split(/\s+/).filter(Boolean))];
+ const words=(typed.filter(word=>!LITTLE_WORDS.has(word)).length?typed.filter(word=>!LITTLE_WORDS.has(word)):typed).slice(0,SEARCH_WORDS);
+ const phrase=(text:string)=>'"'+text.replaceAll('"','""')+'"';
+ const messages=db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='presentation_message_search' LIMIT 1").get()
+  ?(db.query('SELECT generation FROM presentation_message_meta WHERE singleton=1').get() as {generation:number}|null)?.generation??null:null;
+ // One word's threads by name, and by name or conversation; each part carries its own parameters.
+ const titleSet=(word:string)=>{const short=[...word].length<3,table=short?'presentation_topic_short':'presentation_topic_search';
+  return {sql:`SELECT topic.topic_id FROM ${table} hit CROSS JOIN presentation_topics topic ON topic.rowid=hit.rowid
+   WHERE hit.${table} MATCH ? AND topic.generation=? AND topic.session_id=?`,params:[phrase(short?gram([...word]):word),current.generation,current.inbox_session] as unknown[]};};
+ const bodySet=(word:string)=>({sql:`SELECT root.topic_id FROM presentation_message_search hit
+   CROSS JOIN presentation_message_text text ON text.id=hit.rowid
+   CROSS JOIN presentation_messages message ON message.generation=text.generation AND message.event_sequence=text.event_sequence
+   CROSS JOIN presentation_topic_roots root ON root.generation=? AND root.root_id=message.root_input_id
+   WHERE hit.presentation_message_search MATCH ? AND text.generation=? AND root.topic_id IS NOT NULL`,params:[current.generation,phrase(word),messages] as unknown[]});
+ const anySet=(word:string)=>{const title=titleSet(word);if(messages===null||[...word].length<3)return title;
+  const body=bodySet(word);return {sql:`${title.sql} UNION ${body.sql}`,params:[...title.params,...body.params]};};
+ const combine=(parts:{sql:string;params:unknown[]}[],operator:'INTERSECT'|'UNION')=>
+  ({sql:parts.map(part=>`SELECT * FROM (${part.sql})`).join(` ${operator} `),params:parts.flatMap(part=>part.params)});
+ const stateSql=options.state==='all'?'':options.state==='background'?' AND topic.background=1':' AND topic.state=?';
+ const stateParams=options.state==='all'||options.state==='background'?[]:[options.state];
+ const named=combine(words.map(titleSet),'INTERSECT');
+ const count=(matched:{sql:string;params:unknown[]})=>(db.query(`SELECT count(*) AS n FROM presentation_topics topic
+  WHERE topic.generation=? AND topic.session_id=? AND topic.topic_id IN (${matched.sql})${stateSql}`)
+  .get(current.generation,current.inbox_session,...matched.params,...stateParams) as {n:number}).n;
+ let matched=combine(words.map(anySet),'INTERSECT'),total=words.length?count(matched):0,partial=false;
+ if(!total&&words.length>1){matched=combine(words.map(anySet),'UNION');total=count(matched);partial=total>0;}
+ const offset=old?.offset??0,limit=Math.min(SEARCH_PAGE_LIMIT,options.limit);
+ const longWords=words.filter(word=>[...word].length>=3);
+ const page=total?db.query(`SELECT topic.topic_id AS id,topic.summary_json AS summary,topic.topic_id IN (${named.sql}) AS named
+  FROM presentation_topics topic WHERE topic.generation=? AND topic.session_id=? AND topic.topic_id IN (${matched.sql})${stateSql}
+  ORDER BY named DESC,topic.recency DESC,topic.topic_id LIMIT ? OFFSET ?`)
+  .all(...named.params,current.generation,current.inbox_session,...matched.params,...stateParams,limit,offset) as {id:string;summary:string;named:number}[]:[];
+ // The newest message holding one of his words in each conversation-matched page thread: one pass
+ // over the words' hits, kept to those threads, at most one row each. Asking per thread instead took
+ // seconds on his longest threads.
+ const conversational=page.filter(row=>!row.named).map(row=>row.id);
+ const lines=new Map<string,number>();
+ if(messages!==null&&longWords.length&&conversational.length)
+  for(const row of db.query(`SELECT root.topic_id AS id,MAX(text.id) AS line FROM presentation_message_search hit
+   CROSS JOIN presentation_message_text text ON text.id=hit.rowid
+   CROSS JOIN presentation_messages message ON message.generation=text.generation AND message.event_sequence=text.event_sequence
+   CROSS JOIN presentation_topic_roots root ON root.generation=? AND root.root_id=message.root_input_id
+   WHERE hit.presentation_message_search MATCH ? AND text.generation=? AND root.topic_id IN (SELECT value FROM json_each(?))
+   GROUP BY root.topic_id LIMIT ?`).all(current.generation,longWords.map(phrase).join(' OR '),messages,JSON.stringify(conversational),conversational.length) as {id:string;line:number}[])
+   lines.set(row.id,row.line);
+ const lineText=db.query('SELECT text FROM presentation_message_text WHERE id=?');
+ const topics=page.map(row=>{
+  const value=JSON.parse(row.summary);
+  const at=lines.get(row.id);
+  if(row.named||at===undefined)return {...value,searchMatch:{in:'title'}};
+  const text=(lineText.get(at) as {text:string}|null)?.text??'';
+  const word=longWords.find(candidate=>text.toLocaleLowerCase().includes(candidate))??longWords[0]!;
+  return {...value,searchMatch:{in:'conversation',line:matchLine(text,word)}};
+ });
+ const more=total>offset+page.length;
+ return {topics,nextCursor:more?cursor({g:current.generation,inbox:current.inbox_session,state:options.state,query:options.query,offset:offset+page.length}):null,
+  coverage:{...coverage(current,options.canonicalHead),searchOrder:'named-then-recent',matched:total,partial,more}};
+}
+/** The stretch of a message around the first place his word appears, on one line. */
+function matchLine(text:string,word:string){
+ const flat=text.replace(/\s+/g,' '),at=Math.max(0,flat.toLocaleLowerCase().indexOf(word)),start=Math.max(0,at-60),end=Math.min(flat.length,at+word.length+120);
+ return (start?'… ':'')+flat.slice(start,end).trim()+(end<flat.length?' …':'');
 }
 export function readPreparedTopicChanges(db:Database,after:string,canonicalHead:number,limit=20){
  const current=meta(db),old=decode(after);

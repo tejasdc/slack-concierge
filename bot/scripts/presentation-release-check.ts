@@ -81,6 +81,9 @@ phase('reader-refusals');
 // the short child startup boundary on a busy production host.
 const dispatchClaim=await checkDispatchClaim();
 phase('dispatch-claim');
+const questionExpiry=await runFixtureChild({command:process.execPath,args:[join(import.meta.dir,'question-expiry-scope-fixture.ts')],
+  env:{...process.env},deadlineMs:30_000,fixture:'question-expiry-scope'});
+phase('question-expiry-scope');
 // Each lifecycle owns a distinct scratch directory and child process group.
 // Run their independent waits alongside growth checks, within the existing
 // 90-second release envelope rather than extending the deployment deadline.
@@ -88,6 +91,10 @@ const lifecycleChecks=Promise.allSettled([
   checkTopicProjectionLifecycle(),checkNativeOwnerProjectionLifecycle(),
   runFixtureChild({command:process.execPath,args:[join(import.meta.dir,'foreground-composed-fixture.ts')],
     env:{...process.env},deadlineMs:80_000,fixture:'foreground-composed'}),
+  runFixtureChild({command:process.execPath,args:[join(import.meta.dir,'inbox-prepared-lineage-fixture.ts')],
+    env:{...process.env},deadlineMs:45_000,fixture:'inbox-prepared-lineage'}),
+  runFixtureChild({command:process.execPath,args:[join(import.meta.dir,'asked-answer-fixture.ts')],
+    env:{...process.env},deadlineMs:30_000,fixture:'asked-answer'}),
 ]);
 try {for(const [name,contract] of Object.entries(PRESENTATION_READERS)){
   if(!contract.sourceTables.length||!contract.growth||!contract.maxRows||!contract.maxResponseBytes)
@@ -108,5 +115,5 @@ const failures=lifecycleResults.filter(result=>result.status==='rejected');
 for(const failure of failures)process.stderr.write(`presentation-check: lifecycle failure: ${String((failure.reason as Error)?.message??failure.reason).slice(0,4000)}\n`);
 if(failures.length)throw new AggregateError(failures.map(result=>result.reason),'Candidate lifecycle checks failed.');
 phase('passed');
-const [topicProjection,nativeOwnerProjection,foreground]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
-console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,sessionLocation,providerContract,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,readers:results}));
+const [topicProjection,nativeOwnerProjection,foreground,inboxLineage,askedAnswer]=lifecycleResults.map(result=>(result as PromiseFulfilledResult<unknown>).value);
+console.log(JSON.stringify({check:'presentation-release',status:'passed',workerModules:visited.size,ledgerConstructors,sessionLocation,providerContract,topicProjection,nativeOwnerProjection,dispatchClaim,foreground,inboxLineage,askedAnswer,readers:results}));

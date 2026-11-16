@@ -26,21 +26,25 @@ export type ProviderAliasKey =
   | "google-high"
   | "google-flash";
 
+// Fable 5.2, Sonnet 5.5 and Haiku 5.5 each answered a live turn through the server's Claude
+// Code before moving here (2026-11-11). Fable 5.2 needs Claude Code 2.1.320 or newer.
 const CLAUDE_MODELS = {
-  fable: "claude-fable-5-1",
+  fable: "claude-fable-5-2",
   opus: "claude-opus-5-5",
   // Claude Code's own alias for the latest Opus with the extended window. It belongs in
   // this table rather than inline in an alias, so the union below is the whole set.
   opus1m: "opus[1m]",
-  sonnet: "claude-sonnet-5",
-  haiku: "claude-haiku-4-5-20251001",
+  sonnet: "claude-sonnet-5-5",
+  haiku: "claude-haiku-5-5",
 } as const;
 
-// Sol and Luna are on GPT-6, Terra is not, because GPT-6 Terra does not exist —
-// OpenAI shipped only Sol and Luna in that generation and GPT-5.6 Terra remains
-// current. Both GPT-6 tiers cost half their 5.6 counterparts.
+// Sol and Terra are on GPT-6.1 (released 2026-10-26; Terra needs Codex CLI 0.159 or
+// newer), which Codex now recommends in place of GPT-6 Sol and GPT-5.6 Terra. Astra and
+// Luna stay on GPT-6. Both 6.1 names are in the model catalogue Codex downloads for
+// Tejas's accounts; a live turn could not be run when they moved here because both
+// accounts' weekly allowance was spent (2026-11-11).
 //
-// Reaching them needs Codex CLI 0.156 or newer. On 0.153.4 the server refused
+// The GPT-6 generation first needed Codex CLI 0.156 or newer. On 0.153.4 the server refused
 // every gpt-6-* name except Astra with "not supported when using Codex with a
 // ChatGPT account" — which reads like an entitlement problem and is not one: the
 // same account on the Mac's 0.156.0 accepted gpt-6-sol, and after upgrading the
@@ -50,10 +54,21 @@ const CLAUDE_MODELS = {
 // version accepts.
 const CODEX_MODELS = {
   astra: "gpt-6-astra",
-  sol: "gpt-6-sol",
-  terra: "gpt-5.6-terra",
+  sol: "gpt-6.1-sol",
+  terra: "gpt-6.1-terra",
   luna: "gpt-6-luna",
 } as const;
+
+/** The models a start must justify with an escalation reason unless Tejas chose them. */
+export const TOP_MODEL_CHOICES = [CLAUDE_MODELS.fable, CODEX_MODELS.astra] as const;
+export type TopModelChoice = typeof TOP_MODEL_CHOICES[number];
+/** Exact current models whose explicit human choice exempts an implementation-edit prompt. */
+export const THINKING_MODEL_CHOICES = [CLAUDE_MODELS.opus,CLAUDE_MODELS.opus1m,CLAUDE_MODELS.fable,CODEX_MODELS.sol,CODEX_MODELS.astra,
+  'claude-opus-5','claude-fable-5-1','gpt-6-sol','gpt-5.6-sol'] as const;
+/** Current helper defaults, read here so no launcher names a model of its own. */
+export const DEFAULT_CLAUDE_SUBAGENT_MODEL = CLAUDE_MODELS.sonnet;
+export const SMALLEST_CLAUDE_MODEL = CLAUDE_MODELS.haiku;
+export const CODEX_INVESTIGATOR_MODEL = CODEX_MODELS.sol;
 
 // Google's current paid AI Pro CLI offers Argon High as its strongest Gemini mode.
 // Keep Flash selectable only by an explicit model choice. A withdrawn choice
@@ -91,14 +106,14 @@ export type SelectableModel =
   | typeof GOOGLE_MODELS[keyof typeof GOOGLE_MODELS];
 
 const MODEL_LABELS: Record<SelectableModel, string> = {
-  "claude-fable-5-1": "Claude Fable 5.1",
+  "claude-fable-5-2": "Claude Fable 5.2",
   "claude-opus-5-5": "Claude Opus 5.5",
   "opus[1m]": "Claude Opus 5.5 1M",
-  "claude-sonnet-5": "Claude Sonnet 5",
-  "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
-  "gpt-6-sol": "GPT-6 Sol",
+  "claude-sonnet-5-5": "Claude Sonnet 5.5",
+  "claude-haiku-5-5": "Claude Haiku 5.5",
+  "gpt-6.1-sol": "GPT-6.1 Sol",
   "gpt-6-luna": "GPT-6 Luna",
-  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-6.1-terra": "GPT-6.1 Terra",
   "gpt-6-astra": "GPT-6 Astra",
   "gemini-3.8-flash-high": "Gemini 3.8 Flash (High)",
   "gemini-4-argon-high": "Gemini 4 Argon (High)",
@@ -116,11 +131,18 @@ const RETIRED_MODEL_LABELS: Record<string, string> = {
   "gpt-5.6-sol": "GPT-5.6 Sol",
   "gpt-5.6-luna": "GPT-5.6 Luna",
   "claude-fable-5": "Claude Fable 5.1",
+  "claude-fable-5-1": "Claude Fable 5.1",
+  "claude-sonnet-5": "Claude Sonnet 5",
+  "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+  "gpt-6-sol": "GPT-6 Sol",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
 };
 
 /** What he reads for a model id, including one no longer offered. Unknown ids keep their id. */
 export function modelDisplayName(model: string | null | undefined): string {
   if (!model) return "";
+  const projectThinking = chatgptProjectThinking(model);
+  if (projectThinking) return `ChatGPT · ${projectThinking.split('-').map(word => word[0]!.toUpperCase() + word.slice(1)).join(' ')}`;
   return (MODEL_LABELS as Record<string, string>)[model] ?? RETIRED_MODEL_LABELS[model] ?? model;
 }
 
@@ -140,6 +162,12 @@ const PROVIDER_LABELS: Record<ProviderId, string> = {
 /** A provider he can read; an unknown or missing provider is null, never another provider's name. */
 export function providerDisplayName(provider: string | null | undefined): string | null {
   return provider ? (PROVIDER_LABELS as Record<string, string>)[provider] ?? null : null;
+}
+
+/** Human provider directives may use the product name instead of the provider label. */
+export function providerSpokenNames(provider:string):string[] {
+  const label=providerDisplayName(provider);
+  return label?[label,...(provider==='antigravity'?['Google']:[])]:[];
 }
 
 /**
@@ -217,11 +245,24 @@ export const DEFAULT_CHATGPT_THINKING: ChatgptThinkingLevel = "pro";
 // latest model". The model value carries whose chat it is: "tejas:<level>" for his.
 export const DEFAULT_HIS_CHATGPT_THINKING: ChatgptThinkingLevel = "extra-high";
 export const HIS_CHATGPT_PREFIX = "tejas:";
-// A chat with one GPT (from the GPT Store or his own) is "gpt:<g-…>" after the owner prefix: the
+// Historical GPT metadata is "gpt:<g-…>" after the owner prefix: the
 // GPT runs on the model its maker chose, so it carries no thinking level. Tejas, 2026-10-13, asking
 // for a dating-coach GPT rather than plain ChatGPT: "I think they're called GPTs or something.
-// It's just a thing you can talk to." Thinkering's browser adapter reads the same shape.
+// It's just a thing you can talk to." Keep this parser for retained history and recovery only;
+// the canonical owner refuses new GPT admissions.
 export const CHATGPT_GPT_PREFIX = "gpt:";
+export const CHATGPT_PROJECT_PREFIX = "project:";
+export const CHATGPT_GPT_RETIREMENT = 'Custom GPT destinations are retired here ahead of OpenAI’s December 11, 2026 retirement. Start a new ChatGPT project chat with --chatgpt-project <https://chatgpt.com/g/g-p-…/project|g-p-id>; no ordinary-chat fallback is made. Existing history and acknowledged-run recovery remain available.';
+export function isRetiredChatgptGpt(model: string | null | undefined): boolean {
+  return /^(?:tejas:)?gpt:/.test(model ?? '');
+}
+/** Only an exact native project address or ID; never a development folder or GPT Store URL. */
+export function chatgptProject(input: string | null | undefined): string | null {
+  const value = input ?? '';
+  const match = /^(?:https:\/\/chatgpt\.com\/g\/)?(g-p-[a-z0-9]+)(?:\/project)?$/.exec(value);
+  if (!match || (value.startsWith('https:') && !value.endsWith('/project')) || (!value.startsWith('https:') && value.endsWith('/project'))) return null;
+  return match[1]!;
+}
 /** A GPT named by its address (https://chatgpt.com/g/g-…) or its g-… id; projects (g-p-…) are not GPTs. */
 export function chatgptGpt(input: string | null | undefined): string | null {
   const value = input?.trim().replace(/^https:\/\/chatgpt\.com\/g\/([^/?#]+).*$/, "$1") ?? "";
@@ -230,6 +271,11 @@ export function chatgptGpt(input: string | null | undefined): string | null {
 export function chatgptSessionModel(effort: string | null | undefined): string | null {
   const his = effort?.startsWith(HIS_CHATGPT_PREFIX) ?? false;
   const rest = his ? effort!.slice(HIS_CHATGPT_PREFIX.length) : effort;
+  if (rest?.startsWith(CHATGPT_PROJECT_PREFIX)) {
+    const [, project, thinking, ...extra] = rest.split(':');
+    const level = chatgptThinkingLevel(thinking);
+    return !extra.length && chatgptProject(project) && level ? `${his ? HIS_CHATGPT_PREFIX : ""}${CHATGPT_PROJECT_PREFIX}${project}:${level}` : null;
+  }
   if (rest?.startsWith(CHATGPT_GPT_PREFIX)) {
     const gpt = chatgptGpt(rest.slice(CHATGPT_GPT_PREFIX.length));
     return gpt ? `${his ? HIS_CHATGPT_PREFIX : ""}${CHATGPT_GPT_PREFIX}${gpt}` : null;
@@ -241,6 +287,11 @@ export function chatgptThinkingLevel(input: string | null | undefined): ChatgptT
   const value = input?.trim().toLowerCase().replace(/[\s_]+/g, "-");
   const level = value === "xhigh" || value === "extrahigh" ? "extra-high" : value;
   return (CHATGPT_THINKING_LEVELS as readonly string[]).includes(level ?? "") ? level as ChatgptThinkingLevel : null;
+}
+/** Read thinking policy separately from a project's destination and chat ownership. */
+export function chatgptProjectThinking(model: string | null | undefined): ChatgptThinkingLevel | null {
+  const normalized=chatgptSessionModel(model);
+  return normalized && /^(?:tejas:)?project:/.test(normalized) ? chatgptThinkingLevel(normalized.split(':').at(-1)) : null;
 }
 
 export function isHisChatGpt(options: {
@@ -298,6 +349,35 @@ export const AUTOMATIC_PROVIDER_ALIASES = {
   codex: 'cx-sol',
   antigravity: 'google',
 } as const satisfies Record<Exclude<ProviderId, 'chatgpt'>, ProviderAliasKey>;
+
+/**
+ * A moved session keeps its model tier: top is Claude Opus/Fable and Codex Sol/Astra, middle is Claude
+ * Sonnet and Codex Luna, small is Claude Haiku and Codex Terra. The tier is read from the model ID, so
+ * the IDs keep their one home in the tables above. A session with no recorded model, an unknown model
+ * or a Google target takes the AUTOMATIC_PROVIDER_ALIASES default, as new work does.
+ */
+export type ModelTier = "top" | "middle" | "small";
+const TIER_ALIASES: Record<"claude-code" | "codex", Record<ModelTier, ProviderAliasKey>> = {
+  "claude-code": { top: "cc-opus", middle: "cc-sonnet", small: "cc-haiku" },
+  codex: { top: "cx-sol", middle: "cx-luna", small: "cx-terra" },
+};
+export function modelTier(model: string | null | undefined): ModelTier | null {
+  const value = (model ?? "").toLowerCase();
+  if (!value) return null;
+  const known = ([CLAUDE_MODELS.opus, CLAUDE_MODELS.opus1m, CLAUDE_MODELS.fable, CODEX_MODELS.sol, CODEX_MODELS.astra] as string[]).includes(model!)
+    ? "top" : ([CLAUDE_MODELS.sonnet, CODEX_MODELS.luna] as string[]).includes(model!) ? "middle"
+    : ([CLAUDE_MODELS.haiku, CODEX_MODELS.terra] as string[]).includes(model!) ? "small" : null;
+  if (known) return known;
+  // Newer or dated spellings of the same families.
+  if (/opus|fable|(?:^|-)sol$|astra/.test(value)) return "top";
+  if (/sonnet|luna/.test(value)) return "middle";
+  if (/haiku|terra/.test(value)) return "small";
+  return null;
+}
+export function aliasKeepingTier(targetProvider: Exclude<ProviderId, "chatgpt">, sourceModel: string | null | undefined): ProviderAliasKey {
+  const tier = modelTier(sourceModel);
+  return targetProvider === "antigravity" || !tier ? AUTOMATIC_PROVIDER_ALIASES[targetProvider] : TIER_ALIASES[targetProvider][tier];
+}
 
 // The provider a session takes when nothing has chosen one. The Codex allowance
 // is account-scoped and has now been exhausted on two accounts, so the default
@@ -371,6 +451,10 @@ const SUPERSEDED_CLAUDE_MODELS: Record<string, string> = {
   "claude-fable-5": CLAUDE_MODELS.fable,
   // Legacy since Opus 5.5 (2026-09-22); sessions started before it keep running on it.
   "claude-opus-5": CLAUDE_MODELS.opus,
+  // Legacy since 2026-11-11; Fable 5.1 and 5.2 share the one "Fable only" weekly cap.
+  "claude-fable-5-1": CLAUDE_MODELS.fable,
+  "claude-sonnet-5": CLAUDE_MODELS.sonnet,
+  "claude-haiku-4-5-20251001": CLAUDE_MODELS.haiku,
 };
 
 export function canonicalClaudeUsageModel(model: string): string {

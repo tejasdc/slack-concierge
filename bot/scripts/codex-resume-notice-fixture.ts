@@ -29,8 +29,10 @@ const client = {
       return { thread: { id: params.threadId }, model: "gpt-fixture" };
     }
     if (method === "turn/start") {
-      queueMicrotask(() => { for (const listener of notifications) listener({ method: "turn/completed", params: {
-        threadId: params.threadId, turn: { id: "fixture-turn", status: "completed", items: [] } } }); });
+      queueMicrotask(() => { for (const listener of notifications) listener({method:"item/started",params:{threadId:params.threadId,
+        turnId:"fixture-turn",item:{type:"userMessage",clientId:params.clientUserMessageId}}});
+        for (const listener of notifications) listener({ method: "turn/completed", params: {
+          threadId: params.threadId, turn: { id: "fixture-turn", status: "completed", items: [] } } }); });
       return { turn: { id: "fixture-turn" } };
     }
     if (method === "thread/read") return { thread: { turns: [] } };

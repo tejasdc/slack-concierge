@@ -11,6 +11,7 @@ import { CodexAppServerClient, codexAppServerSocketPath } from "./codex-app-serv
 import { useCodexResetCredit } from "./codex-reset-credit";
 import { readRunnerGoogleUsage } from "./runner-google-usage";
 import {createConnection} from 'node:net';
+import { CLAUDE_SCRATCH, isClaudePerLogin } from './claude-home-entries';
 
 type AccountProvider = "codex" | "claude-code";
 const providers = new Set<AccountProvider>(["codex", "claude-code"]);
@@ -131,15 +132,10 @@ function safeAccountFolder(label: string, id: string): string {
   return `${slug}-${createHash("sha256").update(id).digest("hex").slice(0, 12)}`;
 }
 
-const claudePerLogin = new Set([".credentials.json", ".claude.json", ".claude.json.lock", ".account-email", "backups",
-  "remote-settings.json", "policy-limits.json", "policy-limits.json.stamp.json", "hfi-auth.json", ".session_ingress_token", ".storage-write"]);
-const claudeScratch = new Set(["sessions", "session-env", "shell-snapshots", "cache", "statsig", "paste-cache", ".last-cleanup",
-  ".last-update-result.json", "mcp-needs-auth-cache.json", "teams", "jobs", "daemon"]);
 export function prepareRunnerClaudeAccountHome(home: string): void {
   const shared = liveRoot("claude-code");
   for (const name of readdirSync(shared)) {
-    if (claudePerLogin.has(name) || /^\.(credentials|claude)\.json\./.test(name)
-      || /^\.oauth_refresh\.lock/.test(name) || /^\.storage-write\./.test(name)) continue;
+    if (isClaudePerLogin(name)) continue;
     const source = join(shared, name), target = join(home, name), wanted = source;
     let sourceReal: string;
     try { sourceReal = realpathSync(source); } catch { continue; }
@@ -150,7 +146,7 @@ export function prepareRunnerClaudeAccountHome(home: string): void {
       continue;
     }
     const present = targetReal !== null || (() => { try { lstatSync(target); return true; } catch { return false; } })();
-    if (claudeScratch.has(name)) {
+    if (CLAUDE_SCRATCH.has(name)) {
       if (!present) symlinkSync(wanted, target);
       continue;
     }
@@ -586,7 +582,7 @@ function exactProviderTranscripts(key: AccountProvider, home: string, nativeId: 
       try { names = readdirSync(directory); } catch { return; }
       for (const name of names) {
         const path = join(directory, name);
-        if (name === `-${nativeId}.jsonl` || name === `${nativeId}.jsonl`) {
+        if (name === `${nativeId}.jsonl` || key === "codex" && name.endsWith(`-${nativeId}.jsonl`)) {
           if (existsSync(path)) matches.push(path);
         } else if (!name.startsWith(".") && !name.endsWith(".jsonl")) visit(path, depth + 1);
       }

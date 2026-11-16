@@ -4,8 +4,10 @@ import {receiptStatusFromFacts,type StatusContext,type InputStatusDetail} from '
 import {survivableRunKinds} from './execution-survival';
 import {modelDisplayName} from './aliases';
 import {noticeTime} from './notice-time';
-import {receiveSessionFromPeer} from './peer-identity';
+import {inputProvenance,existingRunIdFor} from './input-provenance';
 import {receiptAttachmentProjection,type ReceiptAttachment} from './receipt-attachments';
+import {codexAccountSwitchProjection} from './codex-account-switch-receipt';
+import {readInboxThreadLink} from './inbox-thread-link-read';
 
 type SourceInput={id:string;session_id:number;kind:string;origin:string;source_input_id:string|null;
   source_run_id:string|null;
@@ -42,68 +44,25 @@ const preview=(value:unknown,maxBytes=384):{text:string|null;truncated:boolean}=
 const json=(value:string|null|undefined):any=>value?JSON.parse(value):{};
 const boundedObject=(value:unknown,maxBytes:number):unknown|null=>value!=null&&Buffer.byteLength(JSON.stringify(value))<=maxBytes?value:null;
 
-function sourceProvenance(source:Database,input:SourceInput):unknown|null{
-  const peer=(row:SourceInput)=>{
-    const delivery=source.query(`SELECT peer,origin_session_id,origin_input_id,origin_run_id,
-      requested_effect,origin_provenance_json FROM session_peer_deliveries WHERE target_input_id=?`)
-      .get(row.id) as {peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;
-        requested_effect:string;origin_provenance_json:string|null}|null;
-    if(!delivery)return null;
-    const retained=json(delivery.origin_provenance_json);
-    const human=retained.originatingHuman&&typeof retained.originatingHuman.sessionId==='string'
-      ?{...retained.originatingHuman,sessionId:receiveSessionFromPeer(retained.originatingHuman.sessionId,delivery.peer)}:null;
-    return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,
-      sessionId:receiveSessionFromPeer(delivery.origin_session_id,delivery.peer),peer:delivery.peer},
-      requestId:row.request_id,effectScope:retained.effectScope==='informational'||delivery.requested_effect!=='work'?'informational':'work',
-      originatingHuman:human,peer:delivery.peer};
-  };
-  if(!input.source_input_id||!input.source_run_id)return input.origin==='human'?null:boundedObject(peer(input),1000);
-  const seen=new Set<string>();let current:SourceInput|null=input,first:any=null,human:any=null,effect:'work'|'informational'|null=null;
-  while(current?.source_input_id&&current.source_run_id&&!seen.has(current.id)){
-    seen.add(current.id);
-    const parent=source.query('SELECT * FROM session_inputs WHERE id=?').get(current.source_input_id) as SourceInput|null;
-    const run=parent?.turn_id?source.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?')
-      .get(parent.turn_id,parent.session_id) as {native_run_id:string|null}|null:null;
-    if(!parent||run?.native_run_id!==current.source_run_id)break;
-    const identity={inputId:parent.id,runId:current.source_run_id,sessionId:`concierge:${parent.session_id}`};
-    first??=identity;
-    if(current.origin==='agent'&&['input','create','consultation','request'].includes(current.kind)){
-      const request=source.query(`SELECT payload_json FROM session_communication_requests WHERE request_id=?
-        AND ((target_input_id=? AND target_session_id=?) OR (?='request' AND source_session_id=?))
-        AND source_input_id=? AND source_turn_id=?`)
-        .get(current.request_id,current.id,current.session_id,current.kind,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null;
-      const remote=request?null:current.kind==='request'?source.query(`SELECT payload_json FROM session_peer_requests
-        WHERE request_id=? AND source_session_id=? AND source_input_id=? AND source_turn_id=?`)
-        .get(current.request_id,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null:null;
-      if(!request&&!remote)break;
-      const requested=json((request??remote)!.payload_json).requestedEffect??'informational';
-      effect=effect==='informational'||requested!=='work'?'informational':'work';
-    }
-    const corrected=source.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(parent.id);
-    if(parent.origin==='human'&&!corrected){
-      const payload=json(parent.payload_json);
-      human={...identity,...(payload.capture?.id?{captureId:payload.capture.id}:{})};break;
-    }
-    current=parent;
-  }
-  const delivered=!human&&current?peer(current):null;
-  if(delivered){human=delivered.originatingHuman;effect=effect==='informational'||delivered.effectScope!=='work'?'informational':'work';}
-  return boundedObject(first?{source:first,requestId:input.request_id,effectScope:effect,originatingHuman:human,
-    ...(delivered?{peer:delivered.peer}:{})}:null,1000);
-}
+/** The same walk as the full record, read-only: the list must never name a different human. */
+const sourceProvenance=(source:Database,input:SourceInput)=>boundedObject(inputProvenance(source,input,existingRunIdFor(source)),1000);
 
 /** The worker provides exact live facts separately. A pending fact cannot masquerade as a
  * complete receipt; exact full bodies and return events stay behind the selected detail ID. */
 export function compactReceiptFromFacts(input:SourceInput,turn:Turn|null,steering:Steering|null,
   conversation:Conversation,stopTurnStatus:string|null,dynamic:ReceiptDynamicFacts,nowMs=Date.now(),link:ThreadLink=null):PreparedReceipt {
   const payload=json(input.payload_json),saved=json(input.receipt_json);
+  const codexSwitch=input.kind==='action'&&payload.kind==='codex-account-switch';
+  const switchProjection=codexSwitch?codexAccountSwitchProjection(saved):null;
+  const switchState=switchProjection?.state??null;
   const execution=inputExecutionFacts(turn,steering);
-  const state=receiptOperationState({kind:input.kind,savedState:saved.state,executionState:execution.state,
+  const state=switchState??receiptOperationState({kind:input.kind,savedState:saved.state,executionState:execution.state,
     requestKnown:conversation.known,requestOutcome:conversation.outcome,stopTurnStatus});
   const control=['action','stop','reconcile','cancel','cancel-action','bind','fork','project-task','inbox-capture','resurrect',
     'resurrect-native','outage-choice'].includes(input.kind);
   const text=control?null:payload.text??payload.firstInput?.text??null;
-  const result=control?null:input.kind==='request'?conversation.resultPreview:turn?.agent_text??null;
+  const result=codexSwitch?switchProjection?.resultPreview??null
+    :control?null:input.kind==='request'?conversation.resultPreview:turn?.agent_text??null;
   const error=saved.error?.message??saved.error??steering?.error??(['failed','uncertain'].includes(execution.state)?turn?.agent_text:null);
   const detail=dynamic.statusDetail;
   const detailMessage=preview(detail?.message,384);
@@ -241,10 +200,7 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
     alternatives:offer.alternatives.map(({alias,label,provider}:any)=>({alias,label,provider})),
     open:!offer.choice&&['queued','running'].includes(turn!.status),choice:offer.choice,chosenAt:offer.chosenAt,
     rerunSessionId:offer.rerunSessionId}:null;
-  const linkRow=input.origin==='human'?source.query(`SELECT payload_json FROM session_owner_events
-    WHERE session_id=? AND kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`)
-    .get(input.session_id,input.id) as {payload_json:string}|null:null;
-  const link=linkRow?json(linkRow.payload_json) as ThreadLink:null;
+  const link=input.origin==='human'?readInboxThreadLink(source,input.id):null;
   const attachmentProjection=receiptAttachmentProjection(source,input.kind,json(input.payload_json));
   return compactReceiptFromFacts(input,turn,steering,conversation,stopped?.status??null,
     {kind:'exact',statusDetail,providerOutage,attachments:attachmentProjection.attachments,

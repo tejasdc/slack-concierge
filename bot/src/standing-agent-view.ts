@@ -10,7 +10,7 @@ const MAX_WATCHES_PER_AGENT=20;
 const MAX_LINE=200;
 
 type ScheduleRow={repeat_turn_id:number;saved_root_id:number;saved_repeat_ms:number;
-  saved_fire_at_ms:number|null;dispatch_next_attempt_ms:number|null};
+  saved_fire_at_ms:number|null;dispatch_next_attempt_ms:number|null;saved_daily_time:string|null;saved_time_zone:string|null};
 type RepeatRow=SessionRow&ScheduleRow;
 type EndedRow={id:number;ended_at:string;agent_text:string|null;status:string};
 
@@ -39,6 +39,7 @@ function lastRun(db:Database,sessionId:number,rootId?:number) {
 }
 function schedule(row:ScheduleRow|null) {
   return row?{turnId:row.repeat_turn_id,rootTurnId:row.saved_root_id,intervalMs:row.saved_repeat_ms,
+    dailyLocal:row.saved_daily_time?{time:row.saved_daily_time,timeZone:row.saved_time_zone}:null,
     nextFiringAt:instant(row.saved_fire_at_ms??row.dispatch_next_attempt_ms)}:null;
 }
 function sessionView(row:SessionRow|null) {
@@ -50,7 +51,7 @@ function sessionView(row:SessionRow|null) {
 /** Finite role list plus a capped indexed walk of currently queued repeating firings. */
 export function standingAgentView(db:Database,workspaceRoot:string) {
   const repeatRows=db.query(`SELECT session.*,turn.id AS repeat_turn_id,turn.saved_root_id,turn.saved_repeat_ms,
-    turn.saved_fire_at_ms,turn.dispatch_next_attempt_ms FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    turn.saved_fire_at_ms,turn.dispatch_next_attempt_ms,turn.saved_daily_time,turn.saved_time_zone FROM turns turn JOIN sessions session ON session.id=turn.session_id
     WHERE turn.status='queued' AND turn.saved_kind='scheduled' AND turn.saved_repeat_ms IS NOT NULL
     ORDER BY turn.id LIMIT ?`).all(MAX_SCHEDULES+1) as RepeatRow[];
   const incomplete=repeatRows.length>MAX_SCHEDULES;
@@ -62,7 +63,7 @@ export function standingAgentView(db:Database,workspaceRoot:string) {
     const runnerBound=!!meta&&typeof meta.providerRunner==='string'&&!!meta.providerRunner.trim()
       &&meta.projectName===basename(agent.project)&&(!meta.projectPath||meta.projectPath==='');
     const bound=row&&(runnerBound||relative(workspaceRoot,meta?.cwd??'')===agent.project)?row:null;
-    const own=bound?db.query(`SELECT id AS repeat_turn_id,saved_root_id,saved_repeat_ms,saved_fire_at_ms,dispatch_next_attempt_ms
+    const own=bound?db.query(`SELECT id AS repeat_turn_id,saved_root_id,saved_repeat_ms,saved_fire_at_ms,dispatch_next_attempt_ms,saved_daily_time,saved_time_zone
       FROM turns WHERE session_id=? AND status='queued' AND saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL
       ORDER BY id LIMIT 1`).get(bound.id) as ScheduleRow|null:null;
     const armed=bound?db.query(`SELECT watch_id,kind,

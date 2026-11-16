@@ -14,10 +14,11 @@ interface Env {
   CONCIERGE_KEY: string;
 }
 
+import { WORKERS_AI_EMBEDDING_MODEL, WORKERS_AI_EMBEDDING_DIMENSIONS, WORKERS_AI_EMBEDDING_MAX_TEXTS } from "../../../shared/workers-ai-embedding";
+
 const SPEECH_MODEL = "@cf/openai/whisper-large-v3-turbo";
-const EMBEDDING_MODEL = "@cf/google/embeddinggemma-300m";
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-const MAX_TEXTS = 100;
+const MAX_TEXTS = WORKERS_AI_EMBEDDING_MAX_TEXTS;
 const MAX_TEXT_CHARS = 4_000;
 
 function base64(bytes: ArrayBuffer): string {
@@ -54,10 +55,14 @@ export default {
       if (path === "/v1/embed") {
         const body = (await request.json().catch(() => null)) as { texts?: unknown } | null;
         const texts = body?.texts;
-        if (!Array.isArray(texts) || !texts.length || texts.length > MAX_TEXTS || !texts.every((text) => typeof text === "string" && text.length <= MAX_TEXT_CHARS))
-          return answer(400, { error: `texts must be 1-${MAX_TEXTS} strings of at most ${MAX_TEXT_CHARS} characters` });
-        const result = (await env.AI.run(EMBEDDING_MODEL, { text: texts as string[] })) as { data: number[][]; shape: number[] };
-        return answer(200, { model: EMBEDDING_MODEL, dimensions: result.shape?.[1] ?? result.data[0]?.length ?? 0, vectors: result.data });
+        if (!Array.isArray(texts) || !texts.length || texts.length > MAX_TEXTS || !texts.every((text) => typeof text === "string" && text.length > 0 && text.length <= MAX_TEXT_CHARS))
+          return answer(400, { error: `texts must be 1-${MAX_TEXTS} non-empty strings of at most ${MAX_TEXT_CHARS} characters` });
+        const result = (await env.AI.run(WORKERS_AI_EMBEDDING_MODEL, { text: texts as string[] })) as { data: number[][]; shape: number[] };
+        const dimensions = result.shape?.[1] ?? result.data?.[0]?.length ?? 0;
+        if (dimensions !== WORKERS_AI_EMBEDDING_DIMENSIONS || !Array.isArray(result.data) || result.data.length !== texts.length ||
+            !result.data.every((vector) => Array.isArray(vector) && vector.length === dimensions && vector.every(Number.isFinite)))
+          return answer(502, { error: "embedding model answered with unexpected vectors" });
+        return answer(200, { model: WORKERS_AI_EMBEDDING_MODEL, dimensions, vectors: result.data });
       }
       return answer(404, { error: "unknown path" });
     } catch (error) {

@@ -143,6 +143,18 @@ else
 fi
 command -v ffmpeg >/dev/null 2>&1 || echo "Speech-to-text also needs ffmpeg to read browser recordings: brew install ffmpeg" >&2
 
+# The observer is a one-shot libproc reader invoked by the existing signed speech listener.
+# It has no independent launchd lifetime or permission request.
+FOOTPRINT_SRC="$REPO/bot/native/process-footprint.c"
+FOOTPRINT_BIN="$STATE/speech/process-footprint"
+command -v clang >/dev/null 2>&1 || { echo "Mac process observation needs the Xcode command line tools." >&2; exit 2; }
+footprint_fingerprint=$(shasum -a 256 "$FOOTPRINT_SRC" | cut -d' ' -f1)
+if [ ! -x "$FOOTPRINT_BIN" ] || [ "$(cat "$STATE/speech/.footprint-fingerprint" 2>/dev/null)" != "$footprint_fingerprint" ]; then
+  clang -O2 -Wall "$FOOTPRINT_SRC" -o "$FOOTPRINT_BIN.build"
+  mv "$FOOTPRINT_BIN.build" "$FOOTPRINT_BIN"
+  echo "$footprint_fingerprint" > "$STATE/speech/.footprint-fingerprint"
+fi
+
 # Screenshots for agents (bot/native/mac-capture.swift, run through ~/.local/bin/mac-screenshot).
 # Nothing here asks for the Screen Recording permission: the helper asks the first time a
 # capture is actually wanted, and macOS attributes it to the signed agent-host app above it.
@@ -199,9 +211,57 @@ LAUNCHER=$("$REPO/scripts/build-mac-agent-host.sh" "$REPO" "$STATE" | tail -1)
 HELPERS=$(cd "$REPO/bot" && "$BUN" scripts/build-pinned-helpers.ts "$STATE/helpers" | tail -1)
 [ -f "$HELPERS/scripts/router-sessions.js" ] || { echo "The agent helpers did not build; Concierge was left as it was." >&2; exit 2; }
 
+# One Playwright browser-automation server for every Claude session on this Mac, under its own launchd
+# job and a pinned version (never `npx ...@latest` at session start). Installed and running before
+# Concierge restarts, because new sessions connect to it; its own label, so restarting it here never
+# touches the job doing this install. See docs/plans/2026-11-12-mac-held-work-pacing.md.
+PLAYWRIGHT_MCP_VERSION=0.0.85
+PLAYWRIGHT_PORT=${CONCIERGE_PLAYWRIGHT_PORT:-8931}
+PLAYWRIGHT_LABEL=com.tejasdc.concierge-playwright
+PLAYWRIGHT_PLIST="$HOME/Library/LaunchAgents/$PLAYWRIGHT_LABEL.plist"
+PLAYWRIGHT_DIR="$STATE/playwright-mcp"
+NODE_DIR=$(dirname "$NODE")
+mkdir -p "$PLAYWRIGHT_DIR" "$STATE/logs"
+playwright_changed=0
+if [ "$(cat "$PLAYWRIGHT_DIR/.version" 2>/dev/null || true)" != "$PLAYWRIGHT_MCP_VERSION" ] || [ ! -f "$PLAYWRIGHT_DIR/node_modules/@playwright/mcp/cli.js" ]; then
+  (cd "$PLAYWRIGHT_DIR" && PATH="$NODE_DIR:$PATH" "$NODE_DIR/npm" install --no-audit --no-fund --silent "@playwright/mcp@$PLAYWRIGHT_MCP_VERSION") \
+    && echo "$PLAYWRIGHT_MCP_VERSION" > "$PLAYWRIGHT_DIR/.version" && playwright_changed=1 \
+    || echo "Playwright MCP $PLAYWRIGHT_MCP_VERSION did not install; sessions here keep their own copy until it does." >&2
+fi
+sed -e "s|@HOME@|$HOME|g" -e "s|@STATE@|$STATE|g" -e "s|@NODE@|$NODE|g" -e "s|@NODE_DIR@|$NODE_DIR|g" -e "s|@PLAYWRIGHT_PORT@|$PLAYWRIGHT_PORT|g" \
+    "$REPO/launchd/$PLAYWRIGHT_LABEL.plist" > "$PLAYWRIGHT_PLIST.tmp"
+plutil -lint "$PLAYWRIGHT_PLIST.tmp" >/dev/null
+mv "$PLAYWRIGHT_PLIST.tmp" "$PLAYWRIGHT_PLIST"
+SHARED_PLAYWRIGHT_URL=""
+if [ -f "$PLAYWRIGHT_DIR/node_modules/@playwright/mcp/cli.js" ]; then
+  if ! launchctl print "gui/$(id -u)/$PLAYWRIGHT_LABEL" >/dev/null 2>&1; then
+    launchctl bootstrap "gui/$(id -u)" "$PLAYWRIGHT_PLIST"
+  elif [ "$playwright_changed" = 1 ]; then
+    launchctl kickstart -k "gui/$(id -u)/$PLAYWRIGHT_LABEL"
+  fi
+  # Sessions are pointed at the server only once it answers; otherwise they keep today's plugin.
+  for _ in $(seq 1 20); do
+    curl -s -m 2 -o /dev/null -X POST "http://127.0.0.1:$PLAYWRIGHT_PORT/mcp" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"install","version":"1"}}}' \
+      && { SHARED_PLAYWRIGHT_URL="http://127.0.0.1:$PLAYWRIGHT_PORT/mcp"; break; }
+    sleep 1
+  done
+  [ -n "$SHARED_PLAYWRIGHT_URL" ] || echo "The shared Playwright server did not answer; sessions here keep their own copy for now." >&2
+fi
+# Starts of held work are paced on this Mac: a few sessions per window with jitter, and held back
+# while macOS reports memory pressure. Tunable here, never on the server.
+START_PACE_BUDGET=${CONCIERGE_START_PACE_BUDGET:-3}
+START_PACE_WINDOW_MS=${CONCIERGE_START_PACE_WINDOW_MS:-120000}
+START_PACE_JITTER_MS=${CONCIERGE_START_PACE_JITTER_MS:-30000}
+CROWD_SESSIONS=${CONCIERGE_CROWD_SESSIONS:-10}
+CROWD_LOAD_FACTOR=${CONCIERGE_CROWD_LOAD_FACTOR:-2}
+
 sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" -e "s|@TAILNET_IP@|$TAILNET_IP|g" -e "s|@LAUNCHER@|$LAUNCHER|g" \
     -e "s|@HELPERS@|$HELPERS|g" -e "s|@HOST_LAUNCHER@|${HOST_LAUNCHER:+$LAUNCHER}|g" \
     -e "s|@PEERS@|$PEERS|g" -e "s|@CLAUDE@|$CLAUDE|g" -e "s|@CODEX@|$CODEX|g" -e "s|@NODE@|$NODE|g" \
+    -e "s|@SHARED_PLAYWRIGHT_URL@|$SHARED_PLAYWRIGHT_URL|g" -e "s|@START_PACE_BUDGET@|$START_PACE_BUDGET|g" \
+    -e "s|@START_PACE_WINDOW_MS@|$START_PACE_WINDOW_MS|g" -e "s|@START_PACE_JITTER_MS@|$START_PACE_JITTER_MS|g" \
+    -e "s|@CROWD_SESSIONS@|$CROWD_SESSIONS|g" -e "s|@CROWD_LOAD_FACTOR@|$CROWD_LOAD_FACTOR|g" \
     "$REPO/launchd/$LABEL.plist" > "$PLIST.tmp"
 plutil -lint "$PLIST.tmp" >/dev/null
 mv "$PLIST.tmp" "$PLIST"
@@ -233,8 +293,8 @@ if [ -x "$SPEECH_BIN" ]; then
   plutil -lint "$SPEECH_PLIST.tmp" >/dev/null
   mv "$SPEECH_PLIST.tmp" "$SPEECH_PLIST"
   speech_revision=$(shasum -a 256 "$REPO/bot/scripts/live-speech-service.ts" "$REPO/bot/src/live-speech.ts" \
-    "$REPO/bot/src/speech-engine.ts" "$REPO/bot/src/transcription.ts" "$REPO/bot/src/log.ts" \
-    "$SPEECH_BIN" "$SPEECH_TLS/cert.pem" "$SPEECH_TLS/key.pem" | shasum -a 256 | cut -d' ' -f1)
+    "$REPO/bot/src/mac-voice-observer.ts" "$REPO/bot/src/speech-engine.ts" "$REPO/bot/src/transcription.ts" "$REPO/bot/src/log.ts" \
+    "$SPEECH_BIN" "$FOOTPRINT_BIN" "$SPEECH_TLS/cert.pem" "$SPEECH_TLS/key.pem" | shasum -a 256 | cut -d' ' -f1)
 fi
 installed_speech_revision=$(cat "$STATE/speech/.service-revision" 2>/dev/null || true)
 
@@ -246,10 +306,25 @@ launchctl kickstart -k "gui/$(id -u)/$LABEL"
 echo "Concierge (mac) started: state $STATE, peer listener $TAILNET_IP:8788, logs $STATE/logs/"
 
 if [ -n "$speech_revision" ] && [ "$speech_revision" != "$installed_speech_revision" ]; then
-  launchctl bootout "gui/$(id -u)/$SPEECH_LABEL" 2>/dev/null || true
-  for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$SPEECH_LABEL" >/dev/null 2>&1 || break; sleep 1; done
-  launchctl bootstrap "gui/$(id -u)" "$SPEECH_PLIST"
-  echo "$speech_revision" > "$STATE/speech/.service-revision"
+  speech_response=$(curl -sS --max-time 2 -w ' %{http_code}' -H 'Origin: https://thnkr.ing' "http://127.0.0.1:8790/speech/v1/observer/status" 2>/dev/null || true)
+  speech_status=${speech_response##* }
+  speech_body=${speech_response% *}
+  # Before this endpoint is installed, a live recording always has an ffmpeg child of the
+  # listener's Bun process. Unknown status plus a decoder means leave speech running.
+  speech_decoder=$(ps -axo pid=,ppid=,comm= | awk '$3 ~ /(^|\/)ffmpeg$/ { print $2 }' | while read -r parent; do
+    ps -p "$parent" -o args= 2>/dev/null | grep -q 'live-speech-service.ts' && echo active
+  done | head -1 || true)
+  if [ -z "$speech_decoder" ] && {
+    { [ "$speech_status" = 200 ] && [[ "$speech_body" == *'"activeOperations":0'* ]]; } ||
+    { [ "$speech_status" = 404 ] && [[ "$speech_body" == *'"error":"SPEECH_NOT_FOUND"'* ]]; }
+  }; then
+    launchctl bootout "gui/$(id -u)/$SPEECH_LABEL" 2>/dev/null || true
+    for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$SPEECH_LABEL" >/dev/null 2>&1 || break; sleep 1; done
+    launchctl bootstrap "gui/$(id -u)" "$SPEECH_PLIST"
+    echo "$speech_revision" > "$STATE/speech/.service-revision"
+  else
+    echo "Speech is active or its status is uncertain; leaving it running for the next updater pass."
+  fi
 elif [ -n "$speech_revision" ] && ! launchctl print "gui/$(id -u)/$SPEECH_LABEL" >/dev/null 2>&1; then
   launchctl bootstrap "gui/$(id -u)" "$SPEECH_PLIST"
 fi

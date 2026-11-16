@@ -31,11 +31,34 @@ postponed itself while the recipient was healthy, so it could not detect an unan
 during active work. The new answer clock belongs to the human thread request, not the work-stall
 clock.
 
+A question's answers are found through one matcher shared by the canonical and prepared reads.
+It follows the retained route identities of follow-ups (an exact route event first, then a
+`request:<id>` source's own route, then a unique source match, then the routed destination) so the
+original qualifying post stays discoverable. When an older question's source links to several
+dispatches, the shared original source never picks one of them as its answer; only its own
+follow-ups and an unambiguous dispatch associate a post. A question with no dispatch link still
+accepts a direct reply to its source.
+
 The request enters the recipient's live run through the ordinary agent-input channel. If that run
 ends between acceptance and delivery, the same input enters its queue; it is not replayed after an
 ambiguous provider send. A Mac recipient uses the same peer request and live-input path. When the
 Mac sleeps, the origin retains the request and the answer clock still records that no answer has
 arrived; the Mac receives its input when it wakes.
+
+An explicit `kind:asked` question and its exact recorded dispatch establish this same answer
+clock for work the Inbox dispatches, including a question declared after the request was sent.
+The original request creation time stays the clock origin. An already-retained answering partial
+settles a late-recognized clock at its original event time; final/terminal requests are never
+reopened. A thread address or passive capture alone does not establish an answer obligation.
+Question declaration and exact request linkage reconcile the clock in the canonical writer;
+startup reconciles open asked questions once. The existing coordinator owns scheduling.
+
+For an already-accepted peer request, the origin sends the idempotent, authenticated
+`POST /sessions/v1/peers/requests/:id/prompt-answer` command through the existing peer channel.
+The receiver verifies the original session/input/run, retains the exact question and original
+request time, and uses its existing one-reminder path. It never submits the task again.
+An old or sleeping peer leaves that command pending for ordinary reconciliation; its original
+work remains in custody and the question status does not claim that its reminder was accepted.
 
 The recipient answers with a final request reply or a partial reply bearing `--answers-question`.
 The latter posts the agent's words in Tejas's thread immediately, records an explicit answer signal,
@@ -64,16 +87,14 @@ recorded questions showed no answer and an urgent safety answer read as unseen f
 (request 39914136). For a peer reply, the signal travels with the retained reply event; the
 origin, which holds the thread, drops it with a log line where it does not apply.
 The Mac sends the original final body and closing facts separately; the origin checks the same
-earlier signal before accepting a bodyless final. A final from one agent run can close several
-requests in one Inbox topic with one visible post when its text, attachments, disposition,
-quiet status and nested conversation match exactly. The owner retains each request's reply,
-outcome and topic closure separately. Grouping compares the closing facts recorded for the
-first reply, even though those facts have their own event for each request; different closing
-facts keep separate visible posts. An explicit `--also` still groups requester returns;
-the post rule also works when the agent closes the requests with separate commands. Answers
-from different runs remain separately visible, as do new words after a prompt-answer partial.
-The October 21 retained duplicate posts are hidden by append-only collapse events; their
-original posts and six request outcomes remain in the ledger.
+earlier signal before accepting a bodyless final. Each separately accepted reply stays
+visible under its own request, even when its words match another reply exactly. Only one
+explicit `--also` command shares a visible answer, using that command's retained identity;
+it still settles each named request. A bodyless final attaches closure facts to the exact
+request's earlier answer [decision: fix-protocols-never-hide-duplicates]. The October 21 copy-matched collapses and November 4 agent-update
+collapses remain in the ledger as historical actions, but both direct and prepared Inbox
+readers show those accepted posts again. Timer notices remain out of the human conversation
+because they are agent-facing status, not agent answers.
 On the server, the installed command wrapper always uses the current release's session command
 parser. A running agent can retain an older bundled parser across a deployment; using it for a
 reply would reject `--answers-question` before the owner could record the answer.
@@ -87,6 +108,13 @@ An ask explicitly carrying `--return-to-requester` still sends the agent request
 A late answer is posted to the same thread. The existing fifteen-minute work-stall policy remains
 separate and resumes after a prompt answer; its timer events also stay out of his thread.
 An unavailable agent or sleeping peer cannot promise a semantic answer by a wall clock.
+
+The existing Your questions card receives optional owner-derived `answerStatus: {text:string,
+delayed:boolean}` in canonical and prepared reads. It distinguishes an unassigned question,
+ordinary waiting, an overdue answer, an exact retained prerequisite or device/sign-in wait,
+and a recorded result whose answer delivery is not established. Retained answer reads take
+precedence. Existing question age remains the age; no browser timer, Timeline band or new
+phone-reminder cadence is introduced. Work completion and prompt-answer settlement stay separate.
 
 The origin owns the due time and answer signal. A peer recipient owns its own reminder timer from
 the instant it accepts the request. Stable reminder input identities and retained reply event IDs

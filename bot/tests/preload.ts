@@ -20,6 +20,16 @@ process.env.CONCIERGE_STATE_DIR = scratchDir;
 process.env.CONCIERGE_CAPTURE_STATE_DIR = join(scratchDir, "capture");
 process.env.CONCIERGE_TEST_MODE = "1";
 
+// No test reaches Tejas's live thnkr.ing (thesaurus, to-dos, captures). Every Concierge call to
+// it resolves its place from these variables (thinkering-capability-target.ts, the `thinkering`
+// helper), so pointing the socket at a path nothing listens on and dropping the network entrance
+// makes a forgotten stand-in fail closed instead of reading his live entries. Tests that need
+// thnkr.ing answers pass their own stand-in socket explicitly. 2026-11-06 failure record:
+// docs/incidents/2026-11-06-focused-tests-read-live-thesaurus.md.
+process.env.THINKERING_SESSION_CAPABILITY_SOCKET = join(scratchDir, "no-thinkering.sock");
+for (const key of ["CONCIERGE_THINKERING_CAPABILITY_URL", "CONCIERGE_THINKERING_TOKEN_FILE", "THINKERING_CAPABILITY_URL"])
+  delete process.env[key];
+
 afterAll(() => {
   try {
     rmSync(scratchDir, { recursive: true, force: true });

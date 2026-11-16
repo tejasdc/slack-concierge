@@ -5,7 +5,7 @@ import {realpathSync} from 'node:fs';
 import {join} from 'node:path';
 
 type AsideRequest={operationId:string;provider:'claude-code'|'codex';account:string|null;spendAccount:string|null;sessionUuid:string;
-  project:string|null;path:string;model:string|null;running:boolean;prompt:string};
+  project:string|null;path:string;model:string|null;boundary:string|null;prompt:string};
 type AsideAnswer={answer:string;model:string|null;durationMs:number};
 type Home={account:string|null;home:string|null;transcript:string};
 type Services={botDir:string;bunPath:string;resolveCwd:(project:string|null,path:string)=>Promise<string>;
@@ -25,7 +25,8 @@ export function serveRunnerAside(params:unknown,services:Services):Promise<Aside
     ||input.spendAccount!==null&&typeof input.spendAccount!=='string'
     ||typeof input.sessionUuid!=='string'||!/^[0-9a-f-]{36}$/i.test(input.sessionUuid)
     ||input.project!==null&&typeof input.project!=='string'||typeof input.path!=='string'
-    ||input.model!==null&&typeof input.model!=='string'||typeof input.running!=='boolean'
+    ||input.model!==null&&typeof input.model!=='string'||input.boundary!==null&&typeof input.boundary!=='string'
+    ||typeof input.boundary==='string'&&(!/^[0-9a-f-]{36}$/i.test(input.boundary))
     ||typeof input.prompt!=='string'||input.prompt.length>100_000)throw new Error('INVALID_ASIDE_REQUEST');
   const now=Date.now();for(const [id,item] of retained)if(now-item.at>10*60_000)retained.delete(id);
   const digest=createHash('sha256').update(JSON.stringify(input)).digest('hex');
@@ -60,7 +61,7 @@ export function serveRunnerAside(params:unknown,services:Services):Promise<Aside
           resolve(value as AsideAnswer);}catch{reject(new Error('INVALID_ASIDE_ANSWER'));}
       });
       child.stdin.end(JSON.stringify({provider:input.provider,sessionUuid:input.sessionUuid,cwd,model:input.model,
-        running:input.running,prompt:input.prompt}));
+        boundary:input.boundary,prompt:input.prompt}));
     });
   })();
   retained.set(input.operationId,{promise,at:now,digest});

@@ -19,6 +19,7 @@ import {needClaudeSignInRenewal} from './signin-renewal';
 import {claudeAccountWorks,releaseAuthHold} from './provider-activation';
 import {providerRunnerTarget} from './provider-runner-target';
 import {providerAccountHomeForPlacement} from './provider-account-home';
+import {CLAUDE_SCRATCH,isClaudePerLogin} from './claude-home-entries';
 
 /**
  * What an extra Claude home keeps for itself: its own login and the per-login state Claude writes
@@ -28,25 +29,9 @@ import {providerAccountHomeForPlacement} from './provider-account-home';
  * starts in, so a home that only linked history ran agents with no settings: on 2026-10-07 every
  * command needed an approval nobody could give, for ten minutes after a switch that "worked".
  */
-// Per-login also covers what Claude stamps with the signed-in account and deletes at logout
-// (remote settings and policy limits), so one account never reads another's.
-// It also covers sign-in state and the locks Claude takes while it renews a login (`.storage-write`,
-// `.oauth_refresh.lock*`): linking a lock to the main folder's would tie this account's renewals to
-// whatever a terminal there is doing, and a lock that happened to exist during a switch would be
-// left dangling (GPT-6 Astra's stand-in review, 2026-10-07).
-const PER_LOGIN=new Set(['.credentials.json','.claude.json','.claude.json.lock','.account-email','backups',
-  'remote-settings.json','policy-limits.json','policy-limits.json.stamp.json',
-  'hfi-auth.json','.session_ingress_token','.storage-write']);
-// `.storage-write.lock` is Claude's lock beside `.storage-write`: a terminal sign-in in the main folder left one there on
-// 2026-11-02 and every extra home read as incomplete until it went away.
-const isPerLogin=(name:string)=>PER_LOGIN.has(name)||/^\.(credentials|claude)\.json\./.test(name)||/^\.oauth_refresh\.lock/.test(name)||/^\.storage-write\./.test(name);
-/**
- * Runtime scratch Claude recreates per process. Shared when possible, but a private copy is
- * harmless and is never moved: a live process may be using it (one was, at the 19:40 repair on
- * 2026-10-07).
- */
-const SCRATCH=new Set(['sessions','session-env','shell-snapshots','cache','statsig','paste-cache','.last-cleanup',
-  '.last-update-result.json','mcp-needs-auth-cache.json','teams','jobs','daemon']);
+// Which entries are per-login and which are scratch lives in claude-home-entries.ts, shared with runners.
+const isPerLogin=isClaudePerLogin;
+const SCRATCH=CLAUDE_SCRATCH;
 
 /**
  * The home an extra Claude account launches from, or null when it is not a complete view of the
@@ -228,9 +213,12 @@ export function selectedClaudeHome(runnerTarget:string|null|undefined=undefined)
 
 /** The home a Claude account launches from: the selected account's complete home, or another proven one. */
 function launchableClaudeHome(account:string,selected:string|null,prepare:boolean,home?:string,runnerTarget:string|null|undefined=undefined):string|null {
+  // A peer can supply this account's allowance, but only this machine can establish
+  // whether its own home is signed in. The selected-home exception honors that verdict.
+  const reading=providerAccountUsage('claude-code')?.accounts.find(item=>item.label===account);
+  if(reading?.signedOut===true)return null;
   if(runnerTarget===undefined?providerRunnerTarget('claude-code'):!!runnerTarget){
-    const reading=providerAccountUsage('claude-code')?.accounts.find(item=>item.label===account);
-    return reading?.signedOut?null:providerAccountHomeForPlacement(runnerTarget===undefined?providerRunnerTarget('claude-code'):runnerTarget,account,home??'');
+    return providerAccountHomeForPlacement(runnerTarget===undefined?providerRunnerTarget('claude-code'):runnerTarget,account,home??'');
   }
   const complete=sharedClaudeHome(account,home,prepare,false);
   // The selected account was proven when he chose it and stays his choice across restarts; a
@@ -406,9 +394,15 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   }):null;
   if(selectedAttempt&&(!warmRoom||!!selectedAccount))return {account:selectedAttempt.account,home:selectedAttempt.home,
     because:'stayed-on-its-account',expected,selectionRevision:selection?.revision??0};
-  if(warmRoom&&!selectedAccount)return {account:warmRoom.account,home:warmRoom.home,
+  // A warm account with a fresh reading is weighed by the shared rule against the other accounts'
+  // lapse pressure (WARM_STAY_BAND); only a warm account whose reading has gone stale keeps the
+  // conversation on the last good reading alone, because nothing fresh can be compared. The
+  // unconditional stay here was what let the week ending Sunday be spent while the week ending
+  // Wednesday kept its room (2026-11-15), even after the rule itself had the band.
+  const warmFresh=!!warmRoom&&warmRoom.tightestUsedPercent!==null&&!warmRoom.problem;
+  if(warmRoom&&!selectedAccount&&!warmFresh)return {account:warmRoom.account,home:warmRoom.home,
     because:'stayed-for-warm-cache',expected,selectionRevision:selection?.revision??0};
-  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount});
+  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount:warmRoom?warmCacheAccount:null});
   if(choice.account===null){
     // A new account may be visible in the server's allowance read before this Mac has
     // its own login. Ask the existing browser repair path to establish that local home;

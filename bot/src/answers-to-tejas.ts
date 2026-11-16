@@ -65,10 +65,42 @@ function completeMessageWordsOf(input: AcceptedSessionInput): string[] {
 
 type Verdict = 'his' | 'not-his' | 'unverifiable';
 
+const CHAIN_HOPS = 16, CITED_INPUTS = 64;
+const CITED_INPUT_ID = /\bcapture:[0-9a-f]{64}\b|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
+
 /**
- * Whether a quote is really his: first the message that started this work, then anything he sent
- * in the last thirty days (a thread's question can rest on an earlier message of his). Work whose
- * originating message lives on the other machine cannot be checked here and is taken as given.
+ * His retained messages that this work descends from: every human input on its source chain, and
+ * every retained human input an agent or service hop cites by its exact ID. The cited input is read
+ * from the ledger, never from the citing agent's text, so a citation cannot invent his words.
+ * On 2026-09-16 a usage-reset wake request forwarded seven of his failed messages as quoted
+ * records with their input IDs; the screenshot-drag work that followed traced its human source to
+ * the wake message, and on 2026-11-12 the drag question quoting his September report was refused.
+ */
+function hisMessagesOnChain(actor: AcceptedSessionInput): AcceptedSessionInput[] {
+  const found = new Map<string, AcceptedSessionInput>(), seen = new Set<string>();
+  let cited = 0;
+  let current: AcceptedSessionInput | null = actor;
+  for (let hop = 0; current && hop < CHAIN_HOPS && !seen.has(current.id); hop++) {
+    seen.add(current.id);
+    if (humanAuthored(current)) found.set(current.id, current);
+    else for (const match of wordsOf(current).matchAll(CITED_INPUT_ID)) {
+      if (cited >= CITED_INPUTS) break;
+      const id = match[0];
+      if (found.has(id)) continue;
+      const input = getAcceptedSessionInput(id) ?? getAcceptedSessionInput(`request:${id}`);
+      if (input) cited++;
+      if (input && humanAuthored(input)) found.set(input.id, input);
+    }
+    current = current.source_input_id ? getAcceptedSessionInput(current.source_input_id) : null;
+  }
+  return [...found.values()];
+}
+
+/**
+ * Whether a quote is really his: first the message that started this work, then his messages
+ * retained along this work's own source chain however old, then anything he sent in the last
+ * thirty days (a thread's question can rest on an earlier message of his). Work whose originating
+ * message lives on the other machine cannot be checked here and is taken as given.
  */
 function quoteVerdict(actorInputId: string, quote: string, wholeMessageOnly = false): Verdict {
   const wanted = normalized(quote);
@@ -84,6 +116,7 @@ function quoteVerdict(actorInputId: string, quote: string, wholeMessageOnly = fa
     return human ? getAcceptedSessionInput(human.inputId) : null;
   })();
   if (origin && humanAuthored(origin) && matches(origin)) return 'his';
+  if (hisMessagesOnChain(actor).some(matches)) return 'his';
   const provenance = humanAuthored(actor) ? null : sessionInputProvenance(actor);
   if (provenance?.peer || (provenance?.originatingHuman && !origin)) return 'unverifiable';
   const recent = db.query(`SELECT * FROM session_inputs WHERE origin='human' AND created_at >= datetime('now','-30 days') ORDER BY rowid DESC`).all() as AcceptedSessionInput[];
@@ -97,7 +130,7 @@ function quoteVerdict(actorInputId: string, quote: string, wholeMessageOnly = fa
 export function questionForTejas(input: { actorInputId: string; question: string; lead?: string; hisWords?: string; whyNotAnswered?: string; onlyHeCan?: string; decisionId?: string; approvalAction?: string }): string {
   const kind = requireOnlyHeCan(input.onlyHeCan);
   if(kind==='device'&&!deviceQuestionNamesPhysicalPrerequisite(input.question))
-    throw new Error('Only-he-can device questions ask for one action on a physical device in their first sentence, such as "Please unlock your iPhone." or "Can you unlock your Mac so I can continue?"; later sentences may only state what you saw or will do, never ask him for more. Try the available agent route first, then explain in --why-not-answered why only Tejas can take this step.');
+    throw new Error('Only-he-can device questions ask for one action on a physical device in their first sentence, such as "Please unlock your iPhone.", "Can you unlock your Mac so I can continue?" or one tap, press, click, drag or plug-in that names his device ("Please drag the screenshot thumbnail onto the Desktop on your Mac."); later sentences may only state what you saw or will do, never ask him for more. Try the available agent route first, then explain in --why-not-answered why only Tejas can take this step.');
   if (kind !== 'approval' && (input.decisionId !== undefined || input.approvalAction !== undefined))
     throw new Error('--decision-id and --approval-action belong to --only-he-can approval.');
   const decision = kind === 'approval' ? approvalDecision(input.decisionId, input.approvalAction) : undefined;

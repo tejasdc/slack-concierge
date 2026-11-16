@@ -1,8 +1,10 @@
 import type {Database} from 'bun:sqlite';
+import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 
 /** A routed topic root is an event address; its retained action input owns FK custody. */
 export function topicRouteAnchor(database:Database,sessionId:number,root:string):string|null {
-  const row=database.query("SELECT input_id FROM session_owner_events WHERE session_id=? AND event_id=? AND kind='topic_route'")
+  const row=database.query(`SELECT input_id FROM session_owner_events WHERE session_id IN (${INBOX_LINEAGE_SQL})
+      AND event_id=? AND kind='topic_route'`)
     .get(sessionId,root) as {input_id:string|null}|null;
   return row?.input_id??null;
 }
@@ -21,13 +23,24 @@ export function routeTitle(database:Database,topicId:string|null|undefined,sessi
   return local?.title??sessionId;
 }
 
+/**
+ * A request this Inbox sent, by its exact id, whichever Inbox session holds it now. A provider
+ * handoff moves an open request's custody (its source session) to the successor router; the
+ * thread it was sent for never moves. Matching only the session whose transcript records the
+ * send lost the thread for every request still open at a handoff: on 2026-11-05 twelve of his
+ * forwarded thread replies were each made a thread of their own, titled with his first words
+ * (docs/incidents/2026-11-16-forwarded-replies-became-threads.md).
+ */
+export function inboxSentRequest(database:Database,requestId:string,sessionId:number):{source_input_id:string|null;thread_root_input_id:string|null}|null {
+  return (database.query(`SELECT source_input_id,thread_root_input_id FROM session_communication_requests
+      WHERE request_id=? AND source_session_id IN (${INBOX_LINEAGE_SQL})`).get(requestId,sessionId)
+    ??database.query(`SELECT source_input_id,thread_root_input_id FROM session_peer_requests
+      WHERE request_id=? AND source_session_id IN (${INBOX_LINEAGE_SQL})`).get(requestId,sessionId)) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
+}
+
 /** The input that caused a request, distinct from the older message named for its answer. */
 export function requestPromptInputId(database:Database,requestId:string,sourceSessionId:number):string|null {
-  const row=(database.query('SELECT source_input_id AS id FROM session_communication_requests WHERE request_id=? AND source_session_id=?')
-    .get(requestId,sourceSessionId)
-    ??database.query('SELECT source_input_id AS id FROM session_peer_requests WHERE request_id=? AND source_session_id=?')
-      .get(requestId,sourceSessionId)) as {id:string|null}|null;
-  return row?.id??null;
+  return inboxSentRequest(database,requestId,sourceSessionId)?.source_input_id??null;
 }
 
 /** Thread custody discharges ordinary success; unresolved or failed work returns to its asker. */

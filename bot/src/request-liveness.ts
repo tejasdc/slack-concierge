@@ -35,8 +35,7 @@ export const STILL_WAITING_AFTER_MS = 15 * 60_000;
 export const STILL_WAITING_MINUTES = STILL_WAITING_AFTER_MS / 60_000;
 
 /** Human thread replies get a prompt answer while the recipient continues its work. */
-export const PROMPT_ANSWER_REMINDER_MS = 2 * 60_000;
-export const PROMPT_ANSWER_OVERDUE_MS = 3 * 60_000;
+export {PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS} from './prompt-answer-policy';
 
 /** True while a Concierge update is draining: work held only by it is waiting, not stalled. */
 export function updateDraining(): boolean {
@@ -61,7 +60,8 @@ export function waitingOnLiveRequest(sessionId: number, sinceMs = 0, untakenAnsw
         LEFT JOIN turns saved_turn ON saved_turn.id=target.turn_id
         WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND request.created_at_ms>=? AND ${live} AND ${returns}
           AND NOT (saved_turn.saved_kind IS NOT NULL AND saved_turn.status='queued') LIMIT 1`).get(sessionId, sinceMs)
-        || !!db.query(`SELECT 1 FROM session_peer_requests request WHERE source_session_id=? AND created_at_ms>=? AND ${live} AND ${returns} LIMIT 1`).get(sessionId, sinceMs)
+        || !!db.query(`SELECT 1 FROM session_peer_requests request WHERE source_session_id=? AND created_at_ms>=? AND ${live} AND ${returns}
+          AND json_extract(request.payload_json,'$.responseMode') IS NOT 'context' LIMIT 1`).get(sessionId, sinceMs)
         // A request that has just been answered still wakes this session until its answer is taken
         // in: on 2026-10-08 three requests were reported stalled in the same second their worker's
         // own sub-request settled, before the return that woke it had started a turn.
@@ -174,14 +174,34 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
 }
 
 /** Withdraws one queued turn of withdrawn work, settling what waits on it and any usage-hold notice. */
-function revokeQueuedTurn(inputId: string, turnId: number, sessionId: number, reason: string) {
+function revokeQueuedTurn(inputId: string, turnId: number, sessionId: number, reason: string, receiptReason = 'request_withdrawn') {
     finishTurn(turnId, 'cancelled', reason);
     settleTurnDependencies(turnId);
     const session = getSessionById(sessionId);
     if (session && ['codex', 'claude-code', 'antigravity'].includes(session.provider_id))
         resolveUsageHoldNoticesForSettledTurn(session.provider_id as UsageProvider, turnId, 'request_withdrawn');
-    db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
-        .run(inputId);
+    db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled','$.reason',?,'$.cancellationDetail',?,'$.turnId',?),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id=?")
+        .run(receiptReason,reason,turnId,inputId,turnId);
+}
+
+/**
+ * The keeper reads an entry's current words from thnkr.ing, never the words at filing time, so
+ * a waiting older request for the same entry can only repeat the newer one. While he writes, each
+ * pause files a new request; a keeper held by usage then ran all of them on the same final words
+ * (journal-entry 0d5c3606: 12 filings on Nov 7, 8 identical turns on Nov 8). Retire every one that
+ * never reached a provider; one already started finishes as it is.
+ */
+export function supersedeWaitingJournalObservations(sessionId: number, newestInputId: string, objectId: string): number {
+    const marker = `objectId=${encodeURIComponent(objectId)} `;
+    const waiting = db.query(`SELECT input.id, turn.id AS turn_id FROM session_inputs input JOIN turns turn ON turn.id=input.turn_id
+        WHERE input.session_id=? AND input.id LIKE 'journal-tracker:%' AND input.id<>? AND input.origin='service' AND input.steering_id IS NULL
+          AND instr(json_extract(input.payload_json,'$.text'),?)>0
+          AND turn.status='queued' AND turn.provider_admission_intended_at IS NULL AND turn.provider_started_at IS NULL
+          AND turn.provider_turn_id IS NULL AND turn.provider_input_acknowledged_at IS NULL`)
+        .all(sessionId, newestInputId, marker) as { id: string; turn_id: number }[];
+    for (const item of waiting)
+        revokeQueuedTurn(item.id, item.turn_id, sessionId, 'A newer save of the same journal entry replaced this waiting filing request.', 'journal_observation_superseded');
+    return waiting.length;
 }
 
 /**
@@ -189,12 +209,12 @@ function revokeQueuedTurn(inputId: string, turnId: number, sessionId: number, re
  * request turn, and the schedule is marked ended. A firing already running finishes. Returns how many
  * firings were withdrawn, or null when the input starts no repeating schedule.
  */
-export function endRepeatingScheduleForInput(inputId: string): number | null {
+export function endRepeatingScheduleForInput(inputId: string, reason = 'The requesting session cancelled this repeating schedule.'): number | null {
     const schedule = repeatingScheduleOf(inputId);
     if (!schedule) return null;
     for (const firing of schedule.queued)
-        revokeQueuedTurn(firing.accepted_input_id, firing.id, firing.session_id, 'The requesting session cancelled this repeating schedule.');
-    markRepeatingScheduleEnded(schedule.root, 'The requesting session cancelled this repeating schedule.', schedule.queued.length);
+        revokeQueuedTurn(firing.accepted_input_id, firing.id, firing.session_id, reason);
+    markRepeatingScheduleEnded(schedule.root, reason, schedule.queued.length);
     return schedule.queued.length;
 }
 

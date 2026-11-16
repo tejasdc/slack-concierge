@@ -5,8 +5,15 @@ import declaration from './deployment-artifact-files.json';
 const processEntry=process.argv[1]&&existsSync(process.argv[1])?realpathSync(process.argv[1]):process.argv[1]??"";
 type WorkerName=Extract<keyof typeof declaration.controlBundles,`control/application/${string}.js`> extends `control/application/${infer Name}.js`?Name:never;
 function sealedRoot(entry:string):string|null {
- const root=resolve(dirname(resolve(entry)),'../..');
- return existsSync(join(root,'manifest.json'))?root:null;
+ let root=dirname(resolve(entry));
+ // Application workers and the runner occupy different depths in the same sealed release.
+ for(let depth=0;depth<4;depth++){
+  if(existsSync(join(root,'manifest.json')))return root;
+  const parent=dirname(root);
+  if(parent===root)break;
+  root=parent;
+ }
+ return null;
 }
 /** Resolve inside the application artifact, never the separately moving control link. */
 export function releaseWorkerPath(name:WorkerName,entry=processEntry):string {

@@ -22,7 +22,8 @@ db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,status TEXT,provider_id TE
   CREATE TABLE provider_retry_incarnation(singleton INTEGER PRIMARY KEY,incarnation TEXT);
   CREATE TABLE provider_retry_observations(turn_id INTEGER PRIMARY KEY,incarnation TEXT,since_ms INTEGER,
     attempt INTEGER,max_retries INTEGER,status INTEGER,retry_at_ms INTEGER);
-  CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,kind TEXT,input_id TEXT,payload_json TEXT);
+  CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,kind TEXT,input_id TEXT,payload_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE deployment_drain(singleton INTEGER PRIMARY KEY);
   CREATE TABLE focus_hold(singleton INTEGER PRIMARY KEY,until_ms INTEGER,label TEXT,since_ms INTEGER,action_id TEXT);
   CREATE TABLE turn_dependencies(turn_id INTEGER,satisfied_at TEXT);`);
@@ -50,6 +51,16 @@ db.query('INSERT INTO provider_retry_observations VALUES(1,?,?,?,?,?,?)')
   .run('owner-a',Date.now(),2,4,529,Date.now()+10000);
 const receipt=()=>readCompactReceipt(db,'input-1')!;
 const expect=(condition:unknown,description:string)=>{if(!condition)throw new Error(description);};
+db.query('INSERT INTO sessions VALUES(2,?,?,?)').run('active','codex','{}');
+const placement=(sequence:number,sessionId:number,attached:boolean,thread:string)=>db.query(`INSERT INTO session_owner_events
+  (sequence,session_id,kind,input_id,payload_json) VALUES(?,?,'thread_link','input-1',?)`)
+  .run(sequence,sessionId,JSON.stringify({root:thread,thread,attached,routedBy:{sessionId:`concierge:${sessionId}`}}));
+placement(1,2,true,'successor-thread');
+expect((receipt().replyToMessage as any)?.messageId==='successor-thread','successor routing reaches the predecessor input receipt');
+placement(2,1,false,'successor-thread');
+expect(receipt().replyToMessage===null&&receipt().routedBy===null,'latest detach clears receipt routing');
+placement(3,2,true,'new-thread');
+expect((receipt().replyToMessage as any)?.messageId==='new-thread','latest successor relink replaces old receipt routing');
 expect(receipt().statusDetail?.code==='PROVIDER_RETRYING','live retry remains visible');
 expect(receipt().statusDetail?.automaticRetry===true,'retry tells the truth about automatic retry');
 expect(JSON.stringify(receipt().attachments)===JSON.stringify([
@@ -125,4 +136,33 @@ projection.checkpoint(generation,101);
 const changes=readPreparedReceiptChanges(prepared,1,101,window.asOf,40),changed=changes.operations.find(item=>item.operationId==='held-input');
 expect(changed?.attachments[0]?.name==='held-note.txt'&&changed.attachments[0]?.contentType==='text/plain',
   'prepared receipt change page carries the same retained attachment reference');
-console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure and bounded preview passed');
+// A request the Inbox routed from his own words names him only through routedFrom. On 2026-11-10 the
+// list ran an older copy of the provenance walk and listed no human while the full record named his capture.
+db.exec(`ALTER TABLE session_inputs ADD COLUMN source_run_id TEXT;
+  ALTER TABLE session_communication_requests ADD COLUMN source_session_id INTEGER;
+  ALTER TABLE session_communication_requests ADD COLUMN source_turn_id INTEGER;`);
+db.query(`INSERT INTO turns(id,session_id,status,native_run_id,dispatch_attempt,turn_kind) VALUES(7,1,'completed','run-ring',1,'native'),
+  (8,1,'completed','run-router',1,'native')`).run();
+const addInput=db.query(`INSERT INTO session_inputs(id,session_id,kind,origin,source_input_id,source_run_id,request_id,turn_id,
+  created_at,updated_at,payload_json) VALUES(?,1,?,?,?,?,?,?,'2026-11-10T00:00:00Z','2026-11-10T00:00:00Z',?)`);
+addInput.run('ring-input','input','human',null,null,null,7,JSON.stringify({text:'Ring her',capture:{id:'capture:ring'}}));
+addInput.run('router-input','input','agent',null,null,null,8,JSON.stringify({text:'File it'}));
+addInput.run('routed-request','input','agent','router-input','run-router','routed-rq',null,
+  JSON.stringify({text:'Ring her',routedFrom:{authorKind:'human',messageId:'ring-input'}}));
+db.query(`INSERT INTO session_communication_requests(request_id,target_input_id,target_session_id,source_input_id,source_session_id,
+  source_turn_id,payload_json) VALUES('routed-rq','routed-request',1,'router-input',1,8,?)`).run(JSON.stringify({requestedEffect:'work'}));
+const routed=readCompactReceipt(db,'routed-request')!.provenance as any;
+expect(routed?.originatingHuman?.inputId==='ring-input'&&routed.originatingHuman.captureId==='capture:ring'
+  &&routed.originatingHuman.runId==='run-ring'&&routed.effectScope==='work',
+  'the receipt list names the human a routed request came from, as the full record does');
+// An ask made from a later informational wake names the earlier open work input as its authority.
+db.query(`INSERT INTO turns(id,session_id,status,native_run_id,dispatch_attempt,turn_kind) VALUES(9,1,'completed','run-wake',1,'native')`).run();
+addInput.run('wake-input','input','service',null,null,null,9,JSON.stringify({text:'Answer arrived'}));
+addInput.run('granted-request','input','agent','wake-input','run-wake','granted-rq',null,JSON.stringify({text:'Continue'}));
+db.query(`INSERT INTO session_communication_requests(request_id,target_input_id,target_session_id,source_input_id,source_session_id,
+  source_turn_id,payload_json) VALUES('granted-rq','granted-request',1,'wake-input',1,9,?)`)
+  .run(JSON.stringify({requestedEffect:'work',authorityInputId:'ring-input'}));
+const granted=readCompactReceipt(db,'granted-request')!.provenance as any;
+expect(granted?.source?.inputId==='wake-input'&&granted.originatingHuman?.inputId==='ring-input'&&granted.effectScope==='work',
+  'an ask carrying an earlier work grant lists the human behind that grant');
+console.log('receipt-projection: retry set, restart, clear, hold, readable ChatGPT failure, bounded preview, routed human and granted authority passed');

@@ -8,7 +8,7 @@ export function armThreadNotification(input:{id:string;sessionId:number;kind:str
   if(input.mark!=='result'||input.origin!=='human'||!['input','create','inbox-capture'].includes(input.kind))return;
   if(!db.query("SELECT 1 FROM sessions WHERE id=? AND json_extract(native_metadata_json,'$.inbox')=1").get(input.sessionId))return;
   const capture=input.payload?.capture;
-  if(capture?.importOnly&&capture?.source?.metadata?.quoted?.kind!=='human')return;
+  if(capture?.importOnly&&(capture?.source?.metadata?.quoted?.kind!=='human'||capture?.source?.metadata?.intent!=='action'))return;
   db.query('INSERT OR IGNORE INTO inbox_thread_notifications(input_id,inbox_session_id) VALUES(?,?)').run(input.id,input.sessionId);
 }
 
@@ -19,7 +19,7 @@ function topic(sessionId:number,root:string):string|null {
   return row?.topic_id??null;
 }
 
-function agentMessage(sessionId:number,root:string,messageId:string):{text:string;sequence:number}|null {
+function agentMessage(sessionId:number,root:string,messageId:string):{text:string;sequence:number;payload:any}|null {
   const row=db.query(`SELECT event.kind,event.payload_json,event.sequence,turn.agent_text FROM session_owner_events event
     LEFT JOIN turns turn ON turn.id=event.turn_id
     WHERE event.event_id=? AND event.session_id=? AND coalesce(json_extract(event.payload_json,'$.threadRoot'),event.input_id)=? AND event.kind IN ('post','result')`)
@@ -28,7 +28,7 @@ function agentMessage(sessionId:number,root:string,messageId:string):{text:strin
   const payload=JSON.parse(row.payload_json);
   if(row.kind==='post'&&payload.postedBy==='service')return null;
   const text=String(payload.text??row.agent_text??'').trim();
-  return text?{text,sequence:row.sequence}:null;
+  return text?{text,sequence:row.sequence,payload}:null;
 }
 
 export function messageAlreadyNotified(sessionId:number,messageId:string):boolean {
@@ -38,21 +38,45 @@ export function messageAlreadyNotified(sessionId:number,messageId:string):boolea
     .get(sessionId,messageId);
 }
 
+/**
+ * One agent turn rings him at most once per thread. On 2026-11-12 the Inbox agent filed an
+ * approval question and, eight seconds later in the same turn, posted the same choice in plain
+ * words with --notify: two rings, one decision ("I literally got 2 different notifications").
+ * The first push of the turn stands; later ones from that turn stay in the thread unrung.
+ */
+export function threadRangThisRun(sessionId:number,root:string,runId:string|null|undefined):boolean {
+  if(!runId)return false;
+  return !!db.query(`SELECT 1 FROM session_owner_events WHERE input_id=? AND session_id=? AND kind='needs_you'
+    AND json_extract(payload_json,'$.runId')=?
+    AND (json_extract(payload_json,'$.requestedNotification')=1 OR json_extract(payload_json,'$.blockingNotification')=1) LIMIT 1`)
+    .get(root,sessionId,runId);
+}
+
 /** Consumes all pending requests in this topic. A later human request inserts a new arm. */
-export function consumeThreadNotification(sessionId:number,root:string,messageId:string):string|null {
-  if(messageAlreadyNotified(sessionId,messageId))return null;
+export function consumeThreadNotification(sessionId:number,root:string,messageId:string,silent=false,runId:string|null=null):string|null {
+  if(!silent&&messageAlreadyNotified(sessionId,messageId))return null;
   const message=agentMessage(sessionId,root,messageId);
   if(!message)return null;
   const current=topic(sessionId,root);
   if(!current)return null;
   const pending=db.query("SELECT input_id FROM inbox_thread_notifications WHERE inbox_session_id=? AND consumed_by_message_id IS NULL ORDER BY created_at,input_id")
     .all(sessionId) as {input_id:string}[];
+  const rang=runId&&!silent?db.query(`SELECT MAX(sequence) AS sequence FROM session_owner_events WHERE session_id=? AND input_id=? AND kind='needs_you' AND json_extract(payload_json,'$.runId')=? AND (json_extract(payload_json,'$.requestedNotification')=1 OR json_extract(payload_json,'$.blockingNotification')=1)`).get(sessionId,root,runId) as {sequence:number|null}:null;
   let first:string|null=null;
   for(const row of pending){
     if(db.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(row.input_id))continue;
     const admission=db.query(`SELECT MIN(sequence) AS sequence FROM session_owner_events
       WHERE session_id=? AND input_id=? AND kind IN ('accepted','inbox_capture')`).get(sessionId,row.input_id) as {sequence:number|null};
-    if(admission.sequence===null||admission.sequence>=message.sequence)continue;
+    if(admission.sequence===null||admission.sequence>=message.sequence||rang?.sequence!=null&&admission.sequence<=rang.sequence)continue;
+    {
+      const requestId=message.payload.requestId;
+      if(typeof requestId==='string'){
+        const direct=message.payload.replyToMessage?.messageId===row.input_id
+          ||!!db.query(`SELECT 1 FROM session_communication_requests WHERE request_id=? AND source_input_id=? UNION ALL SELECT 1 FROM session_peer_requests WHERE request_id=? AND source_input_id=?`).get(requestId,row.input_id,requestId,row.input_id);
+        const linked=!!db.query(`SELECT 1 FROM inbox_requests WHERE EXISTS(SELECT 1 FROM json_each(sources_json) source WHERE json_extract(source.value,'$.inputId')=?) AND EXISTS(SELECT 1 FROM json_each(dispatches_json) dispatch WHERE json_extract(dispatch.value,'$.requestId')=?)`).get(row.input_id,requestId);
+        if(!direct&&!linked)continue;
+      }else if(!silent&&dispatchedFromInput(row.input_id))continue;
+    }
     const askingRoot=inboxThreadRoot(sessionId,row.input_id);
     if(!askingRoot||topic(sessionId,askingRoot)!==current)continue;
     const changed=db.query('UPDATE inbox_thread_notifications SET consumed_by_message_id=?,consumed_at=CURRENT_TIMESTAMP WHERE input_id=? AND consumed_by_message_id IS NULL')
@@ -75,21 +99,28 @@ export function hasPendingThreadNotification(sessionId:number,root:string):boole
 }
 
 export function dispatchedFromInput(inputId:string):boolean {
-  return !!db.query('SELECT 1 FROM session_communication_requests WHERE source_input_id=? LIMIT 1').get(inputId)
-    ||!!db.query('SELECT 1 FROM session_peer_requests WHERE source_input_id=? LIMIT 1').get(inputId);
+  return !!db.query(`SELECT 1 FROM session_communication_requests WHERE outcome IS NULL AND (source_input_id=? OR thread_root_input_id=?)
+    UNION ALL SELECT 1 FROM session_peer_requests WHERE outcome IS NULL AND (source_input_id=? OR thread_root_input_id=?)
+    UNION ALL SELECT 1 FROM inbox_requests obligations, json_each(obligations.dispatches_json) dispatch
+      WHERE EXISTS(SELECT 1 FROM json_each(obligations.sources_json) source WHERE json_extract(source.value,'$.inputId')=?)
+      AND (EXISTS(SELECT 1 FROM session_communication_requests work WHERE work.request_id=json_extract(dispatch.value,'$.requestId') AND work.outcome IS NULL)
+        OR EXISTS(SELECT 1 FROM session_peer_requests work WHERE work.request_id=json_extract(dispatch.value,'$.requestId') AND work.outcome IS NULL)) LIMIT 1`)
+    .get(inputId,inputId,inputId,inputId,inputId);
 }
 
 /** An explicitly notified post carries its own words and consumes any open topic arm. */
-export function notifyAgentPost(sessionId:number,root:string,messageId:string,text:string,force=true):void {
+export function notifyAgentPost(sessionId:number,root:string,messageId:string,text:string,force=true,runId:string|null=null):void {
   if(!text.trim())throw new Error('--notify requires words in the message being posted.');
   if(agentMessage(sessionId,root,messageId)?.text!==text.trim())throw new Error('--notify requires the exact words of an existing agent post.');
   db.transaction(()=>{
     const eventId=`needs_you:requested:${messageId}`;
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return;
     if(messageAlreadyNotified(sessionId,messageId))return;
-    const asking=consumeThreadNotification(sessionId,root,messageId);
+    // A later accepted human request may ring again even in the same agent run.
+    const asking=consumeThreadNotification(sessionId,root,messageId,false,runId);
+    if(threadRangThisRun(sessionId,root,runId)&&!asking)return;
     if(!force&&!asking)return;
     recordSessionEvent({eventId,sessionId,inputId:root,kind:'needs_you',payload:{outcome:'response',question:text.trim().slice(0,2000),
-      inputId:root,postId:messageId,requestedNotification:true,...(asking?{notificationInputId:asking}:{})}});
+      inputId:root,postId:messageId,requestedNotification:true,...(asking?{notificationInputId:asking}:{}),...(runId?{runId}:{})}});
   })();
 }

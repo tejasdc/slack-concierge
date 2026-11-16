@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
+import { claudeConsultationEnvironment } from "./claude-consultation-environment";
 import { splitTurnOutcomeMarker, type TurnOutcomeMark } from "./turn-outcome-marker";
 import { claudeHistoryMessages, claudeToolNames, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
+import { launchRefusalReason } from "./claude-launch-refusal";
 import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion, isContextOverflowRefusal } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { WriteOutcomeUnknownError } from "./execution-host-client";
@@ -12,7 +14,8 @@ import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-tra
 import { recordClaudeWorkload } from "./session-fit";
 import { webActivityDetails } from "./agent-progress";
 import { macSurfaceActivity } from "./mac-surface-activity";
-import { claudeUsageFallbackModels } from "./aliases";
+import {isCodeEditTool} from './implementation-models';
+import { claudeUsageFallbackModels, DEFAULT_CLAUDE_SUBAGENT_MODEL } from "./aliases";
 import { assertUsageAvailable, cachedUsageLimit, recordUsageExhaustion, recordUsageSuccess,
   resetEpochMilliseconds, usageAttempt, usageLimitMessage, type UsageAttempt } from "./provider-usage";
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, claudeConsultationArgs,
@@ -401,16 +404,6 @@ function acknowledgedUserText(event: JsonValue): string | null {
   return text || null;
 }
 
-function claudeConsultationEnvironment(selected?: Record<string,string>): Record<string, string> {
-  const environment: Record<string, string> = { CLAUDE_CODE_SAFE_MODE: "1" };
-  for (const name of ["HOME", "PATH", "LANG", "USER", "LOGNAME", "SHELL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR"]) {
-    const value = process.env[name];
-    if (value) environment[name] = value;
-  }
-  if(selected?.CLAUDE_CONFIG_DIR)environment.CLAUDE_CONFIG_DIR=selected.CLAUDE_CONFIG_DIR;
-  return environment;
-}
-
 export function claudeCodeArgs(input: {
   prompt: string;
   additionalDirs: string[];
@@ -440,7 +433,9 @@ export function claudeCodeArgs(input: {
     ...(input.systemPrompt ? ["--append-system-prompt", input.systemPrompt] : []),
     // The request protocol is enforced when the agent tries to stop, not by repeating it to the
     // agent: a Stop hook sends it back if it still owes a reply (bot/scripts/owed-reply-stop-hook.ts).
-    ...(consultation ? [] : ["--settings", CLAUDE_AGENT_HOOK_SETTINGS]),
+    ...(consultation ? [] : ["--settings", claudeAgentSettings()]),
+    // One browser-automation server for this machine's sessions (see sharedPlaywrightServerUrl).
+    ...(consultation || !sharedPlaywrightServerUrl() ? [] : ["--mcp-config", sharedPlaywrightMcpConfig(sharedPlaywrightServerUrl()!)]),
     // Root cannot skip permissions, so remote-box allows tools in its settings; a peer
     // instance running as its user opts in here to match how Tejas runs claude himself.
     ...(process.env.CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS === "1" && !consultation ? ["--dangerously-skip-permissions"] : []),
@@ -449,6 +444,27 @@ export function claudeCodeArgs(input: {
   // Claude variadic flags consume following args, so keep them at the end.
   if (!consultation) for (const dir of input.additionalDirs) args.push("--add-dir", dir);
   return args;
+}
+
+/**
+ * The Mac runs one long-lived Playwright browser-automation server under its own launchd job
+ * (launchd/com.tejasdc.concierge-playwright.plist) and names its address here. Each session it launches
+ * connects to that server, and the per-session copy of the plugin (an npm wrapper plus a node
+ * server, 90-130 MB each) is switched off. A machine without the setting launches exactly as before.
+ * The server keeps every connected session's pages in its own isolated in-memory context.
+ */
+export function sharedPlaywrightServerUrl(env: Record<string, string | undefined> = process.env): string | null {
+  const url = env.CONCIERGE_SHARED_PLAYWRIGHT_URL?.trim();
+  return url ? url : null;
+}
+export function sharedPlaywrightMcpConfig(url: string): string {
+  return JSON.stringify({ mcpServers: { playwright: { type: "http", url } } });
+}
+export const PLAYWRIGHT_PLUGIN = "playwright@claude-plugins-official";
+/** The hook settings, plus the plugin switched off when the shared server stands in for it. */
+export function claudeAgentSettings(env: Record<string, string | undefined> = process.env): string {
+  if (!sharedPlaywrightServerUrl(env)) return CLAUDE_AGENT_HOOK_SETTINGS;
+  return JSON.stringify({ ...JSON.parse(CLAUDE_AGENT_HOOK_SETTINGS), enabledPlugins: { [PLAYWRIGHT_PLUGIN]: false } });
 }
 
 /**
@@ -462,13 +478,16 @@ const HOOK_SUFFIX = process.env.CONCIERGE_RELEASE_MANIFEST || process.env.CONCIE
 // Hook settings are created by the owner but executed by the runner. Resolve machine-owned paths
 // from that process's environment so a Claude turn never carries the owner's Bun or system paths.
 const MANAGED_HISTORY_HOOK = '"${CONCIERGE_CODEX_SYSTEM_DIR:-/etc/codex}/hooks/concierge-history-guard"';
+const MANAGED_EDIT_HOOK = '"${CONCIERGE_CODEX_SYSTEM_DIR:-/etc/codex}/hooks/concierge-implementation-edit"';
 /** Shell commands and monitors, file reads (so the Messages database refusal sees a direct read), plus browser navigation through MCP so the guard can name a website's runbook. */
 const BROWSER_AND_SHELL_MATCHER = "Bash|Monitor|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*";
 export const CLAUDE_AGENT_HOOK_SETTINGS = JSON.stringify({ hooks: {
   Stop: [{ hooks: [{ type: "command",
     command: `"$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.${HOOK_SUFFIX}" claude-code`, timeout: 20 }] }],
   PreToolUse: [{ matcher: BROWSER_AND_SHELL_MATCHER, hooks: [{ type: "command",
-    command: `if [ -x ${MANAGED_HISTORY_HOOK} ]; then ${MANAGED_HISTORY_HOOK}; else "$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.${HOOK_SUFFIX}"; fi`, timeout: 20 }] }],
+    command: `if [ -x ${MANAGED_HISTORY_HOOK} ]; then ${MANAGED_HISTORY_HOOK}; else "$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.${HOOK_SUFFIX}"; fi`, timeout: 20 }] },
+    {matcher:'Bash|Edit|MultiEdit|Write|NotebookEdit|mcp__.*',hooks:[{type:'command',
+      command:`if [ -x ${MANAGED_EDIT_HOOK} ]; then ${MANAGED_EDIT_HOOK}; else "$CONCIERGE_BUN_BIN" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/implementation-edit-hook.${HOOK_SUFFIX}"; fi`,timeout:20}]}],
 } });
 
 export async function runClaudeCodeTurn(input: {
@@ -1140,6 +1159,7 @@ export async function runClaudeCodeTurn(input: {
         const details = toolName === "WebSearch" ? webActivityDetails({ query: block.input?.query })
           : toolName === "WebFetch" ? webActivityDetails({ url: block.input?.url }) : undefined;
         input.onProgress?.({ type: "tool_use", toolName,
+          ...(isCodeEditTool(toolName,block.input)?{codeEdit:true}:{}),
           ...(typeof block.id === "string" ? { itemId: block.id } : {}),
           ...(details ? { details } : {}),
         });
@@ -1386,7 +1406,7 @@ export async function runClaudeCodeTurn(input: {
     args,
     cwd: input.cwd,
     environment: { ...(input.interactionPolicy === "consultation-only" ? claudeConsultationEnvironment(input.environment) : providerOwnerEnvironment(input.environment)),
-      CLAUDE_CODE_SUBAGENT_MODEL: input.environment?.CLAUDE_CODE_SUBAGENT_MODEL || "claude-sonnet-5" },
+      CLAUDE_CODE_SUBAGENT_MODEL: input.environment?.CLAUDE_CODE_SUBAGENT_MODEL || DEFAULT_CLAUDE_SUBAGENT_MODEL },
     ...(input.interactionPolicy === "consultation-only" ? { inheritEnvironment: false } : {}),
     stdin: `${claudeCodeUserMessage(input.prompt)}\n`,
     onStdinReady: (write, close) => {
@@ -1487,10 +1507,29 @@ export async function runClaudeCodeTurn(input: {
     // written then; its own words on stderr are the only record of why (8876, 2026-11-06).
     log("warn", "claude_code_ended_before_ack", { model: input.model ?? null, resumed: !!input.sessionUUID,
       stderr_tail: stderr.replace(/\s+/g, " ").trim().slice(-600) || null });
+    // Concierge's launcher refused before Claude started, so nothing was sent: the turn fails now
+    // with that reason, its requests settle failed and come back for a new owner, instead of
+    // parking as an ambiguous end with its requests counted as live (claude-launch-refusal.ts).
+    const refusal = launchRefusalReason(stderr, outcome.code);
+    if (refusal) throw new ProviderDispatchError({ message: `Claude could not start this turn: ${refusal}`,
+      failureClass: "parked_terminal", terminalConfirmed: true, toolsUsed: [], threadScoped: true });
     throw new Error("Claude Code ended before acknowledging the initial user message.");
   }
   if (!providerProducedResult) {
-    throw new Error("Claude Code ended before producing a terminal result.");
+    const interrupted = output.read(unstructuredOutput);
+    log("warn", "claude_code_exited_without_result", {
+      code: outcome.code, signal: outcome.signal, session_uuid: interrupted.sessionUUID,
+      tool_count: interrupted.toolsUsed.length, assistant_output: interrupted.assistantOutput,
+    });
+    // run() resolved only after the process's retained exit. A disconnected host rejects
+    // instead; it must never authorize a second provider while the first may still act.
+    throw new ProviderDispatchError({
+      message: "Claude Code ended before producing a terminal result.",
+      // Death proves the process cannot act again, not that its effects were observed.
+      failureClass: "parked_terminal", terminalConfirmed: false, processExit: outcome,
+      toolsUsed: interrupted.toolsUsed, assistantOutput: interrupted.assistantOutput,
+      providerSessionId: interrupted.sessionUUID,
+    });
   }
 
   const parsed = output.read(unstructuredOutput);

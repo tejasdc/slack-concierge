@@ -1,3 +1,4 @@
+import {renumberWaitingStarts,START_ORDER_SQL,decideStart,deferStart,ensureStartPaceTables,recordStart,slotWaitingStarts,startIsExempt,startPaceConfig,type StartPaceConfig} from './start-pace';
 import { initializeSessionOwnerSchema } from "./session-schema";
 import {threadOnlyReturnInputSql} from './inbox-request-root';
 import { randomUUID } from "node:crypto";
@@ -780,6 +781,22 @@ CREATE INDEX IF NOT EXISTS executions_open ON executions(turn_id) WHERE state IN
 -- Joins from a turn to its execution attempt; without it SQLite built a temporary index over every
 -- execution on each ghost-turn sweep (2026-11-04).
 CREATE INDEX IF NOT EXISTS executions_turn ON executions(turn_id,dispatch_attempt);`);
+// One proof-backed recovery per exact Codex input. Keeping the full attempt proof beside
+// the atomic queue transition prevents a second action ID from replaying the same input.
+db.exec(`CREATE TABLE IF NOT EXISTS codex_unacknowledged_recoveries (
+  accepted_input_id TEXT PRIMARY KEY REFERENCES session_inputs(id),
+  request_id TEXT NOT NULL,
+  turn_id INTEGER NOT NULL REFERENCES turns(id),
+  provider_thread_id TEXT NOT NULL,
+  proof_json TEXT NOT NULL,
+  action_id TEXT NOT NULL,
+  source_input_id TEXT NOT NULL,
+  source_run_id TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS codex_unacknowledged_recoveries_request ON codex_unacknowledged_recoveries(request_id);`);
+// The parked-run sweep's way to a Codex turn released when it parked (executions.ts, 2026-11-12).
+db.exec("CREATE INDEX IF NOT EXISTS executions_released_codex ON executions(updated_at_ms) WHERE supervisor='codex-daemon' AND state='released'");
 addColumn('executions','adopted_live','adopted_live INTEGER NOT NULL DEFAULT 0');
 addColumn('executions','host_digest','host_digest TEXT');
 addColumn('pending_sign_ins','runner_name','runner_name TEXT');
@@ -818,6 +835,7 @@ db.exec(`
 `);
 
 addColumn("channels", "group_name", "group_name TEXT");
+addColumn("deployment_drain", "purpose", "purpose TEXT NOT NULL DEFAULT 'restart' CHECK(purpose IN ('restart','worktree-retirement'))");
 addColumn("channels", "name", "name TEXT");
 addColumn("channels", "additional_paths", "additional_paths TEXT DEFAULT '[]'");
 addColumn("channels", "provider_default", "provider_default TEXT NOT NULL DEFAULT 'codex'");
@@ -959,7 +977,15 @@ addColumn("turns", "saved_boundary_ms", "saved_boundary_ms INTEGER");
 addColumn("turns", "saved_alerted_at_ms", "saved_alerted_at_ms INTEGER");
 addColumn("turns", "saved_manual_start", "saved_manual_start INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "saved_quiet_only", "saved_quiet_only INTEGER NOT NULL DEFAULT 0 CHECK(saved_quiet_only IN (0,1))");
+// Why a queued banked turn is not starting (saved-work.ts BankedWait), so a long wait names its cause.
+addColumn("turns", "saved_wait_reason", "saved_wait_reason TEXT");
+// Set before a planned banked yield cancels its run (banked-upkeep.ts): the cancellation is carried
+// on by a continuation, so the request it serves stays open (session-inputs.ts carryingTurn).
+addColumn("turns", "saved_yield_reason", "saved_yield_reason TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS banked_yields_awaiting ON turns(id) WHERE saved_yield_reason IS NOT NULL AND status='cancelled'");
 addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
+addColumn("turns", "saved_daily_time", "saved_daily_time TEXT");
+addColumn("turns", "saved_time_zone", "saved_time_zone TEXT");
 addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
 addColumn("turns", "saved_sequence", "saved_sequence INTEGER");
 // A firing's own scheduled instant. The claim clears dispatch_next_attempt_ms, so without this a
@@ -972,6 +998,7 @@ if (!columns("turns").has("saved_fire_at_ms")) {
 // allowance. The status under his message read it from the error's wording, and when the wording
 // changed it told him "the last attempt failed" during a usage hold (2026-10-08, 6:06 AM).
 addColumn("turns", "dispatch_hold", "dispatch_hold TEXT");
+ensureStartPaceTables(db);
 db.exec("UPDATE turns SET dispatch_failure_class=NULL WHERE saved_kind='banked' AND status='queued' AND dispatch_failure_class='retryable'");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS saved_turn_firing ON turns(saved_root_id,saved_sequence) WHERE saved_root_id IS NOT NULL");
 // The clock inspects one root per repeating schedule, then seeks its latest firing through
@@ -1139,8 +1166,9 @@ export interface TurnArtifactRegistration {
   mtimeMs: number;
 }
 
+export const SETTLED_TURN_STATUSES=['done','error','cancelled','delivery_parked'] as const;
 export const SETTLED_EXECUTION_SQL = `
-  prerequisite.status IN ('done', 'error', 'cancelled', 'delivery_parked')
+  prerequisite.status IN (${SETTLED_TURN_STATUSES.map(status=>`'${status}'`).join(',')})
   AND prerequisite.delivery_status NOT IN ('pending', 'sending')
   AND NOT EXISTS (SELECT 1 FROM turn_artifact_batches batch
     WHERE batch.turn_id=prerequisite.id AND batch.status IN ('collecting', 'pending'))
@@ -1235,6 +1263,16 @@ export function recordPendingSignIn(provider: string, ownerInstanceId: string, e
       started_at_ms=excluded.started_at_ms, expires_at_ms=excluded.expires_at_ms,
       runner_name=excluded.runner_name,operation_id=excluded.operation_id,profile_id=excluded.profile_id`)
     .run(provider, ownerInstanceId, Date.now(), expiresAtMs, runner?.runner ?? null, runner?.operationId ?? null, runner?.profileId ?? null);
+}
+
+/** Reserve a runner sign-in before starting its CLI, serialized with the deployment drain claim. */
+export function reservePendingRunnerSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number,
+  runner: { runner: string; operationId: string; profileId?: string | null }): boolean {
+  return db.transaction(() => {
+    if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) return false;
+    recordPendingSignIn(provider, ownerInstanceId, expiresAtMs, runner);
+    return true;
+  }).immediate();
 }
 
 export function clearPendingSignIn(provider: string) {
@@ -3998,6 +4036,9 @@ export function acknowledgeTurnProviderInput(
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
     `).run(turnId, ownerInstanceId, dispatchAttempt);
     if (changed.changes !== 1) throw new Error("Provider input acknowledgement lost turn ownership.");
+    db.query(`UPDATE codex_custody_successors SET acknowledged_at=COALESCE(acknowledged_at,CURRENT_TIMESTAMP),state='acknowledged'
+      WHERE placement_turn_id=? AND dispatch_attempt=? AND attempt_spent_at IS NOT NULL
+      AND state IN ('admitting','admitted','acknowledged')`).run(turnId,dispatchAttempt);
     for (const contextTurnId of contextTurnIds) {
       db.query(`
         UPDATE turns SET input_context_received_by_turn_id=?
@@ -4075,7 +4116,15 @@ export function getRunningTurnDispatchBoundary(
 
 export function recordTurnProviderTurnId(turnId: number, providerTurnId: string | null | undefined) {
   if (!providerTurnId) return;
-  db.query("UPDATE turns SET provider_turn_id=? WHERE id=?").run(providerTurnId, turnId);
+  db.transaction(()=>{
+    const custody=db.query('SELECT native_turn_id,attempt_spent_at FROM codex_custody_successors WHERE placement_turn_id=?')
+      .get(turnId) as {native_turn_id:string|null;attempt_spent_at:string|null}|null;
+    if(custody&&(!custody.attempt_spent_at||custody.native_turn_id!==null&&custody.native_turn_id!==providerTurnId))
+      throw new Error('Canonical successor native attempt identity is not replaceable.');
+    db.query("UPDATE turns SET provider_turn_id=? WHERE id=?").run(providerTurnId, turnId);
+    db.query(`UPDATE codex_custody_successors SET native_turn_id=?,state='admitted'
+      WHERE placement_turn_id=? AND attempt_spent_at IS NOT NULL AND native_turn_id IS NULL`).run(providerTurnId,turnId);
+  })();
 }
 
 export function retryRunningTurnAfterProviderFailure(input: {
@@ -4091,6 +4140,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
   usageResetUnknown?: boolean;
 }): boolean {
   return db.transaction(() => {
+    if(db.query('SELECT 1 FROM codex_custody_successors WHERE placement_turn_id=? AND attempt_spent_at IS NOT NULL').get(input.turnId))return false;
     const boundary = getRunningTurnDispatchBoundary(
       input.turnId,
       input.ownerInstanceId,
@@ -4179,6 +4229,114 @@ export function requeueProvenUnsentNativeChatGptTurn(input: {
         input.nextAttemptMs,RETRYING_PROVIDER_TURN_STATUS_TEXT,input.turnId);
     if(changed.changes!==1)return false;
     db.query(`UPDATE sessions SET status='idle' WHERE id=? AND status='error'`).run(input.sessionId);
+    turnFactChanged(input.turnId,'queued');
+    return true;
+  })();
+}
+
+export interface CodexUnacknowledgedRecoveryRow {
+  accepted_input_id:string;request_id:string;turn_id:number;provider_thread_id:string;proof_json:string;
+  action_id:string;source_input_id:string;source_run_id:string;created_at_ms:number;
+}
+export function codexUnacknowledgedRecovery(inputId:string):CodexUnacknowledgedRecoveryRow|null {
+  return db.query('SELECT * FROM codex_unacknowledged_recoveries WHERE accepted_input_id=?').get(inputId) as CodexUnacknowledgedRecoveryRow|null;
+}
+
+/** Reserve and requeue the same failed report-back atomically after the caller proves every
+ * native attempt empty. The unique accepted input is the idempotency key, across action IDs. */
+export function reserveCodexUnacknowledgedRecovery(input:{sessionId:number;inputId:string;turnId:number;requestId:string;
+  providerThreadId:string;bindingGeneration:number;proof:unknown;actionId:string;sourceInputId:string;sourceRunId:string;nowMs:number}):boolean {
+  return db.transaction(()=>{
+    if(db.query('SELECT 1 FROM codex_custody_successors WHERE canonical_input_id=? OR placement_input_id=?').get(input.inputId,input.inputId))return false;
+    if(db.query("SELECT 1 FROM session_handoffs WHERE predecessor_session_id=? AND handoff_kind='codex-custody-successor' AND state IN ('proposed','accepted')")
+      .get(input.sessionId))return false;
+    const valid=db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      JOIN session_inputs accepted ON accepted.id=turn.accepted_input_id AND accepted.turn_id=turn.id
+      JOIN session_communication_requests request ON request.request_id=?
+        AND request.target_session_id=session.id AND request.outcome IS NULL
+      WHERE turn.id=? AND turn.session_id=? AND accepted.id=? AND turn.turn_kind='native'
+        AND accepted.kind IN ('input','create','request','consultation') AND accepted.steering_id IS NULL
+        AND accepted.origin='service' AND accepted.request_id=request.request_id AND accepted.id<>request.target_input_id
+        AND json_extract(request.payload_json,'$.requestedEffect')='work'
+        AND json_extract(accepted.receipt_json,'$.admission.inputId')=accepted.id
+        AND json_extract(accepted.receipt_json,'$.admission.runId')=turn.native_run_id
+        AND json_extract(accepted.receipt_json,'$.admission.bindingGeneration')=session.binding_generation
+        AND json_extract(accepted.receipt_json,'$.admission.provider')='codex'
+        AND json_extract(accepted.receipt_json,'$.admission.model')='gpt-6-astra'
+        AND (json_extract(accepted.receipt_json,'$.admission.reasoningEffort')='xhigh'
+          OR json_type(accepted.receipt_json,'$.admission.reasoningEffort') IS NULL
+            AND EXISTS (SELECT 1 FROM session_owner_events effort
+              WHERE effort.event_id='prompt-cache-identity:' || turn.id || ':' || turn.dispatch_attempt
+                AND effort.turn_id=turn.id AND effort.session_id=session.id AND effort.kind='prompt_cache_identity'
+                AND json_extract(effort.payload_json,'$.effort')='xhigh'))
+        AND turn.native_run_id IS NOT NULL
+        AND ((turn.status='parked' AND turn.dispatch_failure_class='parked_terminal'
+              AND turn.agent_text LIKE 'CODEX_INPUT_NOT_ACKNOWLEDGED:%')
+          OR (turn.status='done' AND EXISTS (SELECT 1 FROM session_owner_events historical
+              WHERE historical.event_id='result:' || turn.id AND historical.turn_id=turn.id
+                AND historical.input_id=accepted.id AND historical.session_id=session.id AND historical.kind='result'
+                AND json_extract(historical.payload_json,'$.text')=''
+                AND json_array_length(json_extract(historical.payload_json,'$.toolsUsed'))=0
+                AND json_valid(turn.outbound_text)
+                AND json_extract(turn.outbound_text,'$.version')=1
+                AND json_extract(turn.outbound_text,'$.result.sessionUUID')=json_extract(historical.payload_json,'$.sessionUUID')
+                AND json_extract(turn.outbound_text,'$.result.providerTurnId')=json_extract(historical.payload_json,'$.providerTurnId')
+                AND turn.provider_turn_id=json_extract(historical.payload_json,'$.providerTurnId')
+                AND json_extract(turn.outbound_text,'$.result.model')=json_extract(historical.payload_json,'$.model')
+                AND json_extract(turn.outbound_text,'$.result.text')=''
+                AND json_array_length(json_extract(turn.outbound_text,'$.result.toolsUsed'))=0
+                AND json(json_extract(turn.outbound_text,'$.result.toolsUsed'))=json(json_extract(historical.payload_json,'$.toolsUsed'))
+                AND json_extract(turn.outbound_text,'$.result.durationMs') IS json_extract(historical.payload_json,'$.durationMs'))))
+        AND turn.owner_instance_id IS NULL AND turn.stop_requested_at IS NULL
+        AND turn.dispatch_attempt>0
+        AND ((turn.status='parked' AND turn.provider_admission_intended_at IS NOT NULL
+              AND turn.provider_started_at IS NOT NULL AND turn.provider_turn_id IS NOT NULL)
+          OR (turn.status='done' AND turn.provider_admission_intended_at IS NOT NULL AND turn.provider_started_at IS NOT NULL
+              AND EXISTS (SELECT 1 FROM session_owner_events attempt
+              WHERE attempt.turn_id=turn.id AND attempt.session_id=session.id AND attempt.input_id=accepted.id
+                AND attempt.kind='attention'
+                AND json_extract(attempt.payload_json,'$.dispatchAttempt')=turn.dispatch_attempt)
+              AND EXISTS (SELECT 1 FROM session_owner_events identity
+                WHERE identity.event_id='prompt-cache-identity:' || turn.id || ':' || turn.dispatch_attempt
+                  AND identity.turn_id=turn.id AND identity.session_id=session.id AND identity.kind='prompt_cache_identity'
+                  AND json_extract(identity.payload_json,'$.effort')='xhigh')))
+        AND turn.provider_input_acknowledged_at IS NULL
+        AND ((turn.status='parked' AND turn.outbound_text IS NULL) OR turn.status='done')
+        AND session.provider_id='codex' AND session.agent_session_uuid=?
+        AND session.binding_generation=? AND session.status IN ('idle','error')
+        AND json_extract(session.native_metadata_json,'$.model')='gpt-6-astra'
+        AND json_extract(session.native_metadata_json,'$.suspended') IS NOT 1
+        AND json_extract(session.native_metadata_json,'$.interactionPolicy') IS NOT 'consultation-only'
+        AND NOT EXISTS (SELECT 1 FROM turns active WHERE active.session_id=session.id
+          AND active.id<>turn.id AND active.status IN ('queued','running','delivering'))
+        AND NOT EXISTS (SELECT 1 FROM turn_steering_messages steering WHERE steering.turn_id=turn.id
+          AND steering.status IN ('sent','sending','ambiguous'))
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries artifact WHERE artifact.turn_id=turn.id)
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_batches batch WHERE batch.turn_id=turn.id AND batch.status<>'collecting')
+        AND NOT EXISTS (SELECT 1 FROM provider_recovery_inputs recovery WHERE recovery.source_turn_id=turn.id)
+        AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.session_id=turn.session_id AND later.id>turn.id
+          AND (later.provider_admission_intended_at IS NOT NULL OR later.provider_started_at IS NOT NULL
+            OR later.provider_turn_id IS NOT NULL OR later.provider_input_acknowledged_at IS NOT NULL))
+      LIMIT 1`).get(input.requestId,input.turnId,input.sessionId,input.inputId,input.providerThreadId,input.bindingGeneration);
+    if(!valid)return false;
+    try {
+      db.query(`INSERT INTO codex_unacknowledged_recoveries(accepted_input_id,request_id,turn_id,provider_thread_id,
+        proof_json,action_id,source_input_id,source_run_id,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(input.inputId,input.requestId,input.turnId,input.providerThreadId,JSON.stringify(input.proof),
+          input.actionId,input.sourceInputId,input.sourceRunId,input.nowMs);
+    } catch(error) {
+      if(String(error).includes('UNIQUE constraint failed'))return false;
+      throw error;
+    }
+    const changed=db.query(`UPDATE turns SET status='queued',owner_instance_id=NULL,agent_text=NULL,outbound_text=NULL,reasoning_effort='xhigh',
+      ended_at=NULL,dispatch_failure_class='backoff',dispatch_next_attempt_ms=?,provider_admission_intended_at=NULL,
+      provider_started_at=NULL,provider_turn_id=NULL,provider_input_acknowledged_at=NULL,
+      status_desired_text=?,status_desired_revision=status_desired_revision+1,
+      status_projection_status='not_needed',status_projection_attempts=0,status_projection_error=NULL,
+      status_projection_next_attempt_ms=0,status_projection_parked_at=NULL
+      WHERE id=? AND status IN ('parked','done') AND owner_instance_id IS NULL`).run(input.nowMs,RETRYING_PROVIDER_TURN_STATUS_TEXT,input.turnId);
+    if(changed.changes!==1)throw new Error('Codex recovery reservation lost its exact failed turn.');
+    db.query(`UPDATE sessions SET status='idle' WHERE id=? AND status IN ('idle','error')`).run(input.sessionId);
     turnFactChanged(input.turnId,'queued');
     return true;
   })();
@@ -4358,10 +4516,40 @@ export function settleSupersededParkedTurn(turnId: number): boolean {
   })();
 }
 
+/**
+ * Turns parked because Claude ended before acknowledging their input never reached Claude, so
+ * failing them replays nothing; it lets their requests settle failed with this reason and return
+ * to their requester for a new owner. From 2026-11-13 to 11-16 Concierge's launcher refused every
+ * resume of a Claude conversation older than Claude's owner header, and 29 such turns in 9
+ * sessions sat parked with their requests counted as live. New refusals fail at once
+ * (claude-launch-refusal.ts); this releases the ones parked before that release, bounded to parks
+ * that ended before 2026-11-17 so a later unmarked Claude end keeps its ambiguous park. Idempotent.
+ */
+export const CLAUDE_UNACKNOWLEDGED_PARK_TEXT = "Claude Code ended before acknowledging the initial user message.";
+export function failUnacknowledgedClaudeParkedTurns(): number[] {
+  return db.transaction(() => {
+    const rows = db.query(`SELECT turn.id FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.status='parked' AND turn.dispatch_failure_class='parked_ambiguous' AND session.provider_id='claude-code'
+        AND turn.agent_text IN (?1,'Error: '||?1) AND turn.provider_input_acknowledged_at IS NULL AND turn.ended_at<'2026-11-17'`)
+      // The turn runner parks with String(error), so the stored text carries "Error: " in front.
+      .all(CLAUDE_UNACKNOWLEDGED_PARK_TEXT) as { id: number }[];
+    const failed: number[] = [];
+    for (const row of rows) {
+      if (db.query(`UPDATE turns SET status='error', dispatch_failure_class=NULL,
+          agent_text='Claude could not start this turn: it ended before acknowledging its input, so nothing was sent. Its work needs a new attempt.',
+          ended_at=COALESCE(ended_at,CURRENT_TIMESTAMP) WHERE id=? AND status='parked'`).run(row.id).changes !== 1) continue;
+      turnFactChanged(row.id, 'terminal');
+      failed.push(row.id);
+    }
+    return failed;
+  })();
+}
+
 export type ResumeParkedTurnResult = "resumed" | "already_queued" | "not_parked" | "unsafe";
 
 export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult {
   return db.transaction(() => {
+    if(db.query('SELECT 1 FROM codex_custody_successors WHERE placement_turn_id=? AND attempt_spent_at IS NOT NULL').get(turnId))return 'unsafe';
     const turn = db.query(`
       SELECT turn.status, turn.turn_kind, turn.dispatch_failure_class, turn.projection_mode,
              session.status AS session_status,
@@ -5408,15 +5596,75 @@ export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
  * move; ordinary timed retries and paused, archived or stopped inputs stay as they
  * were. Returns the number of actual turn rows released.
  */
-export function releaseScheduledProviderRetries(providerId: ProviderId, ordinaryOnly = false): number {
-  const released = (db.query(`UPDATE turns SET dispatch_next_attempt_ms=0
-    WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_hold='usage'
-      AND (?=0 OR saved_kind IS NULL)
-      AND COALESCE(dispatch_next_attempt_ms,0)>0
-      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)
-    RETURNING id`).all(ordinaryOnly ? 1 : 0,providerId) as {id:number}[]).length;
+export function releaseScheduledProviderRetries(providerId: ProviderId, unboundOnly = false): number {
+  const released = db.transaction(() => {
+    const count = (db.query(`UPDATE turns SET dispatch_hold='${RELEASE_PACE_HOLD}'
+      WHERE status='queued' AND dispatch_failure_class='backoff' AND dispatch_hold='usage'
+        AND (?=0 OR saved_kind IS NULL OR (saved_kind='scheduled' AND saved_account IS NULL))
+        AND COALESCE(dispatch_next_attempt_ms,0)>0
+        AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)
+      RETURNING id`).all(unboundOnly ? 1 : 0,providerId) as {id:number}[]).length;
+    if (count) paceReleasedWork(providerId);
+    return count;
+  })();
   if (released) executionChanged();
   return released;
+}
+
+/**
+ * Held work that becomes free all at once (an account switch, a top-up, a sign-in) starts a few
+ * sessions at a time, sessions owing one of his open Inbox requests first and then the longest
+ * waiting. On 2026-11-12 a Codex account switch set 37 held turns runnable in one instant: about
+ * 78 agent units started in six minutes, the owner blocked 35 s in five minutes on the disk, and
+ * the shared Codex App Server dropped its connection and parked 36 of them
+ * (docs/incidents/2026-11-12-account-switch-released-held-work-at-once.md); Nov 6 froze the
+ * owner for 51 s the same way. Two sessions every 15 s (8 a minute) is the same order as the
+ * paced provider failover's two moved sessions in flight, and drains 37 in under five minutes;
+ * a release of one or two starts at once, as before.
+ *
+ * Released rows carry their own hold, so a later reading's release never collapses the pace
+ * and the status line never calls them "waiting for an allowance". Each call re-ranks every
+ * still-queued released session of the provider from now, so overlapping releases share one pace.
+ */
+export const RELEASE_PACE_HOLD = 'release_pace';
+/**
+ * A usage hold that simply runs out is a bulk release too: every turn held for one account's
+ * reset shares that instant. Before each claim pass, due usage holds join the pace instead of
+ * becoming claimable together. The read is a cheap check; nothing is written unless one is due.
+ */
+export function paceLapsedUsageHolds(nowMs = Date.now()): number {
+  const due = `turn.status='queued' AND turn.dispatch_failure_class='backoff' AND turn.dispatch_hold='usage'
+    AND turn.dispatch_next_attempt_ms>0 AND turn.dispatch_next_attempt_ms<=?`;
+  const providers = db.query(`SELECT DISTINCT session.provider_id AS provider FROM turns turn
+    JOIN sessions session ON session.id=turn.session_id WHERE ${due}`).all(nowMs) as {provider:ProviderId}[];
+  if (!providers.length) return 0;
+  return db.transaction(() => providers.reduce((count, {provider}) => {
+    const lapsed = db.query(`UPDATE turns SET dispatch_hold='${RELEASE_PACE_HOLD}' WHERE id IN (SELECT turn.id FROM turns turn
+      JOIN sessions session ON session.id=turn.session_id WHERE ${due} AND session.provider_id=?)`).run(nowMs, provider).changes;
+    if (lapsed) paceReleasedWork(provider, nowMs);
+    return count + lapsed;
+  }, 0))();
+}
+export const RELEASE_PACE_SESSIONS = 2;
+export const RELEASE_PACE_INTERVAL_MS = 15_000;
+export function paceReleasedWork(providerId: ProviderId, nowMs = Date.now()): number {
+  const sessions = db.query(`SELECT turn.session_id AS id,
+      EXISTS (SELECT 1 FROM session_communication_requests request
+        JOIN inbox_requests inbox ON inbox.state='open'
+        JOIN json_each(inbox.dispatches_json) dispatch ON json_extract(dispatch.value,'$.requestId')=request.request_id
+        WHERE request.target_session_id=turn.session_id AND request.outcome IS NULL) AS owes_inbox,
+      MIN(turn.id) AS oldest
+    FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    WHERE turn.status='queued' AND turn.dispatch_hold='${RELEASE_PACE_HOLD}' AND session.provider_id=?
+    GROUP BY turn.session_id ORDER BY owes_inbox DESC, oldest`).all(providerId) as {id:number}[];
+  const slot = db.query(`UPDATE turns SET dispatch_next_attempt_ms=?
+    WHERE session_id=? AND status='queued' AND dispatch_hold='${RELEASE_PACE_HOLD}'`);
+  sessions.forEach((session, rank) =>
+    slot.run(nowMs + Math.floor(rank / RELEASE_PACE_SESSIONS) * RELEASE_PACE_INTERVAL_MS, session.id));
+  if (sessions.length > RELEASE_PACE_SESSIONS)
+    log('info', 'held_work_release_paced', { provider: providerId, sessions: sessions.length,
+      last_start_in_ms: Math.floor((sessions.length - 1) / RELEASE_PACE_SESSIONS) * RELEASE_PACE_INTERVAL_MS });
+  return sessions.length;
 }
 
 /**
@@ -5436,17 +5684,25 @@ export function moveUsageHoldsEarlier(providerId: ProviderId, atMs: number): num
 
 /** Release only the provider inputs that were refused before any work for lack of sign-in. */
 export function releaseAuthHeldWork(providerId: ProviderId): number {
-  const released = db.query(`UPDATE turns SET dispatch_failure_class='backoff', dispatch_next_attempt_ms=0
-    WHERE status='queued' AND dispatch_failure_class='auth_wait'
-      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+  const released = db.transaction(() => {
+    const count = db.query(`UPDATE turns SET dispatch_failure_class='backoff', dispatch_next_attempt_ms=0, dispatch_hold='${RELEASE_PACE_HOLD}'
+      WHERE status='queued' AND dispatch_failure_class='auth_wait'
+        AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+    if (count) paceReleasedWork(providerId);
+    return count;
+  })();
   if (released) executionChanged();
   return released;
 }
 
 export function releaseUsageContinuationHolds(providerId:ProviderId):number {
-  const released=db.query(`UPDATE turns SET dispatch_failure_class='backoff',dispatch_next_attempt_ms=0
-    WHERE status='queued' AND dispatch_failure_class='usage_wait'
-      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+  const released=db.transaction(()=>{
+    const count=db.query(`UPDATE turns SET dispatch_failure_class='backoff',dispatch_next_attempt_ms=0,dispatch_hold='${RELEASE_PACE_HOLD}'
+      WHERE status='queued' AND dispatch_failure_class='usage_wait'
+        AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+    if(count)paceReleasedWork(providerId);
+    return count;
+  })();
   if(released)executionChanged();
   return released;
 }
@@ -5463,6 +5719,13 @@ export function survivableRunKinds() { return survivableRunKindsIn(db); }
 
 const CLAIMABLE_QUEUED_TURN_WHERE = `
   turn.status='queued'
+  AND NOT EXISTS (SELECT 1 FROM codex_custody_successors recovery WHERE recovery.predecessor_session_id=turn.session_id)
+  AND NOT EXISTS (SELECT 1 FROM codex_custody_successors recovery
+    WHERE recovery.placement_turn_id=turn.id AND (recovery.state<>'constructed' OR recovery.attempt_spent_at IS NOT NULL))
+  AND NOT EXISTS (SELECT 1 FROM codex_custody_successors recovery
+    WHERE recovery.successor_session_id=turn.session_id AND recovery.placement_turn_id<>turn.id AND recovery.acknowledged_at IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM session_handoffs custody WHERE custody.predecessor_session_id=turn.session_id
+    AND (custody.state='accepted' OR (custody.state='proposed' AND custody.handoff_kind='codex-custody-successor')))
   AND NOT (session.provider_id='claude-code' AND ?<?
     AND COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router')
   AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=turn.accepted_input_id
@@ -5497,8 +5760,10 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR turn.saved_expires_at_ms>?)
   AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind='scheduled' OR
     (turn.saved_kind='banked' AND turn.saved_account IS NOT NULL AND turn.saved_boundary_ms>?
-      AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
-        AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL)
+      -- Only generic banking waits for an idle fleet; quiet-only work runs in his night whatever
+      -- standing agents are doing, protected by the reserve (saved-work.ts reconsiderBankedWork).
+      AND (turn.saved_quiet_only=1 OR NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
+        AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL))
       AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.id<>turn.id
         AND other.status IN ('running','delivering') AND other.saved_kind='banked' AND other.saved_manual_start=0)))
   AND turn.session_id NOT IN (SELECT value FROM json_each(?))
@@ -5526,6 +5791,10 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   )
   AND (? = 0 OR (turn.turn_kind='native'
     AND COALESCE((SELECT kind FROM session_inputs WHERE id=turn.accepted_input_id), '')<>'fork'
+    -- Banked work that yields at a deployment boundary is never admitted during the drain:
+    -- banked-upkeep.ts cancels it at once and queues a continuation, which was claimed again,
+    -- 19 times in two minutes on 2026-11-12 (docs/incidents/2026-11-12-banked-pause-closed-its-request.md).
+    AND NOT (COALESCE(turn.saved_kind,'')='banked' AND (turn.saved_manual_start=0 OR turn.saved_quiet_only=1))
     AND session.provider_id IN (SELECT value FROM json_each(?))))
   AND NOT (session.provider_id='codex' AND ?=1)`;
 
@@ -5555,7 +5824,10 @@ function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly nu
 }
 
 function currentClaimSurvivability() {
-  return db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get() ? survivableRunKinds() : null;
+  const gate=db.query("SELECT purpose FROM deployment_drain WHERE singleton=1").get() as {purpose:string}|null;
+  // Moving a finished checkout needs all new starts held briefly, including providers that
+  // survive an ordinary update. Existing restarts keep their survivable-provider admission.
+  return gate?.purpose==='worktree-retirement'?{providers:[]}:gate?survivableRunKinds():null;
 }
 
 export type ClaimableNotClaimedRow={turnId:number;sessionId:number;queuedAt:string};
@@ -5578,6 +5850,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
   const started = performance.now();
   let survivabilityMs = 0, candidateMs = 0, dependencyMs = 0, mutationMs = 0, projectionMs = 0;
   let outcome: 'empty' | 'claimed' | 'archived' | 'declined' | 'error' = 'error';
+  let paceWaiting = false;
   try { return db.transaction(() => {
     // While an update is being installed, only runs that are proven to survive the coordinator's
     // restart start; everything else waits for the install, as before. A model reply is never
@@ -5586,6 +5859,12 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
     const survivable = currentClaimSurvivability();
     survivabilityMs += performance.now() - phase;
     if (survivable && !survivable.providers.length) { outcome='declined'; return null; }
+    // A paced machine (the Mac) admits new provider-process starts at a bounded rate, whatever
+    // released them; unpaced machines run exactly the query and claim below.
+    const pace = startPaceConfig();
+    const orderBy = pace ? `ORDER BY ${START_ORDER_SQL}` : 'ORDER BY turn.id';
+    let paceDeferred = false;
+    const settlePace = () => { if (pace && paceDeferred) { slotWaitingStarts(db, nowMs, pace); paceWaiting = true; } };
     while (true) {
       phase = performance.now();
       const candidate = db.query(`
@@ -5594,11 +5873,11 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
         JOIN sessions session ON session.id=turn.session_id
         WHERE ${CLAIMABLE_QUEUED_TURN_WHERE}
           AND turn.id NOT IN (SELECT value FROM json_each(?))
-        ORDER BY turn.id
+        ${orderBy}
         LIMIT 1
       `).get(...claimableQueuedTurnParameters(nowMs,activeSessionIds,survivable),JSON.stringify(activeTurnIds)) as { turn_id: number; session_id: number; session_status: string } | null;
       candidateMs += performance.now() - phase;
-      if (!candidate) { outcome='empty'; return null; }
+      if (!candidate) { settlePace(); outcome='empty'; return null; }
 
       phase = performance.now();
       settleSelectedTurnDependencies(candidate.turn_id);
@@ -5626,6 +5905,10 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
         continue;
       }
 
+      if (pace) {
+        const decision = decideStart(db, { turnId: candidate.turn_id, exempt: startIsExempt(db, candidate.turn_id) }, nowMs, pace);
+        if (!decision.admit) { deferStart(db, candidate.turn_id, decision); if (decision.hold.startsWith('start_pace')) paceDeferred = true; else paceWaiting = true; continue; }
+      }
       phase = performance.now();
       const claimed = db.query(`
         UPDATE turns
@@ -5665,7 +5948,8 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           )
       `).run(ownerInstanceId, candidate.turn_id);
       mutationMs += performance.now() - phase;
-      if (claimed.changes !== 1) { outcome='declined'; return null; }
+      if (claimed.changes !== 1) { settlePace(); outcome='declined'; return null; }
+      if (pace) { recordStart(db, candidate.turn_id, nowMs); settlePace(); if (renumberWaitingStarts(db)) paceWaiting = true; }
       phase = performance.now();
       restoreRetriedTurnProgressMessage(candidate.turn_id, ownerInstanceId);
       requestTurnWaitingReaction(candidate.turn_id, false);
@@ -5678,6 +5962,8 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
     }
   })(); }
   finally {
+    // Held starts change what his sessions say about them, and the agent orders them off the claim path.
+    if (paceWaiting) executionChanged();
     const totalMs = performance.now() - started;
     if (totalMs >= 100) log('warn','session_turn_claim_slow',{
       duration_ms:Math.round(totalMs),outcome,

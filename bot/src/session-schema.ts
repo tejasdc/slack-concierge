@@ -9,27 +9,39 @@ function allowAbsentAdapterFields(db: Database, table: string, names: string[]) 
   const fields = db.query(`PRAGMA table_info(${identifier(table)})`).all() as {name:string;notnull:number}[];
   const required = names.filter(name => fields.some(field => field.name === name && field.notnull));
   if (!required.length) return;
+  if(table==='session_peer_requests'){
+    const version=(db.query('SELECT sqlite_version() AS version').get() as {version:string}).version.split('.').map(Number);
+    if(version[0]!>3||version[0]===3&&version[1]!>=53){
+      for(const name of required)db.exec(`ALTER TABLE ${identifier(table)} ALTER ${identifier(name)} DROP NOT NULL`);
+      return;
+    }
+  }
   const original = db.query("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as {sql:string};
   const auxiliary = db.query("SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL").all(table) as {sql:string}[];
   const temporary = `${table}_surface_independent`;
   if (db.query("SELECT 1 FROM sqlite_master WHERE name=?").get(temporary)) throw new Error(`Unresolved schema migration: ${temporary}`);
   let definition = original.sql.replace(/^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(?:"[^"]+"|\w+)/i, `CREATE TABLE ${identifier(temporary)}`);
   for (const name of required) {
-    const pattern = new RegExp(`(\\b${name}\\s+TEXT)\\s+NOT NULL`, 'i');
+    const pattern = new RegExp(`(\\b${name}\\s+(?:TEXT|INTEGER))\\s+NOT NULL`, 'i');
     if (!pattern.test(definition)) throw new Error(`Unsupported adapter column definition: ${table}.${name}`);
     definition = definition.replace(pattern, '$1');
   }
-  const columns = fields.map(field => identifier(field.name)).join(',');
+  const columns = (table==='session_peer_requests'?['rowid',...fields.map(field => identifier(field.name))]
+    :fields.map(field => identifier(field.name))).join(',');
   const sequence = db.query('SELECT seq FROM sqlite_sequence WHERE name=?').get(table) as {seq:number}|null;
   db.exec(definition);
   db.exec(`INSERT INTO ${identifier(temporary)} (${columns}) SELECT ${columns} FROM ${identifier(table)}`);
   const oldCount = db.query(`SELECT count(*) AS count FROM ${identifier(table)}`).get() as {count:number};
   const newCount = db.query(`SELECT count(*) AS count FROM ${identifier(temporary)}`).get() as {count:number};
   if (oldCount.count !== newCount.count) throw new Error(`Incomplete adapter migration: ${table}`);
+  const incoming=db.query("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name<>? AND sql IS NOT NULL AND instr(lower(sql),lower(?))>0")
+    .all(table,table) as {name:string;sql:string}[];
+  for(const trigger of incoming)db.exec(`DROP TRIGGER ${identifier(trigger.name)}`);
   db.exec(`DROP TABLE ${identifier(table)}`);
   db.exec(`ALTER TABLE ${identifier(temporary)} RENAME TO ${identifier(table)}`);
   if (sequence) db.query('UPDATE sqlite_sequence SET seq=max(seq,?) WHERE name=?').run(sequence.seq,table);
   for (const item of auxiliary) db.exec(item.sql);
+  for (const trigger of incoming) db.exec(trigger.sql);
 }
 
 export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: number) {
@@ -42,6 +54,7 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
         ['turns', ['slack_user_msg_ts']],
         ['turn_steering_messages', ['slack_user_msg_ts']],
         ['session_communication_requests', ['source_channel','source_message_ts','source_root_ts','target_channel','target_root_ts']],
+        ['session_peer_requests', ['source_turn_id']],
       ];
       const needsUpgrade = adapterFields.some(([table,names]) =>
         (db.query(`PRAGMA table_info(${identifier(table)})`).all() as {name:string;notnull:number}[])
@@ -76,6 +89,11 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
       add('session_communication_requests','prompt_reminded_at_ms','prompt_reminded_at_ms INTEGER');
       add('session_communication_requests','prompt_answered_at_ms','prompt_answered_at_ms INTEGER');
       add('session_communication_requests','stalled_at_ms','stalled_at_ms INTEGER');
+      // The hourly quiet clock's last wake of this request's holder (request-standing.ts); shown on the thread.
+      add('session_communication_requests','quiet_reminded_at_ms','quiet_reminded_at_ms INTEGER');
+      // Quiet wakes since the last word on the request: when the streak began and how many wakes it holds. Three with no word stalls the request.
+      add('session_communication_requests','quiet_streak_since_ms','quiet_streak_since_ms INTEGER');
+      add('session_communication_requests','quiet_streak_count','quiet_streak_count INTEGER NOT NULL DEFAULT 0');
       // A reopened Inbox obligation must not be settled by attempts already linked before reopening.
       if(db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='inbox_requests'").get()) {
         add('inbox_requests','completion_floor','completion_floor INTEGER NOT NULL DEFAULT 0');
@@ -147,6 +165,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           successor_session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
           state TEXT NOT NULL CHECK(state IN ('proposed','accepted','withdrawn')),
           action_id TEXT NOT NULL,
+          handoff_kind TEXT NOT NULL DEFAULT 'ordinary',
+          canonical_input_id TEXT,
           caller_session_id INTEGER NOT NULL REFERENCES sessions(id),
           reason TEXT NOT NULL,
           requesting_input_id TEXT NOT NULL,
@@ -158,6 +178,29 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           accepted_at TEXT,
           withdrawn_at TEXT,
           UNIQUE(requesting_input_id,action_id)
+        );
+        CREATE TABLE IF NOT EXISTS codex_custody_successors (
+          canonical_input_id TEXT PRIMARY KEY REFERENCES session_inputs(id),
+          predecessor_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          successor_session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
+          handoff_id TEXT NOT NULL UNIQUE REFERENCES session_handoffs(id),
+          placement_input_id TEXT NOT NULL UNIQUE REFERENCES session_inputs(id),
+          placement_turn_id INTEGER NOT NULL UNIQUE REFERENCES turns(id),
+          request_id TEXT NOT NULL,
+          source_input_id TEXT NOT NULL,
+          source_run_id TEXT NOT NULL,
+          state TEXT NOT NULL,
+          plan_json TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL,
+          construction_intended_at TEXT,
+          native_thread_id TEXT UNIQUE,
+          construction_json TEXT,
+          attempt_spent_at TEXT,
+          dispatch_attempt INTEGER,
+          native_turn_id TEXT,
+          acknowledged_at TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE UNIQUE INDEX IF NOT EXISTS session_handoffs_one_proposed
           ON session_handoffs(predecessor_session_id) WHERE state='proposed';
@@ -188,6 +231,13 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           WHERE accepted_input_id IS NOT NULL AND NOT (status='failed' AND provider_sent_at IS NULL);
         CREATE INDEX IF NOT EXISTS steering_accepted_input_attempts ON turn_steering_messages(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS communication_source_input ON session_communication_requests(source_input_id,action_id) WHERE source_input_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS session_inputs_lab_pending ON session_inputs(id)
+          WHERE kind='lab-activation' AND json_extract(receipt_json,'$.state')='pending';
+        CREATE INDEX IF NOT EXISTS session_inputs_lab_content ON session_inputs(session_id) WHERE scope='lab:invocation';
+        CREATE INDEX IF NOT EXISTS session_inputs_reply_source ON session_inputs(request_id) WHERE kind='reply';
+        CREATE INDEX IF NOT EXISTS session_inputs_lab_history ON session_inputs(scope) WHERE kind='lab-activation';
+        CREATE INDEX IF NOT EXISTS session_inputs_lab_roster_pending ON session_inputs(id)
+          WHERE kind='lab-roster' AND json_extract(receipt_json,'$.state')='pending';
         CREATE TABLE IF NOT EXISTS canvas_project_policies (
           revision_id TEXT PRIMARY KEY,
           group_name TEXT NOT NULL,
@@ -223,6 +273,9 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           WHERE kind='input' AND turn_id IS NULL AND steering_id IS NULL AND request_id IS NULL;
         CREATE INDEX IF NOT EXISTS session_inputs_capture_recovery ON session_inputs(kind)
           WHERE scope GLOB 'capture:*' AND turn_id IS NULL AND steering_id IS NULL AND request_id IS NULL;
+        CREATE INDEX IF NOT EXISTS session_inputs_context_forward ON session_inputs(id)
+          WHERE json_extract(receipt_json,'$.contextForward') IS NOT NULL
+            AND json_extract(payload_json,'$.responseMode')='context';
         -- Which requests a recipient turn holds is asked for every open request on every
         -- communication wake; scanning the requests' large rows made it a third of the owner's busy
         -- time on 2026-10-07. With this the lookup seeks from the turn's inputs to their requests.
@@ -353,6 +406,10 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
         CREATE INDEX IF NOT EXISTS session_owner_events_topic_relation
           ON session_owner_events(session_id,json_extract(payload_json,'$.topicId'),sequence)
           WHERE kind IN ('topic','topic_route');
+        -- A bounded question restoration looks up only one topic's retained question history.
+        CREATE INDEX IF NOT EXISTS session_owner_events_question_relation
+          ON session_owner_events(json_extract(payload_json,'$.topicId'),sequence)
+          WHERE kind='topic_question';
         -- Queued turns held for one reason (sign-in, backoff) are counted on every execution change.
         CREATE INDEX IF NOT EXISTS turns_queued_hold ON turns(dispatch_failure_class) WHERE status='queued';
         CREATE INDEX IF NOT EXISTS turns_session_latest ON turns(session_id,id DESC);
@@ -363,6 +420,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
         -- Streaming rewrites a message many times; search needs each message's latest version without a whole-ledger GROUP BY.
         CREATE INDEX IF NOT EXISTS session_owner_events_message_version ON session_owner_events(turn_id, json_extract(payload_json,'$.message.id'), sequence) WHERE kind='message';
         CREATE INDEX IF NOT EXISTS session_owner_events_message_delta ON session_owner_events(session_id,sequence) WHERE kind='message';
+        CREATE INDEX IF NOT EXISTS session_owner_events_saved_context ON session_owner_events(session_id,sequence)
+          WHERE kind='message' AND json_extract(payload_json,'$.message.responseMode')='context';
         -- A history delta reads at most one page of non-message changes, then seeks the
         -- held message IDs. Never union every message version of every changed turn.
         CREATE INDEX IF NOT EXISTS session_owner_events_history_turn_delta
@@ -380,7 +439,7 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           request_id TEXT PRIMARY KEY,
           peer TEXT NOT NULL,
           source_session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-          source_turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+          source_turn_id INTEGER REFERENCES turns(id) ON DELETE CASCADE,
           source_input_id TEXT NOT NULL REFERENCES session_inputs(id),
           action_id TEXT NOT NULL,
           payload_json TEXT NOT NULL,
@@ -636,6 +695,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
       `);
+      add('session_handoffs','handoff_kind',"handoff_kind TEXT NOT NULL DEFAULT 'ordinary'");
+      add('session_handoffs','canonical_input_id','canonical_input_id TEXT');
       add('canvas_project_ensures','title_clock','title_clock INTEGER NOT NULL DEFAULT 0');
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.
@@ -760,7 +821,12 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           WHERE json_extract(native_metadata_json,'$.origin')='imported';
         -- Thread refresh lists forwarded replies on every usage reading; it parsed every request's payload.
         CREATE INDEX IF NOT EXISTS session_communication_forwarded ON session_communication_requests(created_at_ms) WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS session_peer_forwarded ON session_peer_requests(created_at_ms) WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL;`);
+        CREATE INDEX IF NOT EXISTS session_peer_forwarded ON session_peer_requests(created_at_ms) WHERE json_extract(payload_json,'$.forwardedReply') IS NOT NULL;
+        -- The sign-in renewal hold reads one account's failed renewals by action name on every usage
+        -- check; it scanned every request (835 ms on 2026-11-12) and hid ones older than two days.
+        CREATE INDEX IF NOT EXISTS session_peer_failed_action ON session_peer_requests(action_id) WHERE outcome='failed';
+        -- Whether a later renewal for any account got past a Mac obstacle reads its answered renewals by action name.
+        CREATE INDEX IF NOT EXISTS session_peer_requests_action ON session_peer_requests(action_id);`);
       // Inputs agents posted through his intake or sign-in, found by the September 23, 2026 audit
       // (docs/runbooks/THINKERING-CAPTURE.md#nothing-but-him). Applied only where the exact input and
       // author exist, so another instance's ledger is untouched. A correction never re-labels in the

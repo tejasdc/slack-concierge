@@ -60,7 +60,16 @@ export function previewHistoryMessage<T extends ProviderHistoryMessage>(message:
   // Untrusted provider metadata may itself be large. The detail retains all fields, while
   // the list keeps exact identity and the attribution needed for actions and navigation.
   const closingLine=(message as T&{closingLine?:string}).closingLine;
-  const compact={id:message.id,role:message.role,content:prefix(message.content,1024),tool:message.tool,
+  // Saved-context mode and custody are small and bounded, so every representation keeps them.
+  const passive=message.responseMode==='context'?{responseMode:message.responseMode,
+    ...(message.contextDelivery?{contextDelivery:{
+      // A delivery that failed before the peer answered has no target session.
+      ...(message.contextDelivery.targetSessionId?{targetSessionId:prefix(message.contextDelivery.targetSessionId,256)}:{}),
+      state:prefix(message.contextDelivery.state,32),
+      ...(message.contextDelivery.requestId?{requestId:prefix(message.contextDelivery.requestId,128)}:{}),
+      ...(message.contextDelivery.peer?{peer:prefix(message.contextDelivery.peer,64)}:{}),
+      ...(message.contextDelivery.error?{error:prefix(message.contextDelivery.error,512)}:{})}}:{})}:{};
+  const compact={id:message.id,...passive,role:message.role,content:prefix(message.content,1024),tool:message.tool,
     ...(closingLine?{closingLine}:{}),
     phase:message.phase,turnId:message.turnId,inputId:message.inputId,submissionId:message.submissionId,
     createdAt:message.createdAt,timestampSource:message.timestampSource,author:message.author,
@@ -71,7 +80,7 @@ export function previewHistoryMessage<T extends ProviderHistoryMessage>(message:
       ordinal:source.source.ordinal,role:source.source.role,locator:source.source.locator,
       textHash:source.source.textHash}}:{})};
   if(byteLength(JSON.stringify(compact))<=MESSAGE_BYTES)return compact as T&{contentDetail:HistoryContentDetail};
-  const minimal={id:message.id,role:message.role,content:prefix(message.content,256),tool:message.tool,
+  const minimal={id:message.id,...passive,role:message.role,content:prefix(message.content,256),tool:message.tool,
     ...(closingLine?{closingLine}:{}),
     phase:message.phase,turnId:message.turnId,inputId:message.inputId,submissionId:message.submissionId,
     author:'canvasContext' in message?message.author:{kind:message.author?.kind??'unknown'},contentDetail:detail,

@@ -59,22 +59,36 @@ if (setup.role === 'sync') {
   // that inode and drops ALL of this process's POSIX locks, including the owner's writer lock
   // on another thread. NOOP reports uncopied frames without copying or bypassing SQLite.
   const pageSize = (connection.query('PRAGMA page_size').get() as { page_size: number }).page_size;
-  const pendingBytes = () => {
+  const uncopied = () => {
     const result = connection.query('PRAGMA wal_checkpoint(NOOP)').get() as { log: number; checkpointed: number };
-    return Math.max(0, result.log - result.checkpointed) * (pageSize + 24);
+    return { bytes: Math.max(0, result.log - result.checkpointed) * (pageSize + 24), checkpointed: result.checkpointed };
   };
   const tick = () => {
-    let bytes = 0;
-    try { bytes = pendingBytes(); } catch { return; }
+    let before: { bytes: number; checkpointed: number };
+    try { before = uncopied(); } catch { return; }
+    const { bytes } = before;
     const ioPressure = pressure();
+    // The log rewinds only when a writer starts with every committed frame copied. PASSIVE
+    // copies up to the frame it saw when it began, so commits made while it runs stay behind
+    // as a small tail. Waiting for that tail to reach the copy threshold let the log grow
+    // without bound (16 hours and ~14 GB on 2026-11-15), so a generation already partly copied
+    // has its tail finished on the next tick. This stays PASSIVE: FULL or RESTART would hold
+    // the writer lock through the copy and its syncs, and the owner's synchronous commits would
+    // wait for them. A tail copy can still lose the race to a new commit; it then retries on
+    // the next tick, so recycling is likely under the live write rate, not guaranteed.
+    // See docs/architecture/LEDGER-DURABILITY.md#log-recycling.
+    const tail = before.checkpointed > 0 && bytes > 0 && bytes < setup.quietBytes;
     // A complete checkpoint lets the owner's next commit rewind the log, and that rewind is
     // the one sync left on the owner's loop. Doing it while the disk is busy is what would
     // stall it, so the log grows through busy periods and is copied when the disk is quiet.
-    if (bytes < setup.quietBytes || (ioPressure > setup.quietPressure && bytes < setup.forceBytes)) return;
+    if ((bytes < setup.quietBytes && !tail) || (ioPressure > setup.quietPressure && bytes < setup.forceBytes)) return;
     const started = performance.now();
     try {
       const result = connection.query('PRAGMA wal_checkpoint(PASSIVE)').get() as { busy: number; log: number; checkpointed: number };
-      port.postMessage({ kind: 'checkpoint', ms: performance.now() - started, bytes, ioPressure, ...result });
+      // A reader still using older frames can hold the tail in place; record a tail attempt
+      // only when it copied something, so a long read does not log every tick.
+      if (tail && result.checkpointed <= before.checkpointed) return;
+      port.postMessage({ kind: 'checkpoint', ms: performance.now() - started, bytes, ioPressure, tail, ...result });
     } catch (error) {
       port.postMessage({ kind: 'checkpoint', ms: performance.now() - started, bytes, ioPressure,
         error: error instanceof Error ? error.message : String(error) });

@@ -1,4 +1,4 @@
-# Speech-to-text and embeddings for Concierge on Cloudflare Workers AI, so neither model runs on the
+# Speech-to-text and optional embeddings for Concierge on Cloudflare Workers AI, so neither model runs on the
 # agent server. The one Cloudflare token can deploy Workers but cannot call Workers AI's REST API,
 # and a Worker's AI binding needs no token permission at all; see docs/architecture/WORKERS-AI.md.
 name = "concierge-workers-ai"

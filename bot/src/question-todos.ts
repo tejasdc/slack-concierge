@@ -1,6 +1,7 @@
 import {spawn} from 'node:child_process';
 import {thinkeringRequest} from './thinkering-capability-target';
 import {log} from './log';
+import {awaitingOutside} from './storage-observation';
 
 /**
  * A question that asks Tejas to do a step names the to-do that step is on his list as, so his own
@@ -49,7 +50,8 @@ export async function readTodos():Promise<TodoState[]>{
     const query=new URLSearchParams({limit:String(PAGE),statuses:'candidate,open,done,dropped'});
     if(after!==null&&afterId){query.set('after',String(after));query.set('afterId',afterId);}
     const path=`/todos/tasks?${query}`;
-    const answer=JSON.parse(await (process.platform==='darwin'?overSsh(path):overSocket(path))) as {items?:any[]};
+    // thnkr.ing answers in its own process: waiting on it is outside time, never owner time.
+    const answer=JSON.parse(await awaitingOutside(()=>process.platform==='darwin'?overSsh(path):overSocket(path))) as {items?:any[]};
     const items=Array.isArray(answer.items)?answer.items:[];
     for(const item of items)if(typeof item?.id==='string')
       all.push({id:item.id,text:String(item.text??''),status:String(item.status??''),completedAt:typeof item.completedAt==='string'?item.completedAt:null});

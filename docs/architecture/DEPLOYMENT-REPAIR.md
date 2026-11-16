@@ -31,6 +31,10 @@ checkpoint is committed before `current` moves, so either path recognizes an
 interrupted candidate and restores LKG on the same run. The root systemd repair
 unit owns standalone CLI execution, diagnosis, Git integration, and retry. It is
 outside Concierge's managed provider queue and does not borrow a managed session.
+Its CLI launch explicitly selects the shared Sol investigator model and uses the
+[command-line trust contract](../runbooks/CODEX-APP-SERVER.md#project-trust-for-command-line-work)
+for fresh and resumed repair work; an explicit untrusted-project choice is never
+overridden by Concierge.
 On deployment success and each reconciliation, the owner parks a terminal failed repair whose
 recorded runner and supervisor are gone once a later run for the same target has
 succeeded. It keeps the failed run's original error and an audit event naming the
@@ -51,6 +55,14 @@ not finish importing its owner modules before its startup deadline, while that
 same check passed alone in under a second and the full gate passed in a later
 isolated run. Serializing this one startup removes the gate's own import burst;
 the remaining independent checks still run together within the same envelope.
+
+The foreground composition fixture publishes its owner readiness data by writing
+a pending file and renaming it into place in the same scratch directory. Its parent
+waits for the final name before parsing, so a slow or interrupted write cannot
+expose partial JSON as a ready owner. The November 13 candidate failed because the
+parent observed the old file as soon as creation began and parsed it before the
+owner finished writing. The release check and its deadlines remain intact; see the
+[failure record](../incidents/2026-11-13-foreground-fixture-readiness-race.md).
 
 In incident `9fef91cf-19bd-4725-b968-f84826c8a928` (October 16), candidate
 `9a5a2307e56e16a7257d2dd8c1547bff7f03ea4f` reached `owner-loaded` at 13,143 ms and

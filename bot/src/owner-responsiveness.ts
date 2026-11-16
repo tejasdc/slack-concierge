@@ -2,6 +2,7 @@ import { db } from "./state-database";
 import {readFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import { log } from "./log";
+import { macMemoryEvidence, startMacMemorySampler } from "./mac-memory-evidence";
 import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./provider-free-notice";
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 
@@ -85,6 +86,7 @@ export function noteSlowOwnerRequest(label: string, ms: number): void {
 
 export function startOwnerResponsivenessWatch(): void {
   if (timer) return;
+  startMacMemorySampler(30_000);
   // A freeze the previous process reported closes here only after this one has been quiet.
   lastBadAt = Date.now();
   episodeStartedAt = openNoticeExists() ? lastBadAt : null;
@@ -172,7 +174,7 @@ function openNotice(now: number, blocked: number, longest: number): void {
     + ` (the longest single freeze was ${Math.round(longest / 1000)} seconds), from ${noticeTime(db, episodeStartedAt ?? now)}.`
     + ` Pages, messages and agents' commands all waited during that time.${machine} ${what}`
     + " This closes by itself once Concierge has answered normally for ten minutes.";
-  log("error", "owner_unresponsive", { blocked_ms: blocked, longest_ms: longest, cpu_ms: cpuMs, starved, routes: busiest });
+  log("error", "owner_unresponsive", { blocked_ms: blocked, longest_ms: longest, cpu_ms: cpuMs, starved, routes: busiest, ...macMemoryEvidence() });
   try {
     if (publishProviderFreeNotice(db, { key: `${NOTICE_PREFIX}${episodeStartedAt}`, kind: "owner_unresponsive", text,
       payload: { blockedMs: blocked, longestMs: longest, cpuMs, starved, startedAt: episodeStartedAt } })) fileServiceNotices();

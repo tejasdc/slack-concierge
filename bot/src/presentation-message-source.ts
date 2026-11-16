@@ -1,10 +1,13 @@
 import type {Database} from 'bun:sqlite';
-import {inboxRequestRoot} from './inbox-request-root';
-import {firstInboxAcceptanceSql} from './inbox-message-identity';
+import {inboxRequestRoot,inboxSentRequest} from './inbox-request-root';
+import {firstInboxAcceptanceSql,savedContextMessageSql} from './inbox-message-identity';
 import {retainedReplyTarget} from './inbox-reply-lineage';
 import {routedTurnResultSql} from './inbox-routing-result';
 import {answeredByPostResultSql} from './inbox-posted-result';
 import {unrequestedProgressPostSql} from './inbox-progress-post';
+import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
+import {readInboxThreadLink} from './inbox-thread-link-read';
+import {postIsCollapsed} from './inbox-collapse-visibility';
 
 export type PreparedInboxMessage={sequence:number;sessionId:number;messageId:string;inputId:string;root:string;createdAt:string;
   entryKind:'final'|'post'|'other'};
@@ -23,6 +26,7 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
   CASE WHEN event.kind IN ('topic','topic_request','topic_question','topic_answer')
     THEN json_extract(event.payload_json,'$.topicId') END AS topic_id,
   CASE WHEN event.kind='message' THEN json_extract(event.payload_json,'$.message.id') END AS owner_message_id
+  ,CASE WHEN ${savedContextMessageSql} THEN 1 ELSE 0 END AS saved_context
   FROM session_owner_events event
   JOIN sessions owner ON owner.id=event.session_id
   LEFT JOIN session_inputs input ON input.id=event.input_id
@@ -30,9 +34,10 @@ export const inboxMessageSourceSql=`SELECT event.sequence,event.session_id,event
   WHERE ${firstInboxAcceptanceSql}`;
 
 type SourceRow={sequence:number;session_id:number;event_id:string;input_id:string|null;kind:string;created_at:string;
-  input_origin:string|null;
+  input_origin:string|null;saved_context:number;
   is_inbox:number|null;has_capture:number;already_posted_in_thread:number;agent_request:number;has_result_text:number;has_attachments:number;routed_result:number;posted_result:number;unrequested_progress_post:number;topic_id:string|null;owner_message_id:string|null};
 export function sourceMessageId(row:SourceRow):string|null {
+  if(row.saved_context)return row.owner_message_id;
   return row.kind==='result'||row.kind==='post'||row.kind==='request'||row.kind==='topic_route'?row.event_id:row.input_id;
 }
 
@@ -42,14 +47,16 @@ export function inboxRootResolver(db:Database) {
   const resolve=(sessionId:number,messageId:string,seen=new Set<string>()):string|null=>{
     const cacheKey=`${sessionId}:${messageId}`;
     if(memo.has(cacheKey))return memo.get(cacheKey)!;
-    const row=(db.query(`SELECT event.input_id,event.event_id,event.kind,event.payload_json FROM session_owner_events event
-      WHERE event.session_id=? AND event.event_id=? AND event.kind IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)
-      ??db.query(`SELECT event.input_id,event.event_id,event.kind,event.payload_json FROM session_owner_events event
-      WHERE event.session_id=? AND event.input_id=? AND event.kind NOT IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)) as {input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
+    const row=(db.query(`SELECT event.session_id,event.input_id,event.event_id,event.kind,event.payload_json FROM session_owner_events event
+      LEFT JOIN session_inputs input ON input.id=event.input_id
+      WHERE event.session_id IN (${INBOX_LINEAGE_SQL}) AND event.event_id=? AND (event.kind IN ('result','post','request','topic_route')
+        OR (${savedContextMessageSql})) ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)
+      ??db.query(`SELECT event.session_id,event.input_id,event.event_id,event.kind,event.payload_json FROM session_owner_events event
+      WHERE event.session_id IN (${INBOX_LINEAGE_SQL}) AND event.input_id=? AND event.kind NOT IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)) as {session_id:number;input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
     if(row?.kind==='request'){
       const requestId=JSON.parse(row.payload_json).requestId;
-      const request=(typeof requestId==='string'?(db.query('SELECT thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId)
-        ??db.query('SELECT thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId)):null) as {thread_root_input_id:string|null}|null;
+      // Found among the Inbox's sessions: a router handoff moves an open request's custody, not its thread.
+      const request=typeof requestId==='string'?inboxSentRequest(db,requestId,row.session_id):null;
       const linked=typeof requestId==='string'?inboxRequestRoot(db,requestId,request?.thread_root_input_id??null):null;
       if(linked&&linked!==row.event_id){memo.set(cacheKey,linked);return linked;}
       memo.set(cacheKey,row.event_id);return row.event_id;
@@ -73,11 +80,10 @@ export function inboxRootResolver(db:Database) {
     }
     if(seen.has(inputId))return inputId;
     seen.add(inputId);
-    const link=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`)
-      .get(sessionId,inputId) as {payload_json:string}|null;
-    if(link){const value=JSON.parse(link.payload_json);if(value.attached!==false&&typeof value.root==='string'){
-      memo.set(cacheKey,value.root);return value.root;
-    }}
+    const link=readInboxThreadLink(db,inputId);
+    if(link?.attached&&typeof link.root==='string'){
+      memo.set(cacheKey,link.root);return link.root;
+    }
     const own=db.query('SELECT origin,scope,source_input_id,source_run_id,payload_json,request_id FROM session_inputs WHERE id=?').get(inputId) as
       {origin:string;scope:string;source_input_id:string|null;source_run_id:string|null;payload_json:string;request_id:string|null}|null;
     const replyTo=retainedReplyTarget(own);
@@ -85,8 +91,8 @@ export function inboxRootResolver(db:Database) {
       const root=resolve(sessionId,replyTo.messageId,seen)??inputId;memo.set(cacheKey,root);return root;
     }
     if(own?.origin==='service'&&own.request_id){
-      const request=(db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS source FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(own.request_id,sessionId)
-        ??db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS source FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(own.request_id,sessionId)) as {source:string|null}|null;
+      const sent=inboxSentRequest(db,own.request_id,row.session_id);
+      const request=sent?{source:sent.thread_root_input_id??sent.source_input_id}:null;
       if(request?.source){const routed=inboxRequestRoot(db,own.request_id,request.source);
         const root=resolve(sessionId,routed??request.source,seen)??inputId;memo.set(cacheKey,root);return root;}
     }
@@ -103,10 +109,9 @@ export function sourceMessagePage(db:Database,after:number,head:number,limit:num
     .all(after,head,limit) as SourceRow[];
   const messages=rows.flatMap(row=>{
     if(!row.is_inbox||row.agent_request||row.unrequested_progress_post)return [];
-    if(row.kind==='post'&&db.query('SELECT 1 FROM session_owner_events WHERE event_id=?')
-      .get(`post:collapse:${row.event_id}`))return [];
+    if(row.kind==='post'&&postIsCollapsed(db,row.event_id))return [];
     if(row.kind==='post'&&canceledRequestNotice(db,row.event_id))return [];
-    if(!(['result','inbox_capture','post','request','topic_route'].includes(row.kind)
+    if(!(row.saved_context||['result','inbox_capture','post','request','topic_route'].includes(row.kind)
       ||row.kind==='accepted'&&!row.has_capture&&!row.already_posted_in_thread))return [];
     if(row.kind==='request'){
       const requestId=(db.query('SELECT json_extract(payload_json,\'$.requestId\') AS id FROM session_owner_events WHERE sequence=?').get(row.sequence) as {id:string|null}|null)?.id;
