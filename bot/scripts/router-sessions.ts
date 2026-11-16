@@ -92,7 +92,7 @@ The lab record (thnkr.ing /lab): threads where sessions discuss, and the finding
 router-actions.sh sessions board read [--thread <handle> | --address <lab address>] <source-flags>   # --address lab:<design-handle> prints a design's sections with their states, his posts and the replies under each
 router-actions.sh sessions board thread [<board>] --kind question|proposal|report|task|meeting --title T [--blind <key>] [--member <address> ...] [--decider <address>|tejas] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
 --blind <key> groups parallel threads while each arm's discussion stays hidden from the other until every thread in the group closes.
-router-actions.sh sessions board post --thread <handle> [--reply-to <lab entry address>] [--target lab:<design-handle>.<passage> [--intent answer|ask|comment|challenge|disposition] [--disposition-file F] [--speaker tejas --his-input <his Inbox input id> [--inbox-session <session> --inbox-message <id>]]] [--sealed] [--mention <address> ...] <source-flags> --action-id A [--text-file F | -- <words>]
+router-actions.sh sessions board post --thread <handle> [--reply-to <lab entry address>] [--target lab:<design-handle>.<passage> [--intent answer|ask|comment|challenge|disposition] [--disposition-file F] [--speaker tejas --his-input <his Inbox input id> [--inbox-session <session> --inbox-message <id>]]] [--sealed] [--mention <address> ...] [--response-target concierge:<n> ...] <source-flags> --action-id A [--text-file F | -- <words>]
 router-actions.sh sessions board claim|reveal --thread <handle> <source-flags> --action-id A [-- <words>]
 router-actions.sh sessions board close --thread <handle> --end <end> --outcome <lab address, file, commit or URL> <source-flags> --action-id A [-- <words>]
 router-actions.sh sessions board product --product finding|decision|skill|design --title T --from "<lab address> :: <why it came from there>" ... [--supersedes "<lab address> :: <why>"] [--mention <address> ...] [--inbox-session <session> --inbox-message <id>] <source-flags> --action-id A [--text-file F | -- <words>]
@@ -368,7 +368,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
 
 const BOARD_VERBS=['read','thread','post','claim','reveal','close','product','cite','link','verdict','cards','status','sweep'];
 const BOARD_SINGLE=['--source-input','--source-run','--source-channel','--source-ts','--action-id','--thread','--reply-to','--kind','--title','--blind','--decider','--end','--outcome','--text-file','--product','--supersedes','--medium','--address','--to','--relation','--reason','--target','--intent','--disposition-file','--speaker','--his-input','--inbox-session','--inbox-message','--design','--verdict','--scope','--json-file'];
-const BOARD_REPEATED=['--mention','--member','--from'];
+const BOARD_REPEATED=['--mention','--member','--from','--response-target'];
 /** `sessions board <verb> [<board>] …`: the Commons board (docs/plans/2026-10-08-commons-board.md). */
 function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   const verb=args.shift();
@@ -418,6 +418,7 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   const names:Record<string,string>={'--action-id':'action_id','--thread':'thread','--reply-to':'reply_to','--kind':'kind','--title':'title','--blind':'blind','--decider':'decider','--end':'end','--outcome':'outcome','--product':'product','--supersedes':'supersedes','--medium':'medium','--address':'address','--to':'to','--relation':'relation','--reason':'reason','--target':'target','--intent':'intent','--speaker':'speaker','--his-input':'his_input','--inbox-session':'inbox_session','--inbox-message':'inbox_message','--design':'design','--verdict':'verdict','--scope':'scope'};
   for(const [flag,key] of Object.entries(names))if(flags.has(flag))body[key]=flags.get(flag);
   if(repeated.get('--mention'))body.mentions=repeated.get('--mention');
+  if(repeated.get('--response-target')){if(verb!=='post')invalid('--response-target is only for board post.');body.responseTargets=repeated.get('--response-target');}
   if(repeated.get('--member'))body.members=repeated.get('--member');
   if(repeated.get('--from'))body.from=repeated.get('--from');
   if(flags.has('--json-file')) {

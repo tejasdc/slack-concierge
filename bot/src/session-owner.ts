@@ -1,4 +1,6 @@
 import {requirementsFor} from './request-history';
+import {LabConversations,LabConversationError,type LabParticipantChoice,type LabPreparedParticipant,type LabActor} from './lab-conversations';
+import {labConversationCapability} from './lab-conversation-capability';
 import {threadOnlyReturnInputSql} from "./inbox-request-root";
 import {ownerRequestLabel} from './owner-request-label';
 import {acceptedMachineNeed,parseMachineNeed} from './machine-need';
@@ -612,6 +614,75 @@ export class SessionOwner {
   projectSetup?:ProjectSetup;
   peerLinks?:PeerLinks;
   communication?:SessionCommunicationCoordinator;
+  private labCoordinator:LabConversations|null=null;
+  get labConversations():LabConversations {
+    return this.labCoordinator??=new LabConversations({
+      bootstrap:thread=>labConversationCapability('GET',thread,'bootstrap'),
+      prepare:(choice,actor)=>this.prepareLabParticipant(choice,actor),
+      sources:references=>this.materializeLabSources(references),
+      bind:(thread,signal)=>labConversationCapability('POST',thread,'binding',{},signal),
+      context:({thread,entryId,sessionId,requestId,signal})=>labConversationCapability('GET',thread,'context',{entryId,sessionId,requestId},signal),
+      publish:({thread,requestId,eventId,signal})=>labConversationCapability('POST',thread,'publish',{requestId,eventId},signal),
+      dispatch:input=>this.dispatch(input),wake:()=>this.communication?.wake(),
+      available:sessionId=>{const session=getSessionById(sessionId);return !!session&&this.runtime.available(session.provider_id);},
+    });
+  }
+  private async materializeLabSources(references:unknown[]) {
+    return Promise.all(references.map(async reference=>{
+      const ref=object(reference);only(ref,['sourceId','sourceVersion','branch','eventId']);
+      if(typeof ref.sourceId!=='string'||typeof ref.sourceVersion!=='string'||!/^[a-f0-9]{64}$/.test(ref.sourceVersion)||typeof ref.branch!=='string'||typeof ref.eventId!=='string')throw new LabConversationError('Choose an exact retained source, version, branch and event.',400,'LAB_SOURCE_UNSUPPORTED');
+      if(!this.runtime.sources?.context)throw new LabConversationError('The retained source capability is unavailable.',409,'LAB_SOURCES_UNAVAILABLE');
+      let result:any;
+      try{result=await this.runtime.sources.context(ref);}catch(error){if(error instanceof SessionCapabilityError)throw new LabConversationError(error.message,error.status??503,error.code);throw error;}
+      const evidence=result?.evidence?.find((entry:any)=>entry.eventId===ref.eventId);
+      if(result?.source?.id!==ref.sourceId||result?.source?.version!==ref.sourceVersion||result?.source?.branch!==ref.branch||evidence?.sourceId!==ref.sourceId||evidence?.sourceVersion!==ref.sourceVersion||typeof evidence?.text!=='string'||hash(evidence.text)!==evidence.textHash)throw new LabConversationError('The retained source did not match the selected exact evidence.',409,'LAB_SOURCE_MISMATCH');
+      return {reference,text:evidence.text,sha256:evidence.textHash};
+    }));
+  }
+  private async prepareLabParticipant(choice:LabParticipantChoice,actor?:LabActor):Promise<LabPreparedParticipant> {
+    if(choice.sessionId){
+      const session=this.session(choice.sessionId),metadata=sessionMetadata(session);
+      if(metadata.inbox||metadata.canvasObservation||metadata.outside||metadata.interactionPolicy==='consultation-only'||metadata.origin==='imported'&&!metadata.nativeBinding||supersededBy(session.id))throw new LabConversationError('Choose a native participant that can continue this conversation; the Inbox does not coordinate Lab threads.',409,'LAB_PARTICIPANT_UNAVAILABLE');
+      if(session.status==='archived'||metadata.suspended)throw new LabConversationError('The selected session is archived or paused.',409,'LAB_PARTICIPANT_HELD');
+      return {choice,sessionId:session.id};
+    }
+    const provider=choice.provider;
+    if(provider==='chatgpt'){
+      if(choice.project!==undefined||choice.model!==undefined)throw new LabConversationError('ChatGPT uses its thinking level or explicit ChatGPT project destination, rather than a code project or coding model.');
+      const model=chatgptSessionModel(choice.reasoningEffort??'pro');
+      if(!model)throw new LabConversationError('Choose a supported ChatGPT thinking level.');
+      return {choice,provider:'chatgpt',metadata:{title:choice.label,purpose:'chat',model,cwd:this.defaultCwd}};
+    }
+    if(!['codex','claude-code','antigravity','auto'].includes(provider??''))throw new LabConversationError('This provider has no native Lab invocation and retained-answer capability.',400,'LAB_PROVIDER_UNSUPPORTED');
+    const location=choice.project?await this.locateProject(choice.project):null;
+    if(!location)throw new LabConversationError('Choose an exact registered project for the participant.');
+    let selector=provider!;
+    if(choice.model){
+      const alias=Object.entries(PROVIDER_ALIASES).find(([,target])=>target.provider===provider&&target.model===choice.model)?.[0];
+      if(!alias)throw new LabConversationError('Choose a model supported by the selected provider.');
+      selector=alias;
+    }else if(provider!=='auto')throw new LabConversationError('A fresh comparison participant needs an explicit model.');
+    const target=this.requestTarget({provider:selector,effort:choice.reasoningEffort,project:choice.project,projectLocation:location,choiceKey:`lab-coordinator:${randomUUID()}`});
+    const humanChoice=!actor||!!target.model&&humanChoseThinkingModel(actor.inputId,target.model);
+    const refused=escalationReason(target.model,choice.escalationReason,humanChoice);
+    if(refused)throw new LabConversationError(refused,409,'MODEL_ESCALATION_REASON_REQUIRED');
+    const {provider:resolved,...metadata}=target;
+    return {choice,provider:resolved,metadata:{...metadata,title:choice.label,...(humanChoice&&target.model?{explicitThinkingModelChoice:target.model}:{})} as NativeSessionMetadata};
+  }
+  private labActor(request:Request,body:unknown):LabActor|undefined {
+    const input=object(body),bodySource=input.agentSource;
+    if(bodySource!==undefined&&(!bodySource||typeof bodySource.inputId!=='string'||typeof bodySource.runId!=='string'))throw new LabConversationError('A marked Lab action needs its complete exact source pair.',403,'AGENT_SOURCE_REQUIRED');
+    const marked=request.headers.get('x-concierge-verified-agent-source'),supplied=bodySource?`${bodySource.inputId} ${bodySource.runId}`:null;
+    if(marked&&supplied&&marked!==supplied)throw new LabConversationError('The marked Lab source differs from its submitted source.',403,'AGENT_SOURCE_MISMATCH');
+    const header=marked??supplied;
+    if(!header)return undefined;
+    const pair=/^(\S+) (\S+)$/.exec(header);
+    if(!pair)throw new LabConversationError('The marked Lab source is invalid.',403,'AGENT_SOURCE_REQUIRED');
+    const value={inputId:pair[1]!,runId:pair[2]!};
+    const source=getAcceptedSessionInput(value.inputId),observed=source?readInputExecution(source):null;
+    if(!source||!observed?.turn||nativeRunId(observed.turn.id)!==value.runId||observed.turn.session_id!==source.session_id||observed.turn.status!=='running'||!observed.turn.provider_admission_intended_at||observed.turn.stop_requested_at)throw new LabConversationError('The marked Lab source must be its exact admitted live run.',403,'AGENT_SOURCE_REQUIRED');
+    return {inputId:source.id,runId:value.runId,sessionId:source.session_id};
+  }
   captureDeliveryStatus?:()=>{available:boolean;reason:string|null};
   private readonly openStreams=new Set<()=>void>();
   private streamsClosed=false;
@@ -4569,6 +4640,14 @@ export class SessionOwner {
       // Tailscale relay while this awaits. On 2026-10-24 a 7.3 MB reply took 13.7 s to arrive and
       // was counted as owner slowness (work-flow supervisor incident a8216a4c). It is awaited time.
       const body=request.method==='POST'?await awaitingOutside(()=>request.json()):null;
+      if(parts[0]==='lab'&&parts[1]==='conversations'){
+        if(request.method==='POST'&&parts.length===2)return ownerJson(await this.labConversations.create(body,this.labActor(request,body)),{status:202});
+        if(request.method==='POST'&&parts.length===4&&parts[3]==='respond')return ownerJson(this.labConversations.respond(parts[2]!,body,this.labActor(request,body)),{status:202});
+        if(request.method==='GET'&&parts.length===3)return ownerJson(this.labConversations.view(parts[2]!,url.searchParams.has('before')?Number(url.searchParams.get('before')):undefined));
+        if(request.method==='GET'&&parts.length===5&&parts[3]==='requests')return ownerJson(this.labConversations.requestFacts(parts[2]!,parts[4]!));
+        if(request.method==='GET'&&parts.length===6&&parts[3]==='responses')return ownerJson(this.labConversations.answerFacts(parts[2]!,parts[4]!,parts[5]!));
+        throw new LabConversationError('Unknown Lab conversation operation.',404,'LAB_ROUTE_NOT_FOUND');
+      }
       if(parts[0]==='agent-test'&&parts[1]==='sessions'){
         if(request.method==='POST'&&parts.length===4&&['stop','connection-loss'].includes(parts[3]!)){
           const input=object(body);
@@ -5070,7 +5149,7 @@ export class SessionOwner {
       if(error instanceof TopicError||error instanceof AreaError)return ownerJson({error:{code:error.code,message:error.message}},{status:error.status});
       // A busy ledger is a moment, not a refusal: a 4xx made the Mac drop a finished answer after one try (2026-10-04, 2026-10-08).
       if(isTransientDatabaseError(error))return ownerJson({error:{code:'DATABASE_BUSY',message:error instanceof Error?error.message:String(error)}},{status:503});
-      return ownerJson({error:{code:error instanceof SessionOwnerError?error.code:'OWNER_ERROR',message:error instanceof Error?error.message:String(error)}},{status:error instanceof SessionOwnerError?error.status:error instanceof Error&&error.message.includes('conflict')?409:400});
+      return ownerJson({error:{code:error instanceof SessionOwnerError||error instanceof LabConversationError?error.code:'OWNER_ERROR',message:error instanceof Error?error.message:String(error)}},{status:error instanceof SessionOwnerError||error instanceof LabConversationError?error.status:error instanceof Error&&error.message.includes('conflict')?409:400});
     }
   }
 }

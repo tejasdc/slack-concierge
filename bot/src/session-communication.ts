@@ -230,6 +230,7 @@ export class SessionCommunicationCoordinator {
     private disarm: (() => void) | null = null;
     private detach: (() => void) | null = null;
     private readonly healthyRechecks = new Map<string, { storedDue: number; nextCheck: number }>();
+    private pendingLabConversations=false;
     private nextRequestInspectionAt = 0;
     private readonly now: () => number;
     constructor(private readonly dependencies: Dependencies) { this.now = dependencies.now ?? Date.now; }
@@ -1820,10 +1821,21 @@ export class SessionCommunicationCoordinator {
                     {method,path,inputId:source.inputId,runId:source.runId,...(body===undefined?{}:{body})})};
             }
         }
-        return boardCommand(input,actor,{
+        if(input.responseTargets!==undefined){
+            if(input.verb!=='post'||!input.thread||!actor)throw new Error('Selected Lab responses require an attributed post in a comparison conversation.');
+            const binding=this.dependencies.owner.labConversations.view(input.thread.replace(/^lab:/,''));
+            if(input.responseTargets.some(sessionId=>!binding.participants.some(member=>member.sessionId===sessionId)))throw new Error('Choose only exact sessions bound to this Lab conversation.');
+        }
+        const result=await boardCommand(input,actor,{
             admit:admission=>this.dependencies.owner.admit(admission),
             askPeer:({address,actionId,text,sourceInputId,sourceRunId})=>this.ask({source:{input_id:sourceInputId,run_id:sourceRunId},action_id:actionId,address,text,requestedEffect:'informational'}),
         });
+        if(input.responseTargets?.length&&actor&&'id' in result){
+            const thread=input.thread!.replace(/^lab:/,'');
+            this.dependencies.owner.labConversations.respond(thread,{clientActionId:`lab-post:${actor.inputId}:${input.action_id}`,entryId:result.id,targets:input.responseTargets},
+                {inputId:actor.inputId!,runId:actor.runId!,sessionId:actor.session});
+        }
+        return result;
     }
     mutationAdmission(input:{source:CommunicationSource}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -3755,6 +3767,10 @@ export class SessionCommunicationCoordinator {
         }
         while (this.reconciliationDirty && !this.stopped) {
             this.reconciliationDirty = false;
+            this.schedule('lab-conversations',async()=>{
+                this.pendingLabConversations=await this.dependencies.owner.labConversations.reconcile();
+                if(!this.stopped)this.arm();
+            });
             if (!startedPeers) this.dependencies.peers?.wake();
             startedPeers = false;
             let pendingAcceptedRecovery=false;
@@ -3888,9 +3904,9 @@ export class SessionCommunicationCoordinator {
         this.nextRequestInspectionAt = requestDue;
         const chatGptNext=db.query(`SELECT min(due_at_ms) AS due FROM session_chatgpt_obligations INDEXED BY chatgpt_obligations_due
             WHERE state NOT IN ('resolved','withdrawn_by_tejas') AND due_at_ms IS NOT NULL`).get() as {due:number|null};
-        if (requestDue === Infinity && chatGptNext.due===null && !this.pendingAcceptedRecovery)
+        if (requestDue === Infinity && chatGptNext.due===null && !this.pendingAcceptedRecovery&&!this.pendingLabConversations)
             return;
-        const delay = Math.min(this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,
+        const delay = Math.min(this.pendingLabConversations?30_000:Infinity,this.pendingAcceptedRecovery?60_000:Infinity,24 * 60 * 60_000,
             Math.max(0,requestDue-now),Math.max(0,(chatGptNext.due??Infinity)-now));
         if (this.dependencies.arm)
             this.disarm = this.dependencies.arm(() => this.wake(), delay);
@@ -3902,6 +3918,7 @@ export class SessionCommunicationCoordinator {
     }
     start() { if (!this.stopped) return;
         this.stopped = false; this.startupReconciled = false;
+        this.dependencies.owner.labConversations.start();
         this.detach = observeExecutionChanges(() => this.wake());
         this.wake();
     }
@@ -3909,5 +3926,5 @@ export class SessionCommunicationCoordinator {
         await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
-    async stop() { this.stopped = true; this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.nextRequestInspectionAt = 0; }
+    async stop() { this.stopped = true; this.dependencies.owner.labConversations.stop(); this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.nextRequestInspectionAt = 0; }
 }

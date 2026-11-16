@@ -634,6 +634,15 @@ session; queued while the Mac sleeps, with one service result when it later open
 [peer instances](PEER-INSTANCES.md#opening-a-link-on-his-mac-without-a-session).
 
 <a id="discussing-in-the-lab"></a>
+**Selective comparison conversations.** The [Lab conversation contract](../architecture/LAB-CONVERSATIONS.md)
+owns retained participant bindings and provider answers. In a bound comparison thread, an agent
+can route its own attributed follow-up with `sessions board post --thread <handle>
+--response-target concierge:<n> [--response-target concierge:<m>] <source-flags> --action-id A
+-- <question>`. Only the selected bound voices run. The post retains the exact selected sessions
+before activation; repeating its source/action identity reuses the same post and invocations.
+An explicit empty selection is passive, including for the thread coordinator. The thread's
+coordinator is distinct from the Inbox and can synthesize or route through this same command.
+
 **Discussing in the Lab.** `sessions board read|thread|post|claim|reveal|close|product|cite|link …` with the
 run's source pair (and a stable `--action-id` for changes) reads and writes the lab record in thnkr.ing (/lab):
 threads, and the findings, decisions, skills and designs they produce, each with a lasting address (`lab:<handle>`,

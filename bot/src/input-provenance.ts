@@ -68,6 +68,19 @@ export function inputProvenance(database:Database,input:ProvenanceInput,runIdFor
     return {inputId:source.id,runId:'',sessionId:`concierge:${source.session_id}`};
   };
   if(!input.source_input_id||!input.source_run_id){
+    // Typed Lab execution has no fictional sending turn. Its retained binding and
+    // activation, rather than text claiming an origin, prove this service edge.
+    if(input.origin==='service'&&input.kind==='input'&&input.request_id&&input.source_input_id){
+      const binding=database.query("SELECT source_input_id,session_id FROM session_inputs WHERE scope='lab:binding' AND action_id=? AND request_id=?")
+        .get(input.request_id,input.request_id) as {source_input_id:string;session_id:number}|null;
+      const activation=accepted(input.source_input_id);
+      if(binding?.source_input_id===activation?.id&&binding?.session_id===input.session_id&&activation?.kind==='lab-activation'){
+        const inherited=inputProvenance(database,activation,runIdForTurn);
+        const identity={inputId:activation.id,runId:'',sessionId:`concierge:${activation.session_id}`};
+        return {source:identity,requestId:input.request_id,effectScope:'informational',originatingHuman:humanAuthored(activation)?identity:inherited?.originatingHuman??null,
+          ...(inherited?.peer?{peer:inherited.peer}:{})};
+      }
+    }
     const delivered=peerDelivered(input);
     const original=routedHuman(input);
     if(delivered)return original?{...delivered,originatingHuman:original}:delivered;
