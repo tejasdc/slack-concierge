@@ -53,7 +53,7 @@ async function runCase(rejectCallback: boolean) {
   const state = current, projected: Array<{ id: string; input: string }> = [], sequence: string[] = [];
   let actingInput = original, returned = false, firstMaterial = true;
   const failure = Error("deliberate asynchronous callback failure");
-  const client = new CodexAppServerClient(socketPath, "/usr/bin/node", { relayRunner: "disposable-fixture", bridgePath: join(import.meta.dir, "../src/codex-app-server-bridge.mjs") });
+  const client = new CodexAppServerClient(socketPath, process.env.CONCIERGE_NODE_BIN || Bun.which("node") || "/usr/bin/node", { relayRunner: "disposable-fixture", bridgePath: join(import.meta.dir, "../src/codex-app-server-bridge.mjs") });
   try {
     let notificationConsumers=0;const subscribe=client.onNotification.bind(client);client.onNotification=(listener,options)=>subscribe(event=>{notificationConsumers++;return listener(event)},options);
     const running = runCodexTurn({ prompt: "original prompt", cwd: scratch, additionalDirs: [], sessionUUID: state.thread,
