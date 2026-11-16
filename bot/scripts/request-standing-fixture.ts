@@ -60,7 +60,7 @@ try {
   };
 
   // Requests. Each claim takes the one queued turn just made, so a holder can ask on.
-  const [a,c,d,e,f,g,h,old]=[await create(),await create(),await create(),await create(),await create(),await create(),await create(),await create()];
+  const [a,c,d,e,f,g,h,old,j]=[await create(),await create(),await create(),await create(),await create(),await create(),await create(),await create(),await create()];
   const waitingId=await ask('thread',router.source,a,root);
   const aRun=run();assert.equal(aRun.sessionId,a.id);
   const chainId=await ask('chain',router.source,f,root);
@@ -70,29 +70,41 @@ try {
   const workingId=await ask('working',router.source,d,root);
   const heldId=await ask('held',router.source,e,root);
   const quietId=await ask('quiet',router.source,h,root);
+  const resetId=await ask('reset',router.source,j,root);
   await communication.stop();
-  endTurns(a.id);endTurns(c.id);endTurns(f.id);endTurns(h.id);
+  endTurns(a.id);endTurns(c.id);endTurns(f.id);endTurns(h.id);endTurns(j.id);
   db.query("UPDATE turns SET status='running' WHERE session_id=?").run(d.id);
   db.query("UPDATE turns SET dispatch_hold='usage' WHERE session_id=? AND status='queued'").run(e.id);
 
   assert.equal(standing(quietId).state,'quiet');
 
-  // Waiting on an agent that is itself idle: exactly one wake per hour of silence.
+  const progress=(requestId:string,text='Still waiting.')=>db.query("INSERT INTO session_communication_events(event_id,request_id,kind,action_key,payload_json,created_at_ms) VALUES(?,?,'progress',NULL,?,?)").run(randomUUID(),requestId,JSON.stringify({text}),clock);
+  const stalledAt=(id:string)=>(db.query('SELECT stalled_at_ms FROM session_communication_requests WHERE request_id=?').get(id) as {stalled_at_ms:number|null}).stalled_at_ms;
+
+  // Waiting on an agent that is itself idle is stuck at once: no hour to wait. Wakes are spaced, answered or not, and stop after three.
   const waiting=standing(waitingId);
   assert.equal(waiting.state,'waiting');assert.match(waiting.text,/^Waiting on .* · no word from it$/);
   assert.equal(waiting.holder.sessionId,`concierge:${a.id}`);assert.deepEqual(waiting.movedFrom,[]);
   assert.doesNotMatch(waiting.text,/\d\d:\d\d/,'times travel in since/until, not in the words');
-  await tick(0);assert.deepEqual(quietInputs(waitingId),[],'nothing at the start');
-  await tick(HOUR-60_000);assert.deepEqual(quietInputs(waitingId),[],'not before an hour');
-  await tick(2*60_000);
-  assert.deepEqual(quietInputs(waitingId),[`request-quiet:${waitingId}:1`],'one wake after an hour');
+  await tick(0);assert.deepEqual(quietInputs(waitingId),[`request-quiet:${waitingId}:1`],'woken at once: what it waits on is stuck');
   const marked=db.query('SELECT quiet_reminded_at_ms AS at FROM session_communication_requests WHERE request_id=?').get(waitingId) as {at:number};
   assert.equal(marked.at,clock);assert.equal(standing(waitingId).remindedAt,new Date(clock).toISOString());
   assert.equal((db.query("SELECT session_id FROM session_inputs WHERE id=?").get(`request-quiet:${waitingId}:1`) as {session_id:number}).session_id,a.id,'the holder received the wake');
-  endTurns(a.id); // the holder acts on the wake without settling the request
-  await tick(30*60_000);assert.equal(quietInputs(waitingId).length,1,'not again within the hour');
-  await tick(31*60_000);
-  assert.deepEqual(quietInputs(waitingId),[`request-quiet:${waitingId}:1`,`request-quiet:${waitingId}:2`],'a second only after another hour');
+  endTurns(a.id);progress(waitingId); // the holder answers each wake with a waiting partial
+  await tick(5*60_000);assert.equal(quietInputs(waitingId).length,1,'not again within 15 minutes');
+  await tick(11*60_000);assert.equal(quietInputs(waitingId).length,2,'a second after the spacing');
+  endTurns(a.id);progress(waitingId);
+  await tick(16*60_000);assert.equal(quietInputs(waitingId).length,3);
+  endTurns(a.id);progress(waitingId);assert.equal(stalledAt(waitingId),null);
+  await tick(16*60_000);
+  assert.equal(quietInputs(waitingId).length,3,'no fourth wake: three answered by a partial still stall');
+  assert.equal(standing(waitingId).state,'stalled');assert.match(standing(waitingId).text,/no word after three hourly reminders/);
+
+  // A holder with nothing it waits on keeps the hour.
+  assert.deepEqual(quietInputs(quietId),[],'under an hour');
+  await tick(14*60_000);
+  assert.deepEqual(quietInputs(quietId),[`request-quiet:${quietId}:1`],'one wake after an hour');
+  endTurns(h.id);
 
   // Nothing wakes a holder whose chain is running, or whose next turn is held.
   assert.equal(standing(workingId).state,'working');assert.equal(standing(workingId).text,'Working now');
@@ -105,23 +117,28 @@ try {
   const routed=topicCurrentWorkers(db,[{sessionId:`concierge:${d.id}`,title:'D',requestId:workingId}],standingFinder(db,new Map(),clock));
   assert.equal(routed[0]!.standing!.state,'working','a routed request that is not a topic dispatch gets a real standing');
   const both=workerWork(routed,openRequestStandings(db,[{state:'open',dispatches:[{requestId:workingId},{requestId:heldId}]}],clock))!;
-  assert.equal(both.kind,'worker_working');
+  assert.equal(both.kind,'worker_working');assert.equal(both.text,'1 held · 1 working');
   assert.deepEqual(both.workers.map(worker=>worker.requestId).sort(),[heldId,workingId].sort(),'one entry per request, working and waiting together');
   assert.equal(both.workers.find(worker=>worker.requestId===heldId)!.standing!.state,'held');
   assert.equal(both.workers.find(worker=>worker.requestId===workingId)!.standing!.state,'working');
 
-  // Wakes that bring no word stop after three: the fourth time round the request is stalled for the Inbox router.
-  endTurns(a.id);await tick(61*60_000);
-  assert.equal(quietInputs(waitingId).length,3);endTurns(a.id);
-  assert.equal((db.query('SELECT stalled_at_ms FROM session_communication_requests WHERE request_id=?').get(waitingId) as {stalled_at_ms:number|null}).stalled_at_ms,null);
+  // The quiet request, answered by a partial after every wake, also stops after three; no wake is counted as a continuation.
+  endTurns(h.id);progress(quietId);
+  await tick(61*60_000);endTurns(h.id);progress(quietId);
+  assert.ok(quietInputs(quietId).length>=3);
   await tick(61*60_000);
-  assert.equal(quietInputs(waitingId).length,3,'no fourth wake');
-  assert.equal(standing(waitingId).state,'stalled');assert.match(standing(waitingId).text,/no word after three hourly reminders/);
-  // A progress reply starts the count again: quiet request h had one wake; it gets a second, then word, then more than three wakes in all.
-  endTurns(h.id);await tick(61*60_000);assert.equal(quietInputs(quietId).length,2);endTurns(h.id);
-  db.query("INSERT INTO session_communication_events(event_id,request_id,kind,action_key,payload_json,created_at_ms) VALUES(?,?,'progress',NULL,?,?)").run(randomUUID(),quietId,JSON.stringify({text:'Still on it.'}),clock);
-  for(let round=3;round<=5;round++){await tick(61*60_000);assert.equal(quietInputs(quietId).length,round,`wake ${round} after the word`);endTurns(h.id);}
-  assert.equal((db.query('SELECT stalled_at_ms FROM session_communication_requests WHERE request_id=?').get(quietId) as {stalled_at_ms:number|null}).stalled_at_ms,null,'word reset the count');
+  assert.ok(stalledAt(quietId)!==null,'three wakes answered by a partial stall the next time round');
+
+  // Seeing the request work for real starts the count again; the wake's own turn does not.
+  await tick(61*60_000);endTurns(j.id);assert.equal(quietInputs(resetId).length,1);
+  await tick(61*60_000);endTurns(j.id);assert.equal(quietInputs(resetId).length,2);
+  const streakOf=()=>db.query('SELECT quiet_streak_count AS count FROM session_communication_requests WHERE request_id=?').get(resetId) as {count:number};
+  assert.equal(streakOf().count,2);
+  db.query("UPDATE turns SET status='running' WHERE id=(SELECT i.turn_id FROM session_inputs i JOIN session_communication_requests r ON r.target_input_id=i.id WHERE r.request_id=?)").run(resetId);
+  await tick(61*60_000);
+  assert.equal(streakOf().count,0,'the holder was seen working on it: the count starts again');
+  endTurns(j.id);await tick(61*60_000);
+  assert.equal(streakOf().count,1);assert.equal(stalledAt(resetId),null);
 
   // Quiet with nothing to wait on gets its wake too; stalled says so.
   assert.equal(quietInputs(quietId)[0],`request-quiet:${quietId}:1`,'a holder with nothing to wait on is woken too');
@@ -137,7 +154,9 @@ try {
   // Thread work value, and what each session holds.
   const standings=openRequestStandings(db,[{state:'open',dispatches:[{requestId:workingId},{requestId:heldId}]}],clock);assert.equal(standings.size,2);
   const value=workerWork([],standings)!;
-  assert.equal(value.kind,'worker_waiting');assert.ok(value.text.includes(' · '));
+  assert.equal(value.kind,'worker_waiting');assert.equal(value.text,'1 stopped · 1 held','mixed states are counted, stopped first');
+  const three=workerWork([],openRequestStandings(db,[{state:'open',dispatches:[{requestId:workingId},{requestId:heldId},{requestId:chainId}]}],clock))!;
+  assert.equal(three.kind,'worker_working');assert.equal(three.text,'1 stopped · 1 held · 1 working','a stopped request is not hidden behind a working one');
   assert.ok(value.workers.every(worker=>worker.requestId&&worker.standing));
   assert.equal(workerWork([],new Map()),null,'no open request is idle');
   const running=workerWork([],openRequestStandings(db,[{state:'open',dispatches:[{requestId:chainId}]}],clock))!;

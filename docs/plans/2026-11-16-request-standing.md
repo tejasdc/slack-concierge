@@ -36,6 +36,8 @@ In the request reconciliation sweep, for an open request with a thread root whos
 
 The existing stall path still applies to a wake that does not help: when the woken holder ends its turn with the dependency stuck, the owner's report-back and stall steps run as before, so a wake never extends silence beyond one more chase.
 
+Refinements from the ChatGPT Pro design review: a wait on something itself stuck (every request the holder sent is quiet or stalled, or the watch it named is gone) is actionable at once, spaced 15 minutes apart, and only a wait on working or held work keeps the hour. A progress reply never resets the three-wake bound; it restarts only when the request is seen working or held for real (the wake's own turn does not count) or a request the holder was waiting on settles. The count lives on the request row, so restarts and handoffs keep it. A thread's work text counts mixed states, worst first (`1 stopped · 2 working`), so a stopped request is not hidden behind a working one.
+
 ## thnkr.ing rendering (separate change)
 Hand-off card pill and one-line state from the standing, naming the current holder and "Moved from"; latest progress under it; thread row shows `worker_waiting` text with a still amber dot; "Work here" lists waiting workers; session row shows "Request open" when `heldRequests` is set and the session is not running, and "Moved" for a superseded predecessor. No notifications.
 
@@ -43,3 +45,6 @@ Hand-off card pill and one-line state from the standing, naming the current hold
 - On the real thread "Give an agent context without starting a conversation": the card names the Claude successor, says "Moved from" the Codex one, shows its state and the latest progress; the row is not "No update yet".
 - A session row for an idle holder of an open request reads "Request open".
 - Focused check (`bot/scripts/request-standing-fixture.ts`): an open thread request whose holder waits on a sent request that is itself idle gets exactly one `request-quiet:` input after 60 minutes, a second only after another 60, none while anything in the chain runs or while held.
+
+## Known limits
+'working' still means the holder session has a running turn, not that the turn serves this request; binding turns to requests is follow-on work.

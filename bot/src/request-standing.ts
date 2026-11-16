@@ -73,17 +73,19 @@ function stalledReason(source:Database,requestId:string):string|null{
 }
 
 /** A request the holder sent and still waits on, or a watch its own partial reply named. */
-function dependencies(source:Database,holder:number,requestId:string):{agents:StandingPerson[];watch:string|null}{
- const agents:StandingPerson[]=[];
- for(const row of source.query('SELECT DISTINCT target_session_id AS target FROM session_communication_requests WHERE source_session_id=? AND outcome IS NULL ORDER BY created_at_ms DESC').all(holder) as {target:number}[])
-  agents.push({sessionId:`concierge:${row.target}`,title:localTitle(source,row.target)});
+function dependencies(source:Database,holder:number,requestId:string):{agents:StandingPerson[];requestIds:string[];peers:number;watch:string|null}{
+ const agents:StandingPerson[]=[],requestIds:string[]=[];
+ for(const row of source.query('SELECT request_id,target_session_id AS target FROM session_communication_requests WHERE source_session_id=? AND outcome IS NULL ORDER BY created_at_ms DESC').all(holder) as {request_id:string;target:number}[]){
+  agents.push({sessionId:`concierge:${row.target}`,title:localTitle(source,row.target)});requestIds.push(row.request_id);
+ }
+ let peers=0;
  for(const row of source.query("SELECT peer,remote_session_id AS remote FROM session_peer_requests WHERE source_session_id=? AND outcome IS NULL AND json_extract(payload_json,'$.responseMode') IS NOT 'context' ORDER BY created_at_ms DESC").all(holder) as {peer:string;remote:string}[])
-  agents.push({sessionId:peerAddress(row.peer,row.remote),title:peerTitle(source,row.peer,row.remote)});
+  {agents.push({sessionId:peerAddress(row.peer,row.remote),title:peerTitle(source,row.peer,row.remote)});peers++;}
  const watch=source.query(`SELECT watch.condition_json FROM watches watch WHERE watch.session_id=? AND watch.state IN ('accepted','observing')
   AND coalesce(watch.series_id,watch.watch_id) IN (SELECT coalesce(named.series_id,named.watch_id) FROM session_communication_events reply
    JOIN watches named ON named.watch_id=json_extract(reply.payload_json,'$.waitingOnWatch') WHERE reply.request_id=? AND reply.kind='progress') LIMIT 1`)
   .get(holder,requestId) as {condition_json:string}|null;
- return {agents,watch:watch?(/slack-concierge-deployment/.test(watch.condition_json)?'a Concierge release':'something it is watching'):null};
+ return {agents,requestIds,peers,watch:watch?(/slack-concierge-deployment/.test(watch.condition_json)?'a Concierge release':'something it is watching'):null};
 }
 
 /** The standing of one open local or peer communication request, or null when it is not open. */
@@ -160,18 +162,54 @@ export function openRequestStandings(source:Database,requests:readonly {state:st
  * `worker_working` while any open request is being worked, else `worker_waiting` with the first
  * standing in words. Null when the thread has no open request and nobody at work.
  */
+const GROUP_ORDER=['stopped','waiting','held','working'] as const;
+const groupOf=(worker:CurrentWorker)=>!worker.standing?'working':worker.standing.state==='stalled'?'stopped':worker.standing.state==='held'?'held'
+ :worker.standing.state==='working'?'working':'waiting';
+
 export function workerWork(current:CurrentWorker[],standings:Map<string,RequestStanding>){
  const covered=new Set(current.map(worker=>worker.requestId));
  // Every open request keeps its own entry: a waiting one is not dropped because another one works.
  const workers:CurrentWorker[]=[...current,...[...standings.values()].filter(standing=>!covered.has(standing.requestId)).map(standing=>({
   sessionId:standing.holder.sessionId as string|null,title:standing.holder.title,progress:standing.progress,requestId:standing.requestId,standing:standing as RequestStanding|null}))];
  if(!workers.length)return null;
- if(workers.some(worker=>!worker.standing||worker.standing.state==='working'))
-  return {kind:'worker_working' as const,text:workers.length===1?`With ${workers[0]!.title}`:`With ${workers.length} agents`,sessionId:workers[0]!.sessionId,workers};
+ const counts=new Map<string,number>();
+ for(const worker of workers)counts.set(groupOf(worker),(counts.get(groupOf(worker))??0)+1);
+ // A stopped request is never hidden behind a working one: mixed states are counted, worst first.
+ const mixed=counts.size>1?GROUP_ORDER.filter(group=>counts.has(group)).map(group=>`${counts.get(group)} ${group}`).join(' · '):null;
+ if(counts.has('working'))
+  return {kind:'worker_working' as const,text:mixed??(workers.length===1?`With ${workers[0]!.title}`:`With ${workers.length} agents`),sessionId:workers[0]!.sessionId,workers};
  const first=workers[0]!;
- return {kind:'worker_waiting' as const,text:`${first.title} · ${first.standing!.text}`,sessionId:first.sessionId,workers};
+ return {kind:'worker_waiting' as const,text:mixed??`${first.title} · ${first.standing!.text}`,sessionId:first.sessionId,workers};
 }
 
 /** The standing of any request id: from the thread's own open requests, else computed (a routed request the thread does not list). */
 export const standingFinder=(source:Database,standings:Map<string,RequestStanding>,nowMs:number)=>
  (requestId:string)=>standings.get(requestId)??requestStanding(source,requestId,nowMs);
+
+/**
+ * Whether what a waiting request waits on is itself stuck, so waking the holder cannot wait for the hour:
+ * every request the holder sent is neither working nor held (its own standing is quiet or stalled), or a
+ * watch its partial reply named is no longer observing. A dependency that is working or held, a peer
+ * request, or a watch still observing keeps the hour.
+ */
+export function dependencyStuck(source:Database,requestId:string,standing:RequestStanding,nowMs:number):boolean{
+ const row=source.query('SELECT target_session_id FROM session_communication_requests WHERE request_id=?').get(requestId) as {target_session_id:number}|null;
+ if(!row)return false;
+ if(standing.state==='waiting'){
+  const waitingOn=dependencies(source,row.target_session_id,requestId);
+  if(!waitingOn.agents.length)return false;
+  if(waitingOn.peers)return false;
+  return waitingOn.requestIds.every(id=>{const dep=requestStanding(source,id,nowMs);return !dep||dep.state==='quiet'||dep.state==='stalled';});
+ }
+ if(standing.state==='quiet'){
+  const named=source.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.waitingOnWatch') IS NOT NULL LIMIT 1").get(requestId);
+  return !!named&&!dependencies(source,row.target_session_id,requestId).watch;
+ }
+ return false;
+}
+
+/** Whether a request the holder sent settled with a final reply after `sinceMs`: a dependency it waited on moved. */
+export function dependencySettledSince(source:Database,holder:number,sinceMs:number):boolean{
+ return !!source.query(`SELECT 1 FROM session_communication_events event JOIN session_communication_requests request ON request.request_id=event.request_id
+  WHERE request.source_session_id=? AND event.kind='final' AND event.superseded_by_event_id IS NULL AND event.created_at_ms>? LIMIT 1`).get(holder,sinceMs);
+}

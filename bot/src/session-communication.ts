@@ -29,7 +29,7 @@ import {ProviderCapabilityUnavailableError} from './provider-policy';
 import {codexAccountSwitchReply} from './codex-account-switch-receipt';
 import { log } from './log';
 import { deliverRequestReminder } from './request-reminder-carrier';
-import { QUIET_WAKE_MS, QUIET_WAKES_BEFORE_STALL, quietWakeText, requestLastWordMs, requestStanding } from './request-standing';
+import { QUIET_WAKE_MS, QUIET_WAKES_BEFORE_STALL, dependencySettledSince, dependencyStuck, quietWakeText, requestLastWordMs, requestStanding } from './request-standing';
 import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
 import {boundSearchResponse} from './search-response-boundary';
@@ -3670,17 +3670,29 @@ export class SessionCommunicationCoordinator {
         if (holder?.provider_id === 'chatgpt') return recheck(now + QUIET_WAKE_MS);
         const standing = requestStanding(db, request.request_id, now);
         if (!standing) return;
-        if (standing.state !== 'waiting' && standing.state !== 'quiet') return recheck(now + STILL_WAITING_AFTER_MS);
-        const due = requestLastWordMs(db, request) + QUIET_WAKE_MS;
+        if (standing.state !== 'waiting' && standing.state !== 'quiet') {
+            // Real work or a real hold is a continuation and starts the count again. The wake's own turn is not: otherwise every wake
+            // would reset the bound it is counted against. A progress reply is not either ("still waiting" proves nothing).
+            if (request.quiet_streak_count > 0 && !this.onlyQuietWakeLive(request))
+                db.query('UPDATE session_communication_requests SET quiet_streak_since_ms=NULL,quiet_streak_count=0 WHERE request_id=?').run(request.request_id);
+            return recheck(now + STILL_WAITING_AFTER_MS);
+        }
+        // A wait on something itself stuck is actionable at once; only a wait on live or held work keeps the hour.
+        const stuck = dependencyStuck(db, request.request_id, standing, now);
+        const due = stuck ? 0 : requestLastWordMs(db, request) + QUIET_WAKE_MS;
         if (now < due) return recheck(due);
         if (!holder || !this.dependencies.owner.canSend(holder)) {
             this.stallRequest(request, 'the holder session is paused, archived or no longer available', `stalled:concierge:${request.target_session_id}:quiet`);
             return;
         }
         // Wakes that brought no word do not go on for ever: after the third, the Inbox router reassigns the request.
-        // A progress or final reply since the streak began starts the count again.
-        const word = db.query("SELECT max(created_at_ms) AS at FROM session_communication_events WHERE request_id=? AND kind IN ('progress','final')").get(request.request_id) as { at: number | null };
-        const streak = request.quiet_streak_since_ms !== null && (word.at ?? 0) <= request.quiet_streak_since_ms ? request.quiet_streak_count : 0;
+        // The count lives on the request row, so a restart or a handoff keeps it. It starts again only when the request is seen
+        // working or held, or when a request the holder was waiting on settled since the streak began.
+        if (request.quiet_streak_since_ms !== null && request.quiet_streak_count > 0 && dependencySettledSince(db, request.target_session_id, request.quiet_streak_since_ms)) {
+            db.query('UPDATE session_communication_requests SET quiet_streak_since_ms=NULL,quiet_streak_count=0 WHERE request_id=?').run(request.request_id);
+            request = { ...request, quiet_streak_since_ms: null, quiet_streak_count: 0 };
+        }
+        const streak = request.quiet_streak_since_ms !== null ? request.quiet_streak_count : 0;
         if (streak >= QUIET_WAKES_BEFORE_STALL) {
             this.stallRequest(request, 'no word after three hourly reminders', `stalled:concierge:${request.target_session_id}:quiet`);
             return;
@@ -3697,11 +3709,17 @@ export class SessionCommunicationCoordinator {
             db.query('UPDATE session_communication_requests SET quiet_reminded_at_ms=?,quiet_streak_since_ms=?,quiet_streak_count=? WHERE request_id=? AND outcome IS NULL')
                 .run(now, streak === 0 ? now : request.quiet_streak_since_ms, streak + 1, request.request_id);
             log('info', 'session_request_quiet_wake', { request_id: request.request_id, holder_session_id: `concierge:${request.target_session_id}`, number: sent + 1, standing: standing.state });
-            recheck(now + QUIET_WAKE_MS);
+            recheck(now + (stuck ? STILL_WAITING_AFTER_MS : QUIET_WAKE_MS));
         } catch (error) {
             log('warn', 'session_request_quiet_wake_failed', { request_id: request.request_id, error: String(error) });
             recheck(now + STILL_WAITING_AFTER_MS);
         }
+    }
+    /** True when everything the holder has running or queued is a quiet wake: the wake's own turn is not a continuation. */
+    private onlyQuietWakeLive(request: RequestRow): boolean {
+        const live = db.query(`SELECT input.id FROM turns turn LEFT JOIN session_inputs input ON input.turn_id=turn.id
+            WHERE turn.session_id=? AND turn.status IN ('running','delivering','queued')`).all(request.target_session_id) as { id: string | null }[];
+        return live.length > 0 && live.every(row => row.id?.startsWith('request-quiet:'));
     }
     /** Marks a request stalled so the Inbox router reassigns it; the same record chaseStranded writes. */
     private stallRequest(request: RequestRow, reason: string, noticeGroup: string) {
