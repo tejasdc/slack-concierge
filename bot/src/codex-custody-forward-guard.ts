@@ -6,6 +6,7 @@ import {isCodexNativeObservation} from './codex-native-observations';
 import {successorThreadStartParams,type CodexSuccessorPlan} from './codex-successor-native';
 import {nativeInputClientMessageId} from './native-result-identity';
 import {custodySelectedTerminalConfirmed} from './codex-custody-terminal';
+import {assertCustodyEndpoint,assertCustodyRunnerBinding} from './codex-custody-colocation';
 
 type Relation={canonical_input_id:string;predecessor_session_id:number;successor_session_id:number;handoff_id:string;
   placement_input_id:string;placement_turn_id:number;state:string;plan_json:string;native_thread_id:string|null;
@@ -82,6 +83,11 @@ function successorGuard(scope:CodexCustodyForwardScope,relation:Relation) {
   const session=scope.ownerSessionId===null?null:db.query('SELECT id,agent_session_uuid,native_metadata_json FROM sessions WHERE id=?').get(scope.ownerSessionId) as any;
   if(!session||session.id!==relation.successor_session_id)
     throw new Error('Protected successor writes require its owner-derived session identity.');
+  if(plan.nativeConnection?.endpoint?.relayRunner){
+    assertCustodyEndpoint(scope.nativeEndpoint);
+    if(!isDeepStrictEqual(scope.nativeEndpoint,plan.nativeConnection.endpoint))
+      throw new Error('The final native send lost the relay pair and preparation committed by custody.');
+  }
   if(scope.method==='thread/start'){
     if(relation.state!=='constructing'||!relation.construction_intended_at||relation.native_thread_id
       ||plan.ownerSessionId!==relation.successor_session_id||plan.nativeConnection?.senderId!==scope.senderId
@@ -93,7 +99,13 @@ function successorGuard(scope:CodexCustodyForwardScope,relation:Relation) {
     return;
   }
   // Pause withholds productive admission; it must not withhold an exact retained Stop.
-  if(scope.method==='turn/interrupt'){assertExactStop(scope,relation.successor_session_id);return;}
+  if(scope.method==='turn/interrupt'){
+    if(plan.nativeConnection?.senderId!==scope.senderId||plan.nativeConnection?.generation!==scope.generation)
+      throw new Error('Native Stop must use its retained protected sender generation.');
+    assertExactStop(scope,relation.successor_session_id);return;
+  }
+  assertCustodyRunnerBinding(JSON.parse(session.native_metadata_json??'{}').providerRunner,
+    plan.nativeConnection?.endpoint??undefined);
   if(JSON.parse(session.native_metadata_json??'{}').suspended)
     throw new Error('Protected successor writes remain held while its owner session is suspended.');
   if(scope.method==='thread/resume'||scope.method==='thread/fork'||scope.method==='thread/start')

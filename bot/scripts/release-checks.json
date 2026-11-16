@@ -34,6 +34,7 @@
     ["bun", "run", "scripts/codex-protected-observer-fixture.ts"],
     ["bun", "run", "scripts/thread-survives-router-handoff-fixture.ts"],
     ["bun", "run", "scripts/lab-content-disclosure-fixture.ts"],
+    ["bun", "run", "scripts/runner-worktree-inventory-fixture.ts"],
     ["bun", "build", "src/index.ts", "src/capture-ingress.ts", "src/presentation-message-worker.ts", "src/presentation-search-read.ts", "src/provider-history-worker.ts", "src/provider-history-object-migrate.ts", "src/provider-history-cache-maintenance.ts", "src/provider-history-sync-worker.ts", "src/provider-history-page-worker.ts", "src/foreground-gateway-worker.ts", "src/native-read-worker.ts", "src/ledger-durability-worker.ts", "src/watch-observation-worker.ts", "src/owner-task-watchdog-worker.ts", "--target", "bun", "--outdir", "/tmp/concierge-build"]
   ],
   "buildChecksB": [
@@ -70,7 +71,9 @@
     ["bun", "run", "scripts/codex-custody-forward-guard-fixture.ts"],
     ["bun", "run", "scripts/inbox-quiet-service-notices-fixture.ts"],
     ["bun", "run", "scripts/work-thread-root-check.ts"],
-    ["bun", "run", "scripts/lab-agent-membership-command-fixture.ts"]
+    ["bun", "run", "scripts/lab-agent-membership-command-fixture.ts"],
+    ["bun", "run", "scripts/codex-relay-protocol-fixture.ts"],
+    ["bun", "run", "scripts/codex-protected-relay-negative-fixture.ts"]
   ],
   "buildChecksC": [
     ["bun", "run", "scripts/ledger-recycling-fixture.ts"],
@@ -106,7 +109,9 @@
     ["bun", "run", "scripts/codex-custody-effects-fixture.ts"],
     ["bun", "run", "scripts/held-work-failover-fixture.ts"],
     ["bun", "run", "scripts/request-standing-fixture.ts"],
-    ["bun", "run", "scripts/lab-conversations-fixture.ts"]
+    ["bun", "run", "scripts/lab-conversations-fixture.ts"],
+    ["bun", "run", "scripts/codex-ordinary-relay-independence-fixture.ts"],
+    ["bun", "run", "scripts/codex-custody-successor-fixture.ts", "--relay"]
   ],
   "historyCache": [
     ["bun", "run", "scripts/history-cache-maintenance-fixture.ts"],

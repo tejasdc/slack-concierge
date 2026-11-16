@@ -23,7 +23,9 @@ try{
   assert.throws(()=>requireOfflineReleaseServiceStopped('fixture.service',()=>({status:0,stdout:state})),/fully stopped/,
    'an environment flag alone cannot authorize direct pointer publication');
  mkdirSync(repo);
- const baseCommit=run(['git','merge-base','HEAD','origin/main']).toString().trim();
+ // Preserve the actual last pre-custody builder/receiver. A moving merge-base eventually
+ // includes the behavior this fixture must prove an OLD receiver cannot provide.
+ const baseCommit='4f59051ea30711ceaa9ac97c5c663cfe1eff1ead';
  const archive=Bun.spawnSync({cmd:['git','archive','--format=tar',baseCommit],cwd:source,stdout:'pipe',stderr:'pipe'});
  if(archive.exitCode!==0)throw new Error(archive.stderr.toString());
  const extracted=Bun.spawnSync({cmd:['tar','-xf','-','-C',repo],stdin:archive.stdout,stdout:'pipe',stderr:'pipe'});

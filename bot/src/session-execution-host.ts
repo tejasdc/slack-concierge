@@ -41,6 +41,7 @@ import {recordRepairNotice} from './repair-notices';
 import {proveCodexInputNeverAcknowledged} from './codex-unacknowledged-proof';
 import {recoverCustodySuccessor,custodySuccessor,custodyPlacement,custodySuccessorSession,protectedCustodyRun} from './codex-custody-successor';
 import {custodyConnection} from './codex-custody-connection';
+import {assertCustodyRunnerBinding} from './codex-custody-colocation';
 import {installCodexCustodyForwardPolicy} from './codex-custody-forward-guard';
 import {CodexAppServerClient,type CodexAppServerClientLike} from './codex-app-server-client';
 import {nativeResultEventId} from './native-result-identity';
@@ -346,7 +347,9 @@ export class SessionExecutionHost {
         const retained=custodySuccessor(`report-back:${input.requestId}`);
         const existing=retained?this.custodyCodexClients.get(retained.successor_session_id):null;
         if(existing)return recoverCustodySuccessor(input,existing,this.options.custodyObserveProcesses);
-        const client=this.custodyClient();
+        const selected=getAcceptedSessionInput(`report-back:${input.requestId}`);
+        const source=selected?getSessionById(selected.session_id):null;
+        const client=this.custodyClient(source?sessionMetadata(source).providerRunner:undefined);
         let keep=false;
         try{
           const result=await recoverCustodySuccessor(input,client,this.options.custodyObserveProcesses);
@@ -365,10 +368,9 @@ export class SessionExecutionHost {
     // Each change to a Codex conversation's history tops up its kept window off the owner loop.
     this.stopCodexWindows=onCodexHistoryChanged((sessionId,thread)=>this.historyPages.prepareCodexWindow(sessionId,thread));
   }
-  private custodyClient(){
-    if(process.env.CONCIERGE_CODEX_RUNNER?.trim())
-      throw new Error('Local custody construction cannot use a runner-selected native endpoint.');
-    return custodyConnection(this.options.custodyClientFactory?.()??new CodexAppServerClient(undefined,undefined,{manageDaemon:false}));
+  private custodyClient(retainedRunner?:string|null){
+    return custodyConnection(this.options.custodyClientFactory?.()??ownerCodexAppServerClient({
+      relayRunner:retainedRunner===undefined?codexRelayRunner():retainedRunner,manageDaemon:false,protectedRelay:true}));
   }
   private prepareTestCodexConnectionLoss(sessionId:number,turnId:number) {
     const turn=db.query(`SELECT status,dispatch_attempt,owner_instance_id,stop_requested_at FROM turns WHERE id=? AND session_id=?`).get(turnId,sessionId) as
@@ -1582,7 +1584,11 @@ export class SessionExecutionHost {
     const successor=custodySuccessorSession(session.id);
     const saved=savedTurn(claim.turn_id);
     const metadata=sessionMetadata(session);
-    const runnerTarget=chooseTurnRunner(session,metadata);
+    // Protected successors retain their assessed physical route, including explicit local
+    // bindings. A later global default cannot replace the committed native association.
+    const protectedEndpoint=successor?JSON.parse(successor.plan_json).nativeConnection?.endpoint:undefined;
+    if(successor)assertCustodyRunnerBinding(metadata.providerRunner,protectedEndpoint);
+    const runnerTarget=successor?protectedEndpoint?.relayRunner??null:chooseTurnRunner(session,metadata);
     let boundAccount:{account:string;home:string|null}|null=adoption?.processor.account??null;
     if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
       const usage=session.provider_id==='codex'||session.provider_id==='claude-code'||session.provider_id==='antigravity'
@@ -1743,7 +1749,7 @@ export class SessionExecutionHost {
           // A ChatGPT run taken back after a restart uses the admission its send was made under.
           if(successor){
             let client=this.custodyCodexClients.get(session.id);
-            if(!client){client=this.custodyClient();this.custodyCodexClients.set(session.id,client);}
+            if(!client){client=this.custodyClient(sessionMetadata(session).providerRunner);this.custodyCodexClients.set(session.id,client);}
             const protectedRun=protectedCustodyRun(claim.turn_id,this.options.instanceId,claim.dispatch_attempt,
               {client,observeProcesses:this.options.custodyObserveProcesses})!;
             custodyConnection(client).protect(protectedRun.plan.nativeConnection);

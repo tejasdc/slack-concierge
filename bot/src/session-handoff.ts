@@ -17,8 +17,8 @@ import {sessionAddress} from './session-address';
 import {transferChatGptAnswerOwnership} from './chatgpt-obligations';
 import {takeInboxRouterRole} from './standing-agents';
 import {claudeConfigDir,locateClaudeTranscript} from './claude-transcript-watch';
-import {runnerMachineCall} from './runner-machine-calls';
-import {resolveRunnerProjectLocation} from './runner-project-location';
+import {runnerMachineCall,RunnerMachineCallError,RunnerUnreachableError,type RunnerMachineAnswerIdentity} from './runner-machine-calls';
+import {resolveRunnerProjectLocation,type RunnerProjectLocation} from './runner-project-location';
 import {undeliveredRequestState} from './request-prerequisite-hold';
 
 const run=promisify(execFile);
@@ -203,26 +203,46 @@ async function codexRollout(thread:string):Promise<string|null> {return runLedge
 async function worktrees(sessionId:number):Promise<{items:Item[];omissions:string[]}> {return runLedgerSteps((function* (this: any): Generator<unknown, any, any> {
   const session=getSessionById(sessionId)!;const meta=sessionMetadata(session);
   let runner=typeof meta.providerRunner==='string'?meta.providerRunner:null;
-  if(meta.providerRunner===undefined&&session.provider_id==='codex')runner=process.env.CONCIERGE_CODEX_RUNNER?.trim()||null;
+  let runnerSelection=meta.providerRunner===undefined?'unrecorded':meta.providerRunner===null?'metadata-null':'metadata';
+  if(meta.providerRunner===undefined&&session.provider_id==='codex'){
+    runner=process.env.CONCIERGE_CODEX_RUNNER?.trim()||null;runnerSelection='codex-config-fallback';
+  }
   if(meta.providerRunner===undefined&&session.provider_id==='claude-code'&&session.agent_session_uuid){
     const prior=lastLaunchedConversationHome(db,sessionId,'claude-code');
     if(prior?.supervisor==='runner'){
       if(!prior.runner)return {items:[],omissions:['The exact runner lease for this conversation is unavailable; worktrees were not inspected.']};
       runner=prior.runner;
+      runnerSelection='retained-conversation-lease';
     }
   }
   if(runner&&session.agent_session_uuid&&['codex','claude-code'].includes(session.provider_id)) {
+    let phase='project-resolution',location:RunnerProjectLocation|null=null,answeringRunner:RunnerMachineAnswerIdentity|null=null;
+    const observeAnswer=(identity:RunnerMachineAnswerIdentity|null)=>{answeringRunner=identity;};
     try {
-      const location=(yield resolveRunnerProjectLocation(runner,meta));
+      location=(yield resolveRunnerProjectLocation(runner,meta,observeAnswer));
       if(!location.project)return {items:[],omissions:['This conversation has no registered runner project for worktree inspection.']};
+      phase='runner-worktree-query';
       const remote=(yield runnerMachineCall<{items:{path:string;branch:string;head:string;uncommittedFiles:number}[];transcriptAvailable:boolean}>(
         runner,'projects.worktrees',{project:location.project,provider:session.provider_id as 'codex'|'claude-code',sessionUUID:session.agent_session_uuid,
-          account:typeof meta.providerAccount==='string'?meta.providerAccount:null}));
+          account:typeof meta.providerAccount==='string'?meta.providerAccount:null},undefined,observeAnswer));
+      phase='worktree-response-parse';
+      if(!remote||!Array.isArray(remote.items)||typeof remote.transcriptAvailable!=='boolean'||remote.items.some(item=>
+        !item||typeof item.path!=='string'||!item.path.startsWith('/')||typeof item.branch!=='string'||typeof item.head!=='string'
+        ||!Number.isSafeInteger(item.uncommittedFiles)||item.uncommittedFiles<0))
+        throw new Error('The runner returned a malformed projects.worktrees response.');
       return {items:remote.items.map(item=>({id:`worktree:${item.path}`,kind:'worktree',ref:item.path,holder:canonical(sessionId),
         branch:item.branch,head:item.head,uncommittedFiles:item.uncommittedFiles})),
         omissions:remote.transcriptAvailable?[]:['Provider transcript unavailable on its runner; worktree references were omitted.']};
-    } catch {
-      return {items:[],omissions:['The session runner is unavailable; runner worktrees could not be inspected.']};
+    } catch(error) {
+      const failure=error instanceof RunnerMachineCallError?error:null;
+      const facts={phase,runner,runnerSelection,retainedRunner:meta.providerRunner===undefined?'undefined':meta.providerRunner,
+        requestedLocation:{projectName:meta.projectName??null,projectPath:meta.projectPath??null,project:meta.project??null,cwd:meta.cwd??null},
+        resolvedLocation:location,provider:session.provider_id,nativeConversationId:session.agent_session_uuid,
+        retainedAccount:meta.providerAccount===undefined?'undefined':meta.providerAccount,
+        answeringRunner:error instanceof RunnerUnreachableError?null:failure?.answeringRunner??answeringRunner,
+        error:{name:error instanceof Error?error.name:'Error',code:failure?.code??(error as any)?.code??null,
+          method:failure?.method??null,phase:failure?.phase??null,message:error instanceof Error?error.message:String(error)}};
+      return {items:[],omissions:[`Runner worktree inventory failed: ${JSON.stringify(facts)}`]};
     }
   }
   const roots=[meta.cwd,...(meta.additionalDirs??[])].filter((value):value is string=>typeof value==='string'&&!!value);
