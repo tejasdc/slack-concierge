@@ -761,13 +761,15 @@ replacement action or invoke `work recover` to bypass uncertain effects.
 
 Every time an agent reads from Concierge also carries Tejas's local clock, written
 the way he says it ("11:25 PM Eastern, Nov 15"), so no agent converts server UTC by
-hand. The router-actions `sessions`, `reports`, `threads`, `external`, `projects` and
-`work` commands keep each machine value exactly and add a sibling field
-(`startedAt` → `startedAtLocal`, `created_at` → `created_at_local`, epoch-millisecond
-moments likewise); an ISO UTC time inside prose gains `(11:25 PM Eastern, Nov 15)`
-after it. The text of every agent and service input (requests, stall, upkeep and
-handoff notices) and the per-turn context get the same inline reading; his own
-messages stay byte-exact. One formatter in `bot/src/agent-local-time.ts` does both.
+hand. The router-actions `sessions`, `reports`, `threads`, `external`, `projects`,
+`work`, `report`, posting and `messages` commands keep each machine value exactly and
+add a sibling field (`startedAt` → `startedAtLocal`, `created_at` → `created_at_local`,
+epoch-millisecond moments likewise); an ISO UTC time inside a prose field gains
+`(11:25 PM Eastern, Nov 15)` after it (a field holding embedded JSON is left exact).
+The text of every agent and service input (requests, stall, upkeep and handoff
+notices), the per-turn context and the end-of-turn owed-reply hook get the same
+reading; the input text of his own messages is sent byte-exact. One formatter in
+`bot/src/agent-local-time.ts` does all of it.
 
 An agent carrying a work request can switch the saved Codex account on this server
 or the Mac through `sessions auth switch codex <saved-profile-id> [--machine mac]`

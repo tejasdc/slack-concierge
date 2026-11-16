@@ -35,7 +35,8 @@ export function hisLocalTime(ms: number, timeZone = HIS_TIME_ZONE): string {
   const at = new Date(ms);
   if (!Number.isFinite(at.getTime())) return '';
   const { clock, day, label } = formatterFor(timeZone);
-  return `${clock.format(at)} ${label}, ${day.format(at)}`;
+  // ICU puts a narrow no-break space before AM/PM; agents and he read an ordinary space.
+  return `${clock.format(at).replace(/\s/g, " ")} ${label}, ${day.format(at)}`;
 }
 
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?Z$/;
@@ -44,6 +45,12 @@ const ISO_UTC_IN_TEXT = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?
 // Epoch milliseconds between 2017 and 2096: never a duration, so a key holding one is a moment.
 const EPOCH_MS_MIN = 1.5e12, EPOCH_MS_MAX = 4e12;
 const MOMENT_KEY = /(?:at|At|until|Until|since|Since|time|Time)(?:_?[Mm]s)?$|(?:_ms|Ms)$/;
+
+/** A Concierge ledger time: ISO UTC, or SQLite CURRENT_TIMESTAMP ("2026-11-16 04:25:00"), which is UTC without a zone. */
+export function hisLocalTimeOfLedgerUtc(value: string, timeZone = HIS_TIME_ZONE): string {
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/.test(value) ? `${value.replace(" ", "T")}Z` : value;
+  return ISO_UTC.test(iso) ? hisLocalTime(Date.parse(iso), timeZone) : "";
+}
 
 /** Adds "(11:25 PM Eastern, Nov 15)" after each ISO UTC timestamp in text. Idempotent. */
 export function annotateTextWithHisTime(text: string, timeZone = HIS_TIME_ZONE): string {
@@ -64,7 +71,7 @@ function localKey(key: string) {
  * inline reading after each timestamp. Existing fields keep their exact machine values.
  */
 export function withHisLocalTimes(value: unknown, timeZone = HIS_TIME_ZONE): unknown {
-  if (typeof value === 'string') return ISO_UTC.test(value) ? value : annotateTextWithHisTime(value, timeZone);
+  if (typeof value === 'string') return ISO_UTC.test(value) || /^\s*[{[]/.test(value) ? value : annotateTextWithHisTime(value, timeZone);
   if (Array.isArray(value)) return value.map(item => withHisLocalTimes(item, timeZone));
   if (!value || typeof value !== 'object') return value;
   const out: Record<string, unknown> = {};

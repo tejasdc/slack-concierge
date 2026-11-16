@@ -167,5 +167,5 @@ export async function runRouterWork(args: string[]) {
 
 if (import.meta.main) {
   try { console.log(agentJson(await runRouterWork(process.argv.slice(2)))); }
-  catch (error) { console.error(JSON.stringify({ error: String(error) })); process.exitCode = 1; }
+  catch (error) { console.error(agentJson({ error: String(error) })); process.exitCode = 1; }
 }
