@@ -106,7 +106,7 @@ try{
   // sent step then refused "changed during handoff", so no such handoff could be accepted.
   // It also holds a standing role: the journal keeper's role stayed on concierge:4571 after its
   // 2026-11-15 handoff, so saved check-ins kept going to a session that never ran again.
-  const asker=createNativeSession('codex',{title:'asker with open ChatGPT question',summary:undefined,purpose:'develop',origin:'native',standingRole:'journal-keeper'});
+  const asker=createNativeSession('codex',{title:'asker with open ChatGPT question',summary:undefined,purpose:'develop',origin:'native',standingRole:'journal-keeper',repairAgent:true});
   const chatgpt=createNativeSession('chatgpt',{title:'ChatGPT review',summary:undefined,purpose:'chat',origin:'native'});
   const askerInput=retainSessionInput({id:'fixture-asker-input',sessionId:asker.id,scope:'fixture',actionId:'asker',kind:'input',origin:'agent',
     payload:{text:'Ask ChatGPT and hand off'}}).input;
@@ -130,6 +130,7 @@ try{
   const role=(id:number)=>(db.query("SELECT json_extract(native_metadata_json,'$.standingRole') AS role FROM sessions WHERE id=?").get(id) as any).role;
   assert.equal(role(successorId),'journal-keeper','the standing role follows the accepted handoff');
   assert.equal(role(asker.id),null,'the superseded predecessor no longer holds the role');
+  assert.equal((db.query("SELECT json_extract(native_metadata_json,'$.repairAgent') AS flag FROM sessions WHERE id=?").get(successorId) as any).flag,1,'the repair agent marker follows the role');
   // concierge:9772 → 9874, 2026-11-16: ChatGPT answered, its return waited in the Codex asker's queue,
   // and Codex's allowance was gone. Acceptance demanded that the asker acknowledge the return first,
   // which it never could. The never-started return now moves with the duty; the successor acknowledges it.

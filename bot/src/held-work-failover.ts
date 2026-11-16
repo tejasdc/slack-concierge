@@ -88,18 +88,9 @@ function logSkip(sessionId:number,reason:SkipReason):void {
 function eligible(session:SessionRow|null):session is SessionRow {
   if(!session||session.status==='archived'||!automatic.includes(session.provider_id as AutomaticProvider))return false;
   const meta=sessionMetadata(session);
-  // The Inbox and standing roles have their own failover; a paused or consultation-only session holds.
-  if(meta.inbox||meta.inboxRole||meta.repairAgent||meta.standingRole
-    ||meta.suspended||meta.interactionPolicy==='consultation-only')return false;
-  const skipped=typeof meta.heldFailoverSkipUntil==='number'?meta.heldFailoverSkipUntil:0;
-  return skipped<=Date.now();
-}
-
-function eligible(session:SessionRow|null):session is SessionRow {
-  if(!session||session.status==='archived'||!automatic.includes(session.provider_id as AutomaticProvider))return false;
-  const meta=sessionMetadata(session);
   // His own provider or model choice stays: only a session whose provider the owner picked moves.
-  // The Inbox and standing roles have their own failover; a paused or consultation-only session holds.
+  // The Inbox and every standing role move by standing-role-provider-failover.ts; a paused or
+  // consultation-only session holds.
   if(meta.automaticProviderChoice!==true||meta.inbox||meta.inboxRole||meta.repairAgent||meta.standingRole
     ||meta.suspended||meta.interactionPolicy==='consultation-only')return false;
   const skipped=typeof meta.heldFailoverSkipUntil==='number'?meta.heldFailoverSkipUntil:0;
