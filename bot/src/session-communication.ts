@@ -46,6 +46,7 @@ import {acceptHandoff,handoffObligations,proposeHandoff,reconcileWithdrawnHandof
 import {askAsideOnce} from './session-asides';
 import {awaitingOutside} from './storage-observation';
 import {earlierWorkFor,type EarlierWork} from './request-history';
+import {closingRefusal,deliveryBlock,outcomeLines,readRequestRecords,type RequirementState} from './requirement-records';
 import {withBefore} from './reply-before';
 import { isHisChatGpt,parseProviderSelector,resolveProviderSelector,chatgptProjectThinking } from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
@@ -1644,6 +1645,15 @@ export class SessionCommunicationCoordinator {
         if (turn.status === 'error' || turn.status === 'cancelled') turn = carryingTurn(turn.id) ?? turn;
         return !['done', 'error', 'cancelled'].includes(turn.status) || awaitingBankedContinuation(turn.id);
     }
+    /** The requirement records a request carries: the ones it named plus its Inbox thread's, for the route to read fresh. */
+    requirementRefs(requestId:string):{ids:string[];topic:string|null}|null {
+        const row=db.query('SELECT payload_json,topic_root_input_id FROM session_communication_requests WHERE request_id=?').get(requestId) as {payload_json:string;topic_root_input_id:string|null}|null;
+        if(!row)return null;
+        const payload=JSON.parse(row.payload_json) as {requirements?:unknown;requestedEffect?:string};
+        if(payload.requestedEffect!=='work')return null;
+        const ids=Array.isArray(payload.requirements)?payload.requirements.filter((id):id is string=>typeof id==='string'):[];
+        return {ids,topic:topicOf(row.topic_root_input_id||null)};
+    }
     private row(id: string): RequestRow {
         const row = db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(id) as RequestRow | null;
         if (!row)
@@ -2007,6 +2017,8 @@ export class SessionCommunicationCoordinator {
         project?: string;
         title?: string;
         text: string;
+        /** Requirement records (thnkr.ing) this work must satisfy; its Inbox thread's records ride along automatically. */
+        requirements?:string[];
         /** Exact work task that needs this ChatGPT answer when this run holds several tasks. */
         for_task?:string;
         /** The original source pair of a frozen ask whose run has ended; `source` is the live run resuming it. */
@@ -2334,11 +2346,16 @@ export class SessionCommunicationCoordinator {
         if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         if(input.answer_view!==undefined&&!['summary','full'].includes(input.answer_view))throw new Error('--answer-view is summary or full.');
+        if(input.requirements!==undefined&&(!Array.isArray(input.requirements)||input.requirements.some(id=>typeof id!=='string'||!id.trim())))
+            throw new Error('--requirements names requirement records by exact id or name.');
+        if(input.requirements?.length&&input.requestedEffect!=='work')throw new Error('--requirements belongs to a work request: the record is what closes work.');
+        const requirementIds=[...new Set((input.requirements??[]).map(id=>id.trim()))].sort();
         const extraWith=(authorityInputId:string|undefined)=>({...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(input.purpose?{purpose:input.purpose}:{}),...(input.providerReason?{providerReason:input.providerReason}:{}),...(input.requestedEffect==='work'&&authorityInputId?{authorityInputId}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})});
         const extra=extraWith(sender.authorityInputId);
         const encodedWith=(extra:ReturnType<typeof extraWith>)=>JSON.stringify({ ...(requestedRole?{role:requestedRole}:input.provider?{provider:input.provider}:{address:input.address}),
             ...((requestedRole?requestedTitle:title)===undefined?{}:{title:requestedRole?requestedTitle:title}), text: input.text, after,...(pace.length?{pace}:{}),...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.for_task?{forTask:input.for_task}:{}),
+            ...(requirementIds.length?{requirements:requirementIds}:{}),
             ...(input.recovery_of?{recoveryOf:input.recovery_of}:{}),
             ...(input.correction_of?{correctionOf:input.correction_of}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
@@ -2417,8 +2434,21 @@ export class SessionCommunicationCoordinator {
         // Looked up once, after every refusal above, when the request is first accepted; a retry
         // returned the receipt earlier.
         const history=await this.earlierWork(actor,input,topicRoot??null,target?.session??null);
+        // The records are read here, at the moment this request's words for the builder are made. A
+        // named record that cannot be read refuses the ask; the thread's own records are best-effort
+        // here (the closing check fails closed on them whenever the reply comes).
+        const recordTopic=input.requestedEffect==='work'?topicOf(topicRoot??null):null;
+        let requirementRecords:Awaited<ReturnType<typeof readRequestRecords>>=[];
+        if(requirementIds.length||recordTopic){
+            try{requirementRecords=await readRequestRecords(requirementIds,recordTopic);}
+            catch(error){
+                if(requirementIds.length)throw new Error(`${error instanceof Error?error.message:'The requirement record could not be read.'} Nothing was sent.`);
+                log('warn','requirement_topic_unreadable',{topic:recordTopic,reason:error instanceof Error?error.message.slice(0,120):'failed'});
+            }
+        }
+        const requirementText=requirementRecords.length?deliveryBlock(requirementRecords):'';
         const consultation=historical?await this.dependencies.owner!.prepareConsultation(input.address!,undefined,input.evidence):null;
-        if(consultation||history) {
+        if(consultation||history||requirementRecords.length) {
             if(this.stopped)throw new Error('Session communication is not accepting requests.');
             const raced=prior();
             if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return this.receipt(raced);}
@@ -2456,7 +2486,7 @@ export class SessionCommunicationCoordinator {
                 hisChat: input.hisChat,
             });
             const chatgptText = isHisChat ? input.text : `${input.text}\n\n${chatgptRequestLine()}`;
-            const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${input.text}`,...extra,...(input.escalationReason?{escalationReason:input.escalationReason}:{}),...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${requirementText?`${requirementText}\n\n`:''}${input.text}`,...extra,...(input.escalationReason?{escalationReason:input.escalationReason}:{}),...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.\n\n${firstInput.text}`;
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,escalationReason:input.escalationReason,project:input.project,projectLocation,title,summary:input.summary,smallTask:input.smallTask,codexNativeTestFaultDeadlineMs:input.codexNativeTestFaultDeadlineMs,outside:input.outside,onRunner:input.onRunner,standingRole,implementation:input.implementation,firstInput,saved:input.saved});
@@ -2731,6 +2761,8 @@ export class SessionCommunicationCoordinator {
         waiting_on_watch?:string;
         /** What earlier agents did on this problem and how this approach differs; required on the first reply to a request that came with earlier work. */
         before?:string;
+        /** The request's requirement records, read from thnkr.ing by the route; never taken from a caller. */
+        requirements_state?:RequirementState;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
@@ -2765,6 +2797,15 @@ export class SessionCommunicationCoordinator {
             if(history&&(history.requests||history.sessions||history.cases)
               &&!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind IN ('progress','final')").get(input.request_id))
                 throw new Error('This request came with WHAT CAME BEFORE: earlier work on the same problem. Your first reply must say what that work did and how your approach differs: add --before "<what came before and how this differs>" to this reply.');
+        }
+        // Closing is the record's verdict, not the builder's: a completed reply on work that carries
+        // requirement records is refused until thnkr.ing says every record is closable (Tejas,
+        // 2026-11-16). Unreadable records refuse too: a closed task must never rest on a guess.
+        if(input.final&&input.workDisposition==='completed'&&input.requirements_state){
+            const refusal=closingRefusal(input.requirements_state);
+            if(refusal)throw new Error(refusal);
+            const lines=outcomeLines(input.requirements_state);
+            if(lines)input={...input,text:`${input.text.trim()?`${input.text.trim()}\n\n`:''}${lines}`};
         }
         if(before)input={...input,before,text:withBefore(before,input.text)};
         if(input.final)input={...input,reply_body:input.text};
