@@ -1,6 +1,7 @@
 import {adoptContentSource,assertCommunicationContent,assertInputContent,contentReaderHeaders,outsideContentReader,withContentSource} from './lab-content-disclosure';
 import {pendingJournalProcessing} from "./journal-processing";
 import { readFileSync } from 'node:fs';
+import {custodySelectedTerminalConfirmed} from './codex-custody-terminal';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
 import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
@@ -887,6 +888,21 @@ export class SessionCommunicationCoordinator {
             return {known:true,allowed:false,message:'This prompt belongs to another Codex execution. Choose GPT-6.1 Sol or retry with its own turn.'};
         if(input.model!=='gpt-6-astra')return {known:true,allowed:true};
         const accepted=getAcceptedSessionInput(turn.accepted_input_id);
+        const custody=!input.providerAgentId&&db.query(`SELECT recovery.canonical_input_id,recovery.handoff_id
+          FROM codex_custody_successors recovery JOIN session_handoffs handoff ON handoff.id=recovery.handoff_id
+          JOIN session_inputs placement ON placement.id=recovery.placement_input_id
+          JOIN turns current ON current.session_id=recovery.successor_session_id AND current.accepted_input_id=?
+          WHERE recovery.successor_session_id=? AND current.id=?
+            AND recovery.native_thread_id=? AND recovery.attempt_spent_at IS NOT NULL
+            AND handoff.state='accepted' AND handoff.successor_session_id=recovery.successor_session_id
+            AND placement.source_input_id=recovery.canonical_input_id AND placement.turn_id=recovery.placement_turn_id`)
+          .get(accepted?.id??'',session.id,turn.id,input.providerSessionId) as {canonical_input_id:string;handoff_id:string}|null;
+        if(custody&&metadata.reasoningEffort==='medium'){
+            recordSessionEvent({eventId:`model-preservation:${turn.id}`,sessionId:session.id,inputId:accepted!.id,turnId:turn.id,
+              kind:'model_preservation',payload:{model:input.model,effort:'medium',basis:'codex_successor_custody_v1',
+                canonicalInputId:custody.canonical_input_id,handoffId:custody.handoff_id}});
+            return {known:true,allowed:true};
+        }
         const serviceContinuation=accepted?.origin==='service'&&!!accepted.source_input_id&&!!accepted.source_run_id
             &&(()=>{
                 const source=getAcceptedSessionInput(accepted.source_input_id!);
@@ -1440,11 +1456,28 @@ export class SessionCommunicationCoordinator {
     }
     /** Recover only the exact service report-back bound to an open work request. Its target input
      * and action receipt stay separate from the already-acknowledged original work input. */
-    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string}) {
+    async recoverCodexNeverAcknowledged(input:{source:CommunicationSource;action_id:string;request_id:string;custody_successor?:boolean}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;action(input.action_id);
         if(authority.scope!=='work')throw new Error('Codex recovery requires work authority from this exact live run.');
         if(!actor.inputId)throw new Error('Codex recovery needs the asking session’s exact accepted input and live run.');
+        if(input.custody_successor===true){
+            const recover=this.dependencies.owner.runtime.recoverCustodySuccessor;
+            if(!recover)throw new Error('This owner cannot construct a custody successor.');
+            const authorityInputId=authority.authorityInputId??actor.inputId;
+            const validateSource=()=>{
+                const live=this.authority(this.fenced(this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)})));
+                if(live.scope!=='work'||live.actor.session!==actor.session
+                    ||(live.authorityInputId??live.actor.inputId)!==authorityInputId||this.row(input.request_id).outcome!==null)
+                    throw new Error('Recovery lost its exact live work authority or its underlying request settled.');
+            };
+            const result=await recover({actorSession:actor.session,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),
+                requestId:input.request_id,actionId:input.action_id,authorityInputId,validateSource});
+            this.wake();return result;
+        }
+        if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?')
+            .get(`custody-recovery-action:${hash(JSON.stringify([actor.inputId,input.action_id]))}`))
+            throw new Error('This admitted action already names a custody-successor recovery.');
         const scope=`communication:${actor.inputId}`;
         const existing=db.query('SELECT receipt_json,payload_json FROM session_inputs WHERE session_id=? AND scope=? AND action_id=?')
             .get(actor.session,scope,input.action_id) as {receipt_json:string|null;payload_json:string}|null;
@@ -3321,6 +3354,31 @@ export class SessionCommunicationCoordinator {
             if (!['done', 'error', 'cancelled'].includes(next.status)) return;
             if (next.status === 'done') { this.chaseStranded(request, next.id, effect); return; }
             ended = next;
+        }
+        if(ended.status==='error'||ended.status==='cancelled'){
+            const custody=db.query(`SELECT canonical_input_id,request_id,placement_input_id,successor_session_id
+                FROM codex_custody_successors WHERE placement_turn_id=? AND successor_session_id=?`)
+                .get(ended.id,request.target_session_id) as {canonical_input_id:string;request_id:string;placement_input_id:string;successor_session_id:number}|null;
+            if(custody){
+                const stop=ended.status==='cancelled'?stoppedByTejas(ended.id):null;
+                const reason=ended.status==='error'?endedWorkInPlainWords(turn.agent_text):stop
+                    ?stoppedByTejasText(stop.atMs):'The selected custody attempt was canceled before it produced a result.';
+                db.transaction(()=>{
+                    db.query(`UPDATE codex_custody_successors SET state=?,error=?
+                        WHERE canonical_input_id=? AND placement_turn_id=? AND state IN ('admitting','admitted','acknowledged')`)
+                        .run(custodySelectedTerminalConfirmed(custody.canonical_input_id)?'acknowledged':'held',reason,custody.canonical_input_id,ended.id);
+                    const eventId=`custody-attempt-failed:${custody.canonical_input_id}:${ended.id}`;
+                    if(!db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))
+                        recordSessionEvent({eventId,sessionId:custody.successor_session_id,inputId:custody.placement_input_id,turnId:ended.id,
+                            kind:'custody_successor_attempt',payload:{canonicalInputId:custody.canonical_input_id,requestId:custody.request_id,
+                                placementInputId:custody.placement_input_id,placementTurnId:ended.id,terminalStatus:ended.status,reason,
+                                ...(stop?{stoppedBy:'tejas',stoppedAtMs:stop.atMs,stopInputId:stop.inputId}:{}),
+                                ...(turn.agent_text?{providerError:String(turn.agent_text).slice(0,2000)}:{})}});
+                }).immediate();
+                // A failed or stopped selected attempt is recorded against its canonical custody
+                // relation. It does not settle any of the independent requests carried with it.
+                return;
+            }
         }
         if (ended.status === 'cancelled') {
             if(this.holdFailedChatGptRequest(request,'The original provider turn was canceled without an answer.'))return;

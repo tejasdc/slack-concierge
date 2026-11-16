@@ -160,6 +160,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           successor_session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
           state TEXT NOT NULL CHECK(state IN ('proposed','accepted','withdrawn')),
           action_id TEXT NOT NULL,
+          handoff_kind TEXT NOT NULL DEFAULT 'ordinary',
+          canonical_input_id TEXT,
           caller_session_id INTEGER NOT NULL REFERENCES sessions(id),
           reason TEXT NOT NULL,
           requesting_input_id TEXT NOT NULL,
@@ -171,6 +173,29 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           accepted_at TEXT,
           withdrawn_at TEXT,
           UNIQUE(requesting_input_id,action_id)
+        );
+        CREATE TABLE IF NOT EXISTS codex_custody_successors (
+          canonical_input_id TEXT PRIMARY KEY REFERENCES session_inputs(id),
+          predecessor_session_id INTEGER NOT NULL REFERENCES sessions(id),
+          successor_session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
+          handoff_id TEXT NOT NULL UNIQUE REFERENCES session_handoffs(id),
+          placement_input_id TEXT NOT NULL UNIQUE REFERENCES session_inputs(id),
+          placement_turn_id INTEGER NOT NULL UNIQUE REFERENCES turns(id),
+          request_id TEXT NOT NULL,
+          source_input_id TEXT NOT NULL,
+          source_run_id TEXT NOT NULL,
+          state TEXT NOT NULL,
+          plan_json TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL,
+          construction_intended_at TEXT,
+          native_thread_id TEXT UNIQUE,
+          construction_json TEXT,
+          attempt_spent_at TEXT,
+          dispatch_attempt INTEGER,
+          native_turn_id TEXT,
+          acknowledged_at TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE UNIQUE INDEX IF NOT EXISTS session_handoffs_one_proposed
           ON session_handoffs(predecessor_session_id) WHERE state='proposed';
@@ -665,6 +690,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
       `);
+      add('session_handoffs','handoff_kind',"handoff_kind TEXT NOT NULL DEFAULT 'ordinary'");
+      add('session_handoffs','canonical_input_id','canonical_input_id TEXT');
       add('canvas_project_ensures','title_clock','title_clock INTEGER NOT NULL DEFAULT 0');
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.

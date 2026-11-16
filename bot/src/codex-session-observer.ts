@@ -17,7 +17,9 @@ import {
   getUniqueCodexSessionBinding,
   listUniqueCodexSessionBindings,
   recordCodexSessionHistoryHead,
+  db,
 } from "./state";
+import { custodySuccessorSession } from "./codex-custody-successor";
 
 const OBSERVATION_RETRY_MS = 100;
 
@@ -39,6 +41,8 @@ export class CodexSessionObserver {
   private readonly stoppedSignal: Promise<void>;
   private resolveStoppedSignal!: () => void;
   private readonly subscribedThreadIds = new Set<string>();
+  private readonly protectedSessionThreadIds = new Set<string>();
+  private readonly protectedObservationLoops = new Map<string, Promise<void>>();
   private readonly pendingThreadSubscriptions = new Map<string, Promise<void>>();
   private readonly appServer: CodexAppServerClientLike;
   private readonly ownsAppServer: boolean;
@@ -59,10 +63,20 @@ export class CodexSessionObserver {
   }
 
   providerSessionBound(providerThreadUuid: string) {
-    if (this.stopped || this.subscribedThreadIds.has(providerThreadUuid)) return Promise.resolve();
+    if (this.stopped) return Promise.resolve();
+    const binding = getUniqueCodexSessionBinding(providerThreadUuid);
+    const protectedCustody = binding ? protectedCustodyBinding(binding.session_id) : null;
+    if (binding && protectedCustody) {
+      if (this.protectedSessionThreadIds.has(providerThreadUuid)) {
+        this.startProtectedObservation(providerThreadUuid);
+        return Promise.resolve();
+      }
+    } else if (this.subscribedThreadIds.has(providerThreadUuid)) return Promise.resolve();
     const pending = this.pendingThreadSubscriptions.get(providerThreadUuid);
     if (pending) return pending;
-    const subscription = this.subscribeBoundProviderSession(providerThreadUuid).finally(() => {
+    const subscription = (binding && protectedCustody
+      ? this.observeProtectedBoundProviderSession(providerThreadUuid, binding.session_id, protectedCustody.role)
+      : this.subscribeBoundProviderSession(providerThreadUuid)).finally(() => {
       if (this.pendingThreadSubscriptions.get(providerThreadUuid) === subscription) {
         this.pendingThreadSubscriptions.delete(providerThreadUuid);
       }
@@ -80,6 +94,7 @@ export class CodexSessionObserver {
     const settled = await Promise.allSettled([close,
       this.connectionLoop,
       this.notificationLoop,
+      ...this.protectedObservationLoops.values(),
       ...this.pendingThreadSubscriptions.values(),
     ].filter(Boolean) as Promise<void>[]);
     if (settled[0]?.status === "rejected") throw settled[0].reason;
@@ -138,7 +153,9 @@ export class CodexSessionObserver {
           const snapshot = await connection.request("thread/read", { threadId, includeTurns: false });
           await this.queueLifecycleRefresh(threadId);
           await this.refreshHistoryHead(binding.session_id, threadId);
-          if (snapshot.thread?.status?.type === "active") await this.providerSessionBound(threadId);
+          if (snapshot.thread?.status?.type === "active" || protectedCustodyBinding(binding.session_id)) {
+            await this.providerSessionBound(threadId);
+          }
         } catch (error) {
           if (this.stopped || await connection.connect() !== generation || this.stopped) return false;
           log("warn", "codex_session_thread_subscription_failed", {
@@ -162,7 +179,17 @@ export class CodexSessionObserver {
     if (this.stopped || await this.appServer.connect() !== generation || this.stopped) {
       throw new Error("The provider observer connection changed while subscribing a newly bound session.");
     }
-    await this.appServer.request("thread/resume", { threadId: providerThreadUuid, excludeTurns: true });
+    const latestBinding = getUniqueCodexSessionBinding(providerThreadUuid);
+    const protectedCustody = latestBinding ? protectedCustodyBinding(latestBinding.session_id) : null;
+    if (latestBinding && protectedCustody) {
+      await this.observeProtectedBoundProviderSession(providerThreadUuid, latestBinding.session_id, protectedCustody.role);
+      return;
+    }
+    if (!latestBinding) return;
+    // Keep the current owner binding and custody relation adjacent to the native call. A
+    // callback queued before accepted custody must not resume the predecessor afterward.
+    await this.appServer.request("thread/resume", { threadId: providerThreadUuid, excludeTurns: true },
+      {custodyOwnerSessionId:latestBinding.session_id});
     if (this.stopped || await this.appServer.connect() !== generation || this.stopped) {
       throw new Error("The provider observer connection changed after subscribing a newly bound session.");
     }
@@ -175,6 +202,101 @@ export class CodexSessionObserver {
       session_id: binding.session_id,
       trigger: "provider_session_bound",
     });
+  }
+
+  /** Protected successor binding is evidence to inspect, never permission to load/resume it. */
+  private async observeProtectedBoundProviderSession(providerThreadUuid: string, sessionId: number,
+    role: "successor" | "predecessor") {
+    if (this.stopped) return;
+    const generation = await this.appServer.connect();
+    if (this.stopped || await this.appServer.connect() !== generation || this.stopped) {
+      throw new Error("The provider observer connection changed before protected observation.");
+    }
+    const snapshot = await this.appServer.request("thread/read", { threadId: providerThreadUuid, includeTurns: false });
+    if (this.stopped || await this.appServer.connect() !== generation || this.stopped) {
+      throw new Error("The provider observer connection changed during protected observation.");
+    }
+    if (snapshot.thread?.id !== providerThreadUuid) throw new Error("Protected observation returned a different native thread.");
+    this.protectedSessionThreadIds.add(providerThreadUuid);
+    await this.queueLifecycleRefresh(providerThreadUuid);
+    await this.refreshHistoryHead(sessionId, providerThreadUuid);
+    if (role === "successor") await this.observeProtectedTurnPages(providerThreadUuid, sessionId);
+    this.startProtectedObservation(providerThreadUuid);
+    log("info", "codex_session_protected_thread_observed", {
+      provider_thread_uuid: providerThreadUuid, session_id: sessionId, trigger: "provider_session_bound",
+    });
+  }
+
+  private startProtectedObservation(providerThreadUuid: string) {
+    if (this.stopped || this.protectedObservationLoops.has(providerThreadUuid)) return;
+    const loop = (async () => {
+      while (!this.stopped && this.protectedSessionThreadIds.has(providerThreadUuid)) {
+        try {
+          const binding = getUniqueCodexSessionBinding(providerThreadUuid);
+          const protectedCustody = binding ? protectedCustodyBinding(binding.session_id) : null;
+          if (!binding || !protectedCustody) return;
+          const relation = protectedCustody.relation;
+          if (protectedCustody.role === "predecessor") {
+            const status = await this.refreshLifecycle(providerThreadUuid);
+            await this.refreshHistoryHead(binding.session_id, providerThreadUuid);
+            if (status !== "active") return;
+          } else {
+            if (!relation || !["staged", "constructing", "constructed", "admitting", "admitted"].includes(relation.state)) return;
+          }
+          if (protectedCustody.role === "successor" && relation && (relation.attempt_spent_at || relation.native_turn_id)) {
+            const status = await this.refreshLifecycle(providerThreadUuid);
+            const terminalTurnObserved = await this.observeProtectedTurnPages(providerThreadUuid, binding.session_id);
+            await this.refreshHistoryHead(binding.session_id, providerThreadUuid);
+            if (status === "idle" && terminalTurnObserved) return;
+          }
+        } catch (error) {
+          if (this.stopped) return;
+          log("warn", "codex_session_protected_observation_failed", {
+            provider_thread_uuid: providerThreadUuid, ...errorFields(error),
+          });
+        }
+        await Promise.race([wait(1_000), this.stoppedSignal]);
+      }
+    })().finally(() => {
+      if (this.protectedObservationLoops.get(providerThreadUuid) === loop) {
+        this.protectedObservationLoops.delete(providerThreadUuid);
+      }
+    });
+    this.protectedObservationLoops.set(providerThreadUuid, loop);
+  }
+
+  private async observeProtectedTurnPages(providerThreadUuid: string, sessionId: number): Promise<boolean> {
+    const relation = custodySuccessorSession(sessionId);
+    if (!relation) return false;
+    let cursor: string | null = null;
+    let target: any = null;
+    do {
+      const page = await this.appServer.request("thread/turns/list", {
+        threadId: providerThreadUuid, cursor, limit: 20, sortDirection: "desc", itemsView: "summary",
+      });
+      if (!Array.isArray(page?.data)) throw new Error("Codex did not return a protected turn page.");
+      target = page.data.find((turn: any) => relation.native_turn_id
+        ? turn?.id === relation.native_turn_id : turn?.status === "inProgress") ?? null;
+      if (target) break;
+      const next = typeof page.nextCursor === "string" ? page.nextCursor : null;
+      if (next && next === cursor) throw new Error("Codex repeated a protected turn cursor.");
+      cursor = next;
+    } while (cursor);
+    if (!target || typeof target.id !== "string") return false;
+    let itemCursor: string | null = null;
+    do {
+      const page = await this.appServer.request("thread/items/list", {
+        threadId: providerThreadUuid, turnId: target.id, cursor: itemCursor, limit: 100, sortDirection: "asc",
+      });
+      if (!Array.isArray(page?.data) || page.data.some((entry: any) => entry?.turnId !== target.id)) {
+        throw new Error("Codex returned protected items for a different native turn.");
+      }
+      for (const entry of page.data) this.observeMessages({ threadId: providerThreadUuid, turnId: target.id, item: entry.item });
+      const next = typeof page.nextCursor === "string" ? page.nextCursor : null;
+      if (next && next === itemCursor) throw new Error("Codex repeated a protected item cursor.");
+      itemCursor = next;
+    } while (itemCursor);
+    return ["completed", "failed", "interrupted"].includes(target.status);
   }
 
   private invalidateHistory(sessionId: number, providerThreadUuid: string) {
@@ -249,6 +371,8 @@ export class CodexSessionObserver {
     if (typeof threadId === "string" && getUniqueCodexSessionBinding(threadId)) {
       if (["turn/started", "turn/completed"].includes(event.method)) {
         observeCodexLifecycle(threadId, event.params.turn, event.method);
+        if (event.method === "turn/started" && this.protectedSessionThreadIds.has(threadId))
+          this.startProtectedObservation(threadId);
         if (event.method === "turn/completed") this.invalidateHistory(getUniqueCodexSessionBinding(threadId)!.session_id, threadId);
         if (event.method === "turn/completed") await this.releaseIdleSubscription(threadId);
         return;
@@ -271,6 +395,7 @@ export class CodexSessionObserver {
       if (event.method === "thread/closed") {
         disconnectCodexLifecycle(threadId);
         this.subscribedThreadIds.delete(threadId);
+        this.protectedSessionThreadIds.delete(threadId);
         return;
       }
       if (event.method === "thread/tokenUsage/updated") {
@@ -323,8 +448,8 @@ export class CodexSessionObserver {
     return this.notificationLoop;
   }
 
-  private async refreshLifecycle(threadId: string) {
-    if (this.stopped) return;
+  private async refreshLifecycle(threadId: string): Promise<string | undefined> {
+    if (this.stopped) return undefined;
     const version = this.lifecycleVersions.get(threadId) ?? 0;
     let page: any, snapshot: any;
     try {
@@ -335,11 +460,12 @@ export class CodexSessionObserver {
     } catch {
       if (!this.stopped) disconnectCodexLifecycle(threadId);
       log("warn", "codex_session_lifecycle_refresh_failed", { provider_thread_uuid: threadId });
-      return;
+      return undefined;
     }
     // Notifications received during this read own newer evidence and are already queued.
-    if (this.stopped || (this.lifecycleVersions.get(threadId) ?? 0) !== version) return;
+    if (this.stopped || (this.lifecycleVersions.get(threadId) ?? 0) !== version) return undefined;
     observeCodexLifecycle(threadId, page.data?.[0], "thread/snapshot", snapshot.thread?.status?.type);
+    return typeof snapshot.thread?.status?.type === "string" ? snapshot.thread.status.type : undefined;
   }
 
   private observeMessages(params: any) {
@@ -364,4 +490,36 @@ export class CodexSessionObserver {
       });
     }
   }
+}
+
+/** Production callback shared by execution-host binding and provider-session lifecycle hooks. */
+export async function bindCodexProviderSession(
+  observer: Pick<CodexSessionObserver, "providerSessionBound"> | null | undefined,
+  providerThreadUuid: string,
+  secondaryObserver?: { providerSessionBound(providerThreadUuid: string): Promise<void> } | null,
+) {
+  await observer?.providerSessionBound(providerThreadUuid);
+  const binding = getUniqueCodexSessionBinding(providerThreadUuid);
+  if (binding && protectedCustodyBinding(binding.session_id)) return;
+  await secondaryObserver?.providerSessionBound(providerThreadUuid);
+}
+
+export function isProtectedCodexProviderThread(providerThreadUuid: string): boolean {
+  const bindings=db.query("SELECT id FROM sessions WHERE provider_id='codex' AND agent_session_uuid=?")
+    .all(providerThreadUuid) as {id:number}[];
+  return bindings.some(binding=>!!protectedCustodyBinding(binding.id));
+}
+
+function protectedCustodyBinding(sessionId: number): { relation: ReturnType<typeof custodySuccessorSession>;
+  role: "successor" | "predecessor" } | null {
+  const successor = custodySuccessorSession(sessionId);
+  if (successor) return { relation: successor, role: "successor" };
+  const predecessor = db.query(`SELECT relation.* FROM codex_custody_successors relation
+    JOIN session_handoffs handoff ON handoff.id=relation.handoff_id
+    WHERE relation.predecessor_session_id=? AND handoff.state IN ('proposed','accepted') ORDER BY relation.created_at DESC LIMIT 1`)
+    .get(sessionId) as NonNullable<ReturnType<typeof custodySuccessorSession>> | null;
+  if(predecessor)return {relation:predecessor,role:'predecessor'};
+  const hold=db.query("SELECT 1 FROM session_handoffs WHERE predecessor_session_id=? AND handoff_kind='codex-custody-successor' AND state='proposed'")
+    .get(sessionId);
+  return hold?{relation:null,role:'predecessor'}:null;
 }

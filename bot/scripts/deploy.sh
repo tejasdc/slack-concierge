@@ -78,6 +78,7 @@ CAPTURE_ADMISSION_BLOCKED=0
 CAPTURE_RESTARTED=0
 CAPTURE_PROBE_RESULT="unchanged; not restarted or probed"
 PRESERVE_GATES_ON_FAILURE=${CONCIERGE_PRESERVE_GATES_ON_FAILURE:-0}
+RELEASE_OWNER_HEALTH_PENDING=0
 CAPTURE_BLOCK_COMMENT=concierge-capture-bootstrap-drain
 GIT_ORIGIN_VERIFIED=0
 MIGRATION_DONE=0
@@ -136,13 +137,15 @@ restart_unit() {
     stop_unit "$1"
     start_unit "$1"
   else
-    systemctl restart "$1"
+    systemctl restart "$1" || return $?
+    if [ "$1" = "$SERVICE" ]; then export CONCIERGE_RELEASE_OFFLINE=0; fi
   fi
 }
 
 start_unit() {
   systemctl reset-failed "$1" 2>/dev/null || true
-  systemctl start "$1"
+  systemctl start "$1" || return $?
+  if [ "$1" = "$SERVICE" ]; then export CONCIERGE_RELEASE_OFFLINE=0; fi
 }
 
 stop_unit() {
@@ -160,6 +163,30 @@ stop_unit() {
   else
     systemctl stop "$unit"
   fi
+}
+
+# Offline is a supervised service state, not a mode inherited across a restart.
+# Keep the existing admission drains held while the stopped publication happens.
+stop_release_owner() {
+  RELEASE_OWNER_HEALTH_PENDING=1
+  stop_unit "$SERVICE" || return $?
+  CONCIERGE_SERVICE="$SERVICE" CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" require-stopped || return $?
+  export CONCIERGE_RELEASE_OFFLINE=1
+}
+
+select_release_publication() {
+  local mode
+  if [ "${CONCIERGE_RELEASE_OFFLINE:-0}" = 1 ]; then
+    stop_release_owner
+    return $?
+  fi
+  mode=$(CONCIERGE_RELEASE_OFFLINE=0 CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" publication-mode) || return $?
+  mode=$(printf '%s\n' "$mode" | jq -er '.mode') || return $?
+  case "$mode" in
+    serialized) return 0 ;;
+    stopped) stop_release_owner ;;
+    *) echo "Unproven serving application publication capability." >&2; return 1 ;;
+  esac
 }
 
 verify_git_origin() {
@@ -570,6 +597,10 @@ cleanup_failed_deployment() {
     exit 0
   fi
   record_deployment_failure "$deploy_status" || true
+  if [ "$RELEASE_OWNER_HEALTH_PENDING" = 1 ]; then
+    echo "DEPLOY FAILED: release publication has no restored healthy owner proof; admission gates remain held for recovery." >&2
+    return "$deploy_status"
+  fi
   unblock_capture_admission || true
   release_turn_gate || true
   release_capture_gate || true
@@ -579,6 +610,7 @@ cleanup_failed_deployment() {
 handoff_failed_deployment_to_repair() {
   local deploy_status=$1 lkg_output failed_commit restored_commit failure_error fingerprint
   local incident_output incident_id unit_name repair_status restored_health=0
+  stop_release_owner || return 1
   lkg_output=$(CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control 2>/dev/null) || return 1
   failed_commit=${FAILED_CANDIDATE_COMMIT:-${DEPLOYED_COMMIT:-$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)}}
   FAILED_CANDIDATE_COMMIT="$failed_commit"
@@ -705,9 +737,17 @@ install_deployment_runtime() {
 }
 
 require_last_known_good_release() {
-  if ! CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control >/dev/null; then
+  local was_offline=${CONCIERGE_RELEASE_OFFLINE:-0} restored
+  select_release_publication || return $?
+  if ! restored=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control); then
     echo "DEPLOY FAILED: no verified immutable last-known-good release exists. Run the documented one-time trusted-root repair cutover before deploying a candidate." >&2
     return 1
+  fi
+  if [ "${CONCIERGE_RELEASE_OFFLINE:-0}" = 1 ] && [ "$was_offline" != 1 ]; then
+    local DEPLOYED_COMMIT
+    DEPLOYED_COMMIT=$(printf '%s\n' "$restored" | jq -er '.git_commit') || return $?
+    start_unit "$SERVICE" || return $?
+    probe_service || return $?
   fi
 }
 
@@ -835,10 +875,7 @@ prepare_candidate_release() {
   # In an operator-controlled offline rollout, the serving owner is not needed
   # for activation. A stuck old owner can retain the ledger writer and make the
   # activated candidate impossible to record, so stop it before the pointer moves.
-  if [ "${CONCIERGE_RELEASE_OFFLINE:-0}" = "1" ] && systemctl is-active --quiet "$SERVICE"; then
-    echo "=== stop old coordinator before offline candidate activation ==="
-    stop_unit "$SERVICE"
-  fi
+  select_release_publication || return $?
   status=0
   run_retaining_output candidate-activate env CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
     --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH" --allow-supersede || status=$?
@@ -855,9 +892,14 @@ prepare_candidate_release() {
 
 promote_candidate_release() {
   [ -n "$CANDIDATE_ARTIFACT_DIGEST" ] || return 0
+  select_release_publication || return $?
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" promote \
     --run-id "$DEPLOY_RUN_ID" --artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
     --artifact "$CANDIDATE_ARTIFACT_PATH" || return $?
+  if [ "${CONCIERGE_RELEASE_OFFLINE:-0}" = 1 ]; then
+    start_unit "$SERVICE" || return $?
+    probe_service || return $?
+  fi
   DEPLOY_FAILURE_REASON="The Google account identity hook could not be installed."
   "$CANDIDATE_ARTIFACT_PATH/control/install-antigravity-account-hook.sh" \
     "$CANDIDATE_ARTIFACT_PATH/control/antigravity-account-statusline.sh"
@@ -983,6 +1025,7 @@ probe_service() {
         fi
         DEPLOYED_INVOCATION_ID=$invocation_id
         DEPLOYED_RUNTIME_SHA=$runtime_sha
+        RELEASE_OWNER_HEALTH_PENDING=0
         echo "Service probe passed (state=$state, MainPID=$main_pid, InvocationID=$invocation_id, runtime SHA=${runtime_sha:-unreported}, Slack and Codex App Server probes=ok)."
         return 0
       fi
@@ -1000,6 +1043,7 @@ restore_last_known_good_and_start_repair() {
   local restore_output incident_output incident_id unit_name fingerprint restore_status restore_line
   FAILED_CANDIDATE_COMMIT="$failed_commit"
   echo "Candidate deployment failed; restoring the immutable last-known-good release." >&2
+  stop_release_owner || return $?
   restore_line=$((LINENO + 1))
   restore_output=$(CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control) || {
     restore_status=$?
@@ -1342,13 +1386,6 @@ deploy() {
     return 0
   fi
 
-  if [ -n "$DRAIN_TOKEN" ] || [ -n "$CAPTURE_DRAIN_TOKEN" ]; then
-    DEPLOY_FAILURE_REASON="The durable admission-release checkpoint could not be recorded."
-    record_deployment_phase releasing "{\"service_invocation_id\":\"$DEPLOYED_INVOCATION_ID\"}"
-    DEPLOY_FAILURE_REASON="Provider or capture admission could not be reopened after health verification."
-    release_deployment_gate
-  fi
-
   if [ -n "$DEPLOY_RUN_ID" ]; then
     DEPLOY_FAILURE_REASON="The final service invocation and runtime commit could not be re-proven unchanged."
     confirm_service_proof_is_current
@@ -1362,6 +1399,15 @@ deploy() {
     retire_capture_credentials
     DEPLOY_FAILURE_REASON="The promoted release's router action helper could not be installed."
     install_router_actions
+  fi
+  if [ -n "$DRAIN_TOKEN" ] || [ -n "$CAPTURE_DRAIN_TOKEN" ]; then
+    DEPLOY_FAILURE_REASON="The durable admission-release checkpoint could not be recorded."
+    record_deployment_phase releasing "{\"service_invocation_id\":\"$DEPLOYED_INVOCATION_ID\"}"
+    DEPLOY_FAILURE_REASON="Provider or capture admission could not be reopened after health verification."
+    release_deployment_gate
+  fi
+  if [ -n "$DEPLOY_RUN_ID" ]; then
+    confirm_service_proof_is_current
     DEPLOY_FAILURE_REASON="Verified deployment success could not be committed to durable state."
     record_deployment_success
   fi
@@ -1385,7 +1431,7 @@ control_recovery_failed() {
   set +e
   recovery_error="Controller recovery stopped at $CURRENT_DEPLOY_STAGE (exit $code)."
   if [ "$CONTROL_RECOVERY_ACTIVATED" = 1 ]; then
-    if "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control && restart_unit "$SERVICE" && probe_service; then
+    if stop_release_owner && "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control && restart_unit "$SERVICE" && probe_service; then
       release_deployment_gate
     else
       recovery_error="$recovery_error Healthy release restoration requires explicit recovery."
@@ -1427,6 +1473,7 @@ recover_control() {
   hold_capture_gate
   if [ -n "$prior_activation" ]; then
     CONTROL_RECOVERY_ACTIVATED=1
+    stop_release_owner
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control
     restart_unit "$SERVICE"
     probe_service
@@ -1435,9 +1482,10 @@ recover_control() {
   install_deployment_runtime
   CURRENT_DEPLOY_STAGE=control-recovery-activate
   CONTROL_RECOVERY_ACTIVATED=1
+  stop_release_owner
   CONCIERGE_RELEASE_OFFLINE=1 "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH"
   record_deployment_phase restarting
-  stop_unit "$SERVICE"
+  # The owner was positively stopped before offline pointer publication.
   CONCIERGE_STATE_DIR="$STATE_DIR" CONCIERGE_SERVICE="$SERVICE" "$BUN_BIN" run \
     "$CANDIDATE_ARTIFACT_PATH/control/migrate-deployment-repair.js" --schema-only --backup-path "$MIGRATION_BACKUP_PATH"
   start_unit "$SERVICE"

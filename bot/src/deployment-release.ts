@@ -19,6 +19,7 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import BUILT_IN_DECLARATION from "./deployment-artifact-files.json";
 import {assertHistoryCacheActivation,HISTORY_CACHE_CAPABILITY_PATH,HISTORY_CACHE_CONTROL_CAPABILITY_PATH} from "./provider-history-cache-compatibility";
+import {assertCustodyReaderActivation,CUSTODY_APPLICATION_CAPABILITY_PATH,CUSTODY_CONTROL_CAPABILITY_PATH,type CustodyApplicationProvenance} from './codex-custody-compatibility';
 
 // Normal preparation took about 47 seconds; the same check passed in 52 seconds under
 // load after a 90-second deploy timeout. Three minutes leaves room for disk contention
@@ -103,6 +104,7 @@ export interface ReleaseManifest {
   artifact_digest: string;
   files: Record<string, string>;
   application_bundle_source_digest?: string;
+  custody_application_provenance?:CustodyApplicationProvenance;
 }
 
 export interface PreparedRelease {
@@ -116,6 +118,7 @@ export interface ReleaseEnvironment {
   installRoot: string;
   bunExecutable: string;
   historyCacheStateDirectory?: string;
+  custodyStateDirectory?:string;
 }
 
 interface SpawnResult {
@@ -294,6 +297,7 @@ export function defaultReleaseEnvironment(repositoryRoot: string): ReleaseEnviro
     installRoot: process.env.CONCIERGE_DEPLOYMENT_RUNTIME_DIR || "/usr/local/lib/slack-concierge-deployment",
     bunExecutable: process.env.CONCIERGE_BUN_BIN || "/root/.bun/bin/bun",
     historyCacheStateDirectory: process.env.CONCIERGE_STATE_DIR || "/root/.local/state/concierge",
+    custodyStateDirectory:process.env.CONCIERGE_STATE_DIR||"/root/.local/state/concierge",
   };
 }
 
@@ -302,6 +306,46 @@ export class TrustedRootReleaseManager {
     readonly environment: ReleaseEnvironment,
     readonly services: ReleaseServices = defaultServices(),
   ) {}
+
+  private custodyRowsExist(candidateArtifact:string,candidateFiles:Record<string,string>):boolean {
+    const database=join(this.environment.custodyStateDirectory??this.environment.historyCacheStateDirectory??'/root/.local/state/concierge','state.db');
+    // A genuinely new installation has no ledger and cannot yet contain custody rows.
+    if(!existsSync(database))return false;
+    const selectedControl=this.controlArtifactPath();
+    const readerPath='control/ledger-read.py';
+    let reader:string|null=null;
+    if(selectedControl){
+      const current=this.verify(selectedControl);
+      const path=join(selectedControl,readerPath);
+      if(current.files[readerPath]&&existsSync(path)
+        &&digest(readFileSync(path))===current.files[readerPath])reader=path;
+    }
+    if(!reader){
+      const path=join(candidateArtifact,readerPath);
+      if(candidateFiles[readerPath]&&existsSync(path)&&digest(readFileSync(path))===candidateFiles[readerPath])reader=path;
+    }
+    if(!reader)throw new Error('CODEX_CUSTODY_READ_ENTRANCE_UNAVAILABLE');
+    const sql='SELECT EXISTS(SELECT 1 FROM codex_custody_successors LIMIT 1) AS required';
+    const result=this.services.spawn(['/usr/bin/python3',reader,
+      '--database',database,'--max-rows','1',sql],{cwd:this.environment.repositoryRoot});
+    if(result.exitCode!==0) {
+      // Before this feature's schema exists, the bounded read reports its absence. Every other
+      // reader failure fails closed so activation cannot silently lose the state requirement.
+      if(Buffer.from(result.stderr).toString('utf8').includes('no such table: codex_custody_successors'))return false;
+      throw new Error(`CODEX_CUSTODY_LEDGER_READ_FAILED: ${Buffer.from(result.stderr).toString('utf8').slice(-1000)}`);
+    }
+    const line=Buffer.from(result.stdout).toString('utf8').trim().split('\n').at(-1);
+    const row=line?JSON.parse(line) as {required?:unknown}:null;
+    if(typeof row?.required!=='number'&&typeof row?.required!=='boolean')throw new Error('CODEX_CUSTODY_LEDGER_READ_INVALID');
+    return row.required===1||row.required===true;
+  }
+
+  private assertCustodyReader(artifact:string,manifest:ReleaseManifest,control:boolean) {
+    if(this.environment.custodyStateDirectory)
+      assertCustodyReaderActivation(this.environment.custodyStateDirectory,artifact,manifest.files,control,this.custodyRowsExist(artifact,manifest.files),{
+        applicationCommit:manifest.git_commit,controlCommit:manifest.control_git_commit,
+        applicationSourceTreeDigest:manifest.source_tree_digest,custodyApplicationProvenance:manifest.custody_application_provenance});
+  }
 
   private verifyRuntimeLaunchers(artifactPath: string) {
     const manifest = this.verify(artifactPath);
@@ -314,6 +358,15 @@ export class TrustedRootReleaseManager {
       if (stat.isDirectory()) for (const entry of readdirSync(path)) sealed(join(path, entry));
     };
     sealed(artifactPath);
+    return manifest;
+  }
+
+  /** Synchronous preflight for operations that must validate before recording an owner mutation. */
+  verifyControlActivation(artifactPath:string) {
+    const canonical=realpathSync(artifactPath),manifest=this.verifyRuntimeLaunchers(canonical);
+    if(this.environment.historyCacheStateDirectory)
+      assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
+    this.assertCustodyReader(canonical,manifest,true);
     return manifest;
   }
 
@@ -431,11 +484,16 @@ export class TrustedRootReleaseManager {
         delete controlFiles[launcherCapability];
       const controllerCapability=controlFiles[HISTORY_CACHE_CONTROL_CAPABILITY_PATH];
       if(controllerCapability && !existsSync(join(effectiveControlSourceRoot,controllerCapability)))delete controlFiles[HISTORY_CACHE_CONTROL_CAPABILITY_PATH];
+      const custodyController=controlFiles[CUSTODY_CONTROL_CAPABILITY_PATH];
+      if(custodyController&&!existsSync(join(effectiveControlSourceRoot,custodyController)))delete controlFiles[CUSTODY_CONTROL_CAPABILITY_PATH];
       // Reader capability belongs to the application commit, even in a hybrid
       // artifact with a separately upgraded deployment controller.
       delete controlFiles[HISTORY_CACHE_CAPABILITY_PATH];
       const readerCapability=applicationDeclaration.controlFiles[HISTORY_CACHE_CAPABILITY_PATH];
       if(readerCapability && existsSync(join(sourceRoot,readerCapability)))controlFiles[HISTORY_CACHE_CAPABILITY_PATH]=readerCapability;
+      const custodyReader=applicationDeclaration.controlFiles[CUSTODY_APPLICATION_CAPABILITY_PATH];
+      delete controlFiles[CUSTODY_APPLICATION_CAPABILITY_PATH];
+      if(custodyReader&&existsSync(join(sourceRoot,custodyReader)))controlFiles[CUSTODY_APPLICATION_CAPABILITY_PATH]=custodyReader;
       const declaration={...controlDeclaration,controlFiles,controlBundles:{...controlDeclaration.controlBundles,
         ...Object.fromEntries([...applicationPaths].map(path=>[path,applicationDeclaration.controlBundles[path]!]))}};
       const runtimeFiles = runtimeFilesFor(declaration);
@@ -445,7 +503,7 @@ export class TrustedRootReleaseManager {
       }
       for (const [destination, source] of Object.entries(declaration.controlFiles)) {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
-        copyFileSync(join(destination===HISTORY_CACHE_CAPABILITY_PATH?sourceRoot:effectiveControlSourceRoot, source), join(outputRoot, destination));
+        copyFileSync(join(destination===HISTORY_CACHE_CAPABILITY_PATH||destination===CUSTODY_APPLICATION_CAPABILITY_PATH?sourceRoot:effectiveControlSourceRoot, source), join(outputRoot, destination));
       }
       await this.services.build(
         join(effectiveControlSourceRoot, "bot/src/codex-app-server-bridge.mjs"),
@@ -459,6 +517,9 @@ export class TrustedRootReleaseManager {
       const runtimeDigest = releaseFileSetDigest(outputRoot, runtimeFiles);
       const compatibilityDigest = releaseFileSetDigest(sourceRoot, COMPATIBILITY_FILES);
       const files = Object.fromEntries(runtimeFiles.map((path) => [path, digest(readFileSync(join(outputRoot, path)))]));
+      const applicationCapabilityDigest=files[CUSTODY_APPLICATION_CAPABILITY_PATH];
+      const custodyApplicationProvenance:CustodyApplicationProvenance|undefined=applicationCapabilityDigest?{
+        format:1,applicationSourceTreeDigest:sourceTreeDigest,applicationCapabilityDigest}:undefined;
       const unsigned = {
         format: 2 as const,
         git_commit: gitCommit,
@@ -469,6 +530,7 @@ export class TrustedRootReleaseManager {
         compatibility_digest: compatibilityDigest,
         files,
         ...(applicationPaths.size?{application_bundle_source_digest:sourceTreeDigest}:{}),
+        ...(custodyApplicationProvenance?{custody_application_provenance:custodyApplicationProvenance}:{}),
       };
       const artifactDigest = digest(JSON.stringify(unsigned));
       const manifest: ReleaseManifest = { ...unsigned, artifact_digest: artifactDigest };
@@ -575,9 +637,7 @@ export class TrustedRootReleaseManager {
 
   activateControl(artifactPath: string) {
     const canonical = realpathSync(artifactPath);
-    const manifest = this.verifyRuntimeLaunchers(canonical);
-    if(this.environment.historyCacheStateDirectory)
-      assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
+    const manifest = this.verifyControlActivation(canonical);
     mkdirSync(this.environment.releaseRoot, { recursive: true, mode: 0o755 });
     this.installRuntimeLaunchers();
     const temporary = join(this.environment.releaseRoot, `.control-${randomUUID()}`);
@@ -593,6 +653,7 @@ export class TrustedRootReleaseManager {
     const manifest = this.verify(canonical);
     if(this.environment.historyCacheStateDirectory)
       assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files);
+    this.assertCustodyReader(canonical,manifest,false);
     mkdirSync(this.environment.releaseRoot, { recursive: true, mode: 0o755 });
     const temporary = join(this.environment.releaseRoot, `.current-${randomUUID()}`);
     symlinkSync(relative(this.environment.releaseRoot, canonical), temporary);
@@ -604,9 +665,11 @@ export class TrustedRootReleaseManager {
 
   restore(artifactPath: string) {
     this.verifyRuntimeLaunchers(realpathSync(artifactPath));
-    if(this.environment.historyCacheStateDirectory) {
+    {
       const canonical=realpathSync(artifactPath),manifest=this.verify(canonical);
+      if(this.environment.historyCacheStateDirectory)
       assertHistoryCacheActivation(this.environment.historyCacheStateDirectory,canonical,manifest.files,true);
+      this.assertCustodyReader(canonical,manifest,true);
     }
     const manifest = this.activate(artifactPath);
     this.activateControl(artifactPath);

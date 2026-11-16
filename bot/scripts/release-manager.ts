@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 
 import { realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { defaultReleaseEnvironment, TrustedRootReleaseManager } from "../src/deployment-release";
-import { ledgerAccess } from "../src/ledger-access-policy";
+import { ledgerAccess, requireOfflineReleaseServiceStopped } from "../src/ledger-access-policy";
+import { releasePublicationMode } from "../src/deployment-release-publication";
 import { deploymentReactionTokensForCommitRange } from "../src/deployment-reaction-tokens";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { deploymentOwnerFetch as ownerFetch } from "../src/deployment-owner-fetch";
@@ -59,6 +61,18 @@ try {
   };
   const repositoryRoot = process.env.CONCIERGE_REPO || "/var/lib/slack-concierge-deployment/source";
   const manager = new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
+  if(command==='require-stopped') {
+    requireOfflineReleaseServiceStopped(process.env.CONCIERGE_SERVICE||'concierge-bot.service',service=>{
+      const status=spawnSync('systemctl',['show',service,'-p','LoadState','-p','ActiveState','-p','SubState',
+        '-p','MainPID','-p','ControlPID','-p','Job'],{encoding:'utf8'});
+      return {status:status.status,stdout:status.stdout};
+    });
+    finish(0,{status:'stopped'});
+  }
+  if(command==='publication-mode')finish(0,{mode:await releasePublicationMode(manager,ownerFetch)});
+  if(ownerServedReleaseCommand&&['activate','restore-lkg','promote','set-control'].includes(command??'')
+    &&await releasePublicationMode(manager,ownerFetch)!=='serialized')
+    throw new Error('The serving application requires positively stopped-owner publication.');
   if (command?.startsWith("recovery-")) {
     const {handleControlRecovery}=await import('../src/deployment-control-recovery');
     finish(0, await handleControlRecovery(command, option, manager));
@@ -116,7 +130,9 @@ try {
         console.error(JSON.stringify({ event: "deployment_turn_reaction_discovery_failed", run_id: runId, error: message }));
       }
     }
-    const manifest = timed("activate_files", () => manager.activate(artifact));
+    const manifest = ownerServedReleaseCommand
+      ? await timedAsync("activate_files", () => ownerReleaseMutation('activate-files',{artifactPath:artifact}))
+      : timed("activate_files", () => manager.activate(artifact));
     await timedAsync("record_activated", () => releaseMutation('activated',{runId,artifactDigest:manifest.artifact_digest},
       () => recordDeploymentReleaseActivated(runId,manifest.artifact_digest)));
     notifyDeploymentWorker();
@@ -128,8 +144,11 @@ try {
     if (!release) throw new Error("No last-known-good release has been recorded.");
     if (process.argv.includes('--keep-control') && !manager.controlArtifactPath())
       throw new Error('Cannot retain a missing deployment controller.');
-    const manifest = process.argv.includes('--keep-control')
-      ? manager.activate(release.artifact_path) : manager.restore(release.artifact_path);
+    const manifest = ownerServedReleaseCommand
+      ? await ownerReleaseMutation(process.argv.includes('--keep-control')?'activate-files':'restore-files',
+        {artifactPath:release.artifact_path})
+      : process.argv.includes('--keep-control')
+        ? manager.activate(release.artifact_path) : manager.restore(release.artifact_path);
     finish(0, { status: "restored", artifact_path: release.artifact_path, ...manifest });
   }
   if (command === "promote") {
@@ -137,9 +156,12 @@ try {
     const artifactDigest = required("--artifact-digest");
     const release = manager.verify(required("--artifact"));
     if (release.artifact_digest !== artifactDigest) throw new Error("Promoted artifact path and digest disagree.");
-    const promoted = await releaseMutation('promote',{runId,artifactDigest},
-      () => promoteDeploymentRelease(runId,artifactDigest));
-    manager.activateControl(required("--artifact"));
+    const artifact=required('--artifact');
+    if(!ownerServedReleaseCommand)manager.verifyControlActivation(artifact);
+    const promoted = ownerServedReleaseCommand
+      ? (await ownerReleaseMutation('promote-and-activate-control',{runId,artifactDigest,artifactPath:artifact})).promoted
+      : await releaseMutation('promote',{runId,artifactDigest},()=>promoteDeploymentRelease(runId,artifactDigest));
+    if(!ownerServedReleaseCommand)manager.activateControl(artifact);
     finish(0, { status: "promoted", artifact_digest: promoted.artifact_digest, git_commit: promoted.git_commit });
   }
   if (command === "current") {
@@ -154,7 +176,10 @@ try {
     finish(0, { status: "lkg", artifact_path: release.artifact_path, ...manifest });
   }
   if (command === "set-control") {
-    const manifest = manager.activateControl(required("--artifact"));
+    const artifact=required('--artifact');
+    const manifest = ownerServedReleaseCommand
+      ? await ownerReleaseMutation('activate-control-files',{artifactPath:artifact})
+      : manager.activateControl(artifact);
     finish(0, { status: "control-activated", ...manifest });
   }
   if (command === "prune") {
@@ -169,7 +194,7 @@ try {
     const { kept, removed } = manager.pruneReleases([release.artifact_path, ...inUse]);
     finish(0, { status: "pruned", kept, removed: removed.length });
   }
-  throw new Error("usage: release-manager.ts <install-runtime|install-launchers|prepare|activate|restore-lkg|promote|set-control|current|lkg|prune>");
+  throw new Error("usage: release-manager.ts <install-runtime|install-launchers|prepare|activate|restore-lkg|promote|set-control|current|lkg|prune|publication-mode|require-stopped>");
 } catch (error) {
   finish(1, { status: "error", error: error instanceof Error ? error.message : String(error) });
 }

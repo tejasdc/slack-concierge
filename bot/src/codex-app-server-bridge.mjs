@@ -52,7 +52,7 @@ appServer.on("message", (data) => {
     }
     appServer.send(JSON.stringify({ method: "initialized", params: {} }));
     ready = true;
-    write({ type: "ready" });
+    write({ type: "ready", serverInfo: message.result });
     return;
   }
   if (Object.prototype.hasOwnProperty.call(message, "id") && ("result" in message || "error" in message)) {

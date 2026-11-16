@@ -107,6 +107,28 @@ retaining the runner's verified controller for startup recovery too. Promotion a
 controller only after health succeeds. Explicit `restore-lkg` without the flag still restores
 both pointers for its documented recovery use.
 
+Release publication follows the actual serving application's capability, independently of
+the selected controller. The controller reads `/supervisor/ping`, matches its release to the
+verified current application, reads `/internal/deployment-release-capabilities`, and confirms
+the same serving process again. A capable application publishes pointers in its own serialized
+request turn. The retained application's exact `404` / `Unknown request API route.` response
+selects the existing stopped-owner lane; transport errors, other errors, or changed/unproven
+identity refuse publication rather than falling back. The legacy application's receiver is
+exercised unchanged by `release-application-compatibility.ts`, including the ordinary
+predeployment restore and old-application/new-controller hybrid promotion.
+
+Before offline publication, deployment stops the owner and `require-stopped` positively
+checks the loaded unit's inactive/failed state, dead/failed substate, zero main/control PIDs,
+and absence of a pending job. This also applies when a candidate is active but fails functional
+health, interrupted-deployment repair, and control-recovery activation/restoration. Admission
+drains remain held through pointer publication and promotion. A successful owner start or
+restart clears inherited offline mode, so later live reads and mutations use the serving
+owner. Legacy predeployment restore restarts and proves the restored application's own
+identity before preparation continues; candidate activation stays stopped until migration.
+The release fixture substitutes systemd and functional-health effects and uses disposable
+ledgers, real sealed artifacts, the real release CLI, and both actual receiver generations;
+it establishes source integration rather than installed service behavior.
+
 The production native request owner starts serving independently of the retired Slack
 Socket Mode connection. Slack's WebSocket can remain in its own connection attempt or
 fail its TLS handshake without preventing the owner socket, capture intake, or queued
