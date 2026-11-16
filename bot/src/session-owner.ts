@@ -96,7 +96,7 @@ import {sessionCatalogueLabels} from './session-labels';
 import {sessionAddress} from './session-address';
 import {handoffView,supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {sessionExecution,sessionPresence} from './session-presence';
-import {heldRequests} from './request-standing';
+import {heldRequests,inputRefusalStreak} from './request-standing';
 import {inboxAttribution} from './inbox-attribution-read';
 import {openInboxObligationCount,openInboxObligations} from './session-topics';
 import {workThread} from './session-fit';
@@ -1402,6 +1402,10 @@ export class SessionOwner {
     const meta=sessionMetadata(session);
     return !meta.canvasObservation&&this.providerReachable(session,meta)&&session.status!=='archived'&&!meta.suspended&&!supersededBy(session.id)&&!withdrawnSuccessor(session.id);
   }
+  /** Why an agent's ask to this session is refused before admission; null when its recent turns took their input. */
+  inputRefusal(session:SessionRow) {
+    return inputRefusalStreak(db,session.id);
+  }
   /**
    * The view's execution state alone. A peer delivery's status asks only whether its recipient is
    * still working, and building whole views for that was a fifth of every Inbox receipts read
@@ -1455,6 +1459,7 @@ export class SessionOwner {
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
     const consultationReadiness=origin==='imported'?this.consultationReadiness(meta):{ready:false,reason:null};
     const consult=!meta.canvasObservation&&origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&consultationReadiness.ready&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended;
+    const inputRefused=meta.canvasObservation?null:inputRefusalStreak(db,session.id);
     const consultationRefusal=origin==='imported'&&session.provider_id!=='chatgpt'&&!meta.canvasObservation&&!available&&!consultationReadiness.ready?consultationReadiness.reason:null;
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
       timing:presence.timing,cancellation:presence.cancellation,agentName:presence.agentName,presenceRevision:presence.presenceRevision,
@@ -1476,6 +1481,9 @@ export class SessionOwner {
       needsAttention:meta.inbox?preparedAttention!.needsAttention??true:needsAttention(meta),turnOutcome:meta.turnOutcome??null,
       withdrawnNeeds:meta.withdrawnNeeds??[],unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
       heldRequests:heldRequests(db,session.id),
+      // The agent-facing signal. capabilities.send stays "he can send here": thnkr.ing's composer goes read-only on false.
+      messageableForAgents:!inputRefused,
+      inputRefused:inputRefused?{since:inputRefused.since,count:inputRefused.count,lastTurnId:inputRefused.lastTurnId,reason:inputRefused.reason}:null,
       savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,quietOnly:saved.saved_quiet_only===1,
         startsAt:savedStartAt(saved),
         expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,

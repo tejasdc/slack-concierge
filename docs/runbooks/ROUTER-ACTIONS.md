@@ -1101,6 +1101,8 @@ candidate context before addressing a question. Both source forms return the com
 and provider-message matches precede catalogue-only and legacy routing matches. Use
 `session.capabilities` and `session.interactionPolicy` to distinguish direct communication
 from historical consultation; search success alone does not authorize execution.
+A session whose last three turns ended without taking their input shows `session.messageableForAgents:false` and `session.inputRefused` (with its reason); `capabilities` is unchanged; `ask` to it is refused (choose another session, or use `sessions codex-recover` or a handoff).
+His own message is still accepted. See [session ownership](../architecture/SESSION-OWNER.md#a-session-whose-turns-keep-ending-without-taking-their-input).
 
 `ask` requires an explicit stable `--action-id`. Distinct questions from the same
 input use distinct action IDs and retain their separate returned request IDs.

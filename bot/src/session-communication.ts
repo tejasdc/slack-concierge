@@ -2384,6 +2384,9 @@ export class SessionCommunicationCoordinator {
         }
         const historical=!!targetSession&&sessionMetadata(targetSession).origin==='imported'&&!this.dependencies.owner?.canSend(targetSession);
         if(target&&!historical&&!this.messageable(target))throw new Error('The exact session is not currently messageable.');
+        // Only an agent's ask is refused; his own message from thnkr.ing is the deliberate retry that can clear it.
+        const inputRefusal=targetSession&&target&&!historical?this.dependencies.owner.inputRefusal(targetSession):null;
+        if(inputRefusal)throw new Error(inputRefusal.reason);
         const consultationOnly=!!targetSession&&sessionMetadata(targetSession).interactionPolicy==='consultation-only';
         const serviceReply=consultationOnly||targetSession?.provider_id==='chatgpt'||input.provider==='chatgpt';
         if(consultationOnly&&input.requestedEffect==='work')throw new Error('This session accepts consultation only — information, no actions.');
