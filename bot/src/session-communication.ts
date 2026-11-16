@@ -50,6 +50,7 @@ import {withBefore} from './reply-before';
 import { isHisChatGpt,parseProviderSelector,resolveProviderSelector,chatgptProjectThinking } from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
+import {astraAllowedForTurn} from './astra-turn-gate';
 import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptAttachmentCorrectionPending,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,recordChatGptToolRead,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,validateChatGptToolRead,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, endRepeatingScheduleForInput, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
@@ -858,7 +859,21 @@ export class SessionCommunicationCoordinator {
     editGate(input:{providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;providerAgentId?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown}) {
         return implementationEditDecision(input);
     }
+    /** A refusal is recorded against the owner turn so the parked turn can say why, instead of ending without a word. */
     modelStartGate(input:{providerSessionId:string;model:string;providerTurnId?:string;ownerTurnId?:number;sourceRunId?:string;providerAgentId?:string}) {
+        const answer=this.evaluateModelStart(input);
+        if(answer.known&&answer.allowed===false&&typeof input.providerSessionId==='string'){
+            const session=db.query("SELECT id FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
+                .get(input.providerSessionId) as {id:number}|null;
+            const running=session?db.query(`SELECT id,accepted_input_id FROM turns WHERE session_id=?
+                AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2`).all(session.id) as {id:number;accepted_input_id:string|null}[]:[];
+            const turn=running.length===1?running[0]!:null;
+            if(session&&turn)recordSessionEvent({eventId:`model-start-denied:${turn.id}`,sessionId:session.id,inputId:turn.accepted_input_id,
+                turnId:turn.id,kind:'model_start_denied',payload:{turnId:turn.id,model:input.model,message:answer.message}});
+        }
+        return answer;
+    }
+    private evaluateModelStart(input:{providerSessionId:string;model:string;providerTurnId?:string;ownerTurnId?:number;sourceRunId?:string;providerAgentId?:string}):{known:false}|{known:true;allowed:boolean;message?:string} {
         if(typeof input.providerSessionId!=='string'||!input.providerSessionId||input.providerSessionId.length>256)return {known:false};
         let session=db.query("SELECT id FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
             .get(input.providerSessionId) as {id:number}|null;
@@ -896,52 +911,10 @@ export class SessionCommunicationCoordinator {
         }else if(!input.providerAgentId&&input.providerTurnId&&turn.provider_turn_id&&turn.provider_turn_id!==input.providerTurnId)
             return {known:true,allowed:false,message:'This prompt belongs to another Codex execution. Choose GPT-6.1 Sol or retry with its own turn.'};
         if(input.model!=='gpt-6-astra')return {known:true,allowed:true};
-        const accepted=getAcceptedSessionInput(turn.accepted_input_id);
-        const custody=!input.providerAgentId&&db.query(`SELECT recovery.canonical_input_id,recovery.handoff_id
-          FROM codex_custody_successors recovery JOIN session_handoffs handoff ON handoff.id=recovery.handoff_id
-          JOIN session_inputs placement ON placement.id=recovery.placement_input_id
-          JOIN turns current ON current.session_id=recovery.successor_session_id AND current.accepted_input_id=?
-          WHERE recovery.successor_session_id=? AND current.id=?
-            AND recovery.native_thread_id=? AND recovery.attempt_spent_at IS NOT NULL
-            AND handoff.state='accepted' AND handoff.successor_session_id=recovery.successor_session_id
-            AND placement.source_input_id=recovery.canonical_input_id AND placement.turn_id=recovery.placement_turn_id`)
-          .get(accepted?.id??'',session.id,turn.id,input.providerSessionId) as {canonical_input_id:string;handoff_id:string}|null;
-        if(custody&&metadata.reasoningEffort==='medium'){
-            recordSessionEvent({eventId:`model-preservation:${turn.id}`,sessionId:session.id,inputId:accepted!.id,turnId:turn.id,
-              kind:'model_preservation',payload:{model:input.model,effort:'medium',basis:'codex_successor_custody_v1',
-                canonicalInputId:custody.canonical_input_id,handoffId:custody.handoff_id}});
-            return {known:true,allowed:true};
-        }
-        const serviceContinuation=accepted?.origin==='service'&&!!accepted.source_input_id&&!!accepted.source_run_id
-            &&(()=>{
-                const source=getAcceptedSessionInput(accepted.source_input_id!);
-                const sourceTurn=source?.turn_id?db.query('SELECT session_id,native_run_id FROM turns WHERE id=?').get(source.turn_id) as {session_id:number;native_run_id:string|null}|null:null;
-                const workRequest=accepted.request_id?db.query(`SELECT 1 FROM session_communication_requests
-                    WHERE request_id=? AND target_session_id=? AND outcome IS NULL
-                      AND json_extract(payload_json,'$.requestedEffect')='work' LIMIT 1`)
-                    .get(accepted.request_id,session.id):null;
-                return !!source&&source.session_id===session.id&&sourceTurn?.session_id===session.id
-                    &&sourceTurn.native_run_id===accepted.source_run_id&&!!workRequest
-                    &&(metadata.explicitThinkingModelChoice===input.model||humanChoseThinkingModel(accepted.id,input.model));
-            })();
-        if(accepted&&(humanAuthored(accepted)||serviceContinuation)){
-            recordSessionEvent({eventId:`model-continuation:${turn.id}`,sessionId:session.id,inputId:accepted.id,turnId:turn.id,
-                kind:'model_escalation',payload:{model:input.model,reason:'explicit human model choice',sourceInputId:accepted.id,continuation:true,
-                    ...(serviceContinuation?{serviceContinuation:true}:{})}});
-            return {known:true,allowed:true};
-        }
-        const creation=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND input_id=?
-            AND kind='model_escalation' AND json_extract(payload_json,'$.model')=? ORDER BY sequence DESC LIMIT 1`)
-            .get(session.id,turn.accepted_input_id,input.model) as {payload_json:string}|null;
-        const request=db.query('SELECT payload_json FROM session_communication_requests WHERE target_input_id=? LIMIT 1')
-            .get(turn.accepted_input_id) as {payload_json:string}|null;
-        const reason=(creation?JSON.parse(creation.payload_json).reason:undefined)
-            ??(request?JSON.parse(request.payload_json).escalationReason:undefined)
-            ??(accepted?JSON.parse(accepted.payload_json).escalationReason:undefined);
-        const refusal=escalationReason(input.model,typeof reason==='string'?reason:undefined,reason==='explicit human model choice'&&!!creation);
-        if(!refusal&&!creation&&accepted)recordSessionEvent({eventId:`model-continuation:${turn.id}`,sessionId:session.id,
-            inputId:accepted.id,turnId:turn.id,kind:'model_escalation',payload:{model:input.model,reason,sourceInputId:accepted.id,continuation:true}});
-        return {known:true,allowed:!refusal,message:refusal?.replaceAll('cx-sol','gpt-6.1-sol')??undefined};
+        const decision=astraAllowedForTurn({sessionId:session.id,turnId:turn.id,acceptedInputId:turn.accepted_input_id,
+            providerSessionId:input.providerSessionId,providerAgentId:input.providerAgentId});
+        if(decision.allowed)return {known:true,allowed:true};
+        return {known:true,allowed:false,message:decision.message};
     }
     async journalReview(input:any) {
         this.fenced(this.actor(input.source));

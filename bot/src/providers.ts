@@ -62,6 +62,8 @@ export interface AgentProvider {
     onRetryRestartReady?: (restart: (() => boolean) | null) => void;
     onInputAcknowledged?: () => void;
     onPreferredModel?: (model: string) => void;
+    /** This turn alone runs on this model, whatever the thread was resumed with. */
+    turnModelOverride?: string;
     onProviderThreadStarted?: (providerThreadId: string) => void;
     onProviderTurnStarted?: (providerTurnId: string) => void;
     onResumeUnanswered?: (wait: CodexResumeWait) => void;

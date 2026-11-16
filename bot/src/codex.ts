@@ -442,6 +442,8 @@ export interface RunCodexTurnInput {
   additionalDirs: string[];
   sessionUUID: string | null;
   model?: string;
+  /** Sent on turn/start itself: a warm thread may keep the model it already holds. */
+  turnModelOverride?: string;
   reasoning_effort?: string;
   applicationInstructions?: string;
   clientUserMessageId?: string;
@@ -1794,6 +1796,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         clientUserMessageId: submissionClientId,
         ...(input.custodySuccessor ? successorTurnStartParams(input.custodySuccessor.plan,threadId,prompt,submissionClientId)
           : input.reasoning_effort ? { effort: input.reasoning_effort } : {}),
+        ...(input.turnModelOverride ? { model: input.turnModelOverride } : {}),
         ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
         ...turnAdditionalContext(input.applicationInstructions),
       }, undefined, input.custodySuccessor ? async () => {
