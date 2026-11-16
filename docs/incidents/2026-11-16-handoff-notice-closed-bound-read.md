@@ -21,7 +21,9 @@ The shared guard/diagnostic predicate also accepts a service input of kind input
 
 ## Acceptance scenario
 
-- **Seed:** a predecessor test session holding only its own accepted-handoff closing notice.
-- **Action:** the creator's current run reads it through the bound route; a human input is then added and the read repeated.
-- **Expected:** the first read is not refused for authorship; after the human input it is, and the diagnostic names that input.
-- **Replayable offline:** yes
+- **Seed:** the already-superseded test session 9825 (accepted handoff 7697a4ab to session 9935), whose only rejecting input is its own closing handoff notice. Nothing is added to it.
+- **Action:** the genuine creator, session 8754, from its own current admitted run, runs the creator-only diagnostic and then the bound view and receipts of 9825 with the same create request.
+- **Expected:** the diagnostic reports complete coverage and 0 rejecting inputs; the bound view and receipts return HTTP 200. No content, command, action or retry beyond those reads, and no write to 9825 or 9935.
+- **Replayable offline:** no (it needs the real superseded session and the creator's own live run).
+
+Cases checked by reading the source only, not performed and not authorized to be performed: a human, foreign agent or returned service input in the same session still makes the diagnostic report it and the bound read refuse; a proposed or withdrawn handoff, another session's handoff, a bare prefix or a mismatched source pair does not qualify the notice.
