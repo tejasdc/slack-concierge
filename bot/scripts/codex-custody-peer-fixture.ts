@@ -18,7 +18,8 @@ const codexHome=join(scratch,'codex'),rolloutDir=join(codexHome,'sessions','2026
 const keyFile=join(scratch,'lab.key');writeFileSync(keyFile,'fixture-key');
 const lab=Bun.serve({port:0,fetch:()=>Response.json({threads:[]})});
 process.env.THINKERING_AGENT_TEST_KEY_FILE=keyFile;process.env.THINKERING_ORIGIN_URL=`http://127.0.0.1:${lab.port}`;
-const {db}=await import('../src/state');
+const {db,getSessionById}=await import('../src/state');
+const {sessionAddress}=await import('../src/session-address');
 const {createNativeSession,retainSessionInput,enqueueSessionInput,nativeRunId,updateSessionMetadata}=await import('../src/session-inputs');
 const {SessionPeers}=await import('../src/session-peers');
 const {stageRecoveryHandoff,commitRecoveryHandoff}=await import('../src/session-handoff');
@@ -58,7 +59,7 @@ function request(target:any,placement:any,remoteId:number,effect:'work'|'informa
   db.query(`INSERT INTO session_peer_deliveries(request_id,peer,origin_session_id,origin_input_id,origin_run_id,target_session_id,target_input_id,requested_effect,origin_provenance_json,created_at_ms)
     VALUES(?,'origin',?,?,?,?,?,?,'{"answerGuaranteeVersion":1}',?)`).run(id,`concierge:${source.id}`,sourceInput.id,nativeRunId(sourceInput.turn_id!),target.id,placement.id,effect,Date.now());
   db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,status,due_at_ms,created_at_ms)
-    VALUES(?,'target',?,?,?,?,?,'fixture',?,?,?,'admitted',?,?)`).run(id,source.id,sourceInput.turn_id,sourceInput.id,id,JSON.stringify({answerGuaranteeVersion:1,requestedEffect:effect}),`concierge:${remoteId}`,'session:fixture',remoteOperation??`request:${id}`,Date.now()+60_000,Date.now());
+    VALUES(?,'target',?,?,?,?,?,'fixture',?,?,?,'admitted',?,?)`).run(id,source.id,sourceInput.turn_id,sourceInput.id,id,JSON.stringify({answerGuaranteeVersion:1,requestedEffect:effect}),`concierge:${remoteId}`,sessionAddress(getSessionById(remoteId)!),remoteOperation??`request:${id}`,Date.now()+60_000,Date.now());
   return id;
 }
 async function retainedPredecessorFinalSurvivesHandoff(){
