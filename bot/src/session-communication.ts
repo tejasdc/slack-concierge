@@ -1662,7 +1662,7 @@ export class SessionCommunicationCoordinator {
         if (this.dependencies.peers && !this.local(input.request_id) && (this.dependencies.peers.owns(input.request_id) || this.dependencies.peers.hasDelivery(input.request_id)))
             return this.dependencies.peers.get(this.peerActor(actor), input.request_id);
         const row = this.row(input.request_id);
-        if (actor.session !== row.source_session_id && actor.session !== row.target_session_id)
+        if (!holdsRequesterPlace(actor.session,row.source_session_id) && actor.session !== row.target_session_id)
             throw new Error('Request is outside this session.');
         const receipt=this.receipt(row);
         const obligation=db.query(`SELECT * FROM session_chatgpt_obligations WHERE active_request_id=? AND asker_session_id=?
