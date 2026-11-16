@@ -45,13 +45,14 @@ try{
   const two=make('two refusals');turn(two.id,'refused');turn(two.id,'refused');
   assert.equal(inputRefusalStreak(db,two.id),null,'two in a row is not marked');
   assert.equal(view(two.id).capabilities.send,true);
-  assert.equal(view(two.id).inputRefused,null);
+  assert.equal(view(two.id).inputRefused,null);assert.equal(view(two.id).messageableForAgents,true);
 
   const three=make('three refusals');const first=turn(three.id,'refused');turn(three.id,'historical');const last=turn(three.id,'refused');
   const marked=view(three.id);
-  assert.equal(marked.capabilities.send,false);assert.equal(marked.capabilities.steer,false);
-  assert.match(marked.capabilities.reason,/Cannot take messages: its last 3 turns since 2026-11-\d\d ended without taking their input/);
-  assert.match(marked.capabilities.reason,/codex-recover/);
+  assert.equal(marked.capabilities.send,true,'his composer stays usable');assert.equal(marked.messageableForAgents,false);
+  assert.doesNotMatch(String(marked.capabilities.reason),/Cannot take messages/,'the composer-visible reason is not overloaded');
+  assert.match(marked.inputRefused.reason,/Cannot take messages: its last 3 turns since 2026-11-\d\d ended without taking their input/);
+  assert.match(marked.inputRefused.reason,/codex-recover/);
   assert.deepEqual(marked.inputRefused&&{count:marked.inputRefused.count,lastTurnId:marked.inputRefused.lastTurnId},{count:3,lastTurnId:last});
   assert.ok(first<last&&typeof marked.inputRefused.since==='string');
   assert.match(planFor(three.id),/turns_session_latest/,'the streak reads the existing session index');
