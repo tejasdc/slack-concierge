@@ -9,19 +9,26 @@ text, a negated request, and a routine request for explanation do not arm delive
 notification if help is needed; it does not arm the topic's next result.
 
 A `result` input arms its Inbox topic. The owner retains the exact human input
-that armed it. The first final agent answer in that topic consumes every pending arm
+that armed it. The first substantive agent answer for that input consumes its pending arm
 and emits one requested notification whose `postId` names that answer. The push
 body is the agent's posted words, carried as the event's `question`; it cannot
-be fabricated from Tejas's request. A later answer is quiet. A later marked
+be fabricated from Tejas's request. A later answer is quiet. A later explicitly marked
 human input inserts a new arm, so a later exchange can request another push.
 The arm and notification event commit in one ledger transaction. An answer
 filed by a local or Mac worker uses the same path. A router response counts only
 when its turn did not dispatch work from that asking input; the router's post or
 result must supply the actual message ID and words. An acknowledgement of work
 in progress leaves the arm for the dispatched answer.
-An interim reply, including one marked as answering a direct question, remains quiet,
-and `--notify` cannot change that. It does not consume a result arm for work still in
-progress. A later final answer can consume it.
+A substantive `--partial --answers-question` reply is an answer even while its work
+continues: it consumes the explicit human arm and pushes its own posted words. An ordinary
+progress partial stays quiet and does not consume the arm, even with `--notify`. A later
+final answer may consume an arm that no prompt answer has consumed. Direct router posts
+and response outcomes use this same retained arm without depending on the router remembering
+`--notify`; posts marked `--keep-working` and acknowledgements with dispatched work outstanding
+leave it pending. Dispatch matching uses the asking input, thread address and explicit
+source-to-request links, so another request in the same topic cannot consume it.
+A completed answer with `--quiet-because` consumes its matching arm silently and files no
+reading item; it cannot leave a pending promise for a later unrelated answer.
 If an answer also asks for Tejas's decision, its topic question remains a
 decision; the requested phone event uses the `response` outcome required by
 thnkr.ing's one-shot requested-result path.
@@ -31,8 +38,8 @@ post --notify` or `sessions reply --notify`. The owner requires a new message
 with words, names that message in the event, and emits
 `requestedNotification:true`. This also consumes an open topic arm, so the
 same answer never creates a second requested push. On a reply the flag is honored
-only for a final `completed` reply carrying `--checked` (a finished result checked live);
-on a partial, failed or unchecked reply it is dropped with a receipt notice and the reply
+for a substantive partial `--answers-question` reply, or a final `completed` reply carrying
+`--checked` (a finished result checked live); on an ordinary progress partial, failed or unchecked reply it is dropped with a receipt notice and the reply
 is recorded as written. Tejas, 2026-11-02, after the think-aloud agent sent 14
 partial-update alerts in two hours: "Why can't it wait until everything is deployed and
 tested and then let me know?" A bodyless final cannot use it. These commands are available on both local and
@@ -47,11 +54,12 @@ when it first becomes ready; a later turn outcome for that same run and thread
 does not emit another. A reply already produces the thread's single attention
 event. When the same posted message has already used `--notify` or consumed a
 human notification arm, the blocking question remains visible without another
-push. One agent turn rings at most once per Inbox thread: once a question or a
+push. One agent turn rings at most once per Inbox thread unless a later explicit human notification
+request arrives after its first push: once a question or a
 `--notify` post from a run has produced a push event for a thread, a later
 question, `--notify` post or `needs_you` turn outcome from the same run in that
-thread is recorded and shown without one (`threadRangThisRun`). A skipped post
-leaves his own "notify me" request unconsumed for a later answer. On 2026-11-12 the Inbox agent filed an
+thread is recorded and shown without one (`threadRangThisRun`). An older pending arm cannot bypass that guard; a later accepted explicit human request can.
+A skipped post leaves his own "notify me" request unconsumed for a later answer. On 2026-11-12 the Inbox agent filed an
 approval question and then posted the same choice in plain words with
 `--notify`, and Tejas's devices rang twice eight seconds apart for one decision
 ("I literally got 2 different notifications"). Agent issue reports never create
@@ -104,8 +112,8 @@ the thread line "Your request is still open. Concierge has tried twice to restar
 (three pushes) and "A result reached this conversation, but the agent stopped…" for a result
 nobody read (one push, from the repair agent's session). The first is now posted in the
 thread without a notification; the second is recorded as something to read (`response`), so
-it stays in Needs attention without ringing. Only a question only he can answer or a finished,
-checked answer rings.
+it stays in Needs attention without ringing. A question only he can answer, an explicitly requested substantive prompt answer, or a finished,
+checked answer can ring.
 
 ### A question tied to the to-do it asks for
 
@@ -140,3 +148,12 @@ feature that much." An agent waiting on him is therefore never a reason to
 notify again. A repeat belongs only to a notification he asked for, and only
 while he has not opened it; whether he opened one is known only to thnkr.ing,
 which owns that repeat.
+
+### Source-bound acceptance
+
+`bot/scripts/inbox-requested-notification-fixture.ts` exercises a disposable owner ledger:
+explicit human arming, unmarked questions and notes staying unarmed, progress and dispatched
+acknowledgements staying quiet, prompt-answer partials with and without `--notify`, bodyless
+final closure, same-run duplicate suppression, later explicit rearming, quiet consumption,
+and direct router answers. It creates no production inputs and proves owner events, not
+physical phone receipt. Existing blocking-question delivery remains independent.
