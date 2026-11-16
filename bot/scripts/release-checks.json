@@ -3,6 +3,8 @@
     ["bun", "run", "scripts/private-code-isolation-fixture.ts"],
     ["bun", "run", "scripts/presentation-release-check.ts", "--bounded-child"],
     ["bun", "run", "scripts/ledger-recycling-protocol-fixture.ts"],
+    ["bun", "run", "scripts/ledger-recycling-fixture.ts"],
+    ["bun", "run", "scripts/ledger-recycling-concurrent-fixture.ts"],
     ["bun", "run", "scripts/deployment-launch-authority-fixture.ts"],
     ["bun", "run", "scripts/deployment-launch-schedules-fixture.ts"],
     ["bun", "run", "scripts/deployment-ledger-handover-fixture.ts"],
