@@ -2841,17 +2841,17 @@ export class SessionOwner {
     agentTestSource({inputId:source.input_id,runId:source.run_id});
     const saved=retainSessionInput({sessionId:actor.sessionId,scope:`journal-review:${actor.inputId}`,actionId:input.action_id,
       kind:'journal-review',origin:'agent',payload:review,sourceInputId:actor.inputId,sourceRunId:actor.runId}).input;
-    const reports=portions.map(({id,item,line})=>{
+    const reports=portions.map(({id,item,line,location})=>{
       // A source portion, rather than the reviewing turn, owns its one Inbox handoff.
       const priorPortion=getAcceptedSessionInput(`journal-portion:${id}`);
       if(priorPortion?.receipt_json)return JSON.parse(priorPortion.receipt_json);
       const priorIntent=getAcceptedSessionInput(`journal-portion-intent:${id}`);
-      const relation=!priorIntent&&item.existingRequestId?existingJournalRequestEvidence(item.existingRequestId,review.rootId,item.lineId,item.quote):null;
+      const relation=!priorIntent&&item.existingRequestId?existingJournalRequestEvidence(item.existingRequestId,review.rootId,item.lineId,item.quote,location,line.text):null;
       const retained=priorPortion??retainSessionInput({id:`journal-portion:${id}`,sessionId:actor.sessionId,scope:'journal-portion',actionId:id,kind:'journal-portion',origin:'agent',
-        payload:{rootId:review.rootId,lineId:item.lineId,quote:item.quote},sourceInputId:actor.inputId,sourceRunId:actor.runId}).input;
+        payload:{rootId:review.rootId,lineId:item.lineId,quote:item.quote,...location},sourceInputId:actor.inputId,sourceRunId:actor.runId}).input;
       const intent=priorIntent??retainSessionInput({id:`journal-portion-intent:${id}`,sessionId:retained.session_id,scope:'journal-portion-intent',actionId:id,kind:'journal-portion-intent',origin:'agent',
         payload:{...(item.existingRequestId?{existingRequestId:item.existingRequestId,existingRelation:relation}:{}),source:{kind:'agent-report',id:`journal-review:${id}`,recordedAt:new Date().toISOString(),title:item.title,
-          metadata:{agentSource:{inputId:retained.source_input_id,runId:retained.source_run_id},journal:{rootId:review.rootId,rootRevision:review.revision,sourceVersion:review.sourceVersion,lineId:line.objectId,lineRevision:line.revision,actor:line.actor,evidence:line.evidence,capturedAt:line.at,quote:item.quote,offset:item.offset??line.text.indexOf(item.quote),classification:item.classification,reason:item.reason,authority:'agent-assessment',arrivedAt:getAcceptedSessionInput(actor.inputId)!.created_at}}},
+          metadata:{agentSource:{inputId:retained.source_input_id,runId:retained.source_run_id},journal:{rootId:review.rootId,rootRevision:review.revision,sourceVersion:review.sourceVersion,lineId:line.objectId,lineRevision:line.revision,actor:line.actor,evidence:line.evidence,capturedAt:line.at,quote:item.quote,...location,classification:item.classification,reason:item.reason,authority:'agent-assessment',arrivedAt:getAcceptedSessionInput(actor.inputId)!.created_at}}},
           text:`Journal ${item.classification} for assessment; preserve intentional friction and verify authority before acting.\n\n${item.quote}\n\n${item.reason}`},sourceInputId:retained.source_input_id!,sourceRunId:retained.source_run_id!}).input;
       let accepted:{report?:unknown};
       const frozen=JSON.parse(intent.payload_json);
