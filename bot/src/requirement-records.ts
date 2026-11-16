@@ -91,6 +91,11 @@ export async function readRecord(idOrName:string):Promise<RecordCatalogue>{
 /** Every record tied to an Inbox thread, read now. */
 export async function readTopicRecords(topic:string):Promise<RecordCatalogue[]>{
   const answer=await requirementCall('GET',`/requirements?topic=${encodeURIComponent(topic)}`);
+  // A thnkr.ing that has not installed the requirement routes answers with the web framework's own
+  // "Route not found" (its error is a string); its real refusals are {error:{code,message}}. No route
+  // means no records exist for this thread, so work is not blocked on a feature that is not there:
+  // the 2026-11-16 release refused every completed reply on any thread request until thnkr.ing shipped.
+  if(answer.status===404&&typeof answer.body?.error==='string')return [];
   if(answer.status!==200||!Array.isArray(answer.body?.records))throw new Error(`Requirement records for thread ${topic}: ${errorWords(answer)}`);
   return answer.body.records as RecordCatalogue[];
 }
