@@ -35,6 +35,10 @@ export async function startForegroundGateway(config:{stateDir:string;ownerSocket
     // with the owner, while its retained page projection runs in a read executor.
     // The owed hook's filing projection also stays private: peers and network agents
     // are rejected at their listeners before they can reach this owner-local route.
+    // Search may own only one archive reader; interactive app reads pass its backlog
+    // and keep the other reader available for the Sessions panel and other reads.
+    if(url.pathname==='/internal/session-search')
+      return pool.request(request,'/internal/session-search',randomUUID(),'archive');
     if(url.pathname==='/internal/owed-unfiled')
       return pool.request(request,'/internal/owed-unfiled',randomUUID(),'archive');
     if(url.pathname==='/internal/event-stream-page')

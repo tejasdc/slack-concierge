@@ -4,6 +4,8 @@ import {createConnection} from 'node:net';
 import {classifyNativeReadRoute,assertNativeReadRouteCoverage} from './native-read-routes';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {PeerAccountAnswers} from './peer-account-answers';
+import type {MeaningSearch} from './meaning-index';
+import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {logSinkCounters} from './log';
 import {log} from './log';
 import {observeStorageOperation,type StorageWork} from './storage-observation';
@@ -70,6 +72,16 @@ async function capped(response:Response,max:number,route:string):Promise<Respons
   if(body.byteLength>max)return overBudget(route,body.byteLength,max);
   const headers=new Headers(response.headers);headers.set('content-length',String(body.byteLength));
   return new Response(body,{status:response.status,statusText:response.statusText,headers});
+}
+/** The owner starts meaning alongside this executor's searches; await it only at the merge. */
+async function ownerSearchMeaning(searchId:string):Promise<MeaningSearch|null> {
+  const response=await fetch('http://localhost/internal/session-search-meaning?'+new URLSearchParams({searchId}),
+    {unix:ownerSocket,signal:AbortSignal.timeout(OWNER_READ_RESPONSE_MS)} as RequestInit);
+  if(!response.ok){await response.body?.cancel();throw new Error('SEARCH_MEANING_UNAVAILABLE');}
+  const value=await response.json() as {meaning:MeaningSearch|null};
+  if(!value||!Object.hasOwn(value,'meaning')||(value.meaning!==null&&(!Array.isArray(value.meaning.hits)||typeof value.meaning.available!=='boolean')))
+    throw new Error('SEARCH_MEANING_INVALID');
+  return value.meaning;
 }
 async function ownerEphemera(fresh=false):Promise<ProviderAuthEphemera>{
   let response:Response;
@@ -154,6 +166,17 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   const admissionId=request.headers.get('x-concierge-admission-id');
   const url=new URL(request.url);
   if(request.method==='GET'&&url.pathname==='/internal/ready')return Response.json({ok:true,pid:process.pid,logging:logSinkCounters(),requests});
+  if(request.method==='POST'&&url.pathname==='/internal/session-search'){
+    try {
+      const input=await request.json() as {body:unknown;routingSource?:Parameters<typeof composition.owner.searchRead>[1];searchId:string;materialized?:Parameters<typeof composition.owner.searchRead>[3]};
+      const answer=await observeStorageOperation('/internal/session-search',async()=>withContentReader(request,()=>{
+        contentReader();return composition.owner.searchRead(input.body,input.routingSource,()=>ownerSearchMeaning(input.searchId),input.materialized);
+      }));
+      return Response.json(answer);
+    } catch {
+      return failure(503,'SEARCH_READ_UNAVAILABLE','The session search read is unavailable.');
+    }
+  }
   if(request.method==='GET'&&url.pathname==='/internal/owed-unfiled'){
     const sessionId=Number(url.searchParams.get('sessionId'));
     const turnId=Number(url.searchParams.get('turnId'));

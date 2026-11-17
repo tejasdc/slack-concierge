@@ -13,7 +13,7 @@ process had used about 1.5 cores; moving it remains the goal, not an installed c
 | `concierge-workers-ai` Worker (`cloudflare/workers-ai`) | Cloudflare, `https://concierge-workers-ai.thnkring.workers.dev` | `POST /v1/transcribe` (16 kHz mono MP3, ≤10 min) → Whisper large-v3-turbo; optional `POST /v1/embed` (≤32 texts, the model's limit) → Qwen3-Embedding-0.6B. Every answer names its model. |
 | Shared key | Worker secret `CONCIERGE_KEY`; root-only `/etc/concierge/workers-ai.token` on each Concierge machine that uses it | Bearer key for both calls. A machine without the file (the Mac) keeps its own engines. |
 | Speech worker (`concierge-speech-worker.service`) | server | Converts a recording to MP3 pieces with ffmpeg, sends them to the Worker, joins the words. Engine name `workers-ai-whisper`. |
-| Meaning index (session search, earlier work, Inbox areas) | Concierge owner, server | Currently embeds locally. When explicitly enabled, builds a Worker-backed file named for its model beside the local index on the ledger disk. The in-memory int8 scan stays local. |
+| Meaning index (session search, earlier work, Inbox areas) | Concierge owner, server | Currently embeds locally. When explicitly enabled, builds a Worker-backed file named for its model beside the local index on the ledger disk. The in-memory int8 scan stays local and yields between time-bounded steps. |
 
 **Why a Worker and not the REST API.** The one Cloudflare token (`remote-box-workers-deploy`) can
 deploy Workers but is refused by the Workers AI and Vectorize APIs. A Worker's AI binding needs no
@@ -22,9 +22,15 @@ shared key. Adding the Workers AI permission to the token would remove the Worke
 dashboard, and the Worker is also where a future Cloudflare-hosted control plane would call the
 models from.
 
-**Why not Vectorize.** The plan named Vectorize for the vectors. The processor cost was computing
-embeddings, not searching them: the local scan of the whole index is about 20 ms and 49 MB. Vectorize
-would add a network round trip to every search, cap results per query (the index keeps the best
+**Local ranking.** Session search and earlier-work comparisons scan the in-memory int8 matrix
+in time-bounded steps that yield the owner between them, like the Inbox entry index warm-up.
+Each step targets five milliseconds, leaving room below ten for loop overhead; copying, stable ranking and candidate selection also yield.
+A scan captures its row count once and visits only those published rows, so indexing appends
+cannot extend it or expose a half-written row. Scoring, best-per-target selection, insertion-order
+ties, result limits and archive-lookup bounds are unchanged. Embedding remains an awaited engine
+call; the stored vectors, index format and indexing process are unchanged.
+
+**Why not Vectorize.** The plan named Vectorize for the vectors. Vectorize would add a network round trip to every search, cap results per query (the index keeps the best
 passage per session over all passages), and a second store to keep in step with title changes and
 the archive. It earns its place when the index outgrows the app server's memory (tens of millions of
 passages), not at 96,000.

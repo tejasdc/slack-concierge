@@ -242,6 +242,8 @@ function localOwnerRequest(shared:(request:Request)=>Promise<Response>,sessions?
     try {
       const url=new URL(request.url);
       if(url.pathname.startsWith('/runner/v1/')&&owner)return await runnerRoutes(request,url);
+      if(request.method==='GET'&&url.pathname==='/internal/session-search-meaning'&&owner)
+        return Response.json({meaning:await owner.searchMeaning(url.searchParams.get('searchId'))});
       if(request.method==='GET'&&url.pathname==='/internal/auth-ephemera'&&owner)
         return Response.json(owner.authEphemera());
       if(request.method==='POST'&&url.pathname==='/internal/auth-refresh'&&owner)

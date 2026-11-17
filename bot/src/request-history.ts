@@ -73,8 +73,8 @@ function threadRequests(topicRoot:string,beforeMs:number,recipient:number|null,s
 }
 
 /** Earlier sessions close in meaning, from the index alone: imported transcripts count only when Concierge already holds them. */
-function closestSessions(index:MeaningIndex,vector:Float32Array):{found:{id:number;score:number}[];omission:string|null} {
-  const answer=index.searchVector(vector,30);
+async function closestSessions(index:MeaningIndex,vector:Float32Array):Promise<{found:{id:number;score:number}[];omission:string|null}> {
+  const answer=await index.searchVector(vector,30);
   if(!answer.available)return {found:[],omission:`Earlier sessions were not compared: ${answer.reason??'the meaning index is unavailable'}.`};
   const best=new Map<number,number>();
   const keep=(id:number,score:number)=>{if((best.get(id)??0)<score)best.set(id,score);};
@@ -166,14 +166,14 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
   const thread=input.topicRoot?threadRequests(input.topicRoot,input.nowMs,input.recipient,input.sendingTurn):[];
   const inThread=new Set(thread.map(row=>row.target_session_id));
   const query=oneLine(`${input.summary??''} ${input.text}`,600);
-  type Compared={sessions:ReturnType<typeof closestSessions>;cases:Closest<FailureCase>;decisions:Closest<Decision>;taste:Closest<TastePassage>};
+  type Compared={sessions:Awaited<ReturnType<typeof closestSessions>>;cases:Closest<FailureCase>;decisions:Closest<Decision>;taste:Closest<TastePassage>};
   const compare=async():Promise<Compared|null>=>{
     const index=meaningIndex();
     if(!index?.installed){omissions.push('Earlier sessions, failure cases, his decisions and his taste profile were not compared: the meaning index is not installed on this machine.');return null;}
     const vector=await index.questionVector(query);
     // One index for the question and every comparison, so they always share an embedding model.
     const [cases,decisions,taste]=await Promise.all([closestCases(index,vector!),closestDecisions(index,vector!),closestTaste(index,vector!)]);
-    return {sessions:closestSessions(index,vector!),cases,decisions,taste};
+    return {sessions:await closestSessions(index,vector!),cases,decisions,taste};
   };
   const compared=await within(compare(),MEANING_WAIT_MS).catch(error=>{omissions.push(`Earlier sessions, failure cases, his decisions and his taste profile could not be compared: ${error instanceof Error?error.message:String(error)}.`);return null;});
   if(compared==='late')omissions.push(`Earlier sessions, failure cases, his decisions and his taste profile were not compared within ${MEANING_WAIT_MS/1000} s; search yourself with router-actions.sh sessions search, node scripts/failure-case.mjs search in thnkr.ing, decision search, and his taste profile in the interface-decisions skill.`);
