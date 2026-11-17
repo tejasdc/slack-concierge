@@ -4302,6 +4302,11 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
   withdraw?:WithdrawSuperseded):Promise<ThreadUpkeepResult> {
   const session=inboxSession();
   if(!session)return {threads:0,closed:0,settled:0,flagged:0};
+  // The pass reads the thread index (the unfiled wake, topic views). Its guard only skips while a warm
+  // runs, so a pass before the startup warm began built the cold index in one synchronous read: on
+  // 2026-11-17 the usage watch's first tick, thirty seconds after start and before the owner was
+  // online, held the owner 8.5 s and left the warm nothing to do. It now waits for the yielding warm.
+  await warmedEntryIndex();
   refreshRootMemo();
   const forwards=forwardedReplies();
   const hasOpenDecision=!!db.query(`SELECT 1 FROM inbox_questions question
