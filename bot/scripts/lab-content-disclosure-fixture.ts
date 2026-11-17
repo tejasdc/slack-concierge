@@ -135,6 +135,10 @@ async function child(){
   const unknownReader=new Request('http://localhost/x',{headers:{'x-concierge-agent-origin':'unknown'}});
   const budgeted=<T>(work:()=>T)=>disclosure.withContentReader(unknownReader,()=>withStorageReadBudget({maxCalls:500,maxRows:5000,maxResultBytes:8_000_000},work));
   assert.equal(budgeted(()=>disclosure.inputContentVisible(aInput)),false,'a budgeted unknown agent read is admitted and still withholds Lab content');
+  // A receipts page checks every operation, so one check must stay one statement with a few rows.
+  const single=<T>(work:()=>T)=>disclosure.withContentReader(unknownReader,()=>withStorageReadBudget({maxCalls:1,maxRows:6,maxResultBytes:16_384},work));
+  assert.equal(single(()=>disclosure.inputContentVisible(aInput)),false,'the whole provenance walk is one bounded statement');
+  assert.equal(single(()=>disclosure.inputIdContentVisible(aInput.id)),false,'checking by id reads no whole input');
   try{budgeted(()=>disclosure.assertCommunicationContent(aInput.request_id!));}catch(error){assert.ok(error instanceof disclosure.LabDisclosureError,`communication check is admitted by the read budget: ${error}`);}
   // Overflow: an ordinary input (no Lab provenance of its own) whose request has more replies than the bound.
   const fakeRequest=`fixture-overflow-${randomUUID()}`,plainId=`fixture-plain-${randomUUID()}`;
@@ -143,7 +147,8 @@ async function child(){
    db.query(`INSERT INTO session_inputs(${columns.join(',')}) SELECT ${columns.map(name=>overrides[name]??name).join(',')} FROM session_inputs WHERE id=?`).run(id,fakeRequest,aInput.id);};
   clone(plainId,'message');
   assert.equal(budgeted(()=>disclosure.inputContentVisible(getAcceptedSessionInput(plainId)!)),true,'an input with no Lab provenance stays visible');
-  for(let index=0;index<=disclosure.DISCLOSURE_FANOUT_LIMIT;index++)clone(`fixture-overflow-reply-${index}`,'reply');
+  // Each reply is its own source, so the walk reaches one more input per reply than the bound allows.
+  for(let index=0;index<=disclosure.PROVENANCE_NODE_LIMIT;index++){const id=`fixture-overflow-reply-${index}`;clone(id,'reply');db.query('UPDATE session_inputs SET source_input_id=id WHERE id=?').run(id);}
   assert.equal(budgeted(()=>disclosure.inputContentVisible(getAcceptedSessionInput(plainId)!)),false,'a reply set past the bound is treated as protected');
   assert.equal(disclosure.inputContentVisible(getAcceptedSessionInput(plainId)!),true,'a trusted reader is unaffected by the bound');
   db.query('DELETE FROM session_inputs WHERE request_id=?').run(fakeRequest);
@@ -156,7 +161,7 @@ async function child(){
   db.query('DELETE FROM session_inputs WHERE id IN (?,?)').run(bigId,linkedId);
   const bDuring=db.query('SELECT id,session_id,status,agent_text FROM turns WHERE id=?').get(bClaim.turn_id) as any;
   assert.deepEqual(bDuring,bBefore,'B remains in the same real active invocation throughout all reads');
-  console.log(JSON.stringify({fixture:'lab-content-disclosure',independentReaderRestricted:true,wholeEntityRefusal:true,runnerSourceRestricted:true,unknownAgentRestricted:true,ownOperationReadable:true,humanOriginalReadable:true,readerScopeEndsWithRequest:true,budgetedDisclosureWalkAdmitted:true,replyOverflowProtected:true,walkReadsProvenanceOnly:true,activeInvocationUnchanged:true}));
+  console.log(JSON.stringify({fixture:'lab-content-disclosure',independentReaderRestricted:true,wholeEntityRefusal:true,runnerSourceRestricted:true,unknownAgentRestricted:true,ownOperationReadable:true,humanOriginalReadable:true,readerScopeEndsWithRequest:true,budgetedDisclosureWalkAdmitted:true,replyOverflowProtected:true,walkReadsProvenanceOnly:true,walkIsOneStatement:true,activeInvocationUnchanged:true}));
  }finally{await gateway.stop(true);await privateOwner.stop(true);releaseProvider();await bExecution;}
 }
 
