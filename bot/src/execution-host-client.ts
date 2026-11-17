@@ -15,6 +15,7 @@ import { RETRY_POLICIES } from "./retry-policies";
 import { nextRetry } from "./retry-core";
 import { log } from "./log";
 import { ledgerDurable } from "./ledger-durability-barrier";
+import { agentLedgerImageCommand } from './agent-ledger-image-boundary';
 import { ProviderDispatchError } from "./provider-failures";
 import type { HostAccess, HostLink, HostManifest, HostRunnerFile } from "./host-access";
 
@@ -282,7 +283,7 @@ export async function startHost(input: {
       ...(input.hiddenPaths ?? []).map(path => `--property=InaccessiblePaths=-${path}`),
       `--description=Concierge agent execution ${input.executionId}`,
       `--working-directory=${directory}`,
-      runtime, "run", hostScript, directory,
+      ...agentLedgerImageCommand([runtime, "run", hostScript, directory]),
     ], 30_000);
     // A refusal the supervisor stated means no unit; a timeout or a lost answer does not, and is
     // left to custody (hostCustody), which asks the supervisor what actually exists.

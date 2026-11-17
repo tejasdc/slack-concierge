@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { agentLedgerImageCommand } from './agent-ledger-image-boundary';
 import { closeSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { onJsonLines } from "./json-lines";
@@ -92,7 +93,7 @@ export async function runRepairAgent(input: RepairAgentInput, repositoryRoot: st
       "CONCIERGE_SOURCE_INPUT_ID", "CONCIERGE_SOURCE_RUN_ID", "CONCIERGE_TURN_ID",
       "CONCIERGE_SESSION_ID", "CONCIERGE_TURN_KIND", "CONCIERGE_OWNER_INSTANCE_ID",
       "CONCIERGE_ACCEPTED_INPUT_ID", "CONCIERGE_SLACK_CHANNEL_ID", "CONCIERGE_SLACK_THREAD_TS"]) delete environment[name];
-    const [command, ...launchArgs] = trustedCodexExecCommand(executable, args);
+    const [command, ...launchArgs] = agentLedgerImageCommand(trustedCodexExecCommand(executable, args));
     child = spawn(command!, launchArgs, {
       cwd: input.cwd, env: environment,
       detached: true, stdio: ["ignore", "pipe", "pipe"],

@@ -492,6 +492,44 @@ survival proof follow the rules above through the same host-access interface; se
 `execution_host_protocol_unadoptable`, `execution_adoption_failed`, `execution_journal_unreadable`.
 `systemctl list-units 'concierge-exec-*'` lists live hosts.
 
+## Ledger backing image isolation
+
+On Linux, all new execution-host units (Claude, Google, outside Codex and command watches,
+including owner-local and runner placement) start through `agentLedgerImageCommand`.
+The same boundary wraps shared Codex daemon start/restart, direct provider fallback transports,
+fresh Claude command launches, and autonomous deployment repair Codex. Host-owned agent
+supervisors use the sealed `control agent-command -- <provider> ...` entrance so only the
+provider child is masked. It hides `/var/lib/concierge-ledger.img` independently
+of mount discovery: a runner's existing state-directory mask removes the original loop mount
+from the child's mount information, so discovering the backing image inside that child is too late.
+The host's runner hide list remains a second host-owned boundary.
+
+The image is bound to systemd's inaccessible character device (0:0), not `/dev/null` or
+an empty regular file: root can still open either regular placeholder. An outer bubblewrap
+mount and a second user namespace lock the image mask against unmount while preserving
+capabilities within the inner namespace, including nested mounts supported by private code
+checks. The owner and backup processes retain their original namespace. API sockets and
+network entrances are unchanged. This targeted image boundary does not claim to contain
+root agents against every privileged host escape.
+
+`bun run bot/scripts/agent-ledger-image-fixture.ts` from the repository root exercises an owned
+scratch image only: successful caller open without reading bytes, denied child open after a
+failed unmount, API socket access, nested mount-capable checks, detached daemon survival after
+the starter exits, and unchanged caller access. It requires a Linux host with bubblewrap and
+systemd's inaccessible device; it is not a private-code build check that already lacks uid-map
+capabilities. It never opens the production image or database.
+
+Installing new source does not change existing namespaces. Ordinary deployment keeps accepted
+provider turns and execution hosts alive; moving a daemon to another cgroup cannot retrofit
+mounts. Full installed acceptance remains **unsatisfied** until existing hosts finish and the
+shared daemon is replaced under the [idle maintenance activation boundary](../runbooks/CODEX-APP-SERVER.md).
+The source-bound `sessions codex-maintenance` operation closes owner admission and defers
+while shared owned/native work is active. Its generation-bound graceful-only native drain,
+durable recovery, replacement proof and outside-worker command are specified in that runbook.
+It never replays an accepted input or forces an active daemon down for proof.
+A fresh disposable installed agent must deny a no-byte `open` of the image,
+still reach its API entrance, and leave owner/backup access unchanged before closing the gate.
+
 ## Disk limit for agent work
 
 On Linux each execution host is launched into `agents.slice` (`bot/src/agent-work-slice.ts`), as is the

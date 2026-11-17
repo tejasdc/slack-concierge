@@ -4,6 +4,7 @@ import {dirname,delimiter,isAbsolute,join,resolve,sep} from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {requestApiResponse} from './router-request-client';
 import {LAUNCH_REFUSED_EXIT,LAUNCH_REFUSED_MARKER} from '../src/claude-launch-refusal';
+import {agentLedgerImageCommand} from '../src/agent-ledger-image-boundary';
 
 // When the owner places a launch on a runner, it names the account, not a path: the path is the
 // runner's own (runner-provider-accounts.ts). Passed through unresolved, Claude found no sign-in at
@@ -243,7 +244,8 @@ if(!passthrough){
   }
 }
 claudeStarted=true;
-const child=spawn(executable,args,{env:environment,stdio:'inherit'});
+const [agentExecutable,...agentArgs]=agentLedgerImageCommand([executable,...args]);
+const child=spawn(agentExecutable!,agentArgs,{env:environment,stdio:'inherit'});
 for(const signal of ['SIGINT','SIGTERM'] as const)process.on(signal,()=>child.kill(signal));
 child.on('error',error=>{console.error(error.message);process.exitCode=1;});
 child.on('exit',(code,signal)=>{process.exitCode=signal?128+(signal==='SIGINT'?2:15):(code??1);});
