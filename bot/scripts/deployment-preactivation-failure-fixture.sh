@@ -74,10 +74,10 @@ reset_case() {
 reset_case
 mode=matching
 handoff_failed_deployment_to_repair 1 candidate-preparation
-rg -q '^probe$' "$trace"
-rg -q '^release_gate$' "$trace"
-rg -q '^systemctl:start fixture-repair.service$' "$trace"
-if rg -q '^(stop|start|restart|bun:restore-lkg)$' "$trace"; then
+grep -Eq '^probe$' "$trace"
+grep -Eq '^release_gate$' "$trace"
+grep -Eq '^systemctl:start fixture-repair.service$' "$trace"
+if grep -Eq '^(stop|start|restart|bun:restore-lkg)$' "$trace"; then
   echo 'A failed preactivation check interrupted a healthy serving release.' >&2
   exit 1
 fi
@@ -85,7 +85,7 @@ fi
 reset_case
 mode=different
 handoff_failed_deployment_to_repair 1 candidate-activation
-sequence=$(rg '^(stop|bun:restore-lkg|start|probe)$' "$trace" | paste -sd ' ' -)
+sequence=$(grep -E '^(stop|bun:restore-lkg|start|probe)$' "$trace" | paste -sd ' ' -)
 if [ "$sequence" != 'stop bun:restore-lkg start probe' ]; then
   echo "Recovery did not start the restored owner before probing it: $sequence" >&2
   exit 1
@@ -94,7 +94,7 @@ fi
 reset_case
 mode=matching_stopped
 handoff_failed_deployment_to_repair 1 candidate-preparation
-sequence=$(rg '^(stop|bun:restore-lkg|start|probe)$' "$trace" | paste -sd ' ' -)
+sequence=$(grep -E '^(stop|bun:restore-lkg|start|probe)$' "$trace" | paste -sd ' ' -)
 if [ "$sequence" != 'stop bun:restore-lkg start probe' ]; then
   echo "A stopped owner waited in a health probe before restoration: $sequence" >&2
   exit 1
@@ -104,7 +104,7 @@ reset_case
 mode=matching
 force_failed_probe=1
 handoff_failed_deployment_to_repair 1 candidate-preparation
-sequence=$(rg '^(stop|bun:restore-lkg|start|probe)$' "$trace" | head -5 | paste -sd ' ' -)
+sequence=$(grep -E '^(stop|bun:restore-lkg|start|probe)$' "$trace" | head -5 | paste -sd ' ' -)
 if [ "$sequence" != 'probe stop bun:restore-lkg start probe' ]; then
   echo "Unhealthy serving owner was not restored and started before probing: $sequence" >&2
   exit 1
@@ -128,7 +128,7 @@ fail_repair_start=1
 PRESERVE_GATES_ON_FAILURE=0
 PREFLIGHT_REFUSED=0
 (cleanup_failed_deployment)
-if rg -q '^terminalize_run$' "$trace"; then
+if grep -Eq '^terminalize_run$' "$trace"; then
   echo 'Outer cleanup terminalized a run with a durable, runnable repair incident.' >&2
   exit 1
 fi
@@ -138,7 +138,7 @@ for blocked_step in install daemon; do
   mode=matching
   if [ "$blocked_step" = install ]; then fail_repair_install=1; else fail_repair_daemon=1; fi
   (cleanup_failed_deployment)
-  if rg -q '^terminalize_run$' "$trace"; then
+  if grep -Eq '^terminalize_run$' "$trace"; then
     echo "Outer cleanup terminalized the durable incident after $blocked_step refusal." >&2
     exit 1
   fi
