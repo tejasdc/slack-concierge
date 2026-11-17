@@ -6,7 +6,8 @@ import { basename, join } from 'node:path';
 import { ledgerWriteResults } from '../src/ledger-write-results';
 import { isVerifiedBackup, publishSqliteBackup, pruneVerifiedBackups } from '../src/verified-sqlite-backup';
 import { liveStoreCopyRefusal, liveStores } from '../src/live-store-copy-policy';
-import { privateDatabaseCommand } from '../src/private-database-command';
+import { inheritedDatabaseBoundary, privateDatabaseCommand } from '../src/private-database-command';
+import { DATABASE_SAFETY_FIXTURE_TEST_AUTHORIZATION } from '../src/test-authorizations';
 
 const root = mkdtempSync(join(tmpdir(), 'concierge-schema-plan-'));
 try {
@@ -93,12 +94,13 @@ try {
   // Real command import with another connection holding the writer. Before this fix, lkg
   // reran schema UPDATEs and exhausted busy_timeout despite being a read-only operation.
   let canMountCanonical = true;
-  try { accessSync(join(homedir(),'.local/state/concierge'),constants.R_OK | constants.X_OK); }
+  try { canMountCanonical = !inheritedDatabaseBoundary(); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EACCES' && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     canMountCanonical = false;
   }
-  const env = { ...process.env, CONCIERGE_STATE_DIR: root };
+  // The sealed private entrance marks children as tests; these children open only `root`.
+  const env = { ...process.env, CONCIERGE_STATE_DIR: root, CONCIERGE_TEST_AUTHORIZATION: DATABASE_SAFETY_FIXTURE_TEST_AUTHORIZATION };
   const init = Bun.spawnSync([process.execPath, join(import.meta.dir, 'migrate-deployment-repair.ts'), '--empty-schema'], { env, stdout:'pipe', stderr:'pipe', timeout:20_000 });
   assert.equal(init.exitCode, 0, init.stderr.toString());
   const owner = ledgerWriteResults(new Database(join(root, 'state.db')));
@@ -165,7 +167,7 @@ try {
     }
   } finally { owner.exec('ROLLBACK'); owner.close(); }
   if (process.platform === 'linux') {
-    const command = privateDatabaseCommand(['/usr/bin/python3', '-c', 'import os; p=os.path.expanduser("~/.local/state/concierge/state.db");\ntry: open(p,"rb")\nexcept PermissionError: print("refused")\nelse: raise SystemExit("live file was accessible")']);
+    const command = privateDatabaseCommand(['/usr/bin/python3', '-c', 'import os; p=os.path.expanduser("~/.local/state/concierge/state.db");\ntry: open(p,"rb")\nexcept (PermissionError, FileNotFoundError): print("refused")\nelse: raise SystemExit("live file was accessible")']);
     if (existsSync(join(homedir(),'.local/state/concierge'))) {
       const isolated = Bun.spawnSync(command, { stdout:'pipe', stderr:'pipe', timeout:5_000 });
       assert.equal(isolated.exitCode, 0, isolated.stderr.toString());
