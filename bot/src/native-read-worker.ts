@@ -169,10 +169,14 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   if(request.method==='POST'&&url.pathname==='/internal/session-search'){
     try {
       const input=await request.json() as {body:unknown;routingSource?:Parameters<typeof composition.owner.searchRead>[1];searchId:string;materialized?:Parameters<typeof composition.owner.searchRead>[3]};
+      const began=performance.now();
       const answer=await observeStorageOperation('/internal/session-search',async()=>withContentReader(request,()=>{
         contentReader();return composition.owner.searchRead(input.body,input.routingSource,()=>ownerSearchMeaning(input.searchId),input.materialized);
       }));
-      return Response.json(answer);
+      // The owner subtracts this from its own elapsed time to see how long the read waited for a
+      // reader: search shares the archive lane's single reader with the owed-replies check and
+      // whole-transcript reads, and a queue long enough to time out would fall back onto the loop.
+      return Response.json({...answer,worker_ms:Math.round(performance.now()-began)});
     } catch {
       return failure(503,'SEARCH_READ_UNAVAILABLE','The session search read is unavailable.');
     }

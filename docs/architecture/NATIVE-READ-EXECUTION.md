@@ -31,6 +31,13 @@ meaning hits, reads the peer catalogue and mutuals, and builds and bounds the re
 views in a read executor. Prepared word and historical routing searches still use their sealed
 subprocesses. Search uses the archive lane: it may occupy only one of the two readers, and
 interactive app reads pass its backlog, keeping capacity for the Sessions panel and other reads.
+That one archive reader is shared with the owed-replies check and whole-transcript reads, so
+concurrent searches queue behind them and the pool's response limit counts that wait. A search
+that spends its budget queueing falls back onto the owner, which is the block this moved off it,
+so the fallback separates `queued` from a broken or absent executor and `session_search_slow`
+carries `executor_wait_ms`. Giving search its own lane would let it and an archive read hold both
+readers at once and take away the free reader his interactive reads rely on; the measurement
+decides whether that trade is needed rather than assuming it.
 
 An unchanged imported source resolves without writing. Sources that need creation or a metadata
 update return as exact pending source descriptors, in discovery order, without a partial answer.

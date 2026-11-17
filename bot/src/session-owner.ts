@@ -465,7 +465,7 @@ type SearchRoutingSource={beforeTs:string;excludeChannel:string;excludeRootTs:st
 const searchTiming=()=>({word_ms:0,routing_ms:0,meaning_ms:0,meaning_embed_ms:0,meaning_rank_ms:0,archive_search_ms:0,archive_retention_ms:0,meaning_retention_ms:0});
 type SearchSource={source:CapabilitySource;meaning:boolean};
 type SearchMaterialization=SearchSource&{session:SessionRow};
-type SearchReadAnswer={response:{results:any[];coverage:any}|null;pending:SearchSource[];sources:SearchSource[];timing:ReturnType<typeof searchTiming>};
+type SearchReadAnswer={response:{results:any[];coverage:any}|null;pending:SearchSource[];sources:SearchSource[];timing:ReturnType<typeof searchTiming>;worker_ms?:number};
 
 export type SessionOwnerRuntime = {
   readJournalEntry?(rootId:string):Promise<unknown>;
@@ -4232,7 +4232,7 @@ export class SessionOwner {
         timing.meaning_embed_ms=meaningTiming.embed_ms;timing.meaning_rank_ms=meaningTiming.rank_ms;});
     const searchId=randomUUID();this.searchMeanings.set(searchId,meaning);
     try {
-    let executorMs=0,fallbackReason='unavailable',answer:SearchReadAnswer|undefined;
+    let executorMs=0,workerMs=0,fallbackReason='unavailable',answer:SearchReadAnswer|undefined;
     try {
       const stateDir=process.env.CONCIERGE_STATE_DB?dirname(process.env.CONCIERGE_STATE_DB):process.env.CONCIERGE_STATE_DIR!;
       const read=async(materialized:SearchMaterialization[]=[])=>{
@@ -4245,6 +4245,7 @@ export class SessionOwner {
           if(!response.ok){fallbackReason='refused';await response.body?.cancel();throw new Error('SEARCH_READ_REFUSED');}
           const value=await response.json() as SearchReadAnswer;
           if(!value||!Array.isArray(value.pending)||!Array.isArray(value.sources)||!value.timing||(!value.pending.length&&!value.response)){fallbackReason='invalid';throw new Error('SEARCH_READ_INVALID');}
+          workerMs+=value.worker_ms??0;
           return value;
         } finally {executorMs+=performance.now()-began;}
       };
@@ -4266,13 +4267,18 @@ export class SessionOwner {
     } catch(error) {
       // Availability wins over isolation only on this explicit failure path. Never log search words.
       if(error instanceof Error&&['TimeoutError','AbortError'].includes(error.name))fallbackReason='timeout';
-      log('warn','session_search_executor_fallback',{reason:fallbackReason,executor_ms:Math.round(executorMs)});
+      // Search shares the archive lane's single reader with the owed-replies check and
+      // whole-transcript reads. A fallback that spent its budget queueing is a capacity problem,
+      // not a broken executor, and only this distinction tells us whether that lane needs its own.
+      const waited=Math.max(0,Math.round(executorMs-workerMs));
+      if(['timeout','unavailable'].includes(fallbackReason)&&waited>=executorMs/2&&executorMs>=1000)fallbackReason='queued';
+      log('warn','session_search_executor_fallback',{reason:fallbackReason,executor_ms:Math.round(executorMs),executor_wait_ms:waited});
       answer=await this.localSearch(input,routingSource,()=>meaning,false);
     }
     Object.assign(timing,answer!.timing,{meaning_ms:timing.meaning_ms,meaning_embed_ms:timing.meaning_embed_ms,meaning_rank_ms:timing.meaning_rank_ms});
     const response=answer!.response!,durationMs=Math.round(performance.now()-started);
     if(durationMs>=500)log('warn','session_search_slow',{duration_ms:durationMs,...timing,
-      executor_ms:Math.round(executorMs),owner_ms:Math.max(0,Math.round(performance.now()-started-executorMs)),
+      executor_ms:Math.round(executorMs),executor_wait_ms:Math.max(0,Math.round(executorMs-workerMs)),owner_ms:Math.max(0,Math.round(performance.now()-started-executorMs)),
       results:response.results.length,evidence:response.results.reduce((sum:number,result:any)=>sum+result.evidence.length,0),
       response_bytes:Buffer.byteLength(JSON.stringify(response))});
     return response;
