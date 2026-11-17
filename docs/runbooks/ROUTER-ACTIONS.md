@@ -442,15 +442,17 @@ compressed into one-line titles, built to the titles, and closed on the builder'
   <record> --from <capture or input id>` fetches the exact retained words itself (the text
   `reports capture` prints), so a kept capture cannot be a paraphrase. `file` takes repeated
   `--words "<his exact words>" [--reading …]` with one `--source`, or `--json-file`.
-- `sessions ask --requirements <record>` (repeatable, work requests) stores the record ids in the
-  request. A work request made from an Inbox thread also carries every record tied to that thread
-  at that moment (`GET /requirements?topic=`), so a router that forgets the flag still attaches it.
-  The set is fixed when the request is created: closing reads exactly those records (states fresh)
-  and never looks the thread up again, so a record made later during the work (the Inbox router
-  filing one) does not block a request that did not begin with it; hand a running builder a new
-  record with `sessions ask --requirements`.
-- At ask time the target's first input gets a block after WHAT CAME BEFORE: each record's title and
-  link, every requirement verbatim with id, state and source, each kept capture with the command
+- `sessions ask --requirements <record>` (repeatable, work requests) stores the declared record ids
+  in the request. Nothing is inherited from a thread: a work request made in an Inbox thread that
+  has records (`GET /requirements?topic=`) is refused unless it names the records it delivers (any
+  subset) or declares `--requirements none --requirements-why "<why this work delivers none of
+  them>"`. Side work (a review, a sweep, a question) declares none; routing into a feature thread
+  names the feature's records. Why: a nightly sweep started from the "Sending messages in his name"
+  thread inherited that feature's record and could only close as failed (Tejas's requirement-record
+  decision, 2026-11-16). Closing reads exactly the stored ids, fresh; a request open before this
+  keeps what it stored.
+- At ask time the target's first input gets a block after WHAT CAME BEFORE (or one line, "Delivers
+  none of this thread's requirement records: <reason>"): each declared record's title and link, every requirement verbatim with id, state and source, each kept capture with the command
   that prints it whole, and the closing obligations. A named record that cannot be read refuses the
   ask; a thread's own records that cannot be read are skipped there and checked at close.
 - A `completed` reply on a request carrying records is refused until every record is closable

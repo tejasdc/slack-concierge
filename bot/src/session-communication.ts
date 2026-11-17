@@ -46,7 +46,7 @@ import {acceptHandoff,handoffObligations,proposeHandoff,reconcileWithdrawnHandof
 import {askAsideOnce} from './session-asides';
 import {awaitingOutside} from './storage-observation';
 import {earlierWorkFor,type EarlierWork} from './request-history';
-import {closingRefusal,deliveryBlock,outcomeLines,readRequestRecords,type RequirementState} from './requirement-records';
+import {closingRefusal,declinedBlock,deliveryBlock,outcomeLines,readRequestRecords,readTopicRecords,threadRecordsRefusal,type RequirementState} from './requirement-records';
 import {withBefore} from './reply-before';
 import { isHisChatGpt,parseProviderSelector,resolveProviderSelector,chatgptProjectThinking } from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
@@ -1618,7 +1618,7 @@ export class SessionCommunicationCoordinator {
         if (turn.status === 'error' || turn.status === 'cancelled') turn = carryingTurn(turn.id) ?? turn;
         return !['done', 'error', 'cancelled'].includes(turn.status) || awaitingBankedContinuation(turn.id);
     }
-    /** The requirement records a request carries, fixed when it was created: the ones named plus its thread's then. The route reads their states fresh; the thread is never looked up again. */
+    /** The requirement records a request declared when it was created. The route reads their states fresh; nothing is inherited from its thread. */
     requirementRefs(requestId:string):{ids:string[];topic:string|null}|null {
         const row=db.query('SELECT payload_json,topic_root_input_id FROM session_communication_requests WHERE request_id=?').get(requestId) as {payload_json:string;topic_root_input_id:string|null}|null;
         if(!row)return null;
@@ -1992,6 +1992,8 @@ export class SessionCommunicationCoordinator {
         text: string;
         /** Requirement records (thnkr.ing) this work must satisfy; its Inbox thread's records ride along automatically. */
         requirements?:string[];
+        /** Why a work request in a record thread delivers none of its records (`--requirements none`). */
+        requirements_why?:string;
         /** Exact work task that needs this ChatGPT answer when this run holds several tasks. */
         for_task?:string;
         /** The original source pair of a frozen ask whose run has ended; `source` is the live run resuming it. */
@@ -2322,13 +2324,21 @@ export class SessionCommunicationCoordinator {
         if(input.requirements!==undefined&&(!Array.isArray(input.requirements)||input.requirements.some(id=>typeof id!=='string'||!id.trim())))
             throw new Error('--requirements names requirement records by exact id or name.');
         if(input.requirements?.length&&input.requestedEffect!=='work')throw new Error('--requirements belongs to a work request: the record is what closes work.');
-        const requirementIds=[...new Set((input.requirements??[]).map(id=>id.trim()))].sort();
+        // Nothing is inherited from a thread: a work request names the records it delivers, or says in
+        // words that it delivers none (Tejas, 2026-11-16: a review made in a feature's thread could not
+        // close because it inherited that feature's record). `none` is only that declaration.
+        const declaresNone=(input.requirements??[]).some(id=>id.trim()==='none');
+        const requirementIds=[...new Set((input.requirements??[]).map(id=>id.trim()).filter(id=>id!=='none'))].sort();
+        const noneWhy=(input.requirements_why??'').trim();
+        if(declaresNone&&requirementIds.length)throw new Error('--requirements none cannot be combined with record ids: name the records this work delivers, or declare none.');
+        if(declaresNone&&!saysSomething(noneWhy))throw new Error('--requirements none needs --requirements-why "<why this work delivers none of the thread\'s requirement records>".');
+        if(!declaresNone&&input.requirements_why!==undefined)throw new Error('--requirements-why belongs to --requirements none.');
         const extraWith=(authorityInputId:string|undefined)=>({...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{}),...(input.purpose?{purpose:input.purpose}:{}),...(input.providerReason?{providerReason:input.providerReason}:{}),...(input.requestedEffect==='work'&&authorityInputId?{authorityInputId}:{}),...(localMachineNeed?{machineNeed:localMachineNeed}:{}),...(routedFrom?{routedMessage:{sourceInputId:routedFrom.messageId},routedFrom}:{})});
         const extra=extraWith(sender.authorityInputId);
         const encodedWith=(extra:ReturnType<typeof extraWith>)=>JSON.stringify({ ...(requestedRole?{role:requestedRole}:input.provider?{provider:input.provider}:{address:input.address}),
             ...((requestedRole?requestedTitle:title)===undefined?{}:{title:requestedRole?requestedTitle:title}), text: input.text, after,...(pace.length?{pace}:{}),...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.for_task?{forTask:input.for_task}:{}),
-            ...(requirementIds.length?{requirements:requirementIds}:{}),
+            ...(requirementIds.length?{requirements:requirementIds}:{}),...(declaresNone?{requirementsNone:noneWhy}:{}),
             ...(input.recovery_of?{recoveryOf:input.recovery_of}:{}),
             ...(input.correction_of?{correctionOf:input.correction_of}:{}),
             ...(input.consult===undefined?{}:{consult:input.consult}),
@@ -2407,21 +2417,24 @@ export class SessionCommunicationCoordinator {
         // Looked up once, after every refusal above, when the request is first accepted; a retry
         // returned the receipt earlier.
         const history=await this.earlierWork(actor,input,topicRoot??null,target?.session??null);
-        // The records are read here, at the moment this request's words for the builder are made. A
-        // named record that cannot be read refuses the ask; the thread's own records are best-effort
-        // here (the closing check fails closed on them whenever the reply comes).
+        // The records the builder reads are the ones this request declares, read here when its words
+        // are made; a named record that cannot be read refuses the ask. A work request made in a
+        // thread that has records must declare (records, or none with a reason); it inherits nothing.
         const recordTopic=input.requestedEffect==='work'?topicOf(topicRoot??null):null;
-        let requirementRecords:Awaited<ReturnType<typeof readRequestRecords>>=[];
-        if(requirementIds.length||recordTopic){
-            try{requirementRecords=await readRequestRecords(requirementIds,recordTopic);}
-            catch(error){
-                if(requirementIds.length)throw new Error(`${error instanceof Error?error.message:'The requirement record could not be read.'} Nothing was sent.`);
-                log('warn','requirement_topic_unreadable',{topic:recordTopic,reason:error instanceof Error?error.message.slice(0,120):'failed'});
-            }
+        if(recordTopic&&!requirementIds.length&&!declaresNone){
+            let threadRecords:Awaited<ReturnType<typeof readTopicRecords>>=[];
+            try{threadRecords=await readTopicRecords(recordTopic);}
+            catch(error){log('warn','requirement_topic_unreadable',{topic:recordTopic,reason:error instanceof Error?error.message.slice(0,120):'failed'});}
+            if(threadRecords.length)throw new Error(threadRecordsRefusal(threadRecords));
         }
-        const requirementText=requirementRecords.length?deliveryBlock(requirementRecords):'';
+        let requirementRecords:Awaited<ReturnType<typeof readRequestRecords>>=[];
+        if(requirementIds.length){
+            try{requirementRecords=await readRequestRecords(requirementIds,null);}
+            catch(error){throw new Error(`${error instanceof Error?error.message:'The requirement record could not be read.'} Nothing was sent.`);}
+        }
+        const requirementText=requirementRecords.length?deliveryBlock(requirementRecords):declaresNone?declinedBlock(noneWhy):'';
         const consultation=historical?await this.dependencies.owner!.prepareConsultation(input.address!,undefined,input.evidence):null;
-        if(consultation||history||requirementRecords.length) {
+        if(consultation||history||requirementText) {
             if(this.stopped)throw new Error('Session communication is not accepting requests.');
             const raced=prior();
             if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return this.receipt(raced);}
@@ -2481,10 +2494,7 @@ export class SessionCommunicationCoordinator {
             const address=sessionAddress(getSessionById(selected.session)!);
             const retainedBody=JSON.parse(encodedWith(extra));
             if(input.files)retainedBody.files=input.files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}));
-            // The records are bound here, once: the ones named plus the ones tied to the thread at this moment.
-            // Closing reads exactly these (states fresh, membership fixed); a record made later during the
-            // work, even by the Inbox router filing it, never blocks a request that did not begin with it.
-            const retainedPayload=JSON.stringify({...retainedBody,...(requirementRecords.length?{requirements:[...new Set([...requirementIds,...requirementRecords.map(record=>record.id)])].sort()}:{}),...extra,address,...(input.smallTask?{smallTask:true}:{}),...(fitNote?{newTopic:true}:{}),...(history?{history:{requests:history.requests,sessions:history.sessions,cases:history.cases,omissions:history.omissions.length}}:{}),...(forwardedFrom?{forwardedFrom}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
+            const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(input.smallTask?{smallTask:true}:{}),...(fitNote?{newTopic:true}:{}),...(history?{history:{requests:history.requests,sessions:history.sessions,cases:history.cases,omissions:history.omissions.length}}:{}),...(forwardedFrom?{forwardedFrom}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id,topic_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
                 .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest,
