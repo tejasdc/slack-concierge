@@ -1578,6 +1578,19 @@ export class SessionOwner {
     if(receiptSettled(built))this.settledReceipts.set(input.id,built);
     return built;
   }
+  /**
+   * The exact operation read is what send checks trust, so it names the thread and topic the
+   * operation belongs to now, read from the ledger's own thread and topic links. On 2026-11-17
+   * thnkr.ing's send check had to resolve that through the Threads display index, which refuses
+   * whenever the display lags the ledger, so his explicit send was held while agents were busy.
+   * Only this exact read carries it: a thread or topic can move after a receipt settles, and the
+   * list readers do not pay a thread walk per row.
+   */
+  exactOperationReceipt(input:AcceptedSessionInput) {
+    const rootInputId=inboxThreadRoot(input.session_id,input.id);
+    return {...this.buildReceipt(input),
+      threadContext:rootInputId?{version:1 as const,rootInputId,topicId:topicOfRoot(rootInputId)}:null};
+  }
   buildReceipt(input:AcceptedSessionInput) {
     assertInputContent(input);
     let comparison:ReturnType<typeof comparisonContext>=null;
@@ -5393,7 +5406,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='artifacts'&&parts.length===4&&this.runtime.artifact)result=await this.runtime.artifact(this.session(parts[1]!),parts[3]!);
       // Exact operation reads authorize provider admission and recovery. A failed operation can be
       // reopened, so another reader's settled cache is not authority for its current execution.
-      else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.buildReceipt(this.input(parts[1]!));
+      else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.exactOperationReceipt(this.input(parts[1]!));
       else if(request.method==='GET'&&parts[0]==='events'&&parts.length===1) {
         const page=this.eventPage(Number(url.searchParams.get('after'))||0,url.searchParams.get('sessionId'),url.searchParams.get('runId'),
           {kind:url.searchParams.get('kind'),limit:boundedLimit(url.searchParams.get('limit'),1000)});

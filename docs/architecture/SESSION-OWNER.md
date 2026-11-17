@@ -14,6 +14,13 @@ processes returned five versus six admissions for the same recovered ChatGPT ope
 only the canonical process invalidated its own cache. The single-operation entrance now bypasses
 that process-local cache without changing the exact-admission guard or any stored receipt.
 
+That exact receipt also carries `threadContext: {version:1, rootInputId, topicId}` (or `null`
+when the operation sits in no Inbox thread), read on every call from the ledger's own thread
+links and topic placement, never from the Threads display index. Send checks use it to bind an
+operation to its thread; on November 17 thnkr.ing had to resolve that through the display index,
+which refuses while the display lags the ledger, so his explicit send was held during busy agent
+activity. `topicId` is `null` for a thread not yet placed in a topic. Lists do not carry it.
+
 The existing `sessions.id` is public as `concierge:<integer>`. An opaque address pins that row and its binding generation. Provider conversation IDs and original Slack roots remain exact bindings. A fork creates a distinct child with an exact boundary; a verified replacement binding advances the generation. Search ranking, a matching title, an import namespace or a provider UUID alone cannot establish ownership.
 
 Discovery matches current catalogue titles, summaries and project names alongside retained dialogue. A catalogue-only match has an empty dialogue evidence array and the exact current session view; it cannot fabricate a message or collapse equal titles. Context resolves the selected address before communication.
