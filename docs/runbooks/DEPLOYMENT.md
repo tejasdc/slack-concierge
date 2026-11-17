@@ -1391,7 +1391,9 @@ replacement. No tests or reviews were run by the autonomous repair; activation a
 proof remain with the normal detached controller.
 Inside an already isolated check, descendants inherit the inaccessible directory rather
 than trying to create another user namespace. "Already isolated" means the directory refuses
-access or is the boundary's own mask (an empty, mode-000 tmpfs): the private code entrance
+access or is the boundary's own mask (an empty, mode-000 tmpfs) seen from inside a nested
+user namespace, where inherited mounts are locked. In the initial namespace (an agent shell
+under systemd's mask) root could unmount that mask, so the launcher still wraps. The private code entrance
 keeps permission override for its mount-capable children, so the mask reads as accessible
 there, and a permission probe alone sent the database-safety fixture into a nested namespace
 the kernel refuses ("setting up uid map", 2026-11-17). Through that entrance the fixture's
