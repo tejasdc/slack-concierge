@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { agentLedgerImageCommand } from './agent-ledger-image-boundary';
 import { createHash, randomUUID } from "node:crypto";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { claudeConsultationEnvironment } from "./claude-consultation-environment";
@@ -124,7 +125,8 @@ export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
     onInterruptReady?: (interrupt: () => Promise<void>) => void;
     onProtocolActivityReady?: (record: () => void) => void;
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-    const proc = spawn(this.executable, input.args, {
+    const [executable, ...args] = agentLedgerImageCommand([this.executable, ...input.args]);
+    const proc = spawn(executable!, args, {
       cwd: input.cwd,
       env: { ...(input.inheritEnvironment === false ? {} : process.env), ...input.environment },
       stdio: ["pipe", "pipe", "pipe"],

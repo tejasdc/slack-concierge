@@ -1,4 +1,5 @@
 /** Provider-account facts and actions that belong to this runner's machine. */
+import { codexDaemonImageCommand } from './agent-ledger-image-boundary';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -308,7 +309,7 @@ async function completeSignIn(params: Record<string, unknown>) {
 
 let codexActivationFlight: Promise<unknown> | null = null;
 async function runCommand(command: string, args: string[], timeoutMs: number): Promise<{ code: number|null; output: string }> {
-  const child = Bun.spawn([command, ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const child = Bun.spawn(codexDaemonImageCommand(command, args), { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   const timer = setTimeout(() => child.kill(), timeoutMs);
   try {
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
