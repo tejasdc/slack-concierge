@@ -80,19 +80,31 @@ function boundedRows<T>(walk:{overflow:boolean},sql:string,...args:any[]):T[] {
  return rows;
 }
 const REPLY_SOURCES="SELECT source_input_id FROM session_inputs WHERE request_id=? AND kind='reply' ORDER BY rowid";
-function origins(input:AcceptedSessionInput,walk:Walk):Set<string> {
+/** The walk reads only the provenance facts of each linked input, never its whole row: whole
+ * payloads (request bodies, attachments) made a 40-receipt agent page exceed the read budget's
+ * result bytes on 2026-11-17 once the reply query was bounded. */
+type ProvenanceNode={id:string;scope:string|null;kind:string;source_input_id:string|null;request_id:string|null;invocation_thread:unknown;thread:unknown;binding_thread:unknown};
+function provenanceNode(id:string):ProvenanceNode|null {
+ return db.query(`SELECT id,scope,kind,source_input_id,request_id,CASE json_type(payload_json,'$.labInvocation.thread') WHEN 'text' THEN json_extract(payload_json,'$.labInvocation.thread') END AS invocation_thread,
+  CASE json_type(payload_json,'$.thread') WHEN 'text' THEN json_extract(payload_json,'$.thread') END AS thread,CASE json_type(payload_json,'$.binding.thread') WHEN 'text' THEN json_extract(payload_json,'$.binding.thread') END AS binding_thread FROM session_inputs WHERE id=?`).get(id) as ProvenanceNode|null;
+}
+function rootNode(input:AcceptedSessionInput):ProvenanceNode {
+ const payload=JSON.parse(input.payload_json);
+ return {id:input.id,scope:input.scope,kind:input.kind,source_input_id:input.source_input_id,request_id:input.request_id,
+  invocation_thread:payload.labInvocation?.thread,thread:payload.thread,binding_thread:payload.binding?.thread};
+}
+function origins(input:ProvenanceNode,walk:Walk):Set<string> {
  const {seen,invocations}=walk;
  const threads=new Set<string>();if(seen.has(input.id))return threads;seen.add(input.id);
- const payload=JSON.parse(input.payload_json);
- if(input.scope==='lab:invocation'&&typeof payload.labInvocation?.thread==='string'){threads.add(payload.labInvocation.thread);invocations.add(input.id);}
+ if(input.scope==='lab:invocation'&&typeof input.invocation_thread==='string'){threads.add(input.invocation_thread);invocations.add(input.id);}
  if(['lab-conversation','lab-roster','lab-activation','lab-membership','lab-binding'].includes(input.kind)){
-  const thread=payload.thread??payload.binding?.thread;if(typeof thread==='string')threads.add(thread);
+  const thread=input.thread??input.binding_thread;if(typeof thread==='string')threads.add(thread);
  }
- if(input.source_input_id){const source=getAcceptedSessionInput(input.source_input_id);if(source)for(const thread of origins(source,walk))threads.add(thread);}
+ if(input.source_input_id){const source=provenanceNode(input.source_input_id);if(source)for(const thread of origins(source,walk))threads.add(thread);}
  if(input.request_id){
   const request=db.query('SELECT source_input_id,target_input_id FROM session_communication_requests WHERE request_id=?').get(input.request_id) as any;
   const replies=boundedRows<{source_input_id:string|null}>(walk,REPLY_SOURCES,input.request_id);
-  for(const id of [request?.source_input_id,request?.target_input_id,...replies.map(value=>value.source_input_id)]){const linked=id?getAcceptedSessionInput(id):null;if(linked)for(const thread of origins(linked,walk))threads.add(thread);}
+  for(const id of [request?.source_input_id,request?.target_input_id,...replies.map(value=>value.source_input_id)]){const linked=id?provenanceNode(id):null;if(linked)for(const thread of origins(linked,walk))threads.add(thread);}
  }
  return threads;
 }
@@ -101,7 +113,7 @@ export function restrictedLabThread(thread:string):boolean {
 }
 export function inputContentVisible(input:AcceptedSessionInput):boolean {
  const reader=contentReader();if(reader.kind==='trusted'||reader.kind==='actor'&&!reader.comparison?.openingOnly)return true;
- const walk:Walk={seen:new Set(),invocations:new Set(),overflow:false},invocations=walk.invocations,threads=origins(input,walk);
+ const walk:Walk={seen:new Set(),invocations:new Set(),overflow:false},invocations=walk.invocations,threads=origins(rootNode(input),walk);
  if(walk.overflow)return false;if(!threads.size)return true;
  if(reader.kind==='unknown')return false;
  if(!reader.comparison?.openingOnly||!threads.has(reader.comparison.thread))return true;
