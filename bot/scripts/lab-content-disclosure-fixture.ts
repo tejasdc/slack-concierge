@@ -147,9 +147,16 @@ async function child(){
   assert.equal(budgeted(()=>disclosure.inputContentVisible(getAcceptedSessionInput(plainId)!)),false,'a reply set past the bound is treated as protected');
   assert.equal(disclosure.inputContentVisible(getAcceptedSessionInput(plainId)!),true,'a trusted reader is unaffected by the bound');
   db.query('DELETE FROM session_inputs WHERE request_id=?').run(fakeRequest);
+  // A linked input's whole payload is not the walk's business: reading it made a 40-receipt page exceed result bytes.
+  const bigId=`fixture-big-${randomUUID()}`,linkedId=`fixture-linked-${randomUUID()}`;clone(bigId,'message');clone(linkedId,'message');
+  db.query('UPDATE session_inputs SET payload_json=?,request_id=NULL WHERE id=?').run(JSON.stringify({text:'x'.repeat(400_000)}),bigId);
+  db.query('UPDATE session_inputs SET source_input_id=?,request_id=NULL WHERE id=?').run(bigId,linkedId);
+  const tight=<T>(work:()=>T)=>disclosure.withContentReader(unknownReader,()=>withStorageReadBudget({maxCalls:500,maxRows:5000,maxResultBytes:200_000},work));
+  assert.equal(tight(()=>disclosure.inputContentVisible(getAcceptedSessionInput(linkedId)!)),true,'the walk reads provenance facts, not whole linked payloads');
+  db.query('DELETE FROM session_inputs WHERE id IN (?,?)').run(bigId,linkedId);
   const bDuring=db.query('SELECT id,session_id,status,agent_text FROM turns WHERE id=?').get(bClaim.turn_id) as any;
   assert.deepEqual(bDuring,bBefore,'B remains in the same real active invocation throughout all reads');
-  console.log(JSON.stringify({fixture:'lab-content-disclosure',independentReaderRestricted:true,wholeEntityRefusal:true,runnerSourceRestricted:true,unknownAgentRestricted:true,ownOperationReadable:true,humanOriginalReadable:true,readerScopeEndsWithRequest:true,budgetedDisclosureWalkAdmitted:true,replyOverflowProtected:true,activeInvocationUnchanged:true}));
+  console.log(JSON.stringify({fixture:'lab-content-disclosure',independentReaderRestricted:true,wholeEntityRefusal:true,runnerSourceRestricted:true,unknownAgentRestricted:true,ownOperationReadable:true,humanOriginalReadable:true,readerScopeEndsWithRequest:true,budgetedDisclosureWalkAdmitted:true,replyOverflowProtected:true,walkReadsProvenanceOnly:true,activeInvocationUnchanged:true}));
  }finally{await gateway.stop(true);await privateOwner.stop(true);releaseProvider();await bExecution;}
 }
 

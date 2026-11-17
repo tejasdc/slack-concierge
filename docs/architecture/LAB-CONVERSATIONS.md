@@ -81,8 +81,10 @@ that reader, and an invocation that has not yet proven its admitted binding carr
 comparison fact instead of failing the whole read. The provenance walk runs inside
 interactive read budgets, so each of its fan-out queries (a request's replies, a session's
 invocations, a message's events) is LIMITed to `DISCLOSURE_FANOUT_LIMIT`; a set larger than
-the bound cannot be proven free of Lab provenance and is treated as protected. An
-unLIMITed reply query made agent receipt reads answer 503 on 2026-11-17.
+the bound cannot be proven free of Lab provenance and is treated as protected. Each linked
+input is read as its provenance facts only (ids, kind, scope and text thread fields), never
+its whole payload. An unLIMITed reply query, then whole linked payloads, made agent receipt
+reads answer 503 on 2026-11-17.
 `scripts/lab-content-disclosure-fixture.ts` exercises all seven read paths against a real
 held-open ChatGPT participant through the agent gateway, the reader's lifetime, the walk
 under a read budget and reply overflow.
