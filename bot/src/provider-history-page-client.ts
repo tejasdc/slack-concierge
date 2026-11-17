@@ -1,6 +1,7 @@
 import {fork,type ChildProcess} from 'node:child_process';
 import {releaseWorkerPath} from './release-worker';
 import {readdirSync,readFileSync} from 'node:fs';
+import {log,errorFields} from './log';
 
 function groupHasRunningProcesses(group:number):boolean {
   if(process.platform!=='linux'){
@@ -46,13 +47,13 @@ export class ProviderHistoryPageClient {
     const failed=(reason:string)=>{
       if(this.worker!==worker)return;
       for(const [id,item] of this.pending){clearTimeout(item.timer);item.reject(new Error(reason));this.pending.delete(id);}
-      void this.close();
+      void this.close().catch(error=>log('warn','history_page_worker_retirement_failed',errorFields(error)));
     };
     worker.on('error',error=>{
       // A failed IPC write does not establish that the child has exited.
       for(const item of this.pending.values()){clearTimeout(item.timer);item.reject(error);}
       this.pending.clear();
-      void this.close();
+      void this.close().catch(error=>log('warn','history_page_worker_retirement_failed',errorFields(error)));
     });
     worker.on('exit',code=>failed(`HISTORY_PAGE_WORKER_EXIT_${code}`));
     this.worker=worker;
@@ -100,9 +101,14 @@ export class ProviderHistoryPageClient {
       const exited=new Promise<void>(resolve=>worker.once('close',()=>resolve()));
       // Terminate the owned process group, including imports still running after a caller timeout.
       signal('SIGTERM');
-      const kill=setTimeout(()=>signal('SIGKILL'),2000);
+      let kill:ReturnType<typeof setTimeout>;
+      const escalation=new Promise<never>((_,reject)=>{
+        kill=setTimeout(()=>{
+          try{signal('SIGKILL');}catch(error){reject(error);}
+        },2000);
+      });
       try{
-        await exited;signal('SIGKILL');
+        await Promise.race([exited,escalation]);signal('SIGKILL');
         while(worker.pid&&groupHasRunningProcesses(worker.pid))await new Promise(resolve=>setTimeout(resolve,10));
       }finally{clearTimeout(kill);}
       if(this.worker===worker)this.worker=null;

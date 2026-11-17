@@ -1767,8 +1767,6 @@ export class SessionExecutionHost {
               custodySuccessor:protectedRun,appServerClient:client};
           }
           if(!adoption&&this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
-          if(!adoption&&!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-            throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
           const followed=adoption&&session.provider_id==='chatgpt'?JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}').admission??null:null;
           const admission=adoption?followed:this.retainAdmission(claim,input,session,actual,attachments);
           if(adoption&&session.provider_id==='chatgpt'&&!admission)throw new ProviderDispatchError({message:'The ChatGPT send this run made has no retained admission; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
@@ -1787,11 +1785,14 @@ export class SessionExecutionHost {
             // update instead of the update waiting for ChatGPT to finish (Tejas, 2026-10-09).
             if(!adoption)retainExecutionIntent({executionId:newExecutionId(),turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'chatgpt',
               directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'capability-host',processor:{replayPrompt,runAdditionalDirs,staging:null,account:null}});
-            return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
+            const chatgptProvider=this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
               onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding}),
               onConversationTitle:title=>adoptProviderConversationTitle(session.id,title),
               ...(adoption?{follow:{onLive:()=>{recordLiveAdoption(adoption.execution.execution_id);
-                log('info','chatgpt_run_followed',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id,still_running:true});}}}:{})}).run(actual)
+                log('info','chatgpt_run_followed',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id,still_running:true});}}}:{})});
+            if(!adoption&&!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+            return chatgptProvider.run(actual)
               .then(result=>{
                 noteChatgptModel(result.text);
                 const body=result.text.replace(/^Answered by ChatGPT model[^\n]*\n*/,'').trim();
@@ -1806,9 +1807,13 @@ export class SessionExecutionHost {
             // receiver. Adoption first marks those attempts unsent; bring each exact input back
             // to this session's FIFO before following the independent process again.
             this.pullWaitingInputs(session.id);
+            if(!adoption&&!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
             return runOutsideCodexTurn(actual as OutsideRun);
           }
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
+          if(!adoption&&!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+            throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
           return underlying.run(actual);
         }};
       return await executeAgentTurn({
@@ -1989,7 +1994,7 @@ export class SessionExecutionHost {
     const current=getSessionById(session.id)!,metadata=sessionMetadata(current);
     const owned=db.query("SELECT provider_admission_intended_at FROM turns WHERE id=? AND session_id=? AND owner_instance_id=? AND dispatch_attempt=? AND status='running' AND stop_requested_at IS NULL")
       .get(claim.turn_id,session.id,this.options.instanceId,claim.dispatch_attempt) as any;
-    if(!owned?.provider_admission_intended_at||current.binding_generation!==session.binding_generation||current.status==='archived'||metadata.suspended)throw new ProviderCapabilityUnavailableError('send','The exact owner admission is no longer current.');
+    if(!owned||current.binding_generation!==session.binding_generation||current.status==='archived'||metadata.suspended)throw new ProviderCapabilityUnavailableError('send','The exact owner admission is no longer current.');
     if(boundLabInvocation(input)&&(!labInvocationBindingMatches(input)||(actual.model??null)!==(metadata.model??null)||(actual.reasoning_effort??null)!==(metadata.reasoningEffort??null)))throw new ProviderCapabilityUnavailableError('send','The prepared Lab execution differs from the selected provider, model or effort; no replacement was sent.');
     const admission=db.transaction(()=>{
       const saved=JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}');
