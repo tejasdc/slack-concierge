@@ -1,6 +1,8 @@
 import {adoptContentSource,assertCommunicationContent,assertInputContent,contentReaderHeaders,outsideContentReader,withContentSource} from './lab-content-disclosure';
 import {pendingJournalProcessing} from "./journal-processing";
 import { readFileSync } from 'node:fs';
+import {progressRunnerCodexRuntimeMaintenance} from './runner-provider-account-owner';
+import {providerRunnerTarget} from './provider-runner-target';
 import {custodySelectedTerminalConfirmed} from './codex-custody-terminal';
 import { historyStorageStatus, type HistoryStorageKind } from './history-storage-status';
 import { createHash, randomUUID } from 'node:crypto';
@@ -931,6 +933,32 @@ export class SessionCommunicationCoordinator {
         if(!db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit_hold' LIMIT 1").get(actor.turn))
             throw new Error('This turn has no held fifth edit; continue normally or use sessions implement for fixed work.');
         return recordImplementationEditReason(actor.turn,actor.session,actor.inputId,input.reason,input.action_id);
+    }
+    async codexMaintenance(input:{source:CommunicationSource;action_id:string;required_commit:string;resume_operation?:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const authority=this.authority(this.fenced(this.actor(input.source))),actor=authority.actor;action(input.action_id);
+        if(authority.scope!=='work')throw new Error('Runtime maintenance requires work authority from this exact live run.');
+        if(!actor.inputId||! /^[0-9a-f]{40}$/.test(input.required_commit))throw new Error('Runtime maintenance requires this exact source run and a full required commit.');
+        let runner=providerRunnerTarget('codex');if(!runner)throw new Error('Runtime maintenance requires a configured Codex runner.');
+        const sourceRunId=nativeRunId(actor.turn);
+        const operationId=`runtime:${createHash('sha256').update(actor.inputId).update('\0').update(sourceRunId).update('\0').update(input.action_id).digest('hex').slice(0,40)}`;
+        let binding={operationId,sourceInputId:actor.inputId,sourceRunId,actionId:input.action_id,requiredCommit:input.required_commit};
+        let retained:{input:AcceptedSessionInput};
+        if(input.resume_operation){
+          if(!/^runtime:[0-9a-f]{40}$/.test(input.resume_operation))throw new Error('An exact retained runtime operation is required.');
+          const previous=db.query(`SELECT * FROM session_inputs WHERE session_id=? AND kind='action' AND origin='agent'
+            AND json_extract(payload_json,'$.kind')='codex-runtime-maintenance' AND json_extract(payload_json,'$.binding.operationId')=?`)
+            .get(actor.session,input.resume_operation) as AcceptedSessionInput|null;
+          if(!previous)throw new Error('This session has no such retained runtime operation.');
+          const payload=JSON.parse(previous.payload_json);
+          if(payload.binding.requiredCommit!==input.required_commit)throw new Error('Idempotency conflict: retained maintenance release changed.');
+          binding=payload.binding;runner=payload.runner;retained={input:previous};
+        }else retained=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'action',origin:'agent',
+          payload:{kind:'codex-runtime-maintenance',runner,binding},sourceInputId:actor.inputId,sourceRunId});
+        if(retained.input.receipt_json){const receipt=JSON.parse(retained.input.receipt_json);if(receipt.phase==='applied')return {...receipt,operationId:binding.operationId,actionInputId:retained.input.id,duplicate:true};}
+        const result=await progressRunnerCodexRuntimeMaintenance(runner,binding);
+        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(result),retained.input.id);
+        return {...result as Record<string,unknown>,operationId:binding.operationId,actionInputId:retained.input.id};
     }
     private owedRunning(input:{provider:string;provider_session_id:string;run_id?:string}):OwedRunning|null {
         // A new session's conversation id reaches the owner from the provider's output stream, which

@@ -551,6 +551,8 @@ export function watchAuthHeldCredentials(): () => void {
     .catch(error=>log('error','codex_runner_admission_recovery_failed',{error:error instanceof Error?error.message:String(error)}));
   repair();
   const detach=observeExecutionChanges(()=>{
+    void import('./runner-provider-account-owner').then(module=>module.resumeRunnerCodexRuntimeMaintenance())
+      .catch(error=>log('error','codex_runtime_maintenance_recovery_failed',{error:String(error)}));
     updateInterval();
     if(pendingCodexActivation && runningCodexTurns()===0)check('codex','turn_finished');
     if(pendingCodexRepair && runningCodexTurns()===0)repair();

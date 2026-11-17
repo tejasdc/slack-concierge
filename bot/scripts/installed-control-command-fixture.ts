@@ -55,6 +55,7 @@ function artifact(name: string, modern = true, missing = false) {
     "control/release-manager.js": modern ? managerBundle : 'throw new Error("old manager has no install-launchers command")',
     "control/deployment-launcher.sh": readFileSync(join(repo, "bot/scripts/deployment-launcher.sh")),
     "control/history-cache.js": 'console.log(JSON.stringify({status:"fixture-status",path:import.meta.dir,args:process.argv.slice(2)}))',
+    "control/bot/scripts/private-agent-command.js": 'console.log(JSON.stringify({status:"fixture-agent",path:import.meta.dir,args:process.argv.slice(2)}))',
     "bot/src/index.js": `console.log("fixture-application-${name}")`,
   };
   if (!missing) files["control/deployment-control-launcher.sh"] = modern
@@ -79,6 +80,9 @@ function status(expectedPath?: string) {
   if (!expectedPath) { assert.equal(result.exitCode, 2); return; }
   assert.equal(result.exitCode, 0, result.stderr.toString());
   assert.deepEqual(JSON.parse(result.stdout.toString()), { status: "fixture-status", path: join(expectedPath, "control"), args: ["status"] });
+  const agent=run([stable,'agent-command','--','/usr/bin/claude','--fixture']);
+  assert.equal(agent.exitCode,0,agent.stderr.toString());
+  assert.deepEqual(JSON.parse(agent.stdout.toString()),{status:'fixture-agent',path:join(manager.controlArtifactPath()!,'control/bot/scripts'),args:['/usr/bin/claude','--fixture']});
 }
 function snapshot() {
   return { current: manager.currentArtifactPath(), control: manager.controlArtifactPath(),

@@ -4,6 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agentLedgerImageCommand } from '../src/agent-ledger-image-boundary';
 
+function assertSourceCoverage(){
+  const source=(name:string)=>readFileSync(join(import.meta.dir,'../src',name),'utf8');
+  assert(source('execution-host-client.ts').includes('...agentLedgerImageCommand([runtime, "run", hostScript, directory])'));
+  assert.equal(source('codex-daemon-file-limit.ts').split('...agentLedgerImageCommand([MANAGED_CODEX, "app-server", "daemon", "start"])').length-1,2);
+  for(const file of ['provider-activation.ts','runner-provider-accounts.ts'])assert(source(file).includes('codexDaemonImageCommand(command, args)'),file);
+  assert(source('deployment-repair-agent.ts').includes('agentLedgerImageCommand(trustedCodexExecCommand(executable, args))'));
+  assert(readFileSync(join(import.meta.dir,'agent-claude-launch.ts'),'utf8').includes('agentLedgerImageCommand([executable,...args])'));
+  assert(readFileSync(join(import.meta.dir,'deployment-control-launcher.sh'),'utf8').includes('private-agent-command.js'));
+}
+if(process.argv.includes('--source-guard')){assertSourceCoverage();console.log('PASS: all agent launch entrances retain the backing-image boundary');process.exit(0);}
+
 if (process.platform !== 'linux') throw new Error('This acceptance requires the Linux mount boundary.');
 const root = mkdtempSync(join(tmpdir(), 'concierge-agent-image-'));
 try {
@@ -68,10 +79,6 @@ print(p.pid)`;
   } finally { try { process.kill(detachedPid, 'SIGTERM'); } catch {} }
   // The caller (owner/backup analogue) remains in its original namespace.
   closeSync(openSync(image, 'r'));
-  const source = (name: string) => readFileSync(join(import.meta.dir, '../src', name), 'utf8');
-  assert(source('execution-host-client.ts').includes('...agentLedgerImageCommand([runtime, "run", hostScript, directory])'));
-  assert.equal(source('codex-daemon-file-limit.ts').split('...agentLedgerImageCommand([MANAGED_CODEX, "app-server", "daemon", "start"])').length - 1, 2);
-  for (const file of ['provider-activation.ts', 'runner-provider-accounts.ts']) assert(source(file).includes('codexDaemonImageCommand(command, args)'), file);
-  assert(source('deployment-repair-agent.ts').includes('agentLedgerImageCommand(trustedCodexExecCommand(executable, args))'));
+  assertSourceCoverage();
   console.log('PASS: open/unmount denied, API reachable, nested private mounts preserved, detached daemon survives starter exit, caller unchanged, launch coverage present');
 } finally { rmSync(root, { recursive: true, force: true }); }

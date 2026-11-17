@@ -641,7 +641,7 @@ function answerMachineCalls(id:string) {
     recordOwnerContact();
     if(method==='ping')return true;
     if(method.startsWith('watch.'))return serveWatchCall(watchMachine,stateDir,method.slice('watch.'.length),params);
-    if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params,{activeTurns:turns.size});
+    if(method.startsWith('accounts.'))return serveRunnerAccountCall(method,params,{activeTurns:turns.size,botDir});
     if(method.startsWith('provider-history.'))return serveProviderHistoryCall(method,params,runnerAccountHome,stateDir,runnerAccountHomes);
     if(method.startsWith('provider-fork.'))return serveRunnerProviderForkCall(method,params,{
       resolveHome:runnerAccountHome,

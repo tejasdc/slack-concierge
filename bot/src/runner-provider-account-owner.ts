@@ -4,6 +4,9 @@ import { runningCodexTurns } from "./provider-activation";
 import { runnerMachineCall } from "./runner-machine-calls";
 import {withCodexRestartLock} from './codex-restart-lock';
 import {externallyRunningCodexTurns} from './provider-activation';
+import {db} from './state';
+import {sharedCodexAppServerClient} from './codex-app-server-client';
+import type {RuntimeMaintenanceBinding,RuntimeMaintenanceState} from './codex-runtime-maintenance';
 
 const activationReconciliations=new Map<string,Promise<void>>();
 let activeActivationOperationId:string|null=null;
@@ -61,9 +64,45 @@ export async function activateRunnerCodexAccount(runner: string, account: string
 
 /** Reconcile durable runner operations after an owner process restart, without gating startup. */
 export function resumeRunnerCodexAdmissionHolds():void{
+  resumeRunnerCodexRuntimeMaintenance();
   for(const {recovery} of codexAdmissionRecoveryHolds())if(recovery.kind==='runner-activation'){
     activeActivationOperationId=recovery.operationId;
     holdCodexAdmission(`codex:runner-activation:${recovery.runner}:${recovery.operationId}`,true,recovery);
     void reconcileActivation(recovery.runner,recovery.account,recovery.operationId);
+  }
+}
+
+const runtimeMaintenanceFlights=new Map<string,Promise<unknown>>();
+export function progressRunnerCodexRuntimeMaintenance(runner:string,binding:RuntimeMaintenanceBinding):Promise<unknown>{
+  const holder=`codex:runner-runtime-maintenance:${runner}:${binding.operationId}`;
+  const recovery={kind:'runner-runtime-maintenance' as const,runner,...binding};
+  const previous=codexAdmissionRecoveryHolds().find(row=>row.holder===holder);
+  if(previous&&JSON.stringify(previous.recovery)!==JSON.stringify(recovery))throw new Error('The retained maintenance operation cannot change its source or release.');
+  // Durable admission closes before either activity snapshot; an outside CLI is independent
+  // of the shared daemon and may progress this request without excluding an active native turn.
+  holdCodexAdmission(holder,true,recovery);
+  const pending=runtimeMaintenanceFlights.get(holder);if(pending)return pending;
+  const work=withCodexRestartLock(async()=>{
+    const owned=(db.query(`SELECT COUNT(*) AS count FROM turns JOIN sessions ON sessions.id=turns.session_id
+      WHERE sessions.provider_id='codex' AND turns.status IN ('running','delivering')
+      AND COALESCE(json_extract(sessions.native_metadata_json,'$.outside'),0)=0`).get() as {count:number}).count;
+    const external=externallyRunningCodexTurns();
+    if(owned!==0||external!==0)return {phase:'waiting',operationId:binding.operationId,detail:'Admission is held; existing owned or native work remains active or uncertain.'};
+    try{
+      const result=await runnerMachineCall<RuntimeMaintenanceState>(runner,'accounts.codex.runtimeMaintenance',{binding},130_000);
+      if(result.phase!=='applied')return result;
+      const models=await sharedCodexAppServerClient().request('model/list',{}, {requestTimeoutMs:20_000});
+      if(!Array.isArray(models?.data)||!models.data.length)throw new Error('The owner provider API did not reconnect to the replacement.');
+      holdCodexAdmission(holder,false);return result;
+    }catch(error){return {phase:'uncertain',operationId:binding.operationId,detail:error instanceof Error?error.message:String(error)};}
+  }).finally(()=>runtimeMaintenanceFlights.delete(holder));
+  runtimeMaintenanceFlights.set(holder,work);return work;
+}
+
+/** Existing startup/execution-change recovery advances the same retained intent, never a new turn. */
+export function resumeRunnerCodexRuntimeMaintenance():void{
+  for(const {recovery} of codexAdmissionRecoveryHolds())if(recovery.kind==='runner-runtime-maintenance'){
+    const {kind,runner,...binding}=recovery;
+    void progressRunnerCodexRuntimeMaintenance(runner,binding).catch(()=>{});
   }
 }

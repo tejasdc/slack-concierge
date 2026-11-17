@@ -37,6 +37,7 @@ router-actions.sh sessions implement --project <registered-project> [--provider 
 router-actions.sh sessions ask <the frozen ask's exact flags, action ID and text> --resume-source-input <original input> --resume-source-run <original run> <this run's source-flags>
 Resumes an ask frozen by a run that has since ended: the same session's live run cites the original source pair; Concierge returns the one request already admitted under that pair and action, or admits it once. A changed payload is an idempotency conflict.
 router-actions.sh sessions edit-reason --reason "<why this turn still needs its thinking model>" <source-flags> --action-id A
+router-actions.sh sessions codex-maintenance --required-commit <full-sha> [--resume-operation <runtime:id>] <source-flags> --action-id A
 router-actions.sh sessions ask --outside --project <registered-project> [--provider <codex alias>] [--effort <level>] --session-name <title> --summary "<one line>" [--thread <message-id>] <source-flags> --action-id A [--file <path> ...] [--text-file F | -- <text>]
 router-actions.sh sessions ask --provider chatgpt [--effort light|medium|high|extra-high|pro] [--chatgpt-project <https://chatgpt.com/g/g-p-…/project|g-p-id>] [--his-chat] [--session-name <title>] [--for-task <kind>:<exact-id>] [--recovery-of <original-request-id> (missing-context follow-up only)] <source-flags> --action-id A [--file <path> ...] [--text-file F | -- <text>]
 router-actions.sh sessions ask <original-chatgpt-address> --for-task <kind>:<exact-id> --correction-of <original-request-id> <source-flags> --action-id A --summary "<one line>" --file <corrected-path> -- <original question>
@@ -197,6 +198,7 @@ export type SessionCommunicationRequest =
   | { operation: "context"; body: { source: Source; address: string; thread?: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; role?:string; provider?: string; purpose?:'research'|'design-critique'|'design-review';providerReason?:string; implementation?:boolean; smallTask?:boolean; codexNativeTestFaultDeadlineMs?:number; effort?:string; escalationReason?:string; project?:string; title?: string; text: string; after?: string[]; pace?: string[]; summary?: string; answer_view?: 'summary'|'full'; requirements?:string[]; requirements_why?:string; return_to_requester?:boolean; for_task?:string; recovery_of?:string; correction_of?:string; resume_source?:{input_id:string;run_id:string}; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; machine_need?: string; consult?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean} } }
   | {operation:'edit-reason';body:{source:Source;action_id:string;reason:string}}
+  | {operation:'codex-maintenance';body:{source:Source;action_id:string;required_commit:string;resume_operation?:string}}
   | { operation: "note"; body: { source: Source; action_id:string; captureId?:string; messageId?:string; summary?:string; addTo?:string; person?:string; journal?:"entry"|"checkin" } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string; address?:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; promise_request?:string; keep_working?:boolean; notify?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
@@ -796,6 +798,18 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(!action_id)invalid('auth switch needs a stable --action-id.');
     if(machine&&machine!=='mac')invalid('auth switch --machine accepts mac only; omit it for this machine.');
     return {operation:'auth-switch',body:{source,action_id,profile_id,...(machine?{machine:'mac' as const}:{})}};
+  }
+  if(operation==='codex-maintenance'){
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--action-id','--required-commit','--resume-operation'].includes(flag)||!value?.trim()||flags.has(flag))invalid(`Invalid codex-maintenance option ${flag}.`);
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags),action_id=flags.get('--action-id'),required_commit=flags.get('--required-commit');
+    if(!('input_id' in source)||!action_id||!required_commit||! /^[0-9a-f]{40}$/.test(required_commit))invalid('codex-maintenance requires exact source input/run, stable action and full required commit.');
+    const resume_operation=flags.get('--resume-operation');
+    if(resume_operation&&!/^runtime:[0-9a-f]{40}$/.test(resume_operation))invalid('Name the exact retained runtime operation.');
+    return {operation:'codex-maintenance',body:{source,action_id,required_commit,...(resume_operation?{resume_operation}:{})}};
   }
   if(operation==='edit-reason'){
     const flags=new Map<string,string>();

@@ -497,7 +497,9 @@ survival proof follow the rules above through the same host-access interface; se
 On Linux, all new execution-host units (Claude, Google, outside Codex and command watches,
 including owner-local and runner placement) start through `agentLedgerImageCommand`.
 The same boundary wraps shared Codex daemon start/restart, direct provider fallback transports,
-and autonomous deployment repair Codex. It hides `/var/lib/concierge-ledger.img` independently
+fresh Claude command launches, and autonomous deployment repair Codex. Host-owned agent
+supervisors use the sealed `control agent-command -- <provider> ...` entrance so only the
+provider child is masked. It hides `/var/lib/concierge-ledger.img` independently
 of mount discovery: a runner's existing state-directory mask removes the original loop mount
 from the child's mount information, so discovering the backing image inside that child is too late.
 The host's runner hide list remains a second host-owned boundary.
@@ -521,11 +523,11 @@ Installing new source does not change existing namespaces. Ordinary deployment k
 provider turns and execution hosts alive; moving a daemon to another cgroup cannot retrofit
 mounts. Full installed acceptance remains **unsatisfied** until existing hosts finish and the
 shared daemon is replaced under the [idle maintenance activation boundary](../runbooks/CODEX-APP-SERVER.md).
-There is currently no automated activation command: close new provider admission, prove both
-Concierge-owned and externally submitted native turns idle, hold daemon auto-start, stop once,
-start through the installed wrapped path, probe the provider and reconnect its persistent
-client, then reopen admission. Never replay an accepted input or restart an active daemon to
-obtain this proof. A fresh disposable installed agent must deny a no-byte `open` of the image,
+The source-bound `sessions codex-maintenance` operation closes owner admission and defers
+while shared owned/native work is active. Its generation-bound graceful-only native drain,
+durable recovery, replacement proof and outside-worker command are specified in that runbook.
+It never replays an accepted input or forces an active daemon down for proof.
+A fresh disposable installed agent must deny a no-byte `open` of the image,
 still reach its API entrance, and leave owner/backup access unchanged before closing the gate.
 
 ## Disk limit for agent work

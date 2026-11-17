@@ -1,6 +1,6 @@
 /** Provider-account facts and actions that belong to this runner's machine. */
 import { codexDaemonImageCommand } from './agent-ledger-image-boundary';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,6 +13,9 @@ import { useCodexResetCredit } from "./codex-reset-credit";
 import { readRunnerGoogleUsage } from "./runner-google-usage";
 import {createConnection} from 'node:net';
 import { CLAUDE_SCRATCH, isClaudePerLogin } from './claude-home-entries';
+import {progressRuntimeMaintenance,sameRuntime,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState} from './codex-runtime-maintenance';
+import {isProcessIdentityAlive,processIdentity} from './runtime-identity';
+import {LEDGER_IMAGE_PATH} from './agent-ledger-image-boundary';
 
 type AccountProvider = "codex" | "claude-code";
 const providers = new Set<AccountProvider>(["codex", "claude-code"]);
@@ -22,11 +25,13 @@ const signinJournal = join(process.env.CONCIERGE_RUNNER_STATE?.trim() || join(ho
 const activationJournal = join(process.env.CONCIERGE_RUNNER_STATE?.trim() || join(homedir(), ".local", "state", "concierge-runner"), "codex-activation-state.json");
 const signinOperations = new Map<string, SignInOperation>();
 const pendingSignins = new Map<AccountProvider, string>();
-type ActivationOperation = { id: string; account: string; status: "starting" | "applied" | "failed" | "uncertain"; detail?: string };
+type ActivationOperation = { id: string; account: string; status: "starting" | "applied" | "failed" | "uncertain"; detail?: string;runtimeMaintenance?:RuntimeMaintenanceState };
 const activationOperations = new Map<string, ActivationOperation>();
 let unmanagedRepair:Promise<{status:string;detail?:string}>|null=null;
 let codexRepairActive=false;
-export function runnerCodexRepairActive():boolean{return codexRepairActive;}
+let runtimeMaintenanceReserved=false;
+function runtimeMaintenancePending(){return runtimeMaintenanceReserved||[...activationOperations.values()].some(row=>row.runtimeMaintenance&&row.runtimeMaintenance.phase!=='applied');}
+export function runnerCodexRepairActive():boolean{return codexRepairActive||runtimeMaintenancePending();}
 
 export function runnerCodexServerNeedsRehome(versionOutput:string,hasRunnerState:boolean|null):boolean {
   return versionOutput.includes('"backend":"pid"')&&hasRunnerState===false;
@@ -70,15 +75,20 @@ try {
       if (active || ["applied","failed","uncertain"].includes(row.status)) activationOperations.set(row.id, {
         id: row.id, account: row.account, status: active ? "uncertain" : row.status,
         detail: active ? "The runner restarted during the account switch. State needs inspection." : row.detail,
+        ...(row.runtimeMaintenance?{runtimeMaintenance:row.runtimeMaintenance}:{}),
       });
     }
   }
 } catch { /* first activation */ }
+// Restore before startup readiness can auto-start an unmasked replacement or a peer operation.
+if(runtimeMaintenancePending())holdCodexDaemonAutoStart(true);
 
 function writeActivationState() {
   mkdirSync(join(activationJournal, ".."), { recursive: true, mode: 0o700 });
   writeFileSync(`${activationJournal}.tmp`, JSON.stringify([...activationOperations.values()]), { mode: 0o600 });
+  const file=openSync(`${activationJournal}.tmp`,'r');try{fsyncSync(file);}finally{closeSync(file);}
   renameSync(`${activationJournal}.tmp`, activationJournal);
+  const directory=openSync(join(activationJournal,'..'),'r');try{fsyncSync(directory);}finally{closeSync(directory);}
 }
 const signinManager = new ProviderLoginManager({
   onUnattendedCompletion: provider => {
@@ -382,6 +392,7 @@ async function restartCodexForAccount(accountLabel: string) {
 }
 
 function activateCodex(params: Record<string, unknown>) {
+  if(runtimeMaintenancePending())return {status:'busy',detail:'Exact runtime maintenance is unresolved; account identity was left unchanged.'};
   const account = params.account, id = params.operationId;
   if (typeof account !== "string" || !account.trim() || typeof id !== "string" || !/^[A-Za-z0-9._:-]{8,160}$/.test(id))
     throw new Error("A Codex account and stable activation operation id are required.");
@@ -434,6 +445,7 @@ function processTree(roots:number[]):number[]{
 }
 const processAlive=(pid:number)=>{try{process.kill(pid,0);return true;}catch{return false;}};
 async function runnerSocketRepair(activeTurns:number):Promise<{status:string;detail?:string}>{
+  if(runtimeMaintenancePending())return {status:'busy',detail:'Exact runtime maintenance owns the App Server drain.'};
   if(unmanagedRepair)return unmanagedRepair;
   if(codexActivationFlight)return {status:'busy',detail:'A Codex account switch is active; retry App Server re-home after it finishes.'};
   unmanagedRepair=(async()=>{
@@ -607,7 +619,70 @@ export async function runnerAccountReadings() {
 }
 
 /** Closed vocabulary for the account operations exposed on the runner-machine relay. */
-export async function serveRunnerAccountCall(method: string, params: Record<string, unknown>,context:{activeTurns:number}={activeTurns:0}): Promise<unknown> {
+let runtimeMaintenanceFlight:Promise<RuntimeMaintenanceState>|null=null;
+async function runnerRuntimeMaintenance(params:Record<string,unknown>,botDir?:string):Promise<RuntimeMaintenanceState>{
+  const binding=params.binding as RuntimeMaintenanceBinding;
+  if(!binding||!['operationId','sourceInputId','sourceRunId','actionId'].every(key=>typeof binding[key as keyof RuntimeMaintenanceBinding]==='string'&&binding[key as keyof RuntimeMaintenanceBinding].length>0)
+    ||!/^runtime:[0-9a-f]{40}$/.test(binding.operationId)||! /^[0-9a-f]{40}$/.test(binding.requiredCommit))throw new Error('Exact source-bound runtime maintenance identity is required.');
+  const prior=activationOperations.get(binding.operationId);
+  if(prior?.runtimeMaintenance&&JSON.stringify(prior.runtimeMaintenance.binding)!==JSON.stringify(binding))throw new Error('A runtime operation cannot change its source or required release.');
+  if(runtimeMaintenanceFlight)return runtimeMaintenanceFlight.then(()=>runnerRuntimeMaintenance(params,botDir));
+  if(codexActivationFlight||unmanagedRepair)throw new Error('Another App Server operation is active; no drain was requested.');
+  if(runtimeMaintenanceReserved)throw new Error('A runtime maintenance preflight already owns the App Server reservation.');
+  if([...activationOperations.values()].some(row=>row.runtimeMaintenance&&row.id!==binding.operationId&&row.runtimeMaintenance.phase!=='applied'))
+    throw new Error('Another exact runtime maintenance operation remains unresolved.');
+  if(!botDir||process.platform!=='linux')throw new Error('Runtime maintenance requires the installed Linux runner.');
+  const manifest=readJson(join(botDir,'../..','manifest.json'));
+  const commit=manifest?.control_git_commit;
+  if(typeof commit!=='string'||! /^[0-9a-f]{40}$/.test(commit))throw new Error('The runner has no sealed control source identity.');
+  runtimeMaintenanceReserved=true;
+  try {
+  const ancestry=await runCommand('/usr/bin/git',['-C','/var/lib/slack-concierge-deployment/source','merge-base','--is-ancestor',binding.requiredCommit,commit],20_000);
+  if(ancestry.code!==0)throw new Error('The loaded runner does not contain the required protection source.');
+  const row=prior??{id:binding.operationId,account:'',status:'starting' as const,
+    runtimeMaintenance:{binding,phase:'waiting' as const}};
+  if(!row.runtimeMaintenance)throw new Error('This operation identity already belongs to an account change.');
+  activationOperations.set(row.id,row);holdCodexDaemonAutoStart(true);writeActivationState();
+  const snapshot=async()=>{
+    const listeners=controlSocketListeners(codexAppServerSocketPath());
+    if(listeners.length>1)throw new Error('The control socket has multiple listeners; no daemon was selected.');
+    if(!listeners.length)return null;
+    const identity=processIdentity(listeners[0]!);
+    const version=await runCommand(`/proc/${identity.pid}/exe`,['--version'],20_000);
+    if(!isProcessIdentityAlive(identity))throw new Error('The exact listener generation changed during inspection.');
+    const image=statSync(`/proc/${identity.pid}/root${LEDGER_IMAGE_PATH}`);
+    return {identity,masked:image.isCharacterDevice()&&image.rdev===0,supported:version.code===0&&version.output.trim()==='codex-cli 0.166.0'};
+  };
+  runtimeMaintenanceFlight=progressRuntimeMaintenance(row.runtimeMaintenance,{
+    persist:()=>{row.status=row.runtimeMaintenance!.phase==='applied'?'applied':row.runtimeMaintenance!.phase==='uncertain'?'uncertain':'starting';writeActivationState();},
+    snapshot,alive:isProcessIdentityAlive,
+    nativeIdle:async()=>{
+      const probe=new CodexAppServerClient();try{
+        let cursor:string|null=null;const seen=new Set<string>();
+        do{const page=await probe.request('thread/loaded/list',{cursor,limit:100});
+          if(!Array.isArray(page?.data))throw new Error('Native loaded-thread activity is unavailable.');
+          for(const threadId of page.data){if(typeof threadId!=='string'||seen.has(threadId))throw new Error('Native loaded-thread activity is malformed.');seen.add(threadId);
+            const read=await probe.request('thread/read',{threadId,includeTurns:false});
+            if(read?.thread?.status?.type!=='idle')return false;}
+          const next=page.nextCursor??null;if(next!==null&&typeof next!=='string'||next!==null&&next===cursor)throw new Error('Native activity cursor is invalid.');cursor=next;
+        }while(cursor);return true;
+      }finally{await probe.close();}
+    },
+    signal:identity=>{if(!isProcessIdentityAlive(identity))throw new Error('The exact drain generation is gone.');process.kill(identity.pid,'SIGHUP');},
+    start:async()=>{if(!codexUpdaterDisabled())throw new Error('Codex automatic updates must remain disabled.');
+      const started=await startCodexDaemonInOwnScope();if(started.code!==0)throw new Error('The masked App Server start did not confirm success.');},
+    prove:async identity=>{const probe=new CodexAppServerClient();try{
+      const models=await probe.request('model/list',{}, {requestTimeoutMs:20_000});
+      if(!Array.isArray(models?.data)||!models.data.length)throw new Error('The replacement provider model API did not answer.');
+      const after=await snapshot();if(!after?.masked||!sameRuntime(after.identity,identity))throw new Error('The replacement listener changed during provider proof.');
+    }finally{await probe.close();}},
+  }).finally(()=>{runtimeMaintenanceFlight=null;if(!runtimeMaintenancePending())holdCodexDaemonAutoStart(false);});
+  return runtimeMaintenanceFlight;
+  } finally {runtimeMaintenanceReserved=false;}
+}
+
+export async function serveRunnerAccountCall(method: string, params: Record<string, unknown>,context:{activeTurns:number;botDir?:string}={activeTurns:0}): Promise<unknown> {
+  if(method==='accounts.codex.runtimeMaintenance')return runnerRuntimeMaintenance(params,context.botDir);
   if (method === "accounts.identity") {
     if(params.provider==='antigravity'){
       const usage=await readRunnerGoogleUsage();
