@@ -794,6 +794,11 @@ from committed handoff inventory and owed-item records. The origin anchors this
 chain at its retained acceptance before resolving the current custodian. Original
 recipient, address and accepted-input columns remain historical provenance; the
 receipt exposes those separately as `accepted_recipient`.
+An ordinary accepted handoff that moved the owed request reports the same
+`custodyPlacement`, with the first transfer's input as `canonicalInputId`, the
+last predecessor as `predecessorSessionId`, and the current accepted input and
+turn as the placement; without it the origin refuses every status read as
+`session_id_mismatch` and holds the successor's replies as `pending`.
 
 Status keeps the selected attempt's truthful terminal facts. A selected Stop/error
 cannot settle an independent transferred duty through polling or notification.
