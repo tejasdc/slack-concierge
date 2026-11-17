@@ -34,7 +34,8 @@ export class ProviderHistoryPageClient {
   private ensure(){
     if(this.sealed)throw new Error('HISTORY_PAGE_WORKER_STOPPED');
     if(this.worker)return this.worker;
-    const worker=fork(this.workerPath,[],{execPath:process.execPath,execArgv:[],detached:true,stdio:['ignore','ignore','inherit','ipc']});
+    const worker=fork(this.workerPath,[],{execPath:process.execPath,execArgv:[],detached:true,
+      env:{...process.env,CONCIERGE_READ_WORKER:'1'},stdio:['ignore','ignore','inherit','ipc']});
     worker.unref();
     worker.on('message',(reply:Reply)=>{
       const item=this.pending.get(reply.id);if(!item)return;

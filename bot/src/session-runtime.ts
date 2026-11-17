@@ -172,7 +172,8 @@ export async function startSessionRuntime() {
     .catch(error=>log('error','inbox_entry_index_warm_failed',errorFields(error)));
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    await host.retireHistory();
+    queue.stop();
+    await host.prepareRelease();
     draining=true;
     const codexSessionObserverStop=codexSessionObserver?.stop();
     if(codexSessionObserverStop)void codexSessionObserverStop.catch(()=>{});

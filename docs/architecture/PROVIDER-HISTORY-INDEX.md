@@ -16,11 +16,42 @@ escalates termination after two seconds, and awaits child closure and the absenc
 running group descendants (Linux excludes already exited zombies). The existing
 service supervisor remains the outer crash-cleanup boundary.
 
-Both service shutdown entrances retire history before setting general draining state,
+Both service shutdown entrances stop queue dispatch and set the host's admission
+fence synchronously before retiring history. New accepted requests remain queued;
+the provider wrapper rechecks the fence after durability and all asynchronous
+preparation, immediately before recording admission intent and invoking a provider.
+Proven-unsent work keeps its exact input and returns to the queue; retained earlier
+intent remains uncertain and is never turned into permission to replay. Adoption
+and genuine Stop still follow their existing execution rather than starting another.
+Both entrances retire history before setting general draining state,
 closing request communication, or withdrawing turn custody. During that wait the old
 service still accepts durable requests and provider results. Subsequent drain and
 successor recovery retain their existing exact-input and provider-result contracts;
 history retirement never requests a genuine Stop or retries an invocation.
+
+A retirement rejection logs an explicit failure and continues the ordinary custody
+drain with dispatch fenced. The helper reference is not discarded on that failure;
+the supervised service's process group/cgroup remains the outer termination owner.
+The later host stop uses the same failure continuation, so a rejected retirement
+cannot strand shutdown before request closure or the final custody flush.
+
+The history child explicitly sets `CONCIERGE_READ_WORKER=1`: ledger access opens a
+physically read-only connection, enables query-only mode and skips schema writes.
+The import child reads the native transcript, truncates only scratch segment copies,
+builds a derived `.next.sqlite` transaction, closes it and atomically renames it over
+the derived snapshot. The verification child opens both databases read-only and
+publishes only generation-bound `.verified.json` via temporary-file rename.
+Other projection writes are derived Codex windows/marks and runner transcript copies
+with source-identity metadata. The ledger and native provider transcripts remain
+authoritative and are not written by these paths. SIGKILL may abandon a temporary
+file or interrupt a derived transaction/publication; it cannot interrupt an
+authoritative request/result commit. SQLite rollback and atomic publication retain
+the preceding snapshot, while missing verification is reconstructed from the import
+position. Remote source copy/metadata mismatches remain explicit read failures.
+
+`history-release-fence-fixture.ts` exercises actual claimed work through the execution
+host, exact unsent requeue, retained-intent uncertainty, acceptance during retirement,
+and injected retirement rejection; it runs in the package build chain.
 
 Disposable verification: `bot/scripts/history-process-retirement-fixture.ts` checks
 timeouts, monotonic closure, process exit and durable SQLite acceptance/readback during

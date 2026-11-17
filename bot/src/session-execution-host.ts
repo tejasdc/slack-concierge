@@ -1042,6 +1042,15 @@ export class SessionExecutionHost {
     }
   }
   retireHistory():Promise<void>{this.stopCodexWindows();return this.historyPages.close();}
+  async prepareRelease():Promise<void>{
+    this.beginDrain();
+    try{await this.retireHistory();}
+    catch(error){
+      // History owns no authoritative writes. Keep request/result custody live until
+      // the ordinary drain completes; the service supervisor still owns its child.
+      log('error','history_retirement_failed_continuing_drain',errorFields(error));
+    }
+  }
   async stop():Promise<void>{
     this.beginDrain();this.stopCodexMoves();this.stopCodexWindows();
     await Promise.allSettled([...this.custodyCodexClients.values()].map(client=>client.close()));
@@ -1055,7 +1064,7 @@ export class SessionExecutionHost {
       timedStop('provider_login',()=>this.providerLoginManager.stop()),
       timedStop('codex_login',()=>this.codexLogin.stop()),
       timedStop('claude_login',()=>this.claudeLogin.stop()),
-      timedStop('history_pages',()=>this.historyPages.close()),
+      timedStop('history_pages',()=>this.prepareRelease()),
     ]);
   }
   private capabilities(session:SessionRow) {
@@ -1708,12 +1717,8 @@ export class SessionExecutionHost {
           // The claimed turn, its execution record and its input are on disk before any provider
           // (Claude, Codex or ChatGPT) is started or told anything.
           await ledgerDurable({kind:'provider_input',id:input.id});
+          if(!adoption&&this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           if(boundLabInvocation(input)&&!labInvocationBindingMatches(input))throw new ProviderCapabilityUnavailableError('send','The Lab participant’s provider, model or effort changed; no replacement execution was submitted.');
-          if(!adoption&&(onRunner||session.provider_id==='claude-code'&&executionHostsEnabled())){
-            if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
-            if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
-          }
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
@@ -1744,11 +1749,6 @@ export class SessionExecutionHost {
           } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
             // The readiness wait ended before provider admission. Keep admission and execution
             // intent adjacent, with no await between them, so drain can requeue a waiting turn.
-            if(!adoption){
-              if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
-              if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-                throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
-            }
             // The shared daemon already outlives Concierge; recording the run lets the next Concierge follow it.
             actual=adoption?this.adoptedCodexRun(actual,adoption,session):this.trackedCodexRun(actual,claim,session,kept,input);
           }
@@ -1766,6 +1766,9 @@ export class SessionExecutionHost {
               additionalDirs:[...protectedRun.plan.runtimeWorkspaceRoots].filter(path=>path!==protectedRun.plan.cwd),
               custodySuccessor:protectedRun,appServerClient:client};
           }
+          if(!adoption&&this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
+          if(!adoption&&!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+            throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
           const followed=adoption&&session.provider_id==='chatgpt'?JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}').admission??null:null;
           const admission=adoption?followed:this.retainAdmission(claim,input,session,actual,attachments);
           if(adoption&&session.provider_id==='chatgpt'&&!admission)throw new ProviderDispatchError({message:'The ChatGPT send this run made has no retained admission; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
@@ -1846,7 +1849,7 @@ export class SessionExecutionHost {
         :sharedCodex&&!successor?{beforeProviderAdmission:()=>{
           if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           return waitForCodexAppServerOrDrain(codexAppServerReady(),this.drainStarted,()=>this.draining);
-        }}:{}),
+        }}:{beforeProviderAdmission:()=>{}}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.
