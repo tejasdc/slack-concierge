@@ -3617,7 +3617,19 @@ function notifyFiledAgentAnswer(answer:{inboxSessionId:number;root:string;postId
       throw new Error('Requested answer notification is not bound to this retained thread answer.');
   }
   const source=answer.answerSource;
-  if(source&&(payload.answerSource?.inputId!==source.inputId||payload.answerSource?.runId!==source.runId))
+  let retainedSource=payload.answerSource;
+  // Older linked copies retain the original post ID, rather than repeating its source fields.
+  // Follow only the exact mirror identity produced by mirrorLinkedAnswer; no prose comparison.
+  if(source&&!retainedSource&&typeof payload.answerGroup==='string'){
+    const original=db.query(`SELECT event_id,payload_json FROM session_owner_events
+      WHERE event_id=? AND session_id=? AND kind='post'`).get(payload.answerGroup,answer.inboxSessionId) as {event_id:string;payload_json:string}|null;
+    const originalPayload=original?JSON.parse(original.payload_json):null;
+    if(original?.event_id.startsWith('post:forward:')
+      &&answer.postId===`post:forward:shared:${original.event_id.slice('post:forward:'.length)}:${topicOfRoot(row.root)}`
+      &&originalPayload.postedBySession===answer.respondingSessionId)
+      retainedSource=originalPayload.answerSource;
+  }
+  if(source&&(retainedSource?.inputId!==source.inputId||retainedSource?.runId!==source.runId))
     throw new Error('Requested answer notification has different retained source custody.');
   const text=String(payload.text??'');
   notifyAgentPost(answer.inboxSessionId,row.root,answer.postId,text,answer.notify===true,

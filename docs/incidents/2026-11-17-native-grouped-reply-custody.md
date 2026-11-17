@@ -32,6 +32,9 @@ every child, preserves legacy group and child action identities, and accepts onl
 retry. Each missing child follows normal route and reply validation; newly accepted children retain
 their own trusted requirement snapshot. The group operation receipt records ordered members,
 accepted child IDs, and an exact failed child and error; child events remain authoritative.
+When the original final already mirrored its answer into a linked topic, a later group child reuses
+that copy through its exact mirror event and original-post association. This follows recorded
+identity, never matching words, and preserves historical source custody without rewriting the copy.
 
 Notification reconciliation preserves the exact-root guard: resolve the canonical post root through
 the exact reply's answer closure, with the same topic and matching posted-by session and source. An
@@ -46,6 +49,7 @@ notification receipt is still returned without another effect.
 **Seed:** One native grouped final with a shared answer in a topic, distinct request roots, and a
 requested notification; retain an accepted first child and leave later children owed. Preserve the
 original command and file custody.
+Include a linked topic where that same final already produced its retained mirror post.
 
 **Action:** After the receiver fix is installed, retry that exact original command once through its
 normal owner entrance; inspect the group and each request's event, post, closure and notification
@@ -54,6 +58,7 @@ receipt. Change one command field in a separate disposable attempt to check conf
 **Expected:** The accepted child is reused, missing children settle once, the canonical shared post
 is reused with exact closure/root authority, and a missing requested notification is reconciled once.
 The changed command conflicts. A matching source/build alone does not prove any of these live effects.
+The linked topic retains its original mirror post and gains the child's closure, with no second answer.
 
 **Replayable offline:** no (agent suites are disabled; use the real original retry after the receiver
 fix). Physical phone display requires separate device evidence.

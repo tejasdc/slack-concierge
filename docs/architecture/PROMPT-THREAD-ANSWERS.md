@@ -102,7 +102,9 @@ There is no autonomous group retry or timer. Peer and external groups retain the
 path. A shared post keeps its own canonical root for notification validation. A covered request's
 different root may use it only through that exact reply's retained answer closure in the same topic;
 the post's agent author and source remain checked. The notification carries the persisted post words,
-without its separate summary or closing facts. An exact accepted checked-final retry can reconcile
+without its separate summary or closing facts. A linked copy already made from the group's original
+post is reused through that exact recorded mirror identity. Older copies derive source custody from
+their retained original post. An exact accepted checked-final retry can reconcile
 its missing requested notification even after answer upkeep finished, without posting another answer.
 Installation alone does not upgrade earlier readings, and Stop, pause, archive or handoff prevent
 resuming a missing notification. A bodyless final attaches closure facts to the exact
