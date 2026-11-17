@@ -79,15 +79,17 @@ reads are unchanged. A reader lives only as long as its request: work the reques
 (the request-delivery, peer and turn-queue loops, timers, provider runs) never runs as
 that reader, and an invocation that has not yet proven its admitted binding carries no
 comparison fact instead of failing the whole read. The provenance walk runs inside
-interactive read budgets, so each of its fan-out queries (a request's replies, a session's
-invocations, a message's events) is LIMITed to `DISCLOSURE_FANOUT_LIMIT`; a set larger than
-the bound cannot be proven free of Lab provenance and is treated as protected. Each linked
-input is read as its provenance facts only (ids, kind, scope and text thread fields), never
-its whole payload. An unLIMITed reply query, then whole linked payloads, made agent receipt
-reads answer 503 on 2026-11-17.
+interactive read budgets, once per item a collection checks, so it is a single statement: a
+recursive query over an input's source, its request's source and target and that request's
+reply sources, returning one summary row plus only the Lab inputs it reached (their thread
+fields, never whole payloads). A walk reaching more than `PROVENANCE_NODE_LIMIT` inputs, and
+any other disclosure fan-out past `DISCLOSURE_FANOUT_LIMIT`, cannot be proven free of Lab
+provenance and is treated as protected. On 2026-11-17 the node-by-node walk made a
+40-receipt agent page exceed its read budget three ways in turn (an unLIMITed reply query,
+whole linked payloads, then rows), each answered as a 503.
 `scripts/lab-content-disclosure-fixture.ts` exercises all seven read paths against a real
-held-open ChatGPT participant through the agent gateway, the reader's lifetime, the walk
-under a read budget and reply overflow.
+held-open ChatGPT participant through the agent gateway, the reader's lifetime, and the walk
+as one bounded statement under a read budget, including overflow.
 
 Selected participant instructions are retained verbatim before the question. Retained
 source references use the existing verified source/version/branch/event capability;
