@@ -5506,7 +5506,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.exactOperationReceipt(this.input(parts[1]!));
       else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===3&&parts[2]==='human-conversation'){
         const input=this.input(parts[1]!);assertInputContent(input);
-        result=verifiedHumanConversation(input.id,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),200));
+        result=await verifiedHumanConversation(input.id,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),200));
       }
       else if(request.method==='GET'&&parts[0]==='events'&&parts.length===1) {
         const page=this.eventPage(Number(url.searchParams.get('after'))||0,url.searchParams.get('sessionId'),url.searchParams.get('runId'),
