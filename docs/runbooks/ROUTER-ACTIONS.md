@@ -451,6 +451,12 @@ compressed into one-line titles, built to the titles, and closed on the builder'
   thread inherited that feature's record and could only close as failed (Tejas's requirement-record
   decision, 2026-11-16). Closing reads exactly the stored ids, fresh; a request open before this
   keeps what it stored.
+- `router-actions.sh sessions requirements <request-id> (--requirements <record> ... | --requirements none
+  --requirements-why "<reason>") --source-input … --source-run … --action-id A` lets the session that
+  sent an open request replace its stored declaration (for a request made before declarations existed
+  that still holds an inherited record). The receiving agent cannot use it, so a builder cannot drop
+  its own requirements; a settled request is refused; the old declaration stays in the request's
+  history. The receiver's next completed reply is judged against the new declaration.
 - At ask time the target's first input gets a block after WHAT CAME BEFORE (or one line, "Delivers
   none of this thread's requirement records: <reason>"): each declared record's title and link, every requirement verbatim with id, state and source, each kept capture with the command
   that prints it whole, and the closing obligations. A named record that cannot be read refuses the

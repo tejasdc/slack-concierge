@@ -197,6 +197,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'context') return Response.json(await sessions.context(input));
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
         if (operation === 'reply') return Response.json(await withLinkCheck(await sessions.reply(await withRequirementState(await withTodoState(input),sessions)),input,owner));
+        if (operation === 'request-requirements') return Response.json(await sessions.redeclareRequirements(input));
         if (operation === 'requirements') {
           try{const answer=await runRequirementCommand(input,owner);return Response.json(answer.body,{status:answer.status||502});}
           catch(error){return Response.json({error:{code:'REQUIREMENTS_UNAVAILABLE',message:error instanceof Error?error.message:'thnkr.ing could not be reached for the requirement record.'}},{status:502});}
