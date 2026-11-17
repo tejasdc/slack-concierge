@@ -407,6 +407,9 @@ user work until explicit operator recovery establishes health and releases them.
 The release build also runs the undefined-name check across its bundled source.
 It refuses an unbound reference that `bun build` would leave to fail when that
 path first runs; see the [routed-message failure record](../incidents/2026-11-07-routed-message-projection-missing-import.md).
+Its first step, `bot/scripts/build-chain-check.ts`, refuses a build step that starts
+more than one program, so a missing `&&` cannot silently turn a check into ignored
+arguments of the step before it; see the [skipped successor fixture record](../incidents/2026-11-17-release-build-skipped-successor-fixture.md).
 
 Every proposed Concierge commit is pushed to a topic branch. GitHub runs the
 frozen `bot` build, including the candidate presentation release check, on that
