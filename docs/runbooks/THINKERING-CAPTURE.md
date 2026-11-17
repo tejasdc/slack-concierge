@@ -43,6 +43,11 @@ uses its own entrance, which runs the same pipeline and records the agent:
 router-actions.sh test-capture --path <path> --source-input <id> --source-run <id> [--reply-to concierge:N] -- <text>
 ```
 
+On Linux, the wrapper selects the current installed `agent-test-capture` client even
+when the calling session pins an older control directory. If the current client is
+unavailable, it falls back to that pinned directory. On macOS it continues to use
+the workspace copy.
+
 Paths: `send-to-inbox`, `bug-report`, `pebble` (this drop-off), `iphone-share`,
 `action-button`, `watch`, `mac` (thnkr.ing's device route, with the agent test device key
 thnkr.ing keeps at `THINKERING_AGENT_TEST_KEY_FILE`), `notification-reply` (thnkr.ing, into
