@@ -2111,22 +2111,43 @@ export class SessionExecutionHost {
     if(turn.status==='queued'||turn.status==='running')return {status:turn.status==='queued'?'already_queued':'already_running',runId:turn.native_run_id};
     if(turn.status!=='error')throw new Error('Only a terminal original turn with no-send proof can be requeued.');
     const run={operationId:operation.id,sessionId:`concierge:${session.id}`,inputId:operation.id,runId:turn.native_run_id};
-    const receipt=await this.capabilityClient.reconcile(run);
-    if(receipt.runId!==run.runId||receipt.state!=='failed'||receipt.acknowledgedAt!==null
-      ||receipt.result?.state!=='failed'||receipt.result.turnId!==null||receipt.result.text!==''
-      ||!['CHATGPT_NOT_SENT','CHATGPT_SEND_FAILED'].includes(String(receipt.result.error))
-      ||stablePayload(receipt.nativeBinding)!==stablePayload(admission.nativeBinding))
-      throw new Error('The original ChatGPT receipt does not prove that Send never happened; reconcile it without resending.');
-    this.capabilityEvidence(operation,turn.id,{kind:'reconcile',run,receipt});
+    // A schema refusal happens before Thinkering creates a browser receipt. Its exact
+    // retained HTTP response is the no-send proof; a missing receipt alone is never proof.
+    const preBrowserRefusal=(db.query(`SELECT event_id FROM session_owner_events
+      WHERE turn_id=? AND input_id=? AND kind='capability'
+        AND json_extract(payload_json,'$.kind')='failure'
+        AND json_extract(payload_json,'$.run.operationId')=?
+        AND json_extract(payload_json,'$.run.sessionId')=?
+        AND json_extract(payload_json,'$.run.inputId')=?
+        AND json_extract(payload_json,'$.run.runId')=?
+        AND json_extract(payload_json,'$.code')='INVALID_PROVIDER_INPUT'
+        AND (json_extract(payload_json,'$.message')='Provider input contains an unsupported authority or filesystem field.'
+          OR json_extract(payload_json,'$.message') LIKE 'Provider input contains an unsupported authority or filesystem field: %')
+        AND json_extract(payload_json,'$.status')=400
+        AND json_extract(payload_json,'$.uncertain')=0
+      LIMIT 1`).get(turn.id,operation.id,operation.id,run.sessionId,operation.id,run.runId) as {event_id:string}|null);
+    const rejectedBeforeBrowser=!!preBrowserRefusal&&turn.dispatch_attempt===1
+      &&turn.provider_started_at===null&&turn.provider_input_acknowledged_at===null&&turn.provider_turn_id===null;
+    if(!rejectedBeforeBrowser){
+      const receipt=await this.capabilityClient.reconcile(run);
+      if(receipt.runId!==run.runId||receipt.state!=='failed'||receipt.acknowledgedAt!==null
+        ||receipt.result?.state!=='failed'||receipt.result.turnId!==null||receipt.result.text!==''
+        ||!['CHATGPT_NOT_SENT','CHATGPT_SEND_FAILED'].includes(String(receipt.result.error))
+        ||stablePayload(receipt.nativeBinding)!==stablePayload(admission.nativeBinding))
+        throw new Error('The original ChatGPT receipt does not prove that Send never happened; reconcile it without resending.');
+      this.capabilityEvidence(operation,turn.id,{kind:'reconcile',run,receipt});
+    }
     const current=getSessionById(session.id)!;
     if(current.binding_generation!==session.binding_generation||current.status==='archived'||sessionMetadata(current).suspended
       ||stablePayload(sessionMetadata(current).nativeBinding??null)!==stablePayload(admission.nativeBinding))
       throw new Error('The ChatGPT binding or session eligibility changed during receipt inspection.');
     const requeued=requeueProvenUnsentNativeChatGptTurn({turnId:turn.id,sessionId:session.id,
-      inputId:operation.id,runId:run.runId,nextAttemptMs:Date.now()+providerRetryDelayMs(turn.dispatch_attempt)});
+      inputId:operation.id,runId:run.runId,nextAttemptMs:Date.now()+providerRetryDelayMs(turn.dispatch_attempt),
+      preBrowserRefusalEventId:rejectedBeforeBrowser?preBrowserRefusal!.event_id:undefined});
     if(!requeued)throw new Error('The original ChatGPT turn changed or later work was sent; it was not requeued.');
     recordSessionEvent({eventId:`chatgpt-proven-unsent-requeue:${turn.id}:${turn.dispatch_attempt}`,sessionId:session.id,
-      inputId:operation.id,turnId:turn.id,kind:'run',payload:{reason:'exact_provider_receipt_proved_no_send',runId:run.runId}});
+      inputId:operation.id,turnId:turn.id,kind:'run',payload:{reason:rejectedBeforeBrowser?'exact_pre_browser_refusal_proved_no_send':'exact_provider_receipt_proved_no_send',
+        proofEventId:rejectedBeforeBrowser?preBrowserRefusal!.event_id:undefined,runId:run.runId}});
     this.options.wake();
     return {status:'requeued',runId:run.runId};
   }

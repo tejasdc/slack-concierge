@@ -4203,8 +4203,26 @@ export function retryRunningTurnAfterProviderFailure(input: {
  * turn in the same conversation. No new input or provider run identity is created. */
 export function requeueProvenUnsentNativeChatGptTurn(input: {
   turnId:number; sessionId:number; inputId:string; runId:string; nextAttemptMs:number;
+  preBrowserRefusalEventId?:string;
 }):boolean {
   return db.transaction(()=>{
+    if(input.preBrowserRefusalEventId){
+      const proof=db.query(`SELECT payload_json FROM session_owner_events
+        WHERE event_id=? AND turn_id=? AND session_id=? AND input_id=? AND kind='capability'`)
+        .get(input.preBrowserRefusalEventId,input.turnId,input.sessionId,input.inputId) as {payload_json:string}|null;
+      if(!proof)return false;
+      const failure=JSON.parse(proof.payload_json);
+      if(failure.kind!=='failure'||failure.run?.operationId!==input.inputId
+        ||failure.run?.sessionId!==`concierge:${input.sessionId}`||failure.run?.inputId!==input.inputId
+        ||failure.run?.runId!==input.runId||failure.code!=='INVALID_PROVIDER_INPUT'
+        ||!(failure.message==='Provider input contains an unsupported authority or filesystem field.'
+          ||typeof failure.message==='string'&&failure.message.startsWith('Provider input contains an unsupported authority or filesystem field: '))
+        ||failure.status!==400||failure.uncertain!==false)return false;
+      const other=db.query(`SELECT 1 FROM session_owner_events
+        WHERE turn_id=? AND kind='capability' AND event_id<>? LIMIT 1`)
+        .get(input.turnId,input.preBrowserRefusalEventId);
+      if(other)return false;
+    }
     const turn=db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
       JOIN session_inputs source ON source.turn_id=turn.id
       WHERE turn.id=? AND turn.session_id=? AND source.id=? AND turn.native_run_id=?
@@ -4212,6 +4230,7 @@ export function requeueProvenUnsentNativeChatGptTurn(input: {
         AND turn.status='error' AND session.status<>'archived'
         AND turn.owner_instance_id IS NULL AND turn.stop_requested_at IS NULL
         AND turn.provider_input_acknowledged_at IS NULL AND turn.provider_turn_id IS NULL
+        ${input.preBrowserRefusalEventId?'AND turn.dispatch_attempt=1 AND turn.provider_started_at IS NULL':''}
         AND turn.outbound_text IS NULL
         AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turn.id)
         AND NOT EXISTS (SELECT 1 FROM turn_artifact_batches WHERE turn_id=turn.id AND status<>'collecting')
