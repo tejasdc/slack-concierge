@@ -421,7 +421,11 @@ logged as `inbox_entry_index_warmed`. A provider prompt reads its own topic's re
 request, return and post identities to decide whether a returned answer still needs
 relaying. It does not wait for the global entry index. The accepted input keeps its
 identity and durability fence; the owner can serve other requests between warm-up
-steps. General topic reads and actions that arrive first still finish the remaining
+steps. `GET /operations/:id/human-conversation` awaits the same yielding warm
+(`warmedEntryIndex`) before it reads, so it never finishes the index synchronously: on
+2026-11-17 thnkr.ing's send check, polling it about 19 times a minute, reached it 4 to 14
+seconds after each restart and held the owner 9.1 to 9.8 seconds with about 185,000 ledger
+calls. Other general topic reads and actions that arrive first still finish the remaining
 index synchronously. On 2026-11-06, a prompt arriving during restart warm-up had
 forced 115,370 ledger calls and an 18.5-second owner-loop block; the installed statement
 observer measured about two million read calls in its longest sampled statement. This

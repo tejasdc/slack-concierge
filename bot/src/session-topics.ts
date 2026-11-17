@@ -338,7 +338,8 @@ let entryIndexState:EntryIndex|null=null;
  * that reads the index waits for it: a reader arriving mid-warm finished the remaining ~10,000 rows in
  * one synchronous read, freezing the owner for 5 to 26 seconds after every restart (Nov 11-12, 2026).
  */
-let entryIndexWarming=false;
+let entryIndexWarmers=0;
+const entryIndexWarming=()=>entryIndexWarmers>0;
 function newestByRoot(messages:EntryIndex['messages']) {
   const byRoot=new Map<string,EntryRecord>(),forHim=new Map<string,EntryRecord>(),finals=new Map<string,EntryRecord&{inputId:string}>(),posts=new Map<string,EntryRecord>();
   for(const [messageId,entry] of messages) {
@@ -380,7 +381,7 @@ function entryIndex():EntryIndex {
  * memo mid-warm makes the next step start over. Nothing is written.
  */
 export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number}={}):Promise<{rows:number;steps:number;ms:number;complete:boolean}> {
-  entryIndexWarming=true;
+  entryIndexWarmers++;
   try {
   const batch=Math.min(ENTRY_INDEX_WARM_BATCH,Math.max(1,options.batch??ENTRY_INDEX_WARM_BATCH));
   const started=performance.now();
@@ -395,7 +396,18 @@ export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number
     if(read.exhausted)return {rows,steps,ms:Math.round(performance.now()-started),complete:true};
     await new Promise<void>(resolve=>setImmediate(resolve));
   }
-  } finally {entryIndexWarming=false;}
+  } finally {entryIndexWarmers--;}
+}
+/**
+ * The index for a request read: whatever is not yet indexed is filled in the same yielding steps as the
+ * startup warm, never in one synchronous pass. On 2026-11-17 thnkr.ing's send check (about 19 reads a
+ * minute) reached his human conversation 4 to 14 seconds after each restart, finished the remaining
+ * ~22,000 rows itself and held the owner 9.1 to 9.8 seconds with ~185,000 ledger calls each time. Once
+ * warm, this costs one tail query, exactly as `entryIndex()` does.
+ */
+export async function warmedEntryIndex():Promise<EntryIndex> {
+  await warmEntryIndex();
+  return entryIndex();
 }
 const ENTRY_INDEX_WARM_BATCH=16;
 const ENTRY_INDEX_WARM_STEP_MS=12;
@@ -1635,7 +1647,10 @@ export function topicEntries(topicId:string,cursor:string|null=null,limit:number
  * activity never changes it, so a busy Inbox cannot keep restarting the read. The cursor
  * carries the digest, sequence and input ID, so messages sharing a sequence are never skipped.
  */
-export function verifiedHumanConversation(operationId:string,cursor:string|null=null,limit:number|null=null) {
+export async function verifiedHumanConversation(operationId:string,cursor:string|null=null,limit:number|null=null) {
+  // Everything below reads in one synchronous step after the index is current, so the answer is the
+  // same one the unwaited read gave; only the filling of a cold index yields.
+  const index=await warmedEntryIndex();
   const source=getAcceptedSessionInput(operationId);
   if(!source)throw new TopicError('Unknown operation.',404,'OPERATION_UNKNOWN');
   if(!humanAuthored(source))throw new TopicError('This operation is not his own message.',409,'NOT_HUMAN_SOURCE');
@@ -1646,7 +1661,6 @@ export function verifiedHumanConversation(operationId:string,cursor:string|null=
       throw new TopicError('Continue with an exact conversation cursor.',400,'CONVERSATION_CURSOR_INVALID');
   }
   const size=Math.min(200,Math.max(1,Number(limit)||100));
-  const index=entryIndex();
   const root=rootOf(source.session_id,source.id);
   const topicId=root?topicOfRoot(root):null;
   const roots=topicId?topicRoots(topicId):root?[root]:[];
@@ -4397,7 +4411,7 @@ export const UNFILED_ALARM_MS=30*60_000;
  */
 export function wakeRouterForUnfiled(session:SessionRow,admit:(input:{sessionId:number;inputId:string;origin:'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;threadReplyNotRequired:true})=>unknown,now=Date.now()) {
   // The next upkeep pass covers it; reading now would finish the warm-up synchronously.
-  if(entryIndexWarming)return;
+  if(entryIndexWarming())return;
   const ageOf=(item:{at:string})=>now-Date.parse(iso(item.at)!);
   const overdue=unfiledInboxRoots().filter(item=>ageOf(item)>=UNFILED_WAKE_MS);
   ensureRepairNotices(db);
@@ -4503,7 +4517,7 @@ function unfiledElsewhereContext(sessionId:number,inputId:string):string {
   if(sessionId!==inboxSession()?.id)return '';
   // For the minute or so the index warms after a restart, the router is not shown these; the unfiled
   // wake still hands over any capture older than ten minutes, and the next router turn lists them.
-  if(entryIndexWarming)return '';
+  if(entryIndexWarming())return '';
   const items=unfiledInboxRoots().filter(item=>item.sessionId!==sessionId&&item.root!==inputId);
   if(!items.length)return '';
   return `\n\n<unfiled-from-earlier-routers>\n${JSON.stringify({
