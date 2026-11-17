@@ -808,6 +808,10 @@ replacement action or invoke `work recover` to bypass uncertain effects.
 
 ## Agent session communication
 
+Native Claude home recovery is a source-bound communication action. The exact command,
+candidate proof requirements, refusal behavior and retry semantics are in
+[native conversation home custody](../architecture/RUNNERS.md#native-conversation-home-custody).
+
 Every time an agent reads from Concierge also carries Tejas's local clock, written
 the way he says it ("11:25 PM Eastern, Nov 15"), so no agent converts server UTC by
 hand. The router-actions `sessions`, `reports`, `threads`, `external`, `projects`,

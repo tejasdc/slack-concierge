@@ -181,6 +181,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
         if (operation === 'move') return Response.json(await sessions.move(input));
+        if (operation === 'repair-home') return Response.json(await sessions.repairHome(input));
         if (operation === 'post') return Response.json(await withLinkCheck(sessions.post(input),input,owner));
         if (operation === 'outcome') return Response.json(sessions.outcome(await withTodoState(input)));
         if (operation === 'answer') return Response.json(sessions.handleChatGptAnswer(input));

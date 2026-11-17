@@ -2,7 +2,7 @@
 import {strict as assert} from 'node:assert';
 import {Database} from 'bun:sqlite';
 import {initializeRunnerSchema,RunnerLeases,LEASE_MS} from '../src/runner-leases';
-import {lastLaunchedConversationHome} from '../src/session-runner-home';
+import {lastLaunchedConversationHome,nativeConversationHome} from '../src/session-runner-home';
 
 const db=new Database(':memory:');
 initializeRunnerSchema(db);initializeRunnerSchema(db);
@@ -94,6 +94,15 @@ homeLeases.claim('ax41',['turn']);
 db.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('launched',42,'claude-code','runner','concierge-exec-launched',1);
 db.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unclaimed',42,'claude-code','runner',null,2);
 assert.deepEqual(lastLaunchedConversationHome(db,42,'claude-code'),{supervisor:'runner',runner:'ax41'});
+const unknownConversation:any={id:404,provider_id:'claude-code',agent_session_uuid:'native-uuid',parent_session_id:null};
+const home=(conversation:any,meta:Record<string,unknown>)=>nativeConversationHome(db,conversation,meta,()=>null);
+assert.equal(home(unknownConversation,{}).known,false,'a pre-host UUID with no saved or launched home stays unknown');
+assert.equal(home(unknownConversation,{}).reason?.includes('no saved machine binding'),true);
+const launchedConversation:any={id:42,provider_id:'claude-code',agent_session_uuid:'native-uuid',parent_session_id:null};
+assert.deepEqual(home(launchedConversation,{resurrection:{peer:'mac'}}),{known:true,runner:'ax41',reason:null},'launched execution takes precedence over older resurrection metadata');
+db.query("UPDATE executions SET unit=NULL WHERE execution_id='launched'").run();
+assert.equal(home(launchedConversation,{}).known,false,'a launched runner with no exact attempt lease stays unknown');
+db.query("UPDATE executions SET unit='concierge-exec-launched' WHERE execution_id='launched'").run();
 db.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('local',42,'claude-code','systemd','concierge-exec-local',3);
 db.query('INSERT INTO executions VALUES (?,?,?,?,?,?)').run('unstarted-runner',42,'claude-code','runner',null,4);
 assert.deepEqual(lastLaunchedConversationHome(db,42,'claude-code'),{supervisor:'systemd',runner:null},

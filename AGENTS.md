@@ -53,6 +53,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [agent security](docs/security/2026-10-07-agent-security-review.md).
 - Agent session commands use each machine's installed wrapper, which selects
   the current release; see [runner command paths](docs/architecture/RUNNERS.md#agent-session-commands).
+- Native Claude conversation homes, agent-messageability and the source-bound repair control are governed by [runner home custody](docs/architecture/RUNNERS.md#native-conversation-home-custody).
 - Hosted-run shutdown custody follows the [execution host](docs/architecture/EXECUTION-HOST.md)
   contract; preserve exact accepted input and provider-result ownership across releases.
 - Claude history payload retirement preserves full SDK rows and the runner

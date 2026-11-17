@@ -12,7 +12,7 @@ import {basename,join} from 'node:path';
 import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,reserveCodexUnacknowledgedRecovery,codexUnacknowledgedRecovery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentAntigravityInputs,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
-import {lastLaunchedConversationHome} from './session-runner-home';
+import {lastLaunchedConversationHome,nativeConversationHome} from './session-runner-home';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
 import {recordResultTurnOutcome,recordUnsaidTurnOutcome} from './session-turn-outcome';
@@ -1619,7 +1619,8 @@ export class SessionExecutionHost {
     // A runner-bound conversation resolves its stable project identity on that machine. Owner
     // absolute cwd paths are retained for presentation only and never go into a remote manifest.
     const onRunner=!adoption&&!!runnerTarget&&(session.provider_id==='claude-code'||session.provider_id==='antigravity'||outsideCodex);
-    if(onRunner&&providerRunnerForSession(session).status==='legacy'&&session.agent_session_uuid===null)
+    if(providerRunnerForSession(session).status==='legacy'
+      &&((onRunner&&session.agent_session_uuid===null)||(session.agent_session_uuid!==null&&nativeConversationHome(db,session,metadata,getSessionById).known)))
       updateSessionMetadata(session.id,{providerRunner:runnerTarget});
     let cwd=onRunner?'':this.cwd(session);
     if(onRunner) {
@@ -2422,22 +2423,9 @@ export function chooseTurnRunner(session:SessionRow,metadata=sessionMetadata(ses
     // A bound native conversation keeps the machine that last ran it. Current deployment
     // settings cannot recover that fact: use the durable execution and lease that actually
     // launched its latest turn, and refuse if that evidence is incomplete or ambiguous.
-    const prior=lastLaunchedConversationHome(db,session.id,session.provider_id);
-    if(!prior){
-      // Older local copies predate the explicit local binding. A fork inherited its parent's
-      // machine; a local resurrection copied the transcript into this machine's provider home.
-      if(metadata.lineage&&session.parent_session_id){
-        const parent=getSessionById(session.parent_session_id);
-        if(parent?.provider_id===session.provider_id)return chooseTurnRunner(parent);
-      }
-      if(metadata.resurrection)return null;
-      throw new Error(`This ${session.provider_id} conversation has no saved machine binding and no exact execution record; refusing to guess its home.`);
-    }
-    if(prior.supervisor===RUNNER_SUPERVISOR){
-      if(!prior.runner)throw new Error(`This ${session.provider_id} conversation ran on a runner, but its exact runner lease is unavailable.`);
-      return prior.runner;
-    }
-    return null;
+    const home=nativeConversationHome(db,session,metadata,getSessionById);
+    if(!home.known)throw new Error(home.reason??'This provider conversation has no proven machine home.');
+    return home.runner;
   }
   // Claude and Google share one placement setting: a machine without runners (the Mac peer's
   // default `marked`) runs unmarked work itself instead of refusing for a missing target.
