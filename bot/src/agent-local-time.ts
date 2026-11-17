@@ -46,9 +46,14 @@ const ISO_UTC_IN_TEXT = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?
 const EPOCH_MS_MIN = 1.5e12, EPOCH_MS_MAX = 4e12;
 const MOMENT_KEY = /(?:at|At|until|Until|since|Since|time|Time)(?:_?[Mm]s)?$|(?:_ms|Ms)$/;
 
+/** A ledger time written as SQLite's CURRENT_TIMESTAMP ("2026-11-16 04:25:00", UTC without a zone) as ISO UTC; other values unchanged. */
+export function ledgerUtcAsIso(value: string): string {
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(value) ? `${value.replace(" ", "T")}Z` : value;
+}
+
 /** A Concierge ledger time: ISO UTC, or SQLite CURRENT_TIMESTAMP ("2026-11-16 04:25:00"), which is UTC without a zone. */
 export function hisLocalTimeOfLedgerUtc(value: string, timeZone = HIS_TIME_ZONE): string {
-  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/.test(value) ? `${value.replace(" ", "T")}Z` : value;
+  const iso = ledgerUtcAsIso(value);
   return ISO_UTC.test(iso) ? hisLocalTime(Date.parse(iso), timeZone) : "";
 }
 

@@ -1,4 +1,5 @@
 import {requirementCall,type AgentIdentity} from './requirement-records';
+import {ledgerUtcAsIso} from './agent-local-time';
 import {getAcceptedSessionInput} from './session-inputs';
 import type {SessionOwner} from './session-owner';
 
@@ -53,12 +54,13 @@ export async function runRequirementCommand(input:Command,owner?:SessionOwner):P
       const from=str(input.from,'--from <capture or input id>');
       const kept=retainedWords(from,owner);
       return call('POST','/requirements/sources',{record:str(input.record,'a record id or name'),source:sourceRef(from),
-        ...(typeof input.source_at==='string'&&input.source_at?{sourceAt:input.source_at}:kept.at?{sourceAt:kept.at}:{}),text:kept.text});
+        // The ledger writes UTC without a zone; thnkr.ing refuses a zone-less time rather than reading it as New York time.
+        ...(typeof input.source_at==='string'&&input.source_at?{sourceAt:ledgerUtcAsIso(input.source_at)}:kept.at?{sourceAt:ledgerUtcAsIso(kept.at)}:{}),text:kept.text});
     }
     case 'file':{
       if(!Array.isArray(input.items)||!input.items.length)throw new Error('requirements file needs at least one requirement (--words "<his exact words>").');
       const items=input.items.map((item:any)=>({words:str(item?.words,'the requirement words'),
-        ...(item?.source?{source:sourceRef(String(item.source))}:{}),...(item?.sourceAt?{sourceAt:item.sourceAt}:{}),...(item?.reading?{reading:item.reading}:{})}));
+        ...(item?.source?{source:sourceRef(String(item.source))}:{}),...(item?.sourceAt?{sourceAt:ledgerUtcAsIso(String(item.sourceAt))}:{}),...(item?.reading?{reading:item.reading}:{})}));
       return call('POST','/requirements/file',{record:str(input.record,'a record id or name'),items});
     }
     case 'reconcile':
