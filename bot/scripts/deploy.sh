@@ -592,7 +592,11 @@ cleanup_failed_deployment() {
   fi
   if [ -n "$DEPLOY_RUN_ID" ] && [ "$DEPLOY_RUN_TERMINAL" = "0" ] && [ "$PREFLIGHT_REFUSED" != "1" ] && \
     handoff_failed_deployment_to_repair "$deploy_status"; then
-    echo "Deployment failure was handed to autonomous trusted-root repair." >&2
+    if [ "${REPAIR_LAUNCH_PENDING:-0}" = 1 ]; then
+      echo "Deployment repair incident is durable; the deployment worker will retry its refused service launch." >&2
+    else
+      echo "Deployment failure was handed to autonomous trusted-root repair." >&2
+    fi
     trap - EXIT ERR INT TERM
     exit 0
   fi
@@ -608,25 +612,50 @@ cleanup_failed_deployment() {
 }
 
 handoff_failed_deployment_to_repair() {
-  local deploy_status=$1 lkg_output failed_commit restored_commit failure_error fingerprint
+  local deploy_status=$1 lkg_output current_output failed_commit restored_commit failure_error fingerprint
+  local current_commit current_artifact lkg_commit lkg_artifact release_outcome='restored and started'
   local incident_output incident_id unit_name repair_status restored_health=0
-  stop_release_owner || return 1
-  lkg_output=$(CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control 2>/dev/null) || return 1
   failed_commit=${FAILED_CANDIDATE_COMMIT:-${DEPLOYED_COMMIT:-$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)}}
   FAILED_CANDIDATE_COMMIT="$failed_commit"
-  restored_commit=$(printf '%s\n' "$lkg_output" | jq -er '.git_commit') || return 1
   [[ "$failed_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
-  failure_error="Deployment stage $CURRENT_DEPLOY_STAGE exited $deploy_status for candidate $failed_commit. $DEPLOY_FAILURE_REASON The immutable last-known-good pointer was restored to $restored_commit."
+
+  # Preparation can fail before activation. In that case the verified last-known-good
+  # owner is still serving; stopping it to restore the same pointer creates an outage.
+  if [ "$CURRENT_DEPLOY_STAGE" = candidate-activation ] && [ "$RELEASE_OWNER_HEALTH_PENDING" = 0 ] && \
+    current_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" current) && \
+    lkg_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" lkg); then
+    current_commit=$(printf '%s\n' "$current_output" | jq -er '.git_commit' 2>/dev/null || true)
+    current_artifact=$(printf '%s\n' "$current_output" | jq -er '.artifact_path' 2>/dev/null || true)
+    lkg_commit=$(printf '%s\n' "$lkg_output" | jq -er '.git_commit' 2>/dev/null || true)
+    lkg_artifact=$(printf '%s\n' "$lkg_output" | jq -er '.artifact_path' 2>/dev/null || true)
+    if [ -n "$current_commit" ] && [ -n "$current_artifact" ] && \
+      [ "$current_commit" = "$lkg_commit" ] && [ "$current_artifact" = "$lkg_artifact" ]; then
+      DEPLOYED_COMMIT="$current_commit"
+      if [ "$(systemctl is-active "$SERVICE" 2>/dev/null || true)" = active ] && probe_service; then
+        restored_commit="$current_commit"
+        restored_health=1
+        release_outcome='kept serving'
+        echo "Candidate failed before activation; the verified last-known-good owner remains serving."
+      fi
+    fi
+  fi
+  if [ "$restored_health" != 1 ]; then
+    stop_release_owner || return 1
+    lkg_output=$(CONCIERGE_RELEASE_OFFLINE=1 CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg --keep-control 2>/dev/null) || return 1
+    restored_commit=$(printf '%s\n' "$lkg_output" | jq -er '.git_commit') || return 1
+    DEPLOYED_COMMIT="$restored_commit"
+    start_unit "$SERVICE" || return 1
+    if probe_service; then
+      restored_health=1
+    else
+      restart_unit "$SERVICE" || true
+      if probe_service; then restored_health=1; fi
+    fi
+  fi
+  failure_error="Deployment stage $CURRENT_DEPLOY_STAGE exited $deploy_status for candidate $failed_commit. $DEPLOY_FAILURE_REASON The last-known-good release $restored_commit was $release_outcome."
   fingerprint=$(printf '%s' "$CURRENT_DEPLOY_STAGE|$deploy_status|$LAST_FAILED_COMMAND" \
     | sha256sum | awk '{print $1}')
 
-  DEPLOYED_COMMIT="$restored_commit"
-  if probe_service; then
-    restored_health=1
-  else
-    restart_unit "$SERVICE" || true
-    if probe_service; then restored_health=1; fi
-  fi
   if [ "$restored_health" = "1" ]; then
     release_deployment_gate || return 1
     recover_abandoned_gates || return 1
@@ -649,13 +678,21 @@ handoff_failed_deployment_to_repair() {
     return 0
   fi
   [ "$repair_status" -eq 0 ] || return "$repair_status"
-  install_systemd_unit concierge-deployment-repair@.service
-  systemctl daemon-reload
+  # From this point the durable repair incident owns the run. A launcher failure
+  # must leave it eligible for the deployment worker, not let cleanup mark it failed.
+  DEPLOY_RUN_TERMINAL=1
   incident_id=$(printf '%s\n' "$incident_output" | jq -er '.incident_id')
   unit_name=$(printf '%s\n' "$incident_output" | jq -er '.unit_name')
   copy_failed_command_output_into_incident "$incident_id"
-  systemctl start "$unit_name"
-  DEPLOY_RUN_TERMINAL=1
+  if ! install_systemd_unit concierge-deployment-repair@.service || \
+    ! systemctl daemon-reload || ! systemctl start "$unit_name"; then
+    # The incident is durable and remains runnable while the deployment run is releasing.
+    # Mark this shell's handoff complete so cleanup cannot terminalize that run; the
+    # deployment worker retries the exact incident's service launch.
+    REPAIR_LAUNCH_PENDING=1
+    echo "Repair service launch was refused; incident $incident_id remains available for the deployment worker to retry." >&2
+    return 0
+  fi
   echo "Autonomous trusted-root repair started as $unit_name (incident $incident_id)."
 }
 
