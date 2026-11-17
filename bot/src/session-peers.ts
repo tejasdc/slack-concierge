@@ -2105,7 +2105,11 @@ export class SessionPeers {
         AND handoff.state='accepted' AND handoff.handoff_kind='codex-custody-successor'`)
       .get(row.request_id,turn.id,input.id,row.target_session_id) as {canonical_input_id:string;predecessor_session_id:number;placement_input_id:string;placement_turn_id:number}|null:null;
     const transfers:{requestId:string;handoffId:string;fromSessionId:string;fromInputId:string;toSessionId:string;toInputId:string}[]=[];
-    if(custodyPlacement){
+    // Every accepted handoff that moved this owed request is reported, not only custody
+    // successors: after an ordinary provider-change handoff on the Mac (2026-11-16, request
+    // ed4dd1b9) the origin refused each status read as session_id_mismatch and held every reply
+    // from the new session as pending, because nothing told it the request had moved.
+    if(turn){
       let sessionId=row.target_session_id,inputId=row.target_input_id;
       const seen=new Set<number>();
       while(!seen.has(sessionId)){
@@ -2145,7 +2149,9 @@ export class SessionPeers {
       sessionId:`concierge:${session.id}`,address:sessionAddress(session),operationId:row.target_input_id,
       ...(custodyPlacement?{custodyPlacement:{version:1,canonicalInputId:custodyPlacement.canonical_input_id,
         predecessorSessionId:`concierge:${custodyPlacement.predecessor_session_id}`,placementInputId:custodyPlacement.placement_input_id,
-        placementTurnId:custodyPlacement.placement_turn_id,transfers}}:{}),
+        placementTurnId:custodyPlacement.placement_turn_id,transfers}}
+        :turn&&transfers.length?{custodyPlacement:{version:1,canonicalInputId:transfers[0].fromInputId,
+          predecessorSessionId:transfers[transfers.length-1].fromSessionId,placementInputId:input.id,placementTurnId:turn.id,transfers}}:{}),
       inputState:current.saved.state??current.observed.state,inputError:current.saved.error??null,stillWorking:['running','queued'].includes(execution),
       execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,stoppedByTejasAtMs:turn.status==='cancelled'?stoppedByTejas(turn.id)?.atMs??null:null,dedicated,answersWithTurn,
         steeringStatus:observed.steering?.status??null,text:turn.status==='done'?turn.agent_text||null:null,error:turn.status!=='done'?turn.agent_text??null:null,sha256:turn.agent_text?hash(turn.agent_text):null}:null,
