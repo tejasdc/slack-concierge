@@ -32,6 +32,11 @@ account/re-home, legacy, unknown and malformed recovery. Restore derives the sam
 the historical durable row shape without migration. Pause, Stop, archive, usage, retries,
 serialization and the protected launch boundary retain their authority.
 
+The release check also rejected the fixture's initial dynamic SQLite import and raw writable
+reopen. Disposable reseeding now uses the existing ledger write-result boundary with a static
+SQLite import. The constructor guard is unchanged; closing the owner and restoring the original
+queued inputs in a fresh process still exercise the historical durable row shape.
+
 ## State card
 
 - **Entity/writer:** each stable admission holder belongs to its retained operation; the canonical

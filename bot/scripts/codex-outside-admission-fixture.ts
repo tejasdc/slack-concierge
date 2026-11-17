@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import {Database} from 'bun:sqlite';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {CODEX_RUNTIME_MAINTENANCE_TEST_AUTHORIZATION} from '../src/test-authorizations';
+import {ledgerWriteResults} from '../src/ledger-write-results';
 
 const restore=process.argv.includes('--restore');
 const root=restore?process.env.CONCIERGE_STATE_DIR!:mkdtempSync(join(tmpdir(),'concierge-outside-admission-'));
@@ -127,7 +129,7 @@ try{
     db.close();
     for(const mode of restoreModes){
       if(mode!=='maintenance'){
-        const {Database}=await import('bun:sqlite');const seed=new Database(join(root,'state.db'));
+        const seed=ledgerWriteResults(new Database(join(root,'state.db'),{readwrite:true}));
         seed.query('DELETE FROM codex_admission_holds WHERE holder<>?').run(holder);
         const value=mode==='activation'?JSON.stringify({kind:'runner-activation',runner:'fixture-runner',account:'fixture-account',operationId:'activation'}):mode==='unknown'?JSON.stringify({kind:'future-kind',runner:'fixture-runner'}):mode==='partial-runtime'?JSON.stringify({...second,sourceInputId:''}):'{';
         seed.query('INSERT OR REPLACE INTO codex_admission_holds(holder,recovery_json,created_at_ms) VALUES(?,?,?)').run(holder,JSON.stringify(recovery),123);
