@@ -73,53 +73,66 @@ export function contentReaderHeaders(peer=false):Record<string,string> {
  * reply query made agent receipt reads answer 503 on 2026-11-17, release fc2ce97a). A set larger
  * than the bound cannot be proven free of Lab provenance, so overflow reads as protected. */
 export const DISCLOSURE_FANOUT_LIMIT=64;
-type Walk={seen:Set<string>;invocations:Set<string>;overflow:boolean};
 function boundedRows<T>(walk:{overflow:boolean},sql:string,...args:any[]):T[] {
  const rows=db.query(`${sql} LIMIT ${DISCLOSURE_FANOUT_LIMIT+1}`).all(...args) as T[];
  if(rows.length>DISCLOSURE_FANOUT_LIMIT){walk.overflow=true;return rows.slice(0,DISCLOSURE_FANOUT_LIMIT);}
  return rows;
 }
 const REPLY_SOURCES="SELECT source_input_id FROM session_inputs WHERE request_id=? AND kind='reply' ORDER BY rowid";
-/** The walk reads only the provenance facts of each linked input, never its whole row: whole
- * payloads (request bodies, attachments) made a 40-receipt agent page exceed the read budget's
- * result bytes on 2026-11-17 once the reply query was bounded. */
-type ProvenanceNode={id:string;scope:string|null;kind:string;source_input_id:string|null;request_id:string|null;invocation_thread:unknown;thread:unknown;binding_thread:unknown};
-function provenanceNode(id:string):ProvenanceNode|null {
- return db.query(`SELECT id,scope,kind,source_input_id,request_id,CASE json_type(payload_json,'$.labInvocation.thread') WHEN 'text' THEN json_extract(payload_json,'$.labInvocation.thread') END AS invocation_thread,
-  CASE json_type(payload_json,'$.thread') WHEN 'text' THEN json_extract(payload_json,'$.thread') END AS thread,CASE json_type(payload_json,'$.binding.thread') WHEN 'text' THEN json_extract(payload_json,'$.binding.thread') END AS binding_thread FROM session_inputs WHERE id=?`).get(id) as ProvenanceNode|null;
-}
-function rootNode(input:AcceptedSessionInput):ProvenanceNode {
- const payload=JSON.parse(input.payload_json);
- return {id:input.id,scope:input.scope,kind:input.kind,source_input_id:input.source_input_id,request_id:input.request_id,
-  invocation_thread:payload.labInvocation?.thread,thread:payload.thread,binding_thread:payload.binding?.thread};
-}
-function origins(input:ProvenanceNode,walk:Walk):Set<string> {
- const {seen,invocations}=walk;
- const threads=new Set<string>();if(seen.has(input.id))return threads;seen.add(input.id);
- if(input.scope==='lab:invocation'&&typeof input.invocation_thread==='string'){threads.add(input.invocation_thread);invocations.add(input.id);}
- if(['lab-conversation','lab-roster','lab-activation','lab-membership','lab-binding'].includes(input.kind)){
-  const thread=input.thread??input.binding_thread;if(typeof thread==='string')threads.add(thread);
+const LAB_KINDS=['lab-conversation','lab-roster','lab-activation','lab-membership','lab-binding'];
+/** Inputs one provenance walk may reach before it is treated as protected. */
+export const PROVENANCE_NODE_LIMIT=256;
+const textAt=(path:string)=>`CASE json_type(i.payload_json,'${path}') WHEN 'text' THEN json_extract(i.payload_json,'${path}') END`;
+/** The whole provenance walk is one statement: an input's source, its request's source and target,
+ * and that request's reply sources, followed transitively. It returns one summary row plus only
+ * the Lab inputs it reached, never whole payloads. Walking it node by node from the application
+ * cost several calls, rows and whole payloads per receipt, and on 2026-11-17 a 40-receipt agent
+ * page was refused by its read budget three times over (unbounded reply query, result bytes,
+ * rows). The statement is a SELECT wrapping the CTE, as interactive read budgets admit only
+ * statements that begin with SELECT. A walk that reaches more than PROVENANCE_NODE_LIMIT inputs is treated as protected. */
+export const PROVENANCE_SQL=`SELECT * FROM (WITH RECURSIVE walk(id) AS (
+ SELECT ?1
+ UNION SELECT i.source_input_id FROM walk JOIN session_inputs i ON i.id=walk.id WHERE i.source_input_id IS NOT NULL
+ UNION SELECT r.source_input_id FROM walk JOIN session_inputs i ON i.id=walk.id JOIN session_communication_requests r ON r.request_id=i.request_id WHERE r.source_input_id IS NOT NULL
+ UNION SELECT r.target_input_id FROM walk JOIN session_inputs i ON i.id=walk.id JOIN session_communication_requests r ON r.request_id=i.request_id WHERE r.target_input_id IS NOT NULL
+ UNION SELECT reply.source_input_id FROM walk JOIN session_inputs i ON i.id=walk.id JOIN session_inputs reply ON reply.request_id=i.request_id AND reply.kind='reply' WHERE reply.source_input_id IS NOT NULL
+ LIMIT ${PROVENANCE_NODE_LIMIT+1})
+SELECT NULL AS id,NULL AS scope,NULL AS kind,(SELECT count(*) FROM walk) AS reached,(SELECT count(*) FROM session_inputs WHERE id=?1) AS root_exists,NULL AS invocation_thread,NULL AS thread,NULL AS binding_thread
+UNION ALL
+SELECT i.id,i.scope,i.kind,NULL,NULL,${textAt('$.labInvocation.thread')},${textAt('$.thread')},${textAt('$.binding.thread')}
+ FROM walk JOIN session_inputs i ON i.id=walk.id WHERE i.scope='lab:invocation' OR i.kind IN (${LAB_KINDS.map(kind=>`'${kind}'`).join(',')}))
+LIMIT ${PROVENANCE_NODE_LIMIT+2}`;
+type Provenance={exists:boolean;overflow:boolean;threads:Set<string>;invocations:Set<string>;root:{scope:string|null;kind:string}|null};
+function provenance(id:string):Provenance {
+ const rows=db.query(PROVENANCE_SQL).all(id) as any[];
+ const summary=rows.find(row=>row.id===null),result:Provenance={exists:!!summary?.root_exists,overflow:!summary||summary.reached>PROVENANCE_NODE_LIMIT,threads:new Set(),invocations:new Set(),root:null};
+ for(const row of rows){
+  if(row.id===null)continue;
+  if(row.id===id)result.root={scope:row.scope,kind:row.kind};
+  if(row.scope==='lab:invocation'&&typeof row.invocation_thread==='string'){result.threads.add(row.invocation_thread);result.invocations.add(row.id);}
+  if(LAB_KINDS.includes(row.kind)){const thread=row.thread??row.binding_thread;if(typeof thread==='string')result.threads.add(thread);}
  }
- if(input.source_input_id){const source=provenanceNode(input.source_input_id);if(source)for(const thread of origins(source,walk))threads.add(thread);}
- if(input.request_id){
-  const request=db.query('SELECT source_input_id,target_input_id FROM session_communication_requests WHERE request_id=?').get(input.request_id) as any;
-  const replies=boundedRows<{source_input_id:string|null}>(walk,REPLY_SOURCES,input.request_id);
-  for(const id of [request?.source_input_id,request?.target_input_id,...replies.map(value=>value.source_input_id)]){const linked=id?provenanceNode(id):null;if(linked)for(const thread of origins(linked,walk))threads.add(thread);}
- }
- return threads;
+ return result;
+}
+function visible(id:string,root:{scope:string|null;kind:string},walk:Provenance,reader:Reader):boolean {
+ if(walk.overflow)return false;if(!walk.threads.size)return true;
+ if(reader.kind==='unknown')return false;
+ if(reader.kind!=='actor'||!reader.comparison?.openingOnly||!walk.threads.has(reader.comparison.thread))return true;
+ const original=reader.turn.accepted_input_id;if(id===original)return true;
+ return root.scope!=='lab:invocation'&&!LAB_KINDS.includes(root.kind)&&walk.invocations.size===1&&walk.invocations.has(original);
 }
 export function restrictedLabThread(thread:string):boolean {
  const reader=contentReader();return reader.kind==='unknown'||reader.kind==='actor'&&reader.comparison?.openingOnly===true&&reader.comparison.thread===thread;
 }
 export function inputContentVisible(input:AcceptedSessionInput):boolean {
  const reader=contentReader();if(reader.kind==='trusted'||reader.kind==='actor'&&!reader.comparison?.openingOnly)return true;
- const walk:Walk={seen:new Set(),invocations:new Set(),overflow:false},invocations=walk.invocations,threads=origins(rootNode(input),walk);
- if(walk.overflow)return false;if(!threads.size)return true;
- if(reader.kind==='unknown')return false;
- if(!reader.comparison?.openingOnly||!threads.has(reader.comparison.thread))return true;
- if(input.id===reader.turn.accepted_input_id)return true;
- const original=reader.turn.accepted_input_id;
- return input.scope!=='lab:invocation'&&!['lab-conversation','lab-roster','lab-activation','lab-membership','lab-binding'].includes(input.kind)&&invocations.size===1&&invocations.has(original);
+ return visible(input.id,{scope:input.scope,kind:input.kind},provenance(input.id),reader);
+}
+/** inputContentVisible by id, without reading the whole input; null when no such input exists. */
+export function inputIdContentVisible(id:string):boolean|null {
+ const reader=contentReader();if(reader.kind==='trusted'||reader.kind==='actor'&&!reader.comparison?.openingOnly)return true;
+ const walk=provenance(id);if(!walk.exists)return null;
+ return visible(id,walk.root??{scope:null,kind:''},walk,reader);
 }
 export function assertInputContent(input:AcceptedSessionInput):void {if(!inputContentVisible(input))throw new LabDisclosureError();}
 function sessionThreads(sessionId:number,walk:{overflow:boolean}={overflow:false}):Set<string> {
@@ -142,19 +155,19 @@ export function messageContentVisible(sessionId:number,message:any):boolean {
  const ids=walk.overflow?new Set<string>():new Set(rows.flatMap(row=>{const value=row.input_id??(row.turn_id?(db.query('SELECT accepted_input_id FROM turns WHERE id=?').get(row.turn_id) as any)?.accepted_input_id:null);return value?[value]:[];}));
  if(ids.size===1)id=[...ids][0] as string;
  if(!id){const turn=/^(?:input|output):([1-9][0-9]*)$/.exec(message.id??'');if(turn)id=(db.query('SELECT accepted_input_id FROM turns WHERE id=? AND session_id=?').get(Number(turn[1]),sessionId) as any)?.accepted_input_id;}
- if(id){const input=getAcceptedSessionInput(id);if(input)return inputContentVisible(input);}
+ if(id){const result=inputIdContentVisible(id);if(result!==null)return result;}
  assertOpaqueSession(sessionId);return true;
 }
 export function assertMessageContent(sessionId:number,message:any):void {if(!messageContentVisible(sessionId,message))throw new LabDisclosureError();}
 export function evidenceContentVisible(sessionId:number,item:any):boolean {
  if(trustedContentReader())return true;
- if(typeof item.sourceId==='string'&&item.sourceId.startsWith('input:')){const input=getAcceptedSessionInput(item.sourceId.slice(6));if(input)return inputContentVisible(input);}
+ if(typeof item.sourceId==='string'&&item.sourceId.startsWith('input:')){const result=inputIdContentVisible(item.sourceId.slice(6));if(result!==null)return result;}
  try{return messageContentVisible(sessionId,{...item,id:item.eventId??item.id});}catch(error){if(error instanceof LabDisclosureError)return false;throw error;}
 }
 export function assertCommunicationContent(requestId:string):void {
- const row=db.query('SELECT source_input_id,target_input_id FROM session_communication_requests WHERE request_id=?').get(requestId) as any;
  if(trustedContentReader())return;
+ const row=db.query('SELECT source_input_id,target_input_id FROM session_communication_requests WHERE request_id=?').get(requestId) as any;
  const walk={overflow:false},replies=boundedRows<{source_input_id:string|null}>(walk,REPLY_SOURCES,requestId);
  if(walk.overflow){const reader=contentReader();if(reader.kind==='unknown'||reader.kind==='actor'&&reader.comparison?.openingOnly)throw new LabDisclosureError();}
- for(const id of [row?.source_input_id,row?.target_input_id,...replies.map(value=>value.source_input_id)]){const input=id?getAcceptedSessionInput(id):null;if(input)assertInputContent(input);}
+ for(const id of new Set([row?.source_input_id,row?.target_input_id,...replies.map(value=>value.source_input_id)])){if(id&&inputIdContentVisible(id)===false)throw new LabDisclosureError();}
 }

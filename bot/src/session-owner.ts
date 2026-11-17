@@ -1,4 +1,4 @@
-import {withContentReader,trustedContentReader,verifiedContentSource,contentReader,contentReaderHeaders,assertInputContent,inputContentVisible,assertMessageContent,messageContentVisible,evidenceContentVisible,assertOpaqueSession,opaqueSessionProtected,LabDisclosureError} from './lab-content-disclosure';
+import {withContentReader,trustedContentReader,verifiedContentSource,contentReader,contentReaderHeaders,assertInputContent,inputContentVisible,inputIdContentVisible,assertMessageContent,messageContentVisible,evidenceContentVisible,assertOpaqueSession,opaqueSessionProtected,LabDisclosureError} from './lab-content-disclosure';
 import {comparisonContext} from './lab-invocation-facts';
 import {requirementsFor} from './request-history';
 import {parseAgentPrincipalHeader} from './agent-token-verify';
@@ -1704,7 +1704,7 @@ export class SessionOwner {
     const session=this.session(id);
     const page=preparedReceiptWindow(session.id,cursor,requestedLimit??PRESENTATION_PAGE);
     if(trustedContentReader())return page;
-    return {...page,operations:page.operations.filter(value=>{const input=getAcceptedSessionInput(value.operationId);return input?inputContentVisible(input):!opaqueSessionProtected(session.id);})};
+    return {...page,operations:page.operations.filter(value=>inputIdContentVisible(value.operationId)??!opaqueSessionProtected(session.id))};
   }
   /** A compact, fixed-head change position. Unlike v1, it never contains the open receipt set.
    * This resolves only the changed page; it is not an all-history export. */
@@ -1712,7 +1712,7 @@ export class SessionOwner {
     const session=this.session(id);
     const page=preparedReceiptChanges(session.id,token,requestedLimit??PRESENTATION_PAGE);
     if(trustedContentReader())return page;
-    return {...page,operations:page.operations.filter(value=>{const input=getAcceptedSessionInput(value.operationId);return input?inputContentVisible(input):!opaqueSessionProtected(session.id);})};
+    return {...page,operations:page.operations.filter(value=>inputIdContentVisible(value.operationId)??!opaqueSessionProtected(session.id))};
   }
   dispatch(input:AcceptedSessionInput) {
     if(db.query(`SELECT 1 FROM session_inputs input WHERE input.id=? AND ${threadOnlyReturnInputSql('input')}`).get(input.id))return input;
