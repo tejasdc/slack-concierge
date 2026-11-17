@@ -1692,6 +1692,42 @@ export class SessionCommunicationCoordinator {
         if (this.dependencies.peers?.hasDelivery(requestId)) return this.dependencies.peers.inspectDelivery(requestId);
         return null;
     }
+    /**
+     * The requester re-declares which requirement records an open request delivers. Only the session
+     * that sent the request may: a builder must never be able to drop its own requirements. The old
+     * declaration and the reason stay in the request's history. Built for requests made before
+     * declarations existed, which still carried a record inherited from their thread.
+     */
+    async redeclareRequirements(input:{source:CommunicationSource;request_id:string;action_id:string;requirements:string[];requirements_why?:string}) {
+        const actor=this.fenced(this.actor(input.source));
+        action(input.action_id);
+        const row=this.row(input.request_id);
+        if(!holdsRequesterPlace(actor.session,row.source_session_id)||actor.session===row.target_session_id)
+            throw new Error('Only the session that sent this request can change which requirement records it delivers; the receiving agent cannot drop its own requirements.');
+        if(row.outcome)throw new Error('This request is already settled; its requirement declaration can no longer change.');
+        const declaresNone=input.requirements.some(id=>id.trim()==='none');
+        const ids=[...new Set(input.requirements.map(id=>id.trim()).filter(id=>id&&id!=='none'))].sort();
+        const why=(input.requirements_why??'').trim();
+        if(declaresNone&&ids.length)throw new Error('--requirements none cannot be combined with record ids.');
+        if(declaresNone&&!saysSomething(why))throw new Error('--requirements none needs --requirements-why "<why this work delivers none of the thread\'s requirement records>".');
+        if(!declaresNone&&!ids.length)throw new Error('Name the records this request delivers, or declare none with a reason.');
+        if(!declaresNone&&input.requirements_why!==undefined)throw new Error('--requirements-why belongs to --requirements none.');
+        if(ids.length){
+            try{await readRequestRecords(ids,null);}
+            catch(error){throw new Error(`${error instanceof Error?error.message:'The requirement record could not be read.'} Nothing was changed.`);}
+        }
+        const current=this.row(input.request_id);
+        const payload=JSON.parse(current.payload_json??'{}') as Record<string,unknown>;
+        const history=Array.isArray(payload.requirementsHistory)?payload.requirementsHistory as {actionId?:string}[]:[];
+        if(history.some(entry=>entry.actionId===input.action_id))return {request_id:current.request_id,requirements:payload.requirements??[],none:payload.requirementsNone??null,duplicate:true};
+        history.push({actionId:input.action_id,at:new Date(this.now()).toISOString(),by:`concierge:${actor.session}`,
+            before:{requirements:payload.requirements??[],none:payload.requirementsNone??null},after:{requirements:ids,none:declaresNone?why:null}});
+        if(ids.length)payload.requirements=ids;else delete payload.requirements;
+        if(declaresNone)payload.requirementsNone=why;else delete payload.requirementsNone;
+        payload.requirementsHistory=history;
+        db.query('UPDATE session_communication_requests SET payload_json=? WHERE request_id=? AND outcome IS NULL').run(JSON.stringify(payload),current.request_id);
+        return {request_id:current.request_id,requirements:ids,none:declaresNone?why:null,duplicate:false};
+    }
     cancel(input:{source:CommunicationSource;request_id:string;action_id:string;reason?:string}) {
         const actor=this.fenced(this.actor(input.source));
         action(input.action_id);

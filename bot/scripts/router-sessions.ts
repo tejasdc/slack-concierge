@@ -62,6 +62,7 @@ router-actions.sh sessions chatgpt-recover <original-chatgpt-request-id> <source
 router-actions.sh sessions codex-recover <original-request-id> [--custody-successor] <source-flags> --action-id A  # recover only the exact retained reminder; custody-successor preserves Astra Medium in a new native thread
 router-actions.sh sessions attention withdraw <session-address> <source-flags> --action-id A --need <exact open event ID> --reason "<why no answer is needed>"
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
+router-actions.sh sessions requirements <request-id> (--requirements <record> ... | --requirements none --requirements-why "<reason>") <source-flags> --action-id A   # the requester re-declares which requirement records an open request delivers
 router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--notify] [--also-main-thread] [--partial [--answers-question] [--waiting-on-watch <watch-id>] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>" | --nothing-changed "<what the answer rests on>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--before "<what earlier agents did and how this differs>" (required on the first reply to a request that came with WHAT CAME BEFORE)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 --notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes any waiting one-shot notification on that Inbox topic. On reply it is honored for a substantive --partial --answers-question answer or a final --work-disposition completed reply with --checked: ordinary progress, corrections and failures stay quiet and the flag is dropped with a notice. A bodyless final cannot use it.
 When a ready decision question, needs_you outcome, or needs_decision reply blocks work on Tejas, the owner raises one phone notification by default. The question opens with its one-line --summary (required on needs_you as on every final reply): say what he must decide and the result it depends on, because it is the first line of his notice; background and other news go in the text after it. Name what he must do and where he can answer; --notify is for an additional explicit request on a different message, not needed for the blocked question. Routine progress and completed answers keep their existing notification rule. A question that asks him to sign in, give a secret or do something on his device names the to-do it is about with --todo <id> (find it in his to-dos: thinkering -s 'http://x/todos/tasks?limit=200', which reaches thnkr.ing from the server or a runner, or curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL where thinkering is not found; from the Mac, curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL through ssh remote-box), or --todo none when no to-do for that step exists. Concierge refuses the question when that to-do is already done or dropped (he has already done it, so continue from there), and closes the question by itself when he ticks the to-do off.
@@ -209,6 +210,7 @@ export type SessionCommunicationRequest =
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; notify?:boolean; also_main_thread?:boolean; also?: string[]; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; todo?:string; decision_id?:string; approval_action?:string; checked?:string; not_checked?:string; nothing_changed?:string; all_done?:boolean; hand_back?:string; quiet_because?:string; before?:string } }
   | { operation: "get"; body: { source: Source; request_id: string } }
+  | { operation: "request-requirements"; body: { source: Source; action_id: string; request_id: string; requirements: string[]; requirements_why?: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
   | { operation: "handoff"; body: { source: Source; verb: 'propose'|'accept'|'withdraw'; address?: string; provider?: string; model?: string; effort?: string; reason?: string; session_name?: string; action_id: string; handoff_id?: string; digest?: string } }
   | { operation: "obligations"; body: { source: Source; address?: string } }
@@ -806,7 +808,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(!action_id||!reason)invalid('edit-reason needs --reason and a stable --action-id from this run.');
     return {operation:'edit-reason',body:{source,action_id,reason}};
   }
-  if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "history-storage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "answer" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
+  if (operation !== "projects" && operation !== "agents" && operation !== "peers" && operation !== "usage" && operation !== "history-storage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "outcome" && operation !== "answer" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel" && operation !== "requirements") {
     invalid("Choose a session command: thread, topics, projects, agents, peers, usage, search, context, ask, note, title, post, outcome, answer, reply, get, or cancel.");
   }
   const separator = args.indexOf("--");
@@ -924,7 +926,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || ((flag === "--limit" || flag === "--after") && operation === "history-storage")
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
-      || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "answer" || operation === "thread" || operation === "cancel"))
+      || (flag === "--action-id" && (operation === "ask" || operation === "requirements" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "outcome" || operation === "answer" || operation === "thread" || operation === "cancel"))
       || (flag === '--reason' && operation === 'cancel')
       || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask" || operation === "search" || operation === "context"))
       || (["--route-message","--response-mode"].includes(flag) && operation === "ask")
@@ -938,7 +940,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--every-ms" && savedKind==='scheduled')
       || (['--daily-at','--time-zone'].includes(flag) && savedKind==='scheduled')
       || (flag === "--session-name" && operation === "ask")
-      || (["--requirements","--requirements-why"].includes(flag) && operation === "ask")
+      || (["--requirements","--requirements-why"].includes(flag) && (operation === "ask" || operation === "requirements"))
       || (["--effort","--escalation-reason","--gpt","--chatgpt-project","--project","--capture-id","--requested-effect","--after-request","--after-settled","--for-task","--recovery-of","--correction-of","--purpose","--provider-reason","--resume-source-input","--resume-source-run"].includes(flag) && operation === "ask")
       // A reply or post carries files the same way an ask does: own bytes, or already
       // retained custody a router forwards without downloading it.
@@ -1039,6 +1041,11 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   const actionId = flags.get("--action-id");
   if (!actionId) invalid(`${operation} requires an explicit stable --action-id.`);
+  if(operation==='requirements') {
+    if(separator>=0)invalid('requirements does not accept text or a -- separator.');
+    if(!requirementRecords.length)invalid('requirements needs --requirements <record> ... or --requirements none --requirements-why "<reason>".');
+    return {operation:'request-requirements',body:{source,action_id:actionId,request_id:identity!,requirements:requirementRecords,...(flags.has('--requirements-why')?{requirements_why:flags.get('--requirements-why')!}:{})}};
+  }
   if(operation==='cancel') {
     if(separator>=0)invalid('cancel does not accept text or a -- separator.');
     return {operation,body:{source,action_id:actionId,request_id:identity!,...(flags.has('--reason')?{reason:flags.get('--reason')!}:{})}};
