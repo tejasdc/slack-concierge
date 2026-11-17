@@ -22,6 +22,13 @@ The bounded raw-body preview was the only output representation. A preview is
 appropriate for logs, but it cannot also serve as a structured admission receipt:
 the response contains a retained request before its diagnostic observation.
 
+Live acceptance later found a second, independent cause after the formatter was
+installed: the ordinary Linux `test-capture` wrapper path still selected the
+calling session's pinned control directory. A long-running turn therefore ran the
+older client even though the current installed release contained the formatter.
+Neighboring owner-facing commands already select their client from the current
+installed release; `test-capture` had not joined that dispatch path.
+
 ## Fix
 
 Parse the complete response before formatting the preview. Keep its existing
@@ -34,6 +41,9 @@ without throwing after a capture may have been accepted.
 The helper is included through the existing sealed control artifact map. The
 focused response fixture runs in the existing release gate. Capture identity,
 admission, classifier semantics, agent provenance and phone authority are unchanged.
+The wrapper now selects the current installed client on Linux, retaining its pinned
+fallback and the macOS workspace path; an executable stale-pin regression runs in
+the same release gate.
 
 ## Acceptance scenario
 
@@ -45,3 +55,10 @@ admission, classifier semantics, agent provenance and phone authority are unchan
 Installed acceptance uses one fresh marked agent capture through the ordinary
 test-capture command and reads these fields from its output. That demonstrates
 command presentation, not a human input or physical phone notification.
+
+### Installed-client selection
+
+- **Seed:** A disposable copy of the actual wrapper, a stale pinned client, and a current installed server client represented by private temporary paths.
+- **Action:** Execute `test-capture` with exact arguments, including spaces.
+- **Expected:** Linux chooses the current client; Darwin and missing-current cases preserve the pinned fallback; an unrelated verb stays pinned even while the current client exists.
+- **Replayable offline:** yes; run `bun run scripts/test-capture-installed-dispatch-fixture.ts` from `bot/`. The fixture never changes production files or submits a capture.
