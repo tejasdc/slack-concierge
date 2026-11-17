@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync, readFileSync, readdirSync, realpathS
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { liveStores } from './live-store-locations';
+import { agentLedgerImageCommand, LEDGER_IMAGE_PATH } from './agent-ledger-image-boundary';
 
 function loopBackingFiles(directories: string[]): string[] {
   const mounts = readFileSync('/proc/self/mountinfo', 'utf8').split('\n').flatMap(line => {
@@ -45,17 +46,18 @@ export function inheritedDatabaseBoundary(state = join(homedir(), '.local/state/
 export function privateDatabaseCommand(command: string[], allowPrivateMounts = false): string[] {
   if (process.platform !== 'linux') return command;
   const state = join(homedir(), '.local/state/concierge');
-  if (!existsSync(state)) return command;
+  if (!existsSync(state)) return agentLedgerImageCommand(command);
   // A child of this boundary inherits the masked directory. Ordinary checks
   // drop capabilities; the code launcher uses a second user namespace so its
   // mount-capable children cannot unmount the protected outer mounts.
-  if (inheritedDatabaseBoundary(state)) return command;
+  if (inheritedDatabaseBoundary(state)) return agentLedgerImageCommand(command);
   if (!existsSync('/usr/bin/bwrap')) throw new Error('Release database isolation requires bubblewrap.');
   // The ledger's own filesystem is reached directly too, not only through the state directory's
   // link, so every live directory that link record names is hidden (2026-10-16).
   const directories = liveStores(state).directories.filter(directory => existsSync(directory));
   const hidden = [
-    ...loopBackingFiles(directories).flatMap(file => ['--ro-bind', '/dev/null', file]),
+    ...[...new Set([...loopBackingFiles(directories), ...(existsSync(LEDGER_IMAGE_PATH) ? [LEDGER_IMAGE_PATH] : [])])]
+      .flatMap(file => ['--ro-bind', '/run/systemd/inaccessible/chr', file]),
     ...directories.flatMap(directory => ['--tmpfs', directory, '--chmod', '000', directory]),
   ];
   const outer = ['/usr/bin/bwrap', '--die-with-parent', '--bind', '/', '/', '--dev', '/dev',

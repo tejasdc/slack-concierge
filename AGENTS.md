@@ -31,6 +31,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   rollback's separate controller and the disposable installed-command acceptance.
   Native release acceptance explicitly selects the host's GNU timeout dependency;
   see [durability acceptance](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md#isolated-acceptance-and-live-gate).
+- Agent execution units and shared Codex starts/restarts mask the ledger backing image;
+  [execution host isolation](docs/architecture/EXECUTION-HOST.md#ledger-backing-image-isolation)
+  owns the boundary and the separate idle activation gate for already-running work.
 - Mac disk upkeep shares the existing automatic update job; log retention, identity staging,
   finished-worktree proof, pressure notices and partial-effect receipts live in
   [Mac disk maintenance](docs/runbooks/MAC-DISK-MAINTENANCE.md).

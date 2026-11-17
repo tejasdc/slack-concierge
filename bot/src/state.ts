@@ -5803,7 +5803,8 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
 const codexAdmissionHolders=new CodexAdmissionHolds();
 for(const row of db.query('SELECT holder FROM codex_admission_holds').all() as {holder:string}[])
   codexAdmissionHolders.set(row.holder,true);
-export type CodexAdmissionRecovery={kind:'runner-activation';runner:string;account:string;operationId:string}|{kind:'runner-rehome';runner:string};
+export type CodexAdmissionRecovery={kind:'runner-activation';runner:string;account:string;operationId:string}|{kind:'runner-rehome';runner:string}
+  |{kind:'runner-runtime-maintenance';runner:string;operationId:string;sourceInputId:string;sourceRunId:string;actionId:string;requiredCommit:string};
 export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdmissionRecovery){
   if(held&&recovery){
     db.query('INSERT INTO codex_admission_holds(holder,recovery_json,created_at_ms) VALUES(?,?,?) ON CONFLICT(holder) DO UPDATE SET recovery_json=excluded.recovery_json')

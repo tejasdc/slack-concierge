@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { log } from "./log";
 import { AGENT_WORK_SLICE } from "./agent-work-slice";
 import { codexUpdaterDisabled } from "./codex-updater-settings";
+import { agentLedgerImageCommand } from './agent-ledger-image-boundary';
 
 const run = promisify(execFile);
 
@@ -23,7 +24,7 @@ export function holdCodexDaemonAutoStart(held: boolean) { autoStartHeld = held; 
 export async function startCodexDaemonInOwnScope(): Promise<{ code: number | null; output: string }> {
   try {
     const { stdout, stderr } = await run("systemd-run", ["--scope", `--slice=${AGENT_WORK_SLICE}`, "--collect", "--quiet", "--property=IOAccounting=yes", "--description=Shared Codex App Server",
-      MANAGED_CODEX, "app-server", "daemon", "start"], { timeout: 90_000 });
+      ...agentLedgerImageCommand([MANAGED_CODEX, "app-server", "daemon", "start"])], { timeout: 90_000 });
     return { code: 0, output: `${stdout}${stderr}` };
   } catch (error: any) {
     return { code: typeof error?.code === "number" ? error.code : 1, output: String(error?.stderr ?? error?.message ?? error) };
@@ -95,7 +96,7 @@ export function startCodexDaemonWhenAbsent(reason: string) {
   daemonStart = (process.platform === "darwin"
     ? run("/bin/sh", ["-c", 'ulimit -n 65536 2>/dev/null; exec "$0" app-server daemon start', MANAGED_CODEX], { timeout: 60_000 })
     : run("systemd-run", ["--scope", `--slice=${AGENT_WORK_SLICE}`, "--collect", "--quiet", "--property=IOAccounting=yes", "--description=Shared Codex App Server",
-      MANAGED_CODEX, "app-server", "daemon", "start"], { timeout: 60_000 }))
+      ...agentLedgerImageCommand([MANAGED_CODEX, "app-server", "daemon", "start"])], { timeout: 60_000 }))
     .then(({ stdout }) => log("warn", "codex_daemon_started_when_absent", { reason, answer: stdout.trim().slice(0, 300) }))
     .catch((error: unknown) => log("error", "codex_daemon_start_failed", { reason, error: error instanceof Error ? error.message : String(error) }))
     .finally(() => { daemonStart = null; });

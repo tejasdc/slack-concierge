@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { codexDaemonImageCommand } from './agent-ledger-image-boundary';
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -91,7 +92,8 @@ function run(command: string, args: string[], timeoutMs: number, environment:Nod
     // LimitNOFILE. A daemon started from an interactive shell instead inherits
     // that shell's 1024 and exhausts it re-opening observer subscriptions; that
     // is why this restart belongs here and not in an SSH session.
-    const child = spawn(command, args, { env: environment, stdio: ["ignore", "pipe", "pipe"], ...(cwd ? { cwd } : {}) });
+    const [executable, ...arguments_] = codexDaemonImageCommand(command, args);
+    const child = spawn(executable!, arguments_, { env: environment, stdio: ["ignore", "pipe", "pipe"], ...(cwd ? { cwd } : {}) });
     let output = "";
     const collect = (chunk: Buffer) => { output += chunk.toString(); };
     child.stdout.on("data", collect);
@@ -549,6 +551,8 @@ export function watchAuthHeldCredentials(): () => void {
     .catch(error=>log('error','codex_runner_admission_recovery_failed',{error:error instanceof Error?error.message:String(error)}));
   repair();
   const detach=observeExecutionChanges(()=>{
+    void import('./runner-provider-account-owner').then(module=>module.resumeRunnerCodexRuntimeMaintenance())
+      .catch(error=>log('error','codex_runtime_maintenance_recovery_failed',{error:String(error)}));
     updateInterval();
     if(pendingCodexActivation && runningCodexTurns()===0)check('codex','turn_finished');
     if(pendingCodexRepair && runningCodexTurns()===0)repair();

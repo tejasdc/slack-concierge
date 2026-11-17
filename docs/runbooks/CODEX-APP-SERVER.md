@@ -34,7 +34,7 @@ a few seconds (503 `RUNNER_NOT_LISTENING`); that gap is not an outage
 - **Minimum version 0.166.0:** the history guard needs Codex to report each command's own folder to its pre-command hook, which Codex does from 0.166.0 (openai/codex #57198). Earlier versions report the session's folder, so a local-only amend in another repository was refused on 2026-11-12. The server staged 0.166.0 that day; the App Server picks it up at its next restart.
 - **Discovery:** the interactive standalone CLI may check for and offer a new version. No repository-owned systemd timer checks for Codex releases.
 - **Staging:** accepting the standalone CLI prompt or manually running the official installer updates the versioned package tree and `current`. It does not activate the new App Server binary.
-- **Activation:** explicit maintenance only. There is no automated Concierge activation command yet. Close provider admission, prove turns idle, restart the App Server, probe it, reconnect, and reopen admission.
+- **Activation:** explicit source-bound `sessions codex-maintenance` from an independent outside CLI worker; see [runtime maintenance](#source-bound-runtime-maintenance). It closes admission, defers active shared work, uses the supported native graceful-only drain and reopens only after replacement/API proof. Ordinary deployment preserves the loaded daemon.
 - **Built-in updater:** disabled by Codex's supported `updater.autoUpdateEnabled: false` in each machine's own `~/.codex/app-server-daemon/settings.json`, preserving the other settings. The server's normal release installer merges the preference before service restart; its systemd startup and in-process daemon-start path refuse to launch without it. The Mac installer merges it as the signed-in user before its daemon start, not in the later sudo hook step. Account-switch restarts also refuse if it is missing. Both `daemon start` and `daemon bootstrap` otherwise launch an updater, even if the App Server is already running. The updater's fixed 60-second grace and lack of Concierge admission coordination do not satisfy the active-agent contract. An intentional CLI update may stage a new release without activating the loaded App Server.
 
 Autonomous deployment repair and its independent review use this same installed
@@ -116,7 +116,46 @@ curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
 
 Repeat the topology and version checks, then stop. Do not run `daemon restart` merely because `managedCodexVersion` is newer than `appServerVersion`. Existing sessions continue on their loaded executable; future ordinary CLI launches use the new `current` target.
 
-There is not yet a Concierge-owned App Server activation command. Until one is implemented with the admission sequence above, activation is an explicit operator maintenance operation. Do not substitute the built-in updater.
+Use the source-bound operation below for the verified supported native runtime. Do not substitute the built-in updater or `daemon stop/restart`, whose forced deadline can interrupt accepted work.
+
+## Source-bound runtime maintenance
+
+Run from an independent `sessions ask --outside` worker, with that worker's own exact live source
+input/run, stable action and the full source commit that the installed runner must contain:
+
+```sh
+router-actions.sh sessions codex-maintenance --required-commit <full-source-commit> --source-input <worker-input> --source-run <worker-run> --action-id <stable-action>
+```
+
+Keep retrying the same command while it returns `waiting`, `draining` or `uncertain`. The operation
+identity and source action are retained before owner admission closes. A changed required commit
+or runner conflicts before a new hold is created, including after terminal success. If the worker
+resumes in a new turn, pass its new live source pair plus `--resume-operation <runtime:id>`; only
+the same worker session can progress/read the already retained operation, with its original
+source/action/runner/release unchanged. A terminal original source run is not a valid live actor.
+
+The distinct durable maintenance hold survives owner restart. The existing restart lock and
+runner activation journal reserve the App Server before the first asynchronous preflight and
+restore auto-start/account/re-home fences on runner restart. Shared owned turns remain untouched;
+independent outside CLI runs do not self-block on a daemon they do not use. Native loaded-thread
+activity must also prove idle before the first signal. The runner records boot ID, exact control
+listener PID and start ticks, then sends **SIGHUP**, not SIGTERM or a daemon-controller stop.
+
+This operation currently supports only a loaded `codex-cli 0.166.0`, checked through that exact
+process's executable. [Pinned upstream native signal handling](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/lib.rs)
+maps SIGHUP to GracefulOnly; native admission and drain share the receiver's lock. A native start
+racing the snapshot is either refused or fully drained. There is no force deadline. Retried
+SIGHUP to the same exact generation is graceful-only too, so recovery after durable intent but
+before signal cannot accidentally invoke a forced second-signal path.
+
+After the original generation exits, the runner starts through the installed image mask, or
+reconciles a replacement already present. It proves the exact listener sees the inaccessible
+0:0 image device and `model/list` answers; the owner must reconnect its persistent API and repeat
+that model read before releasing its exact hold. Unknown generation, unsupported runtime,
+response loss or failed proof keeps admission held and the original request open. No credentials
+or provider inputs are rewritten. A replacement that already proves mask/API health is never
+drained again just to repeat acceptance. Native protocol/process fixtures are separate from
+installed provider-agent no-byte-open, API access and owner/backup-namespace acceptance.
 
 ## Invariant: Only The Managed Daemon Starts The App Server
 

@@ -31,3 +31,4 @@ export const NATIVE_HOME_REPAIR_TEST_AUTHORIZATION='native-home-repair-2026-11-1
 // The sealed private entrance marks its children as tests; the database-safety fixture's
 // empty-schema and release-read children open only its own temporary ledger (request 02b26d77).
 export const DATABASE_SAFETY_FIXTURE_TEST_AUTHORIZATION='database-safety-fixture-02b26d77';
+export const CODEX_RUNTIME_MAINTENANCE_TEST_AUTHORIZATION='codex-runtime-maintenance-ledger-image';
