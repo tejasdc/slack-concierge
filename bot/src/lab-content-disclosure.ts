@@ -69,18 +69,30 @@ export function contentReaderHeaders(peer=false):Record<string,string> {
  return {'x-concierge-agent-origin':'agent',...(scope.principal?{'x-concierge-agent-principal':scope.principal.kind==='run'?`run:${scope.principal.sessionId}:${scope.principal.turnId}`:`runner:${scope.principal.runner}`} :{}),
   ...(scope.source?{'x-concierge-agent-source':`${scope.source.inputId} ${scope.source.runId}`}:{})};
 }
-function origins(input:AcceptedSessionInput,seen=new Set<string>(),invocations=new Set<string>()):Set<string> {
+/** Every disclosure fan-out query is LIMITed so a budgeted agent read is admitted (an unbounded
+ * reply query made agent receipt reads answer 503 on 2026-11-17, release fc2ce97a). A set larger
+ * than the bound cannot be proven free of Lab provenance, so overflow reads as protected. */
+export const DISCLOSURE_FANOUT_LIMIT=64;
+type Walk={seen:Set<string>;invocations:Set<string>;overflow:boolean};
+function boundedRows<T>(walk:{overflow:boolean},sql:string,...args:any[]):T[] {
+ const rows=db.query(`${sql} LIMIT ${DISCLOSURE_FANOUT_LIMIT+1}`).all(...args) as T[];
+ if(rows.length>DISCLOSURE_FANOUT_LIMIT){walk.overflow=true;return rows.slice(0,DISCLOSURE_FANOUT_LIMIT);}
+ return rows;
+}
+const REPLY_SOURCES="SELECT source_input_id FROM session_inputs WHERE request_id=? AND kind='reply' ORDER BY rowid";
+function origins(input:AcceptedSessionInput,walk:Walk):Set<string> {
+ const {seen,invocations}=walk;
  const threads=new Set<string>();if(seen.has(input.id))return threads;seen.add(input.id);
  const payload=JSON.parse(input.payload_json);
  if(input.scope==='lab:invocation'&&typeof payload.labInvocation?.thread==='string'){threads.add(payload.labInvocation.thread);invocations.add(input.id);}
  if(['lab-conversation','lab-roster','lab-activation','lab-membership','lab-binding'].includes(input.kind)){
   const thread=payload.thread??payload.binding?.thread;if(typeof thread==='string')threads.add(thread);
  }
- if(input.source_input_id){const source=getAcceptedSessionInput(input.source_input_id);if(source)for(const thread of origins(source,seen,invocations))threads.add(thread);}
+ if(input.source_input_id){const source=getAcceptedSessionInput(input.source_input_id);if(source)for(const thread of origins(source,walk))threads.add(thread);}
  if(input.request_id){
   const request=db.query('SELECT source_input_id,target_input_id FROM session_communication_requests WHERE request_id=?').get(input.request_id) as any;
-  const replies=db.query("SELECT source_input_id FROM session_inputs WHERE request_id=? AND kind='reply'").all(input.request_id) as {source_input_id:string|null}[];
-  for(const id of [request?.source_input_id,request?.target_input_id,...replies.map(value=>value.source_input_id)]){const linked=id?getAcceptedSessionInput(id):null;if(linked)for(const thread of origins(linked,seen,invocations))threads.add(thread);}
+  const replies=boundedRows<{source_input_id:string|null}>(walk,REPLY_SOURCES,input.request_id);
+  for(const id of [request?.source_input_id,request?.target_input_id,...replies.map(value=>value.source_input_id)]){const linked=id?getAcceptedSessionInput(id):null;if(linked)for(const thread of origins(linked,walk))threads.add(thread);}
  }
  return threads;
 }
@@ -89,7 +101,8 @@ export function restrictedLabThread(thread:string):boolean {
 }
 export function inputContentVisible(input:AcceptedSessionInput):boolean {
  const reader=contentReader();if(reader.kind==='trusted'||reader.kind==='actor'&&!reader.comparison?.openingOnly)return true;
- const invocations=new Set<string>(),threads=origins(input,new Set(),invocations);if(!threads.size)return true;
+ const walk:Walk={seen:new Set(),invocations:new Set(),overflow:false},invocations=walk.invocations,threads=origins(input,walk);
+ if(walk.overflow)return false;if(!threads.size)return true;
  if(reader.kind==='unknown')return false;
  if(!reader.comparison?.openingOnly||!threads.has(reader.comparison.thread))return true;
  if(input.id===reader.turn.accepted_input_id)return true;
@@ -97,23 +110,24 @@ export function inputContentVisible(input:AcceptedSessionInput):boolean {
  return input.scope!=='lab:invocation'&&!['lab-conversation','lab-roster','lab-activation','lab-membership','lab-binding'].includes(input.kind)&&invocations.size===1&&invocations.has(original);
 }
 export function assertInputContent(input:AcceptedSessionInput):void {if(!inputContentVisible(input))throw new LabDisclosureError();}
-function sessionThreads(sessionId:number):Set<string> {
+function sessionThreads(sessionId:number,walk:{overflow:boolean}={overflow:false}):Set<string> {
  const session=getSessionById(sessionId),nativeId=session?sessionMetadata(session).source?.nativeId:null;
  const local=nativeId?(db.query('SELECT id FROM sessions WHERE agent_session_uuid=? AND id<>? ORDER BY id LIMIT 1').get(nativeId,sessionId) as {id:number}|null)?.id:null;
- const rows=db.query("SELECT payload_json FROM session_inputs WHERE session_id=? AND scope='lab:invocation'").all(sessionId) as {payload_json:string}[];
+ const rows=boundedRows<{payload_json:string}>(walk,"SELECT payload_json FROM session_inputs WHERE session_id=? AND scope='lab:invocation' ORDER BY rowid",sessionId);
  const result=new Set(rows.flatMap(row=>{const thread=JSON.parse(row.payload_json).labInvocation?.thread;return typeof thread==='string'?[thread]:[];}));
- if(local)for(const thread of sessionThreads(local))result.add(thread);return result;
+ if(local)for(const thread of sessionThreads(local,walk))result.add(thread);return result;
 }
 export function opaqueSessionProtected(sessionId:number):boolean {
  const reader=contentReader();if(reader.kind==='trusted'||reader.kind==='actor'&&!reader.comparison?.openingOnly)return false;
- const threads=sessionThreads(sessionId);return reader.kind==='unknown'?threads.size>0:reader.comparison?.openingOnly===true&&threads.has(reader.comparison.thread);
+ const walk={overflow:false},threads=sessionThreads(sessionId,walk);if(walk.overflow)return true;return reader.kind==='unknown'?threads.size>0:reader.comparison?.openingOnly===true&&threads.has(reader.comparison.thread);
 }
 export function assertOpaqueSession(sessionId:number):void {if(opaqueSessionProtected(sessionId))throw new LabDisclosureError('LAB_CONTENT_PROVENANCE_REQUIRED');}
 export function messageContentVisible(sessionId:number,message:any):boolean {
  const reader=contentReader();if(reader.kind==='trusted'||reader.kind==='actor'&&!reader.comparison?.openingOnly)return true;
  let id:string|null=null;
- const rows=db.query("SELECT DISTINCT input_id,turn_id FROM session_owner_events WHERE session_id=? AND kind='message' AND json_extract(payload_json,'$.message.id')=?").all(sessionId,message.id) as any[];
- const ids=new Set(rows.flatMap(row=>{const value=row.input_id??(row.turn_id?(db.query('SELECT accepted_input_id FROM turns WHERE id=?').get(row.turn_id) as any)?.accepted_input_id:null);return value?[value]:[];}));
+ const walk={overflow:false},rows=boundedRows<any>(walk,"SELECT DISTINCT input_id,turn_id FROM session_owner_events WHERE session_id=? AND kind='message' AND json_extract(payload_json,'$.message.id')=?",sessionId,message.id);
+ // Overflow leaves the message's input ambiguous; it falls to the session-level opaque check below.
+ const ids=walk.overflow?new Set<string>():new Set(rows.flatMap(row=>{const value=row.input_id??(row.turn_id?(db.query('SELECT accepted_input_id FROM turns WHERE id=?').get(row.turn_id) as any)?.accepted_input_id:null);return value?[value]:[];}));
  if(ids.size===1)id=[...ids][0] as string;
  if(!id){const turn=/^(?:input|output):([1-9][0-9]*)$/.exec(message.id??'');if(turn)id=(db.query('SELECT accepted_input_id FROM turns WHERE id=? AND session_id=?').get(Number(turn[1]),sessionId) as any)?.accepted_input_id;}
  if(id){const input=getAcceptedSessionInput(id);if(input)return inputContentVisible(input);}
@@ -127,6 +141,8 @@ export function evidenceContentVisible(sessionId:number,item:any):boolean {
 }
 export function assertCommunicationContent(requestId:string):void {
  const row=db.query('SELECT source_input_id,target_input_id FROM session_communication_requests WHERE request_id=?').get(requestId) as any;
- const replies=db.query("SELECT source_input_id FROM session_inputs WHERE request_id=? AND kind='reply'").all(requestId) as {source_input_id:string|null}[];
+ if(trustedContentReader())return;
+ const walk={overflow:false},replies=boundedRows<{source_input_id:string|null}>(walk,REPLY_SOURCES,requestId);
+ if(walk.overflow){const reader=contentReader();if(reader.kind==='unknown'||reader.kind==='actor'&&reader.comparison?.openingOnly)throw new LabDisclosureError();}
  for(const id of [row?.source_input_id,row?.target_input_id,...replies.map(value=>value.source_input_id)]){const input=id?getAcceptedSessionInput(id):null;if(input)assertInputContent(input);}
 }
