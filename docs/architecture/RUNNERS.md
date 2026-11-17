@@ -498,6 +498,21 @@ operation outcome and does not launch or submit twice. A different active sign-i
 provider is refused. If the runner restarts during sign-in, the pending operation becomes
 `interrupted`; the caller must start a new operation. If the runner is unreachable, the call has no
 answer and its outcome is unknown until the same operation ID is queried again.
+
+**A sign-in command never outlives its operation.** The journal also records which process the
+sign-in is, by `runtime-identity`'s pid, boot and start time, from the moment the command exists
+and only while the operation is active. A terminal operation's row carries no process. At start,
+an operation that was active in the previous run is reconciled before it is recorded: a recorded
+process still proven alive is ended with its whole process group, and the operation's own detail
+says the leftover was ended; a process already gone claims nothing; an identity that cannot be
+proven is never signalled and the detail says the leftover could not be established. The group is
+what gets signalled because a shell runs the provider CLI, and the group form is used only on
+proof that the process leads its own group — the runner's children otherwise share the runner's
+group. This cannot be left to the unit's cgroup: `remote-box-concierge-runner.service` is
+`KillMode=process` so release restarts keep the long-lived children it means to own, and on
+2026-11-06 a `claude auth login` outlived its interrupted operation by eleven days and many
+restarts. `bot/scripts/provider-signin-leftover-fixture.ts` proves each branch against real
+processes, including that ending the shell alone leaves the CLI running.
 When runner readings or an exact runner turn refusal show a saved Claude login has stopped working,
 the owner creates the existing Mac-browser renewal request for that account; it does not try the
 owner's local Claude home. A Codex turn refusal likewise names the account that actually ran.

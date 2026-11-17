@@ -1,5 +1,7 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { log } from "./log";
+import { processIdentity, type ProcessIdentity } from "./runtime-identity";
 
 // Interactive provider logins on this headless host print an authorization URL
 // and then wait on stdin for the code the provider shows after approval. The
@@ -17,6 +19,51 @@ export type AuthLoginFailure =
   | "no_url_before_timeout"   // the CLI ran but never printed a link we could read
   | "cli_exited"              // the CLI gave up or refused before presenting anything
   | "superseded";             // another sign-in for the same provider replaced this one
+
+/**
+ * Which process a sign-in is, recorded so a later run of this program can recognise it. Process
+ * identity is `runtime-identity`'s: a process id alone names whatever now holds it, so proof is
+ * the id together with the machine's boot and the process's own start time.
+ */
+export function loginProcessIdentity(pid: number | undefined): ProcessIdentity | null {
+  if (typeof pid !== "number" || pid <= 1) return null;
+  try { return processIdentity(pid); } catch { return null; }
+}
+
+/**
+ * Whether this process leads its own group. Signalling a group reaches everything in it, and for
+ * a child that never became a leader that is the runner's own group — every agent session on the
+ * machine. So the group form is used only on this proof, never on the assumption that the spawn
+ * asked for one.
+ */
+function leadsOwnGroup(pid: number): boolean {
+  try {
+    if (process.platform === "darwin") {
+      const group = spawnSync("/bin/ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" });
+      return group.status === 0 && group.stdout.trim() === String(pid);
+    }
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // The fields after the parenthesised command name begin at the line's third, so the
+    // process group is at index 2.
+    return stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[2] === String(pid);
+  } catch { return false; }
+}
+
+/**
+ * End a sign-in's whole process group, because a shell runs the provider CLI and ending the
+ * shell alone leaves the CLI holding the sign-in. A negative id addresses the group; the plain
+ * id is the fallback for a process that never became a group leader.
+ */
+export function endLoginGroup(pid: number | undefined, signal: "SIGTERM" | "SIGKILL"): void {
+  if (typeof pid !== "number" || pid <= 1) return;
+  if (leadsOwnGroup(pid)) {
+    try { process.kill(-pid, signal); return; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return;
+    }
+  }
+  try { process.kill(pid, signal); } catch { /* already gone */ }
+}
 
 export type AuthLoginStartResult =
   | { status: "awaiting_code"; url: string }
@@ -124,6 +171,12 @@ export class ProviderLoginManager {
      * null when the sign-in is over, however it ended.
      */
     onPendingChanged?: (provider: string, expiresAtMs: number | null) => void;
+    /**
+     * Which process the sign-in became, the moment it exists. A caller that records this durably
+     * can end a sign-in a dead run of this program left behind. It fires before the wait for the
+     * provider's link, because that wait is where a runner restart is most likely to catch one.
+     */
+    onProcessStarted?: (provider: string, identity: ProcessIdentity) => void;
   } = {}) {}
 
   /** One place that owns "is a sign-in waiting", so nothing can drop it silently. */
@@ -142,6 +195,14 @@ export class ProviderLoginManager {
     return login?.state === "awaiting_code" ? login.url : null;
   }
 
+  /**
+   * Which process this provider's waiting sign-in is, for a caller that records it durably so a
+   * later run of this program can recognise and end a sign-in this one left behind.
+   */
+  pendingLoginProcess(provider: string): ProcessIdentity | null {
+    return loginProcessIdentity(this.pending.get(provider)?.process.pid);
+  }
+
   async start(provider: string, command: string, cwd: string, flow: AuthLoginFlow = "paste-code",
     env: Record<string, string> = {}): Promise<AuthLoginStartResult> {
     // Reserve the provider slot before any await so a second concurrent start
@@ -155,6 +216,12 @@ export class ProviderLoginManager {
       // account already there survives.
       env: { ...process.env, ...env },
       stdio: ["pipe", "pipe", "pipe"],
+      // A shell runs the provider CLI, so the process we hold is not the one doing the
+      // sign-in. Its own process group makes the pair one thing to end: signalling the
+      // shell alone left `claude auth login` running for eleven days across many runner
+      // restarts (2026-11-06 to 11-17), because the runner unit is KillMode=process and
+      // its cgroup deliberately does not reap children it means to keep.
+      detached: true,
     }) as ChildProcessWithoutNullStreams;
     const login: PendingLogin = {
       process: child,
@@ -168,6 +235,11 @@ export class ProviderLoginManager {
       }),
     };
     this.pending.set(provider, login);
+    const identity = loginProcessIdentity(child.pid);
+    if (identity) {
+      try { this.options.onProcessStarted?.(provider, identity); }
+      catch (error) { log("warn", "provider_signin_process_record_failed", { provider, error_name: (error as Error)?.name ?? "Error" }); }
+    } else log("warn", "provider_signin_process_unidentified", { provider });
     const collect = (chunk: Buffer) => {
       login.output += chunk.toString();
     };
@@ -303,13 +375,13 @@ export class ProviderLoginManager {
 
   private async killChild(login: PendingLogin): Promise<void> {
     if (login.process.exitCode !== null || login.process.signalCode !== null) return;
-    login.process.kill("SIGTERM");
+    endLoginGroup(login.process.pid, "SIGTERM");
     const graceMs = this.options.shutdownGraceMs ?? 2_000;
     const settled = await Promise.race([
       login.exited.then(() => true),
       new Promise<boolean>((resolve) => setTimeout(() => resolve(false), graceMs)),
     ]);
-    if (!settled) login.process.kill("SIGKILL");
+    if (!settled) endLoginGroup(login.process.pid, "SIGKILL");
   }
 
   async stop(): Promise<void> {

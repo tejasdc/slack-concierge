@@ -63,6 +63,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   `test-capture` also selects the current installed client on Linux; see the
   [agent test delivery](docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries) contract.
 - Native Claude conversation homes, agent-messageability and the source-bound repair control are governed by [runner home custody](docs/architecture/RUNNERS.md#native-conversation-home-custody).
+- A sign-in command never outlives its operation: the runner records which process it is and ends a
+  leftover at its next start, on proven identity only. See
+  [provider accounts on runners](docs/architecture/RUNNERS.md#provider-accounts-on-runners).
 - Hosted-run shutdown custody follows the [execution host](docs/architecture/EXECUTION-HOST.md)
   contract; preserve exact accepted input and provider-result ownership across releases.
 - Claude history payload retirement preserves full SDK rows and the runner
