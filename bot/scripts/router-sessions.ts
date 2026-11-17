@@ -3,7 +3,6 @@ import {agentJson,annotateTextWithHisTime} from "../src/agent-local-time";
 import { requestApiResponse } from "./router-request-client";
 import {readFileSync} from 'node:fs';
 import {basename} from 'node:path';
-import {createHash} from 'node:crypto';
 import {parseProviderSelector,normalizeReasoningEffort,chatgptThinkingLevel,chatgptProject,CHATGPT_PROJECT_PREFIX,CHATGPT_GPT_RETIREMENT,CHATGPT_THINKING_LEVELS,DEFAULT_CHATGPT_THINKING,DEFAULT_HIS_CHATGPT_THINKING,PROVIDER_ALIASES} from '../src/aliases';
 import {REQUEST_PROTOCOL} from '../src/request-protocol';
 import {nextDailyWallClock,validDailyWallClock} from '../src/daily-wall-clock';
@@ -1315,21 +1314,7 @@ export async function runRouterSessions(request: SessionCommunicationRequest) {
       agentSource:{inputId:source.input_id,runId:source.run_id}});
   }
   if(request.operation==='agents')return requestApiResponse('/sessions/v1/presentation/agents');
-  if (request.operation !== 'reply' || !request.body.also?.length)
-    return requestApiResponse(`/session-communication/${request.operation}`, request.body);
-  // One explicit command closes several requests. Its stable group identity, rather than its
-  // words, tells the owner that one post or return carries this answer.
-  const { also, ...first } = request.body;
-  const answers = [];
-  for (const [index, requestId] of [first.request_id, ...also].entries()) {
-    // The owner accepts only short alphanumeric action IDs; a literal request-ID suffix broke the second reply.
-    const actionId=index===0?first.action_id:`reply_${createHash('sha256').update(first.action_id).update('\0').update(requestId).digest('hex').slice(0,40)}`;
-    const response = await requestApiResponse('/session-communication/reply', { ...first, request_id: requestId, action_id: actionId,
-      answer_group:JSON.stringify([first.source,first.action_id]) });
-    if (!response.ok) return response;
-    answers.push(response.result);
-  }
-  return { ok: true, result: answers } as Awaited<ReturnType<typeof requestApiResponse>>;
+  return requestApiResponse(`/session-communication/${request.operation}`, request.body);
 }
 
 if (import.meta.main) {
