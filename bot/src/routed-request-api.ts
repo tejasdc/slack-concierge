@@ -200,6 +200,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'context') return Response.json(await sessions.context(input));
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
+        if (operation === 'reply-notification') return Response.json(sessions.reconcileReplyNotification(input));
         if (operation === 'reply') {
           const deliver=async(child:any,grouped=false)=>withLinkCheck(await sessions.reply(await withRequirementState(await withTodoState(child),sessions),grouped),child,owner);
           if (input.also !== undefined) {
