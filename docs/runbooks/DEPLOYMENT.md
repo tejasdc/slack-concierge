@@ -700,6 +700,18 @@ the same active deployment run and starts the same repair service. A launched
 candidate is first switched back to the recorded last-known-good artifact, and
 Concierge re-proves capture and application health before reopening admission:
 
+If candidate preparation fails before activation, the controller first compares the
+current and last-known-good release identities and proves the serving owner healthy.
+When they match and the owner is healthy, it remains serving during repair handoff.
+If restoration is required, the controller starts the restored service before its
+functional probe; probing a deliberately stopped service previously spent the full
+90-second health deadline offline. The preactivation failure is replayed by the
+deployment failure fixture in the build gate, which substitutes the unit installer
+and service commands. If starting the repair service is refused after the incident
+is recorded, the run stays releasing so the deployment worker retries that exact
+incident; it cannot be terminalized as an unowned failure. See the
+[November 17 failure record](../incidents/2026-11-17-preactivation-failure-stopped-healthy-service.md).
+
 ```text
 concierge-deployment-repair@<incident-id>.service
 ```
