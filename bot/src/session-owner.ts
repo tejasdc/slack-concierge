@@ -86,7 +86,7 @@ import {resolveRunnerProjectLocation} from './runner-project-location';
 import {standingAgentView} from './standing-agent-view';
 import {hostTimerView} from './host-timer-view';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
-import {legacyNotificationRequest} from './session-notification-request';
+import {legacyNotificationRequest,notificationRequest} from './session-notification-request';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxRowByMessageId,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
 import {capturesEnterRouter,isInboxProducerKind,readerCaptureAuthor,readerCaptureRefusal,type ReaderCaptureOrigin} from './inbox-producer-sources';
 import {inboxCapturesPage} from './inbox-captures-page';
@@ -2474,7 +2474,10 @@ export class SessionOwner {
         payload:{text:presentation.text,attachments,capture:{id:captureId,digest,source:capture.source,importOnly,urgency:input.urgency??null,holdForReview:input.holdForReview===true,originalTextAttachmentId:presentation.report?attachments[0]:null}}}).input;
       const holdForReview=focusCaptureReviewEnabled()&&!importOnly&&!input.urgency&&retained.origin==='human'
         &&(input.holdForReview===true||focusHoldState().reviewCaptures);
-      if(importOnly)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true}),retained.id);
+      if(importOnly)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true,
+        // This diagnostic runs the production classifier without turning an agent's words into
+        // human authority. Retain it with admission so a retry returns the same observed result.
+        ...(agent&&!reader&&source.kind!=='agent-report'?{agentTest:{notificationRequest:notificationRequest(presentation.text),humanNotificationArmed:false}}:{})}),retained.id);
       else if(holdForReview){
         db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admissionIntent:'held',state:'held'}),retained.id);
         const position=(db.query('SELECT rowid AS position FROM session_inputs WHERE id=?').get(retained.id) as {position:number}).position;
@@ -2496,7 +2499,9 @@ export class SessionOwner {
     this.runtime.wake();
     const current=getAcceptedSessionInput(accepted.id)!;
     const session=getSessionById(current.session_id)!;
+    const agentTest=agent&&importOnly&&!reader&&source.kind!=='agent-report'?JSON.parse(current.receipt_json??'{}').agentTest:null;
     return {inbox:{sessionId:`concierge:${session.id}`,address:sessionAddress(session)},item:this.inboxCapture(captureId),operation:{...this.receipt(current),id:current.id},
+      ...(agentTest?{agentTest}:{}),
       ...(source.kind==='agent-report'?{report:{topicId:topicOfRoot(current.id),requestId:`req:agent-report:${current.id}`}}:{})};
   }
   async releaseHeldCaptures(body:unknown) {

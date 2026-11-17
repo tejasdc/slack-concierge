@@ -8,6 +8,34 @@ text, a negated request, and a routine request for explanation do not arm delive
 "If you still need my help, send me a notification" uses the blocking-question
 notification if help is needed; it does not arm the topic's next result.
 
+An explicit notification instruction qualifies wherever it occurs in the current
+request: “Fix the login bug and notify me when it is done”, a comma in place of “and”,
+“Fix this, and send me a notification when done”, and “Fix it and ping me once done”
+all select `result`. No approved lead-in vocabulary gates these instructions.
+Exclusions belong to the notification's governing clause: questions about an earlier
+or prospective notification (“Did you notify me?”, “Why did you not notify me?”,
+“Will you notify me?”), negation, reported speech, quoted or discussed command names,
+and descriptions of an existing configuration do not create a new promise. A polite
+“Can you notify me?” or “When done, would you notify me?” remains a request. These
+same exclusions apply to temporal “let me know” and “tell me” phrases. An unrelated
+relative clause (“Fix the bug I mentioned and notify me”) does not turn the current
+instruction into reported speech. Diagnostic JSON after `Complete diagnostics JSON`
+is excluded. The classifier is a deterministic wording rule, not a general intent
+model; its focused fixture and the bounded real-message audit define the observed
+coverage. Accepted historical admission marks are never rewritten.
+
+The authenticated marked capture entrance can exercise this classifier without
+human authority. Its response adds `agentTest.notificationRequest` and
+`humanNotificationArmed:false` for a verified agent test imported into the Inbox.
+The diagnostic result is retained with that capture's admission receipt; an exact
+retry returns the same observation. The operation keeps origin agent,
+`humanAuthored:false`, and its ordinary `notificationRequest:null`; the retained
+payload contains no human notification mark and no phone arm is inserted. Ordinary
+agent inputs, Reader captures and agent issue reports do not gain this annotation.
+This receipt proves classifier execution at the owner, not human admission or phone
+delivery. The direct `test-capture --path monologue` entrance exposes this receipt;
+public capture drop-off acceptance alone does not synchronously prove owner admission.
+
 A `result` input arms its Inbox topic. The owner retains the exact human input
 that armed it. The first substantive agent answer for that input consumes its pending arm
 and emits one requested notification whose `postId` names that answer. The push

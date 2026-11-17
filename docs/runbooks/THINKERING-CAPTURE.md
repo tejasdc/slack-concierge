@@ -65,6 +65,14 @@ Monologue, Alexa and Voice Memos tests use the same agent-to-owner connection as
 `sessions` commands. This works for a run outside Concierge's process, where the
 owner's local socket is not mounted. The returned Inbox receipt identifies the accepted
 capture and its agent origin; these marked tests do not start an Inbox turn.
+For a classifier check, that direct receipt also carries
+`agentTest.notificationRequest` (`result`, `scheduled` or `null`) and
+`humanNotificationArmed:false`. It invokes the production notification classifier
+over the retained capture words and saves the diagnostic result with admission.
+It does not turn the agent's words into a human mark, arm a phone notification, or
+start an Inbox turn. Exact retries return the retained result. See
+[requested phone delivery](../contracts/requested-phone-notifications.md) for the
+explicit-request rule and the owner-event versus physical-phone proof boundary.
 
 His own messages show the door they came through ("You · iPhone Action Button", "You · Mac
 quick capture", "You · Pebble", "You · web", "You · web (password)"), derived by the owner from
