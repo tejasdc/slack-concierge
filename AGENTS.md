@@ -11,6 +11,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 
 ## Work and delivery
 
+- History projection subprocess admission and pre-drain retirement follow
+  [history process retirement](docs/architecture/PROVIDER-HISTORY-INDEX.md#history-process-retirement).
+
 - Tejas deprecated Slack as a product surface on September 15, 2026 (inputs
   `1789490232.840229` and `1789490293.092859`). Do not build Slack features,
   preserve Slack parity, run Slack-specific tests or sandboxes, or treat historical

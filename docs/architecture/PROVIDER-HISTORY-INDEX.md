@@ -1,5 +1,66 @@
 # Bounded provider history reads
 
+## History process retirement
+
+The page projection runtime runs in one persistent Bun subprocess per service
+generation, using the serving process's runtime and sealed application worker path.
+It has a separate SQLite registry: history teardown cannot take the serving Bun
+process's global SQLite lock. IPC carries correlated results or explicit errors;
+lost acknowledgements never authorize provider invocation or manufacture empty history.
+
+Closing seals admission synchronously and permanently, including warm-up, background
+Codex preparation, timed-out work, and late replies. A timeout releases only its
+waiting caller, never process ownership. An unexpected child exit seals this client
+rather than starting another generation. Retirement signals the owned process group,
+escalates termination after two seconds, and awaits child closure and the absence of
+running group descendants (Linux excludes already exited zombies). The existing
+service supervisor remains the outer crash-cleanup boundary.
+
+Both service shutdown entrances stop queue dispatch and set the host's admission
+fence synchronously before retiring history. New accepted requests remain queued;
+the provider wrapper rechecks the fence after durability and all asynchronous
+preparation, immediately before recording admission intent and invoking a provider.
+Proven-unsent work keeps its exact input and returns to the queue; retained earlier
+intent remains uncertain and is never turned into permission to replay. Adoption
+and genuine Stop still follow their existing execution rather than starting another.
+Both entrances retire history before setting general draining state,
+closing request communication, or withdrawing turn custody. During that wait the old
+service still accepts durable requests and provider results. Subsequent drain and
+successor recovery retain their existing exact-input and provider-result contracts;
+history retirement never requests a genuine Stop or retries an invocation.
+
+A retirement rejection logs an explicit failure and continues the ordinary custody
+drain with dispatch fenced. The helper reference is not discarded on that failure;
+the supervised service's process group/cgroup remains the outer termination owner.
+The later host stop uses the same failure continuation, so a rejected retirement
+cannot strand shutdown before request closure or the final custody flush.
+
+The history child explicitly sets `CONCIERGE_READ_WORKER=1`: ledger access opens a
+physically read-only connection, enables query-only mode and skips schema writes.
+The import child reads the native transcript, truncates only scratch segment copies,
+builds a derived `.next.sqlite` transaction, closes it and atomically renames it over
+the derived snapshot. The verification child opens both databases read-only and
+publishes only generation-bound `.verified.json` via temporary-file rename.
+Other projection writes are derived Codex windows/marks and runner transcript copies
+with source-identity metadata. The ledger and native provider transcripts remain
+authoritative and are not written by these paths. SIGKILL may abandon a temporary
+file or interrupt a derived transaction/publication; it cannot interrupt an
+authoritative request/result commit. SQLite rollback and atomic publication retain
+the preceding snapshot, while missing verification is reconstructed from the import
+position. Remote source copy/metadata mismatches remain explicit read failures.
+
+`history-release-fence-fixture.ts` exercises actual claimed work through the execution
+host, exact unsent requeue, retained-intent uncertainty, acceptance during retirement,
+and injected retirement rejection; it runs in the package build chain.
+
+Disposable verification: `bot/scripts/history-process-retirement-fixture.ts` checks
+timeouts, monotonic closure, process exit and durable SQLite acceptance/readback during
+a five-second synchronous helper teardown interrupted by the two-second escalation. Its one-second maximum write bound rejects
+the observed multi-second stall while allowing shared-host fsync variance. The history
+page growth fixture also exercises the real history subprocess. These checks do not
+establish production release timing or exact active-turn continuity across an installed
+release; those remain release acceptance observations.
+
 Claude Code's native session reader follows the transcript graph and compaction rules. Concierge must not recreate those rules from raw JSONL or run that reader inside the single request owner.
 
 That reader lists only what follows a conversation's latest compaction. A compaction never removes history: the import child finds each compaction boundary line and runs the same native reader on a scratch copy of the transcript as it stood just before that boundary, so each earlier part comes back under Claude Code's own rules, followed by the current part, de-duplicated by row identity. Before this, every compaction removed the whole earlier conversation from the session window and his requests from before it were drawn at the bottom (thnkr.ing report 60b1809c, 2026-10-29). Snapshots carry a format number (`provider-history-format.ts`); an older one keeps serving while the verifier child checks its transcript once, recording the current format when it never compacted and asking for one rebuild when it did. The import log line counts `compactions` and `rowsBeforeLatestCompaction`.

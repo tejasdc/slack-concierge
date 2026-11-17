@@ -1041,6 +1041,16 @@ export class SessionExecutionHost {
       log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});
     }
   }
+  retireHistory():Promise<void>{this.stopCodexWindows();return this.historyPages.close();}
+  async prepareRelease():Promise<void>{
+    this.beginDrain();
+    try{await this.retireHistory();}
+    catch(error){
+      // History owns no authoritative writes. Keep request/result custody live until
+      // the ordinary drain completes; the service supervisor still owns its child.
+      log('error','history_retirement_failed_continuing_drain',errorFields(error));
+    }
+  }
   async stop():Promise<void>{
     this.beginDrain();this.stopCodexMoves();this.stopCodexWindows();
     await Promise.allSettled([...this.custodyCodexClients.values()].map(client=>client.close()));
@@ -1054,7 +1064,7 @@ export class SessionExecutionHost {
       timedStop('provider_login',()=>this.providerLoginManager.stop()),
       timedStop('codex_login',()=>this.codexLogin.stop()),
       timedStop('claude_login',()=>this.claudeLogin.stop()),
-      timedStop('history_pages',()=>this.historyPages.close()),
+      timedStop('history_pages',()=>this.prepareRelease()),
     ]);
   }
   private capabilities(session:SessionRow) {
@@ -1707,12 +1717,8 @@ export class SessionExecutionHost {
           // The claimed turn, its execution record and its input are on disk before any provider
           // (Claude, Codex or ChatGPT) is started or told anything.
           await ledgerDurable({kind:'provider_input',id:input.id});
+          if(!adoption&&this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           if(boundLabInvocation(input)&&!labInvocationBindingMatches(input))throw new ProviderCapabilityUnavailableError('send','The Lab participant’s provider, model or effort changed; no replacement execution was submitted.');
-          if(!adoption&&(onRunner||session.provider_id==='claude-code'&&executionHostsEnabled())){
-            if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
-            if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
-          }
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
           if(adoption&&prepared.onSteeringReady){
@@ -1743,11 +1749,6 @@ export class SessionExecutionHost {
           } else if(session.provider_id==='codex'&&(adoption||executionHostsEnabled())) {
             // The readiness wait ended before provider admission. Keep admission and execution
             // intent adjacent, with no await between them, so drain can requeue a waiting turn.
-            if(!adoption){
-              if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
-              if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
-                throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
-            }
             // The shared daemon already outlives Concierge; recording the run lets the next Concierge follow it.
             actual=adoption?this.adoptedCodexRun(actual,adoption,session):this.trackedCodexRun(actual,claim,session,kept,input);
           }
@@ -1765,6 +1766,7 @@ export class SessionExecutionHost {
               additionalDirs:[...protectedRun.plan.runtimeWorkspaceRoots].filter(path=>path!==protectedRun.plan.cwd),
               custodySuccessor:protectedRun,appServerClient:client};
           }
+          if(!adoption&&this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           const followed=adoption&&session.provider_id==='chatgpt'?JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}').admission??null:null;
           const admission=adoption?followed:this.retainAdmission(claim,input,session,actual,attachments);
           if(adoption&&session.provider_id==='chatgpt'&&!admission)throw new ProviderDispatchError({message:'The ChatGPT send this run made has no retained admission; it cannot be followed.',terminalConfirmed:false,toolsUsed:[]});
@@ -1783,11 +1785,14 @@ export class SessionExecutionHost {
             // update instead of the update waiting for ChatGPT to finish (Tejas, 2026-10-09).
             if(!adoption)retainExecutionIntent({executionId:newExecutionId(),turnId:claim.turn_id,dispatchAttempt:claim.dispatch_attempt,sessionId:session.id,provider:'chatgpt',
               directory:'',coordinatorInstanceId:this.options.instanceId,supervisor:'capability-host',processor:{replayPrompt,runAdditionalDirs,staging:null,account:null}});
-            return this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
+            const chatgptProvider=this.capabilityClient.createChatGptProvider({run:{operationId:input.id,sessionId:`concierge:${session.id}`,inputId:input.id,runId:admission.runId},admission:admission as ChatGptAdmission,attachments:attachments.map(({transcriptText,...file})=>file),
               onEvidence:evidence=>this.capabilityEvidence(input,claim.turn_id,evidence),onNativeBinding:binding=>updateSessionMetadata(session.id,{nativeBinding:binding}),
               onConversationTitle:title=>adoptProviderConversationTitle(session.id,title),
               ...(adoption?{follow:{onLive:()=>{recordLiveAdoption(adoption.execution.execution_id);
-                log('info','chatgpt_run_followed',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id,still_running:true});}}}:{})}).run(actual)
+                log('info','chatgpt_run_followed',{turn_id:claim.turn_id,execution_id:adoption.execution.execution_id,still_running:true});}}}:{})});
+            if(!adoption&&!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
+            return chatgptProvider.run(actual)
               .then(result=>{
                 noteChatgptModel(result.text);
                 const body=result.text.replace(/^Answered by ChatGPT model[^\n]*\n*/,'').trim();
@@ -1802,9 +1807,13 @@ export class SessionExecutionHost {
             // receiver. Adoption first marks those attempts unsent; bring each exact input back
             // to this session's FIFO before following the independent process again.
             this.pullWaitingInputs(session.id);
+            if(!adoption&&!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+              throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
             return runOutsideCodexTurn(actual as OutsideRun);
           }
           if(!underlying)throw new ProviderCapabilityUnavailableError('send',`${session.provider_id} is unavailable; no provider substitution was attempted.`);
+          if(!adoption&&!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))
+            throw new Error('Provider admission intent could not be persisted for the current turn attempt.');
           return underlying.run(actual);
         }};
       return await executeAgentTurn({
@@ -1845,7 +1854,7 @@ export class SessionExecutionHost {
         :sharedCodex&&!successor?{beforeProviderAdmission:()=>{
           if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           return waitForCodexAppServerOrDrain(codexAppServerReady(),this.drainStarted,()=>this.draining);
-        }}:{}),
+        }}:{beforeProviderAdmission:()=>{}}),
       services:{bindProviderSession:(sessionId,provider,uuid)=>{
         bindSessionProvider(sessionId,provider,uuid);
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.
@@ -1985,7 +1994,7 @@ export class SessionExecutionHost {
     const current=getSessionById(session.id)!,metadata=sessionMetadata(current);
     const owned=db.query("SELECT provider_admission_intended_at FROM turns WHERE id=? AND session_id=? AND owner_instance_id=? AND dispatch_attempt=? AND status='running' AND stop_requested_at IS NULL")
       .get(claim.turn_id,session.id,this.options.instanceId,claim.dispatch_attempt) as any;
-    if(!owned?.provider_admission_intended_at||current.binding_generation!==session.binding_generation||current.status==='archived'||metadata.suspended)throw new ProviderCapabilityUnavailableError('send','The exact owner admission is no longer current.');
+    if(!owned||current.binding_generation!==session.binding_generation||current.status==='archived'||metadata.suspended)throw new ProviderCapabilityUnavailableError('send','The exact owner admission is no longer current.');
     if(boundLabInvocation(input)&&(!labInvocationBindingMatches(input)||(actual.model??null)!==(metadata.model??null)||(actual.reasoning_effort??null)!==(metadata.reasoningEffort??null)))throw new ProviderCapabilityUnavailableError('send','The prepared Lab execution differs from the selected provider, model or effort; no replacement was sent.');
     const admission=db.transaction(()=>{
       const saved=JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}');
@@ -2064,6 +2073,7 @@ export class SessionExecutionHost {
         remoteCall={provider:pin.provider,account,sessionUUID:pin.parentSessionUUID,boundary:pin.boundary,
           threadSource:retained.threadSource,location,additionalLocations};
       }
+      if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
       db.transaction(()=>{
         if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))throw new Error('Native fork control lost its owner.');
         db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...JSON.parse(operation.receipt_json!),fork:retained}),operation.id);
@@ -2077,6 +2087,8 @@ export class SessionExecutionHost {
       if(typeof result.sessionUUID!=='string'||result.sessionUUID===pin.parentSessionUUID)throw new Error('The runner did not return a distinct provider fork identity.');
       completeNativeFork(operation.id,this.options.instanceId,result);
     } catch(error) {
+      if(!effectIntended&&error instanceof OwnerDrainBeforeProviderAdmissionError
+        &&requeueOrphanedPreAdmissionTurn(claim.turn_id,this.options.instanceId))return;
       const reason=error instanceof Error?error.message:String(error);
       const confirmed=!effectIntended||error instanceof ProviderDispatchError&&error.terminalConfirmed||(error as any)?.outcome==='rejected';
       if(confirmed)failRunningTurnAndReleaseSession(claim.turn_id,this.options.instanceId,reason);

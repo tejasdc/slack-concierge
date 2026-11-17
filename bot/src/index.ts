@@ -4127,8 +4127,12 @@ setInterval(() => {
   cleanExpiredArtifactStaging();
 }, 60_000);
 
+let historyRetirementStarted=false;
 async function drainAndStop(signal: string) {
-  if (draining) return;
+  if (draining||historyRetirementStarted) return;
+  historyRetirementStarted=true;
+  sessionTurnQueue?.stop();
+  await sessionExecutionHost.prepareRelease();
   draining = true;
   // Closing the deprecated Slack socket while it is mid-reconnect rejects with no error at all;
   // unhandled, Bun exits 1, systemd records a crash and Tejas is told Concierge crashed. That was
