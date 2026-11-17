@@ -425,8 +425,10 @@ steps. `GET /operations/:id/human-conversation` awaits the same yielding warm
 (`warmedEntryIndex`) before it reads, so it never finishes the index synchronously: on
 2026-11-17 thnkr.ing's send check, polling it about 19 times a minute, reached it 4 to 14
 seconds after each restart and held the owner 9.1 to 9.8 seconds with about 185,000 ledger
-calls. Other general topic reads and actions that arrive first still finish the remaining
-index synchronously. On 2026-11-06, a prompt arriving during restart warm-up had
+calls. The thread-upkeep pass (`keepThreadsCurrent`) awaits it too: its unfiled wake skipped
+only while a warm ran, so a pass before the startup warm began (the usage watch's first tick,
+thirty seconds after start) built the cold index in one 8.5-second block. Other general topic
+reads and actions that arrive first still finish the remaining index synchronously. On 2026-11-06, a prompt arriving during restart warm-up had
 forced 115,370 ledger calls and an 18.5-second owner-loop block; the installed statement
 observer measured about two million read calls in its longest sampled statement. This
 change removes that synchronous prompt-path join, not the cost of the index build itself.
