@@ -2831,6 +2831,49 @@ export class SessionCommunicationCoordinator {
             messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null,
             alsoMainThread:declared.alsoMainThread===true,reconcileNotification});
     }
+    /** Resume only the notification already authorized by an exact accepted final, not completion. */
+    reconcileReplyNotification(input:{source:CommunicationSource;action_id:string;request_id:string;event_id:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting replies.');
+        const actor=this.fenced(this.actor(input.source));action(input.action_id);
+        const request=this.row(input.request_id);
+        if(!actor.inputId||request.target_session_id!==actor.session||this.authority(actor).scope!=='work')
+            throw new Error('Notification reconciliation requires the exact recipient session and live work authority.');
+        if(request.outcome!=='answered'||!request.result_json||JSON.parse(request.result_json).event_id!==input.event_id)
+            throw new Error('Notification reconciliation requires this request\'s current accepted completed reply.');
+        const event=db.query(`SELECT * FROM session_communication_events WHERE event_id=? AND request_id=?
+            AND kind='final' AND superseded_by_event_id IS NULL`).get(input.event_id,input.request_id) as EventRow|null;
+        const payload=event?JSON.parse(event.payload_json):null;
+        if(!event||!payload.final||!payload.notify||payload.workDisposition!=='completed'
+            ||payload.responding_session_id!==`concierge:${actor.session}`)
+            throw new Error('Name the exact accepted checked final that already requested this notification.');
+        const source=getAcceptedSessionInput(payload.source?.input_id??''),execution=source?readInputExecution(source):null;
+        const session=getSessionById(actor.session)!;
+        if(!source||source.session_id!==actor.session||(!humanAuthored(source)&&sessionInputProvenance(source)?.effectScope!=='work')
+            ||!execution?.turn||nativeRunId(execution.turn.id)!==payload.source?.run_id
+            ||execution.turn.stop_requested_at||execution.turn.status==='cancelled'||request.outcome==='canceled'
+            ||session.status==='archived'||sessionMetadata(session).suspended)
+            throw new Error('The original reply source is unproven or held by Stop, pause or archive.');
+        const upkeep=db.query(`SELECT json_extract(payload_json,'$.postId') AS postId
+            FROM session_owner_events WHERE event_id=? AND session_id=?`).get(`answer-upkeep:${event.event_id}`,request.source_session_id) as {postId:string}|null;
+        if(!upkeep?.postId||!db.query("SELECT 1 FROM session_owner_events WHERE event_id=? AND session_id=? AND kind='post'").get(upkeep.postId,request.source_session_id))
+            throw new Error('The accepted final has no completed retained answer post to reconcile.');
+        const operation=db.transaction(()=>{
+            const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+                kind:'action',origin:'agent',payload:{kind:'reply-notification-reconciliation',responseMode:'context',requestId:request.request_id,
+                    eventId:event.event_id,postId:upkeep.postId,originalSource:payload.source},sourceInputId:actor.inputId!,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id});
+            if(!saved.duplicate)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'accepted'}),saved.input.id);
+            return saved.input;
+        })();
+        // Uses the stored reply and original post identity; caller supplies neither replacement words
+        // nor a disposition. Fresh requirement reads remain mandatory for the still-owed siblings.
+        this.postThreadEvent(request,event,payload,true);
+        const recorded=messageAlreadyNotified(request.source_session_id,upkeep.postId);
+        const receipt={state:recorded?'completed':'accepted',operationId:operation.id,requestId:request.request_id,
+            replyEventId:event.event_id,postId:upkeep.postId,notificationRecorded:recorded};
+        db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(receipt),operation.id);
+        if(!recorded)throw new Error('The accepted answer remains retained; notification policy has not admitted its requested notification.');
+        return receipt;
+    }
     /** An accepted reply owns its original trusted requirement read for exact retries. */
     retainedReplyRequirements(input: {source?:CommunicationSource;action_id?:string;request_id?:string}): RequirementState | null | undefined {
         const source = input.source;

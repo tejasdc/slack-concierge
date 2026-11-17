@@ -107,7 +107,19 @@ post is reused through that exact recorded mirror identity. Older copies derive 
 their retained original post. An exact accepted checked-final retry can reconcile
 its missing requested notification even after answer upkeep finished, without posting another answer.
 Installation alone does not upgrade earlier readings, and Stop, pause, archive or handoff prevent
-resuming a missing notification. A bodyless final attaches closure facts to the exact
+resuming a missing notification.
+
+For a legacy completed reply whose notification requirement was subsequently reopened, the owning
+recipient uses `sessions reply <request> --reconcile-notification <accepted-final-event>` with its
+live native source and a stable action ID. This separate retained recovery action requires the
+current accepted completed final, its original requested notification, proven original work source,
+and an existing answer/upkeep association. It takes no replacement words or disposition. It repairs
+only that accepted notification through the same canonical post guard and per-post deduplication;
+it does not close any request or judge any requirement. After receiver delivery is observed, the
+owner can honestly judge the notification requirement and retry the original grouped final to close
+the remaining requests. The ordinary requirement gate still applies to each new completion.
+
+A bodyless final attaches closure facts to the exact
 request's earlier answer [decision: fix-protocols-never-hide-duplicates]. The October 21 copy-matched collapses and November 4 agent-update
 collapses remain in the ledger as historical actions, but both direct and prepared Inbox
 readers show those accepted posts again. Timer notices remain out of the human conversation

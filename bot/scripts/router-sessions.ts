@@ -68,6 +68,8 @@ router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-
 --notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes any waiting one-shot notification on that Inbox topic. On reply it is honored for a substantive --partial --answers-question answer or a final --work-disposition completed reply with --checked: ordinary progress, corrections and failures stay quiet and the flag is dropped with a notice. A bodyless final cannot use it.
 When a ready decision question, needs_you outcome, or needs_decision reply blocks work on Tejas, the owner raises one phone notification by default. The question opens with its one-line --summary (required on needs_you as on every final reply): say what he must decide and the result it depends on, because it is the first line of his notice; background and other news go in the text after it. Name what he must do and where he can answer; --notify is for an additional explicit request on a different message, not needed for the blocked question. Routine progress and completed answers keep their existing notification rule. A question that asks him to sign in, give a secret or do something on his device names the to-do it is about with --todo <id> (find it in his to-dos: thinkering -s 'http://x/todos/tasks?limit=200', which reaches thnkr.ing from the server or a runner, or curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL where thinkering is not found; from the Mac, curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL through ssh remote-box), or --todo none when no to-do for that step exists. Concierge refuses the question when that to-do is already done or dropped (he has already done it, so continue from there), and closes the question by itself when he ticks the to-do off.
 --also-main-thread copies a nested answer into the Inbox thread's main conversation; it is refused for ordinary main-thread requests.
+router-actions.sh sessions reply <request-id> --reconcile-notification <accepted-final-event-id> <native-source-flags> --action-id A
+This repairs only the requested notification of an already accepted, posted, checked completion. It changes no answer, disposition or requirement judgement; inspect actual delivery before closing a notification requirement.
 router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A [--reason <reason>]
 router-actions.sh sessions handoff <predecessor-address> --provider <alias> [--model <model>] [--effort <level>] [--session-name <title>] --reason "<why>" <source-flags> --action-id A
@@ -183,6 +185,7 @@ Use sessions cancel <request-id> to withdraw your own request, for example one y
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =
+  | {operation:'reply-notification';body:{source:Source;action_id:string;request_id:string;event_id:string}}
   | {operation: "commit-identity"; body: {source?:never;session?:string;codexThread?:string}}
   | { operation: "open"; body: { source: Source; action_id: string; url: string; on?: string; browser?: string } }
   | { operation: "move"; body: { source: Source; action_id: string; address: string; project: string } }
@@ -471,6 +474,18 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [first, ...args] = argv;
+  if(first==='reply'&&args.includes('--reconcile-notification')){
+    const requestId=args.shift(),flags=new Map<string,string>();
+    if(!requestId||requestId.startsWith('--'))invalid('Notification reconciliation needs the exact request ID.');
+    while(args.length){
+      const flag=args.shift()!,value=args.shift();
+      if(!['--source-input','--source-run','--action-id','--reconcile-notification'].includes(flag)
+        ||!value?.trim()||value.startsWith('--')||flags.has(flag))invalid(`Invalid notification reconciliation option ${flag}.`);
+      flags.set(flag,value);
+    }
+    if(!flags.get('--action-id')||!flags.get('--reconcile-notification'))invalid('Notification reconciliation needs an accepted final event and stable action ID.');
+    return {operation:'reply-notification',body:{source:sourceFrom(flags),action_id:flags.get('--action-id')!,request_id:requestId!,event_id:flags.get('--reconcile-notification')!}};
+  }
   if(first==='journal-review'){
     const flags=new Map<string,string>();
     for(let i=0;i<args.length;i+=2){

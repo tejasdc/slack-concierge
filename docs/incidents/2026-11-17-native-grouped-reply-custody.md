@@ -44,16 +44,27 @@ worker, automatic group retry, or manual clearing of obligations.
 Stop, pause, archive and handoff prevent a missing notification from being resumed; an existing
 notification receipt is still returned without another effect.
 
+A legacy final has no retained requirement snapshot. When its notification requirement is reopened,
+the fresh completion gate runs before accepted-action reconciliation; retrying that command cannot
+repair its missing notification first. The owning recipient therefore has a separate retained
+`--reconcile-notification <accepted-final-event>` action on `sessions reply`. It requires the current
+completed final, its original requested flag/work provenance, an existing answer/upkeep association
+and the live recipient. It takes no replacement words or disposition and changes no requirement or
+request status. Only after actual notification delivery can the record be honestly judged delivered
+and the original grouped final close the still-owed siblings.
+
 ## Acceptance scenario
 
 **Seed:** One native grouped final with a shared answer in a topic, distinct request roots, and a
 requested notification; retain an accepted first child and leave later children owed. Preserve the
 original command and file custody.
 Include a linked topic where that same final already produced its retained mirror post.
+Reopen the legacy final's notification requirement without changing its accepted reply.
 
-**Action:** After the receiver fix is installed, retry that exact original command once through its
-normal owner entrance; inspect the group and each request's event, post, closure and notification
-receipt. Change one command field in a separate disposable attempt to check conflict handling.
+**Action:** After receiver and native fixes are installed, reconcile the exact accepted final's
+notification through the owning recipient. Observe delivery before judging the requirement, then
+retry the exact original grouped command. Inspect the group and each request's event, post, closure
+and notification receipt. Change one command field in a separate disposable attempt to check conflict handling.
 
 **Expected:** The accepted child is reused, missing children settle once, the canonical shared post
 is reused with exact closure/root authority, and a missing requested notification is reconciled once.
