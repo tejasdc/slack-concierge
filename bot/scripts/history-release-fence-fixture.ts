@@ -22,6 +22,8 @@ try{
  assert.equal((await host.run(refusedClaim)).status,'error');
  assert.equal((db.query('SELECT provider_admission_intended_at FROM turns WHERE id=?').get(refusedClaim.turn_id) as any).provider_admission_intended_at,null,
    'a local provider factory refusal must not be classified as a possible external send');
+ assert.equal((db.query("SELECT COUNT(*) AS count FROM executions WHERE turn_id=? AND state IN ('intended','live','exited')").get(refusedClaim.turn_id) as any).count,0,
+   'a known-unsent local refusal must not leave an open execution');
  assert.equal(starts,1);
  const session=createNativeSession('chatgpt',{title:'release fence',purpose:'chat',model:'his:pro',cwd:scratch,origin:'native'});
  const input=retainSessionInput({id:'before-fence',sessionId:session.id,scope:'fixture',actionId:'before-fence',kind:'input',origin:'human',payload:{text:'Keep my exact request'}}).input;
