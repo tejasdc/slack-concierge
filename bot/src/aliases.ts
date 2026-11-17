@@ -167,7 +167,7 @@ export function providerDisplayName(provider: string | null | undefined): string
 /** Human provider directives may use the product name instead of the provider label. */
 export function providerSpokenNames(provider:string):string[] {
   const label=providerDisplayName(provider);
-  return label?[label,...(provider==='antigravity'?['Google']:[])]:[];
+  return label?[label,...(provider==='antigravity'?['Google','Antigravity']:[])]:[];
 }
 
 /**
