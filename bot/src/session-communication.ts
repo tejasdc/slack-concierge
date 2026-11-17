@@ -1086,6 +1086,7 @@ export class SessionCommunicationCoordinator {
         const target=resolveSessionAddress(input.address);
         return this.dependencies.owner.repairNativeConversationHome({sessionId:target.id,actorSessionId:actor.session,
             sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),actionId:input.action_id,project:input.project,
+            targetUuid:target.agent_session_uuid,targetGeneration:target.binding_generation??1,
             authorityInputId:grant.authorityInputId??actor.inputId,
             ...(input.runner?{runner:input.runner}:{}),local:input.local===true,validateActor:()=>{
                 const current=this.fenced(this.actor(input.source));

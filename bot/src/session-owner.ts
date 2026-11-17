@@ -1855,11 +1855,12 @@ export class SessionOwner {
   /** Repair one idle native Claude conversation from a transcript and project location proved
    * on the selected machine. The retained action makes retries exact and never replays input. */
   async repairNativeConversationHome(input:{sessionId:number;actorSessionId:number;sourceInputId:string;sourceRunId:string;
-    actionId:string;project:string;runner?:string|null;local?:boolean;authorityInputId:string;validateActor?:()=>void}) {
+    actionId:string;project:string;runner?:string|null;local?:boolean;targetUuid:string;targetGeneration:number;
+    authorityInputId:string;validateActor?:()=>void}) {
     const local=input.local===true,runner=input.runner??null;
     if(local===!!runner)throw new SessionOwnerError('Choose exactly one home candidate: --local or --runner.',400,'HOME_CANDIDATE_REQUIRED');
     if(runner&&!/^[a-z][a-z0-9-]{0,31}$/.test(runner))throw new SessionOwnerError('Invalid runner name.',400,'MACHINE_INVALID');
-    const payload={kind:'repair-native-home',sessionId:input.sessionId,runner,local,project:input.project};
+    const payload={kind:'repair-native-home',sessionId:input.sessionId,target:{uuid:input.targetUuid,generation:input.targetGeneration},runner,local,project:input.project};
     const scope=`communication:${input.sourceInputId}`;
     const operation=db.transaction(()=>retainSessionInput({sessionId:input.sessionId,scope,actionId:input.actionId,kind:'action',origin:'agent',
       payload:{...payload,actor:{sessionId:input.actorSessionId,inputId:input.sourceInputId,runId:input.sourceRunId,
@@ -1894,6 +1895,8 @@ export class SessionOwner {
       if(!before||before.provider_id!=='claude-code'||(sessionMetadata(before).origin??'native')!=='native'
         ||!before.agent_session_uuid)throw new SessionOwnerError('Home repair applies only to a native Claude conversation with an exact provider session ID.',409,'HOME_REPAIR_UNSUPPORTED');
       const initialMeta=sessionMetadata(before),uuid=before.agent_session_uuid,generation=before.binding_generation??1;
+      if(uuid!==input.targetUuid||generation!==input.targetGeneration)
+        throw new SessionOwnerError('The target native binding changed before this repair action began.',409,'HOME_REPAIR_STALE');
       const idle=()=>!db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('queued','running','delivering') LIMIT 1").get(before.id);
       if(before.status==='archived'||initialMeta.suspended||supersededBy(before.id))
         throw new SessionOwnerError('An archived, paused or superseded conversation cannot have its home repaired.',409,'HOME_REPAIR_UNAVAILABLE');

@@ -20,13 +20,17 @@ let resolution:'unique'|'shared'|'missing'|'ambiguous'='unique';
 let unavailable=false,mutateAtStat:(()=>void)|null=null;
 let raceMode:'success-first'|'failure-first'|null=null,statCalls=0;
 let firstProofStarted:(()=>void)|null=null,secondProofStarted:(()=>void)|null=null,releaseFirstProof:(()=>void)|null=null,releaseSecondProof:(()=>void)|null=null;
+let pauseProjectLookup=false,projectLookupStarted:(()=>void)|null=null,releaseProjectLookup:(()=>void)|null=null;
 mock.module('../src/runner-machine-calls',()=>({
   RunnerUnreachableError:class RunnerUnreachableError extends Error{},
   RunnerCallNotSentError:class RunnerCallNotSentError extends Error{},
   RunnerMachineCallError:class RunnerMachineCallError extends Error{},
   runnerMachineCall:async(_runner:string,method:string,params:any)=>{
   if(unavailable)throw new Error('fixture runner unreachable');
-  if(method==='projects.locate')return {project:'life-logistics',path:'',cwd:projectRoot};
+  if(method==='projects.locate'){
+    if(pauseProjectLookup){pauseProjectLookup=false;projectLookupStarted?.();await new Promise<void>(resolve=>releaseProjectLookup=resolve);}
+    return {project:'life-logistics',path:'',cwd:projectRoot};
+  }
   if(method==='accounts.transcript')return {account:resolution==='unique'?'writer@example.com':null,resolution};
   if(method==='accounts.validate')return {available:params.account==='writer@example.com'};
   if(method==='provider-history.claude.transcript.stat'){
@@ -97,6 +101,19 @@ try{
     'a fresh informational ask is admitted after the exact home has been repaired');
   assert.equal(db.query("SELECT count(*) AS n FROM session_owner_events WHERE session_id=? AND kind='native_home_repaired'").get(target.id)?.n,1);
   assert.equal((await invoke(target,'repair-success','another-project')).status,400,'a changed payload conflicts with the retained action');
+
+  const rebound=createTarget('rebound');let projectStartedResolve!:()=>void;
+  const projectStarted=new Promise<void>(resolve=>projectStartedResolve=resolve);projectLookupStarted=projectStartedResolve;pauseProjectLookup=true;
+  const pendingOriginal=invoke(rebound,'repair-rebind');await projectStarted;
+  const oldUuid=rebound.agent_session_uuid!,newUuid=`87654321-4321-4123-8123-${String(rebound.id).padStart(12,'0')}`;
+  bindSessionProvider(rebound.id,'claude-code',newUuid);
+  const retryAfterRebind=await invoke(getSessionById(rebound.id)!,'repair-rebind');
+  assert.equal(retryAfterRebind.status,400,'same action ID with a new exact address conflicts with its retained target snapshot');
+  assert.equal(sessionMetadata(getSessionById(rebound.id)!).providerRunner,undefined,'rebound retry cannot choose a home for the new UUID');
+  releaseProjectLookup?.();const originalAfterRebind=await pendingOriginal;
+  assert.notEqual(originalAfterRebind.status,200,'proof started under the older generation cannot bind after rebind');
+  assert.equal(sessionMetadata(getSessionById(rebound.id)!).providerRunner,undefined);
+  assert.notEqual(oldUuid,newUuid);
 
   for(const mode of ['success-first','failure-first'] as const){
     raceMode=mode;statCalls=0;const concurrent=createTarget(mode);

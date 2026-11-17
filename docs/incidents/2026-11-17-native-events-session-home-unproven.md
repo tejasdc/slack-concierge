@@ -50,5 +50,7 @@ state before saving; it never replays conversation input or changes the provider
   available; existing executions and explicit local bindings retain priority. Recovery records
   exact evidence and saves only after authority, lifecycle, identity, generation and idle checks.
   Missing, ambiguous, unreachable and changed-state candidates leave binding untouched; duplicate
-  actions preserve the first terminal result. Imported consultation remains unchanged.
+  actions preserve the first terminal result. Retrying a pending action after the target UUID or
+  binding generation changes conflicts with its retained target identity. Imported consultation
+  remains unchanged.
 - **Replayable offline:** yes
