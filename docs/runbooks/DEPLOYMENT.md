@@ -1218,12 +1218,15 @@ backup/readback, page/detail/cursor/overlay, restore/retention, stopped duration
 net allocation checks still precede production conversion or pin release.
 
 Focused disposable verification (including a local native Restic repository;
-this is not an offsite production proof):
+this is not an offsite production proof). On a machine inheriting the live ledger,
+use the exact installed private command and Bun path printed by the guard's
+inherited-live refusal. The worktree source wrapper imports mutable worktree code
+and is not the sealed entrance. Run the following with those printed paths:
 
 ```bash
-bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-maintenance-fixture.ts
-bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-crash-fixture.ts
-bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-admission-fixture.ts
+<installed-bun> run <installed-private-command> -- bun run bot/scripts/history-cache-maintenance-fixture.ts
+<installed-bun> run <installed-private-command> -- bun run bot/scripts/history-cache-crash-fixture.ts
+<installed-bun> run <installed-private-command> -- bun run bot/scripts/history-cache-admission-fixture.ts
 ```
 
 The normal GitHub Release check runs these three native fixtures after its build

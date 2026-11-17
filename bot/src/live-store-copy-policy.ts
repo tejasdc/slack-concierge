@@ -35,7 +35,8 @@ const SUBSTITUTION_COPY = /(?:^|[\s;&|(])(?:cp|rsync|dd|tar|install|scp)\s/;
 const SCRIPT = /(?:^|[\s;&|])(?:[^\s"']*\/)?(?:python[\d.]*|bun|node|bash|zsh|sh)\s+(?:run\s+)?(?:--?[\w-]+\s+)*["']?([^\s"';|&()]+\.(?:py|[cm]?[jt]s|sh))(?=$|\s|["'])/g;
 const DIRECT_SCRIPT = /(?:^|[;&|]\s*)["']?((?:\/|\.\/|\.\.\/)[^\s"';|&()]+\.(?:py|[cm]?[jt]s|sh))(?=$|\s|["'])/g;
 const SCRIPT_COPY = /\.backup\s*\(|\b(?:copyfile|copy2|copyFileSync|copyFile|copytree)\s*\(|\bVACUUM\s+INTO\b/i;
-const REHEARSAL = /\b(?:migrate-deployment-repair|rehears\w*|.*fixture)\.[cm]?[jt]s\b|\b(?:BEGIN\s+(?:IMMEDIATE|EXCLUSIVE)|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/i;
+const REHEARSAL_SCRIPT = /\b(?:migrate-deployment-repair|rehears\w*|.*fixture)\.[cm]?[jt]s\b/i;
+const REHEARSAL_SQL = /\b(?:BEGIN\s+(?:IMMEDIATE|EXCLUSIVE)|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/i;
 
 /** A router call sends its quoted text to the owner; it does not execute that text. */
 function standaloneRouterCall(command: string): boolean {
@@ -147,8 +148,8 @@ export function liveStoreCopyRefusal(command: string | null, cwd = '', stores = 
   { inspectScripts = true }: { inspectScripts?: boolean } = {}): string | null {
   if (!command) return null;
   if (standaloneRouterCall(command)) return null;
-  const inspected = withoutSocketPaths(inspectScripts && !committeeHelp(command, cwd)
-    ? command + mentionedScripts(command, cwd) : command, cwd);
+  const scripts = inspectScripts && !committeeHelp(command, cwd) ? mentionedScripts(command, cwd) : '';
+  const inspected = withoutSocketPaths(command + scripts, cwd);
   let canonicalCwd = cwd;
   try { canonicalCwd = realpathSync(cwd); } catch {}
   const inLiveDirectory = STATE_DIR.test(canonicalCwd) || stores.directories.includes(canonicalCwd);
@@ -156,6 +157,8 @@ export function liveStoreCopyRefusal(command: string | null, cwd = '', stores = 
     && !namesLiveStore(inspected, cwd, stores)) return null;
   return SQLITE_COPY.test(inspected) || FILE_COPY.test(executableText(command))
     || (/[`]|\$\(/.test(command) && SUBSTITUTION_COPY.test(command))
-    || SCRIPT_COPY.test(inspected) || REHEARSAL.test(inspected)
+    || SCRIPT_COPY.test(inspected) || REHEARSAL_SQL.test(inspected)
+    || REHEARSAL_SCRIPT.test(scripts)
+    || [...command.matchAll(SCRIPT), ...command.matchAll(DIRECT_SCRIPT)].some(match => REHEARSAL_SCRIPT.test(match[1]))
     ? LIVE_STORE_COPY_REFUSAL : null;
 }
