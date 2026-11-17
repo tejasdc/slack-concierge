@@ -59,8 +59,17 @@ async function child(){
  const firstClaim=claimNextQueuedTurn('lab-fixture')!;
  assert.equal(firstClaim.session_id,first.id);markTurnProviderAdmissionIntended(firstClaim.turn_id,'lab-fixture',firstClaim.dispatch_attempt);acknowledgeTurnProviderInput(firstClaim.turn_id,'lab-fixture',firstClaim.dispatch_attempt,[]);
  const codingInvocation=invocations.find((value:any)=>value.sessionId===`concierge:${first.id}`),codingFacts=lab.requestFacts('comparison',codingInvocation.requestId);
- db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({admission:{provider:'codex',model:'gpt-6-luna',bindingGeneration:1,inputId:firstClaim.accepted_input_id,runId:nativeRunId(firstClaim.turn_id)}}),firstClaim.accepted_input_id);
- inputs.recordSessionEvent({eventId:`fixture-coding-binding:${firstClaim.turn_id}`,sessionId:first.id,inputId:firstClaim.accepted_input_id,turnId:firstClaim.turn_id,kind:'lab_binding_verified',payload:Object.fromEntries(['provider','model','reasoningEffort','project','projectPath','generation'].map(key=>[key,codingFacts.participant[key]]))});
+ // The real admission step, not a recorded stand-in: a Codex voice carries an effort, and the run input
+ // names it reasoning_effort. On 2026-11-17 the check read a field that does not exist and refused
+ // every Codex voice with an effort (concierge:9996).
+ {const {SessionExecutionHost}=await import('../src/session-execution-host'),{ActiveTurnDispatchRegistry}=await import('../src/turn-dispatch-seams');
+  const admitting=new SessionExecutionHost({instanceId:'lab-fixture',registry:new ActiveTurnDispatchRegistry({onStarted(){},onSettled(){}}),providers:{},defaultCwd:process.env.CONCIERGE_STATE_DIR!,wake(){},thesaurusContext:async()=>''});
+  const row=db.query('SELECT * FROM sessions WHERE id=?').get(first.id) as any,accepted=getAcceptedSessionInput(firstClaim.accepted_input_id)!;
+  assert.equal(codingFacts.participant.reasoningEffort,'low','the Codex voice carries an explicit effort');
+  (admitting as any).retainAdmission(firstClaim,accepted,row,{prompt:'admission check',cwd:process.env.CONCIERGE_STATE_DIR,additionalDirs:[],
+   model:codingFacts.participant.model,reasoning_effort:codingFacts.participant.reasoningEffort},[]);
+  const verified=db.query("SELECT payload_json FROM session_owner_events WHERE turn_id=? AND kind='lab_binding_verified'").get(firstClaim.turn_id) as {payload_json:string};
+  assert.equal(JSON.parse(verified.payload_json).reasoningEffort,'low','the verified binding records the effort the run actually used');}
  finishTurn(firstClaim.turn_id,'done','Original coding answer, preserved exactly.');
  updateSessionMetadata(first.id,{model:'gpt-6.1-sol'});
  await lab.reconcile();assert.equal(records.size,1,'one original answer published even though its receipt was lost');
@@ -253,6 +262,7 @@ async function child(){
   await refusal([{...member,materials:[{path:join(project,'binary.bin'),sha256:createHash('sha256').update(binary).digest('hex')}]}],'LAB_MATERIAL_UNAVAILABLE',409,'not-utf8');
   await refusal([{...member,materials:[{path:'relative.md',sha256:matSkill.sha256}]}],'LAB_MATERIAL_UNAVAILABLE',400,'relative-path');
   await refusal([{...member,materials:[{...matSkill,extra:true}]}],'LAB_CONVERSATION_REFUSED',400,'extra-field');
+  await refusal([member,{...member,label:'Second voice'}],'LAB_PARTICIPANT_KEY_REPEATED',400,'repeated-key');
   await refusal([{...member,materials:Array.from({length:33},(_,index)=>({path:join(project,`n${index}.md`),sha256:matSkill.sha256}))}],'LAB_CONVERSATION_REFUSED',400,'too-many');
   assert.equal((await (owner as any).prepareLabParticipant({key:'wired',label:'Wired',sessionId:codingId,materials:[matSkill]})).materials[0].text,skillText,'the owner preparation path freezes the exact text');
   const offerSnapshots=process.env.CONCIERGE_LAB_OFFER_SNAPSHOTS!,offerFile=join(offerSnapshots,'offer-1','SKILL.md'),candidateFile=join(offerSnapshots,'..','candidates','offer-2.md');

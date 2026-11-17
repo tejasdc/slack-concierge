@@ -1985,7 +1985,7 @@ export class SessionExecutionHost {
     const owned=db.query("SELECT provider_admission_intended_at FROM turns WHERE id=? AND session_id=? AND owner_instance_id=? AND dispatch_attempt=? AND status='running' AND stop_requested_at IS NULL")
       .get(claim.turn_id,session.id,this.options.instanceId,claim.dispatch_attempt) as any;
     if(!owned?.provider_admission_intended_at||current.binding_generation!==session.binding_generation||current.status==='archived'||metadata.suspended)throw new ProviderCapabilityUnavailableError('send','The exact owner admission is no longer current.');
-    if(boundLabInvocation(input)&&(!labInvocationBindingMatches(input)||(actual.model??null)!==(metadata.model??null)||(actual.reasoningEffort??null)!==(metadata.reasoningEffort??null)))throw new ProviderCapabilityUnavailableError('send','The prepared Lab execution differs from the selected provider, model or effort; no replacement was sent.');
+    if(boundLabInvocation(input)&&(!labInvocationBindingMatches(input)||(actual.model??null)!==(metadata.model??null)||(actual.reasoning_effort??null)!==(metadata.reasoningEffort??null)))throw new ProviderCapabilityUnavailableError('send','The prepared Lab execution differs from the selected provider, model or effort; no replacement was sent.');
     const admission=db.transaction(()=>{
       const saved=JSON.parse(getAcceptedSessionInput(input.id)!.receipt_json??'{}');
       const value={provider:session.provider_id,purpose:metadata.purpose??'chat',inputId:input.id,runId:nativeRunId(claim.turn_id),bindingGeneration:session.binding_generation??1,
@@ -2000,7 +2000,7 @@ export class SessionExecutionHost {
       if(session.provider_id==='chatgpt'&&saved.admission&&stablePayload(saved.admission)!==stablePayload(value))throw new ProviderCapabilityUnavailableError('send','Prepared input changed from its immutable provider admission.');
       recordSessionEvent({eventId:`provider_admission:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'provider_admission',payload:{dispatchAttempt:claim.dispatch_attempt,admission:value}});
       if(boundLabInvocation(input))recordSessionEvent({eventId:`lab-binding:${input.id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'lab_binding_verified',
-        payload:{provider:session.provider_id,model:actual.model??null,reasoningEffort:actual.reasoningEffort??null,project:metadata.project??null,projectPath:metadata.projectPath??null,generation:session.binding_generation??1}});
+        payload:{provider:session.provider_id,model:actual.model??null,reasoningEffort:actual.reasoning_effort??null,project:metadata.project??null,projectPath:metadata.projectPath??null,generation:session.binding_generation??1}});
       // Keep the established receipt field as the first immutable admission. Later Codex
       // dispatches are retained by attempt identity above instead of replacing its custody.
       if(!saved.admission)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...saved,admission:value}),input.id);
