@@ -401,8 +401,12 @@ export function inspectSavedWork(now=Date.now(),lateMs=5*60_000):number {
   let alerts=0;
   settleMissedScheduledWork(now);
   if(paceLapsedUsageHolds(now))executionChanged();
-  const rows=db.query(`SELECT * FROM turns WHERE saved_kind IS NOT NULL AND
-    (status='queued' OR (status='error' AND saved_kind='scheduled' AND saved_expires_at_ms<=?)) ORDER BY id`).all(now) as SavedTurn[];
+  // Two indexed reads, never one OR: the combined statement could use neither partial index, so every
+  // usage reading scanned the whole turns table on the owner's loop (docs/incidents/2026-11-17-saved-work-inspection-scanned-every-turn.md).
+  // A missed row that was already alerted needs nothing further, so the index leaves it out.
+  const missedUnalerted=db.query(`SELECT * FROM turns INDEXED BY saved_work_missed_unalerted WHERE saved_kind='scheduled' AND status='error'
+    AND saved_alerted_at_ms IS NULL AND saved_expires_at_ms IS NOT NULL AND saved_expires_at_ms<=? ORDER BY id`).all(now) as SavedTurn[];
+  const rows=[...savedRows(),...missedUnalerted].sort((left,right)=>left.id-right.id);
   for(const row of rows) {
     if(globalPauseHoldsSession(row.session_id))continue;
     const missed=row.saved_kind==='scheduled'&&row.saved_expires_at_ms!==null&&row.saved_expires_at_ms<=now;
