@@ -118,6 +118,10 @@ only that accepted notification through the same canonical post guard and per-po
 it does not close any request or judge any requirement. After receiver delivery is observed, the
 owner can honestly judge the notification requirement and retry the original grouped final to close
 the remaining requests. The ordinary requirement gate still applies to each new completion.
+Only this explicit recovery may pass an earlier different post's same-turn ring: the notification
+primitive independently verifies the current checked final, exact closure/post, original author,
+source input and run. Its event retains `completionReplyEventId`. Ordinary posts, partials and
+questions keep their existing turn cap, and the same post can still notify only once.
 
 A bodyless final attaches closure facts to the exact
 request's earlier answer [decision: fix-protocols-never-hide-duplicates]. The October 21 copy-matched collapses and November 4 agent-update

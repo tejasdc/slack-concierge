@@ -3598,7 +3598,7 @@ export function retireTimedRequestPosts(range?:{afterSequence:number;throughSequ
 
 const headline=(value:string)=>answerLine(value);
 /** A shared answer has one post root; each covered request still has its own closure root. */
-function notifyFiledAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;requestId?:string;dispatchRequestId?:string;respondingSessionId:string;notify?:boolean;askedInRun?:string|null;answerSource?:{inputId:string;runId:string}|null}) {
+export function notifyFiledAgentAnswer(answer:{checkedCompletionEventId?:string;inboxSessionId:number;root:string;postId:string;eventId:string;requestId?:string;dispatchRequestId?:string;respondingSessionId:string;notify?:boolean;askedInRun?:string|null;answerSource?:{inputId:string;runId:string}|null}) {
   const row=db.query(`SELECT coalesce(json_extract(payload_json,'$.threadRoot'),input_id) AS root,payload_json
     FROM session_owner_events WHERE event_id=? AND session_id=? AND kind='post'`)
     .get(answer.postId,answer.inboxSessionId) as {root:string|null;payload_json:string}|null;
@@ -3633,7 +3633,7 @@ function notifyFiledAgentAnswer(answer:{inboxSessionId:number;root:string;postId
     throw new Error('Requested answer notification has different retained source custody.');
   const text=String(payload.text??'');
   notifyAgentPost(answer.inboxSessionId,row.root,answer.postId,text,answer.notify===true,
-    answer.askedInRun??source?.runId??null);
+    answer.askedInRun??source?.runId??null,answer.checkedCompletionEventId);
 }
 
 function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;summary?:string|null;quiet?:string|null;notify?:boolean;askedInRun?:string|null;answerSource?:{inputId:string;runId:string}|null;todoId?:string|null}) {

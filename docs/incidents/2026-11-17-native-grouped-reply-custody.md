@@ -11,9 +11,12 @@ cause_status: best-explanation
 
 The live original main request `1661ce36-caea-486e-a3dc-45395f80c902` settled with final event
 `4b073572-8c20-46da-9693-98ed28cdd8a1`; nine requests remained owed. The sending owner
-`concierge:9680` confirmed no retry or send since refusal. Exact raw owner roots are still awaited.
-The observed state does not alone prove the precise failure
-path or whether a phone notification appeared.
+`concierge:9680` confirmed no retry or send since refusal. Its bounded raw read established matching
+main request/post roots, and raw post text exactly matching `replyBody`, rather than the enriched
+communication text with closing facts. The upkeep event exists at sequence 2158625; the earlier
+topic-answer notice at 2158620 contains only the summary and no requested-notification flag.
+The explicit requested event is absent. First-sibling roots and the earlier same-run ring receipt
+remain needed to attribute both original failures precisely. Phone display remains unobserved.
 
 ## Cause
 
@@ -23,6 +26,10 @@ topic-wide while the notification guard requires the exact thread root. A later 
 could be denied when its reused canonical post belonged to a different root. The source defect is
 confirmed; applying it to the observed live interruption remains the best explanation pending the
 raw owner evidence.
+The ordinary notification primitive also caps a run that already rang in the same thread, unless a
+newer human notification arm applies. Merely fixing post custody or re-entering that primitive can
+therefore still suppress this completed answer. Independent source investigation confirmed that
+conditional path; attribution of the original main notice still needs the earlier ring's receipt.
 
 ## Fix
 
@@ -52,6 +59,10 @@ completed final, its original requested flag/work provenance, an existing answer
 and the live recipient. It takes no replacement words or disposition and changes no requirement or
 request status. Only after actual notification delivery can the record be honestly judged delivered
 and the original grouped final close the still-owed siblings.
+This explicit recovery alone may pass a prior different post's turn ring. The primitive independently
+checks the current accepted final, exact checked closure/post, author, original source and run before
+using that exception; the native event records the exact completion reply event. Ordinary posts,
+partials and questions retain their turn cap, and post-ID deduplication remains unchanged.
 
 ## Acceptance scenario
 
@@ -60,6 +71,7 @@ requested notification; retain an accepted first child and leave later children 
 original command and file custody.
 Include a linked topic where that same final already produced its retained mirror post.
 Reopen the legacy final's notification requirement without changing its accepted reply.
+Retain an earlier different question notification for the same original root/run, with no newer arm.
 
 **Action:** After receiver and native fixes are installed, reconcile the exact accepted final's
 notification through the owning recipient. Observe delivery before judging the requirement, then
