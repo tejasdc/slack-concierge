@@ -1415,6 +1415,19 @@ launcher's fresh-boundary behavior or weaken the builder's sandbox. Incident `ae
 because a fresh overlay assertion was run inside the inherited boundary. The correction is
 candidate-owned and does not require replacing the installed controller.
 
+The preceding sealed builder masks the ledger backing image with `/dev/null`, rather than
+the newer inaccessible character device. Release-check descendants reuse that legacy mask
+only when the canonical database boundary is inherited, the process is in a non-initial user
+namespace, and the image is a character device with `/dev/null`'s device identity. The old
+builder drops capabilities, so attempting to upgrade its mask in a child fails at uid-map
+setup before the ledger-refusal check can run (incident `15e3ccf9`, November 17). This narrow
+compatibility path preserves isolation from production bytes; it does not claim denied-open
+acceptance for the legacy placeholder. Unmasked images still require isolation, and new
+agent launches retain the stricter inaccessible-device boundary. The candidate-owned
+correction can be consumed by the installed builder without replacing sealed control.
+No tests or reviews were run for this repair; integration, activation and health proof belong
+to the external supervisor and normal detached controller.
+
 The writer reservation covers only the schema change:
 the whole-ledger checks took 32 s on the 1.9 GB ledger (2026-10-09) and about two minutes
 on the 8.4 GB ledger with Concierge stopped (2026-11-04), longer than an agent command's
