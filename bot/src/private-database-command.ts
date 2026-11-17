@@ -28,11 +28,16 @@ const TMPFS_MAGIC = 0x01021994;
 /** True when the canonical state directory is already the boundary's own mask: an empty,
  * mode-000 tmpfs. A permission probe alone is not enough: the private code entrance keeps
  * CAP_DAC_OVERRIDE for its mount-capable children, so the mask still reads as accessible
- * there, and a nested user namespace then fails with "setting up uid map" (2026-11-17). */
+ * there, and a nested user namespace then fails with "setting up uid map" (2026-11-17).
+ * The mask counts only inside a non-initial user namespace, where inherited mounts are locked.
+ * In the initial namespace (an agent shell under systemd's own mask) root could unmount it,
+ * so the launcher still wraps the command to lock that mask for mount-capable children. */
 export function inheritedDatabaseBoundary(state = join(homedir(), '.local/state/concierge')): boolean {
   try { accessSync(state, constants.R_OK | constants.X_OK); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'EACCES') return true; throw error; }
-  return (statSync(state).mode & 0o7777) === 0 && statfsSync(state).type === TMPFS_MAGIC && readdirSync(state).length === 0;
+  const initialUserNamespace = /^\s*0\s+0\s+4294967295\s*$/.test(readFileSync('/proc/self/uid_map', 'utf8'));
+  return !initialUserNamespace && (statSync(state).mode & 0o7777) === 0 && statfsSync(state).type === TMPFS_MAGIC
+    && readdirSync(state).length === 0;
 }
 
 /** Release fixtures cannot open live stores through raw SQLite or filesystem APIs.
