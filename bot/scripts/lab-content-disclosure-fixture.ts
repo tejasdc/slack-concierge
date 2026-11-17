@@ -128,9 +128,28 @@ async function child(){
   assert.equal(during,'actor','the request itself reads as B');
   assert.equal(insideDelivery,'trusted','a shared loop entered from the request never runs as B');
   assert.equal(await background,'trusted','work outliving the request no longer reads as B');
+  // Nov 17 2026: the reply walk ran an unLIMITed .all(), so every budgeted agent read reaching it
+  // (receipts at limit=40) answered 503 READ_BUDGET_EXCEEDED unbounded_collection.
+  const {withStorageReadBudget}=await import('../src/storage-observation');
+  const aInput=getAcceptedSessionInput(aOriginal.author.sourceInput)!;assert.ok(aInput.request_id,'the Lab answer carries its request');
+  const unknownReader=new Request('http://localhost/x',{headers:{'x-concierge-agent-origin':'unknown'}});
+  const budgeted=<T>(work:()=>T)=>disclosure.withContentReader(unknownReader,()=>withStorageReadBudget({maxCalls:500,maxRows:5000,maxResultBytes:8_000_000},work));
+  assert.equal(budgeted(()=>disclosure.inputContentVisible(aInput)),false,'a budgeted unknown agent read is admitted and still withholds Lab content');
+  try{budgeted(()=>disclosure.assertCommunicationContent(aInput.request_id!));}catch(error){assert.ok(error instanceof disclosure.LabDisclosureError,`communication check is admitted by the read budget: ${error}`);}
+  // Overflow: an ordinary input (no Lab provenance of its own) whose request has more replies than the bound.
+  const fakeRequest=`fixture-overflow-${randomUUID()}`,plainId=`fixture-plain-${randomUUID()}`;
+  const columns=(db.query('PRAGMA table_info(session_inputs)').all() as {name:string}[]).map(column=>column.name);
+  const clone=(id:string,kind:string)=>{const overrides:Record<string,string>={id:'?',action_id:'?1',kind:`'${kind}'`,scope:"'fixture'",source_input_id:'NULL',request_id:'?',payload_json:"'{}'"};
+   db.query(`INSERT INTO session_inputs(${columns.join(',')}) SELECT ${columns.map(name=>overrides[name]??name).join(',')} FROM session_inputs WHERE id=?`).run(id,fakeRequest,aInput.id);};
+  clone(plainId,'message');
+  assert.equal(budgeted(()=>disclosure.inputContentVisible(getAcceptedSessionInput(plainId)!)),true,'an input with no Lab provenance stays visible');
+  for(let index=0;index<=disclosure.DISCLOSURE_FANOUT_LIMIT;index++)clone(`fixture-overflow-reply-${index}`,'reply');
+  assert.equal(budgeted(()=>disclosure.inputContentVisible(getAcceptedSessionInput(plainId)!)),false,'a reply set past the bound is treated as protected');
+  assert.equal(disclosure.inputContentVisible(getAcceptedSessionInput(plainId)!),true,'a trusted reader is unaffected by the bound');
+  db.query('DELETE FROM session_inputs WHERE request_id=?').run(fakeRequest);
   const bDuring=db.query('SELECT id,session_id,status,agent_text FROM turns WHERE id=?').get(bClaim.turn_id) as any;
   assert.deepEqual(bDuring,bBefore,'B remains in the same real active invocation throughout all reads');
-  console.log(JSON.stringify({fixture:'lab-content-disclosure',independentReaderRestricted:true,wholeEntityRefusal:true,runnerSourceRestricted:true,unknownAgentRestricted:true,ownOperationReadable:true,humanOriginalReadable:true,readerScopeEndsWithRequest:true,activeInvocationUnchanged:true}));
+  console.log(JSON.stringify({fixture:'lab-content-disclosure',independentReaderRestricted:true,wholeEntityRefusal:true,runnerSourceRestricted:true,unknownAgentRestricted:true,ownOperationReadable:true,humanOriginalReadable:true,readerScopeEndsWithRequest:true,budgetedDisclosureWalkAdmitted:true,replyOverflowProtected:true,activeInvocationUnchanged:true}));
  }finally{await gateway.stop(true);await privateOwner.stop(true);releaseProvider();await bExecution;}
 }
 
