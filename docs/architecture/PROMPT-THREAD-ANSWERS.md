@@ -90,7 +90,22 @@ The Mac sends the original final body and closing facts separately; the origin c
 earlier signal before accepting a bodyless final. Each separately accepted reply stays
 visible under its own request, even when its words match another reply exactly. Only one
 explicit `--also` command shares a visible answer, using that command's retained identity;
-it still settles each named request. A bodyless final attaches closure facts to the exact
+it still settles each named request. For native local groups, the owner retains the complete ordered
+command, source, original file bytes and attachment custody before admitting a child; each request
+must have the same requester and exact recipient session. A retry must match the whole command and
+uses the original child action identities, returning accepted children and admitting missing ones
+through the ordinary reply path. The group receipt tracks ordered members, accepted child IDs and
+the failed child; individual child events remain authoritative. Each child reads its own trusted
+requirement state; an accepted reply retains that state for its exact retry. Older replies without
+a snapshot use a fresh read.
+There is no autonomous group retry or timer. Peer and external groups retain their existing delivery
+path. A shared post keeps its own canonical root for notification validation. A covered request's
+different root may use it only through that exact reply's retained answer closure in the same topic;
+the post's agent author and source remain checked. The notification carries the persisted post words,
+without its separate summary or closing facts. An exact accepted checked-final retry can reconcile
+its missing requested notification even after answer upkeep finished, without posting another answer.
+Installation alone does not upgrade earlier readings, and Stop, pause, archive or handoff prevent
+resuming a missing notification. A bodyless final attaches closure facts to the exact
 request's earlier answer [decision: fix-protocols-never-hide-duplicates]. The October 21 copy-matched collapses and November 4 agent-update
 collapses remain in the ledger as historical actions, but both direct and prepared Inbox
 readers show those accepted posts again. Timer notices remain out of the human conversation
