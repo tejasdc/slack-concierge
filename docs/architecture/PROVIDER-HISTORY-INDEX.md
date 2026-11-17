@@ -1,5 +1,35 @@
 # Bounded provider history reads
 
+## History process retirement
+
+The page projection runtime runs in one persistent Bun subprocess per service
+generation, using the serving process's runtime and sealed application worker path.
+It has a separate SQLite registry: history teardown cannot take the serving Bun
+process's global SQLite lock. IPC carries correlated results or explicit errors;
+lost acknowledgements never authorize provider invocation or manufacture empty history.
+
+Closing seals admission synchronously and permanently, including warm-up, background
+Codex preparation, timed-out work, and late replies. A timeout releases only its
+waiting caller, never process ownership. An unexpected child exit seals this client
+rather than starting another generation. Retirement signals the owned process group,
+escalates termination after two seconds, and awaits child closure and the absence of
+running group descendants (Linux excludes already exited zombies). The existing
+service supervisor remains the outer crash-cleanup boundary.
+
+Both service shutdown entrances retire history before setting general draining state,
+closing request communication, or withdrawing turn custody. During that wait the old
+service still accepts durable requests and provider results. Subsequent drain and
+successor recovery retain their existing exact-input and provider-result contracts;
+history retirement never requests a genuine Stop or retries an invocation.
+
+Disposable verification: `bot/scripts/history-process-retirement-fixture.ts` checks
+timeouts, monotonic closure, process exit and durable SQLite acceptance/readback during
+a five-second synchronous helper teardown interrupted by the two-second escalation. Its one-second maximum write bound rejects
+the observed multi-second stall while allowing shared-host fsync variance. The history
+page growth fixture also exercises the real history subprocess. These checks do not
+establish production release timing or exact active-turn continuity across an installed
+release; those remain release acceptance observations.
+
 Claude Code's native session reader follows the transcript graph and compaction rules. Concierge must not recreate those rules from raw JSONL or run that reader inside the single request owner.
 
 That reader lists only what follows a conversation's latest compaction. A compaction never removes history: the import child finds each compaction boundary line and runs the same native reader on a scratch copy of the transcript as it stood just before that boundary, so each earlier part comes back under Claude Code's own rules, followed by the current part, de-duplicated by row identity. Before this, every compaction removed the whole earlier conversation from the session window and his requests from before it were drawn at the bottom (thnkr.ing report 60b1809c, 2026-10-29). Snapshots carry a format number (`provider-history-format.ts`); an older one keeps serving while the verifier child checks its transcript once, recording the current format when it never compacted and asking for one rebuild when it did. The import log line counts `compactions` and `rowsBeforeLatestCompaction`.

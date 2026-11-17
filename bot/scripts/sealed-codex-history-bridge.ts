@@ -2,7 +2,7 @@ import {strict as assert} from 'node:assert';
 import {copyFileSync,existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync,symlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname,join,resolve} from 'node:path';
-import {Worker} from 'node:worker_threads';
+import {fork} from 'node:child_process';
 import {TrustedRootReleaseManager} from '../src/deployment-release';
 import {checkReleaseApplication} from '../src/deployment-application-check';
 import {releaseCodexBridgePath} from '../src/release-worker';
@@ -44,19 +44,19 @@ try {
   cwd:repository,env:{...process.env,CONCIERGE_STATE_DIR:state,CONCIERGE_TEST_MODE:'1',
    CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622'},stdout:'pipe',stderr:'pipe'});
  assert.equal(seed.exitCode,0,seed.stderr.toString());
- const pageWorker=new Worker(worker,{env:{...process.env,CONCIERGE_STATE_DIR:state,CONCIERGE_TEST_MODE:'1',
+ const pageWorker=fork(worker,[],{execPath:process.execPath,execArgv:[],env:{...process.env,CONCIERGE_STATE_DIR:state,CONCIERGE_TEST_MODE:'1',
   CONCIERGE_TEST_AUTHORIZATION:'responsive-system-b1eed622',CONCIERGE_CODEX_APP_SERVER_SOCKET:join(scratch,'missing-app-server.sock')}});
  try {
   const pageReply=await new Promise<{error?:{message:string}}>((resolve,reject)=>{
    const timeout=setTimeout(()=>reject(new Error('Sealed history worker did not answer.')),12_000);
    pageWorker.once('message',value=>{clearTimeout(timeout);resolve(value)});
    pageWorker.once('error',error=>{clearTimeout(timeout);reject(error)});
-   pageWorker.postMessage({id:1,operation:'page',sessionId:'concierge:1',cwd:scratch,cursor:null,limit:20,after:null});
+   pageWorker.send({id:1,operation:'page',sessionId:'concierge:1',cwd:scratch,cursor:null,limit:20,after:null});
   });
   assert.ok(pageReply.error?.message,pageReply);
   assert.match(pageReply.error.message,/connect ENOENT .*missing-app-server\.sock/,pageReply.error.message);
   assert.doesNotMatch(pageReply.error.message,/Cannot find module|MODULE_NOT_FOUND|codex-app-server-bridge\.mjs/);
- } finally {await pageWorker.terminate();}
+ } finally {const exited=new Promise<void>(resolve=>pageWorker.once('exit',()=>resolve()));pageWorker.kill();await exited;}
  const probe=Bun.spawnSync({cmd:['/usr/bin/node',bridge,join(scratch,'missing-app-server.sock')],
   cwd:prepared.artifactPath,stdout:'pipe',stderr:'pipe'});
  assert.equal(probe.exitCode,1,probe.stderr.toString());

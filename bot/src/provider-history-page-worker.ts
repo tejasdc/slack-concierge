@@ -1,6 +1,6 @@
 import './sqlite-worker-identity';
 /** Provider page projection belongs on a separate event loop from sends and page routing. */
-import {parentPort} from 'node:worker_threads';
+const parentPort={postMessage:(reply:unknown)=>process.send?.(reply)};
 import {SessionOwner} from './session-owner';
 import {log} from './log';
 import {sharedCodexAppServerClient} from './codex-app-server-client';
@@ -10,12 +10,13 @@ import {sessionMetadata} from './session-inputs';
 
 type Work={id:number;operation:'page'|'delta'|'prepare';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
   want?:{dialogue:number;untilInput:boolean};thread?:string};
-if(!parentPort)throw new Error('HISTORY_PAGE_WORKER_PARENT_REQUIRED');
+if(!process.send)throw new Error('HISTORY_PAGE_WORKER_PARENT_REQUIRED');
 // Connect to Codex's App Server when the worker starts, not inside the first history open:
 // after a restart the first open of each Codex conversation took 0.3-0.5 s against 0.05-0.25 s
 // once warm (2026-10-30). A failed early connection is retried by the first request as before.
 void sharedCodexAppServerClient().connect().catch(()=>{});
-parentPort.on('message',async(input:Work)=>{
+process.on('disconnect',()=>process.exit(0));
+process.on('message',async(input:Work)=>{
   try {
     // Codex activity tops up that conversation's kept window, so the next open reads it ready.
     if(input.operation==='prepare'){

@@ -1041,6 +1041,7 @@ export class SessionExecutionHost {
       log('warn','codex_account_move_failed',{detail:String(result.detail??'').slice(0,300)});
     }
   }
+  retireHistory():Promise<void>{this.stopCodexWindows();return this.historyPages.close();}
   async stop():Promise<void>{
     this.beginDrain();this.stopCodexMoves();this.stopCodexWindows();
     await Promise.allSettled([...this.custodyCodexClients.values()].map(client=>client.close()));
