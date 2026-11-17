@@ -624,6 +624,33 @@ The Google paid-credit check and CLI lookup is `google.executable` (`runner-prov
 against the runner's Google settings and returns only the executable path. A missing or unreachable
 runner is an unknown check; it cannot be treated as proof that paid credits are disabled.
 
+### Native conversation home custody
+
+Native Claude conversation dispatch and agent-messageability share one home resolver. A saved
+machine binding wins; otherwise an actual launched execution, fork parent or local resurrection
+record may establish the home. An incomplete runner lease or a conversation with no such evidence
+stays unknown. Search explains that unknown home in the agent-facing messageability field while
+the human composer remains available. First confirmed dispatch persists the selected runner or
+explicit local home, and a known legacy execution home is pinned before it is used again.
+Project moves resolve on that same established machine, preserve an explicit local home, and refuse
+an unknown home with guidance to repair it first; project selection cannot move a conversation
+between machines.
+
+For an idle, unbound native Claude conversation with an exact native UUID, an authorized work
+request can use `sessions repair-home <exact-address> (--local | --runner <name>) --project
+<registered-project> <source-flags> --action-id <stable-id>`. The chosen machine is only a
+candidate: its own registered project resolver and exact UUID transcript/account proof must pass.
+For a runner, history lookup may find the exact account transcript in an older project bucket after
+a move; this proves UUID/account custody, while the registered project resolver separately proves
+the selected execution location. For a local repair, the saved account must resolve to a signed-in
+default or complete shared account home using that home’s own credential and account metadata, and
+the exact transcript must be present there; runner account state cannot identify the local login.
+Ambiguous, missing or unreachable evidence refuses without changing the session. The retained action can resume the
+same immutable read-only proof after interruption; completion rechecks authority, idle state,
+UUID, binding generation, project and lifecycle before saving the explicit home. It never replays
+conversation input or changes the provider or native UUID. This control is Claude-only; imported
+consultation remains governed by its existing binding contract.
+
 Claude hook settings contain runner-local environment references for Bun and the optional managed
 history hook. The owner may prepare the settings JSON, but the command paths resolve when Claude runs
 on the runner, using that machine's helper release and executable. A runner-hosted Claude turn names

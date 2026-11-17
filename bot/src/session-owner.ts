@@ -15,7 +15,7 @@ import {sessionTouch} from './prepared-session-cards';
 import {randomUUID,createHash} from 'node:crypto';
 import {peerLabRequest} from './commons-board-service';
 import {receiveMacDiskWarning} from './mac-disk-warning';
-import {existsSync,lstatSync,mkdirSync,opendirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync} from 'node:fs';
+import {existsSync,lstatSync,mkdirSync,opendirSync,readFileSync,renameSync,unlinkSync,writeFileSync,realpathSync,statSync,readdirSync,openSync,readSync,closeSync} from 'node:fs';
 import {basename,dirname,isAbsolute,join,relative,sep} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
@@ -60,7 +60,9 @@ import {escalationReason,topModel} from './model-escalation';
 import {isThinkingModel} from './implementation-models';
 import {humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {STILL_WAITING_MINUTES,supersedeWaitingJournalObservations} from './request-liveness';
-import {lastLaunchedConversationHome} from './session-runner-home';
+import {lastLaunchedConversationHome,nativeConversationHome} from './session-runner-home';
+import {runnerMachineCall} from './runner-machine-calls';
+import {statRunnerClaudeTranscript} from './runner-provider-history-client';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordHeldInputReceiptEvent,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {INBOX_PURPOSE,REPAIR_AGENT_PURPOSE,purposeFromFirstWords} from './session-purpose';
@@ -108,7 +110,7 @@ import {containingProject,projectCoordinates,sessionProject,sessionProjects} fro
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
 import {runnerMachineCall} from './runner-machine-calls';
-import {selectedClaudeHome} from './provider-account-dispatch';
+import {selectedClaudeHome,sharedClaudeHome,claudeHomeHasLogin} from './provider-account-dispatch';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,preparedLabRequestIds} from './presentation-session-reader';
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
@@ -124,7 +126,7 @@ import {usageBreakdownForPage,usageAllowanceLookup,validUsageAllowanceLookup} fr
 import {chooseProviderForNewWork,newWorkCapacity,type AutomaticProvider} from './provider-start-choice';
 import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
-import {currentAccount} from './provider-accounts';
+import {currentAccount,localDefaultClaudeAccount,localClaudeAccountHome} from './provider-accounts';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {PeerAccountAnswers} from './peer-account-answers';
 import {maybeStartStandingRoleFailover} from './standing-role-provider-failover';
@@ -1390,6 +1392,11 @@ export class SessionOwner {
   private providerReachable(session:SessionRow,meta=sessionMetadata(session)) {
     return ((meta.origin??'native')!=='imported'||!!meta.nativeBinding)&&this.runtime.available(session.provider_id);
   }
+  /** The conversation's provider home is part of whether an agent can safely send work. */
+  private nativeHome(session:SessionRow,meta=sessionMetadata(session)) {
+    if((meta.origin??'native')!=='native')return {known:true,runner:null,reason:null};
+    return nativeConversationHome(db,session,meta,getSessionById);
+  }
   /**
    * Whether this session can be sent a message, the view's capabilities.send. Delivery asks it
    * for every request it routes; building the whole view for that also built the Inbox's
@@ -1402,6 +1409,20 @@ export class SessionOwner {
   canSend(session:SessionRow) {
     const meta=sessionMetadata(session);
     return !meta.canvasObservation&&this.providerReachable(session,meta)&&session.status!=='archived'&&!meta.suspended&&!supersededBy(session.id)&&!withdrawnSuccessor(session.id);
+  }
+  canReceiveAgentWork(session:SessionRow) {return this.canSend(session)&&this.nativeHome(session).known;}
+  canSendReason(session:SessionRow):string|null {
+    const meta=sessionMetadata(session),home=this.nativeHome(session,meta);
+    return !home.known?home.reason:!this.providerReachable(session,meta)?'Provider unavailable.':null;
+  }
+  async prepareSessionProjectLocation(session:SessionRow,requested:string) {
+    const metadata=sessionMetadata(session);
+    if((metadata.origin??'native')==='native'&&session.provider_id==='claude-code'&&session.agent_session_uuid){
+      const home=this.nativeHome(session,metadata);
+      if(!home.known)throw new SessionOwnerError(`${home.reason} Use sessions repair-home to establish custody before moving this conversation.`,409,'PROVIDER_RUNNER_UNKNOWN');
+      return this.prepareProjectLocation(requested,home.runner);
+    }
+    return this.prepareProjectLocation(requested,Object.hasOwn(metadata,'providerRunner')?metadata.providerRunner??null:undefined);
   }
   /** Why an agent's ask to this session is refused before admission; null when its recent turns took their input. */
   inputRefusal(session:SessionRow) {
@@ -1450,7 +1471,7 @@ export class SessionOwner {
     const labels=this.catalogueLabels(session);
     const origin=meta.origin??'native';
     const catalogueKind=origin==='imported'&&!meta.nativeBinding?'historical-evidence' as const:'conversation' as const;
-    const available=this.providerReachable(session,meta);
+    const available=this.providerReachable(session,meta),home=this.nativeHome(session,meta);
     const policy=meta.interactionPolicy;
     const consultationOnly=policy==='consultation-only';
     const generation=meta.generation??0;
@@ -1483,7 +1504,7 @@ export class SessionOwner {
       withdrawnNeeds:meta.withdrawnNeeds??[],unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
       heldRequests:heldRequests(db,session.id),
       // The agent-facing signal. capabilities.send stays "he can send here": thnkr.ing's composer goes read-only on false.
-      messageableForAgents:!inputRefused,
+      messageableForAgents:!inputRefused&&home.known,
       inputRefused:inputRefused?{since:inputRefused.since,count:inputRefused.count,lastTurnId:inputRefused.lastTurnId,reason:inputRefused.reason}:null,
       savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,quietOnly:saved.saved_quiet_only===1,
         startsAt:savedStartAt(saved),
@@ -1497,7 +1518,7 @@ export class SessionOwner {
       continuedAs:origin==='imported'?(()=>{const row=db.query("SELECT receipt_json FROM session_inputs WHERE session_id=? AND kind='resurrect' AND receipt_json IS NOT NULL ORDER BY created_at DESC LIMIT 1").get(session.id) as {receipt_json:string}|null;return row?JSON.parse(row.receipt_json)?.result?.sessionId??null:null;})():null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,canvasObservation:meta.canvasObservation?{boardId:meta.canvasBoardId??''}:null,policyLabel:meta.canvasObservation?'Canvas voice record — observed speech and action outcomes; no provider turns':consultationOnly?'Consultation only — information, no actions':null,
-      capabilities:{send:this.canSend(session),resume:!meta.canvasObservation&&origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!meta.canvasObservation&&!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:!meta.outside&&!meta.canvasObservation&&available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:!meta.canvasObservation&&available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult,recover:!meta.canvasObservation&&!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:!meta.canvasObservation&&available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:meta.canvasObservation?'Canvas speech and action observations only.':consultationRefusal??(!available?(origin==='imported'?(consult?'Takes no work: a conversation from outside Concierge. It answers questions through a consultation copy; ask it with --requested-effect informational.':'Archive evidence is read-only.'):'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':answersQuestionsOnly(session,meta)))}};
+      capabilities:{send:this.canSend(session),resume:!meta.canvasObservation&&origin==='imported'&&catalogueKind==='historical-evidence'&&['claude-code','codex'].includes(session.provider_id)&&typeof meta.source?.nativeId==='string'&&/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(meta.source.nativeId),stop:!meta.canvasObservation&&!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:!meta.outside&&!meta.canvasObservation&&available&&home.known&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:!meta.canvasObservation&&available&&home.known&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult,recover:!meta.canvasObservation&&!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:!meta.canvasObservation&&available&&home.known&&session.status!=='archived'?providerCaps.models??[]:[],attachments:!meta.canvasObservation&&available&&home.known&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:meta.canvasObservation?'Canvas speech and action observations only.':consultationRefusal??(!home.known?home.reason:!available?(origin==='imported'?(consult?'Takes no work: a conversation from outside Concierge. It answers questions through a consultation copy; ask it with --requested-effect informational.':'Archive evidence is read-only.'):'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':answersQuestionsOnly(session,meta)))}};
   }
   /**
    * Re-homes a session in another folder. Every turn reads the session's folder when it starts, so
@@ -1511,9 +1532,14 @@ export class SessionOwner {
     if(busy)throw new SessionOwnerError('That session has work running or queued; move it once it is idle.',409,'SESSION_BUSY');
     const from=sessionMetadata(getSessionById(sessionId)!).cwd??null;
     const current=sessionMetadata(getSessionById(sessionId)!);
-    if(holdsInbox(getSessionById(sessionId)!)&&current.cwd!==project.cwd)throw new SessionOwnerError(INBOX_PIN_REFUSAL,409,'INBOX_SESSION_PINNED');
+    const session=getSessionById(sessionId)!;
+    if(holdsInbox(session)&&current.cwd!==project.cwd)throw new SessionOwnerError(INBOX_PIN_REFUSAL,409,'INBOX_SESSION_PINNED');
+    const nativeClaude=session.provider_id==='claude-code'&&(current.origin??'native')==='native'&&!!session.agent_session_uuid;
+    const home=nativeClaude?this.nativeHome(session,current):null;
+    if(home&&!home.known)throw new SessionOwnerError(`${home.reason} Use sessions repair-home to establish custody before moving this conversation.`,409,'PROVIDER_RUNNER_UNKNOWN');
+    if(home&&project.runner!==home.runner)throw new SessionOwnerError('A project move cannot change this conversation’s machine home.',409,'HOME_MOVE_CONFLICT');
     updateSessionMetadata(sessionId,{cwd:project.cwd,project:project.cwd,projectName:project.name,projectPath:project.path,
-      ...(project.runner?{providerRunner:project.runner}:{}),
+      ...(home?{providerRunner:home.runner}:project.runner?{providerRunner:project.runner}:{}),
       ...(current.standingRole&&current.cwd!==project.cwd?{standingRole:null}:{})});
     return {from,to:project.cwd};
   }
@@ -1826,9 +1852,166 @@ export class SessionOwner {
   savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   private configuredProjectRunner():string|null { return process.env.CONCIERGE_TURN_RUNNER?.trim()||null; }
   async prepareProjectLocation(location:string,runner?:string|null) { return this.locateProject(location,runner); }
+  /** Repair one idle native Claude conversation from a transcript and project location proved
+   * on the selected machine. The retained action makes retries exact and never replays input. */
+  async repairNativeConversationHome(input:{sessionId:number;actorSessionId:number;sourceInputId:string;sourceRunId:string;
+    actionId:string;project:string;runner?:string|null;local?:boolean;targetUuid:string|null;targetGeneration:number;
+    authorityInputId:string;validateActor?:()=>void}) {
+    const local=input.local===true,runner=input.runner??null;
+    if(local===!!runner)throw new SessionOwnerError('Choose exactly one home candidate: --local or --runner.',400,'HOME_CANDIDATE_REQUIRED');
+    if(runner&&!/^[a-z][a-z0-9-]{0,31}$/.test(runner))throw new SessionOwnerError('Invalid runner name.',400,'MACHINE_INVALID');
+    const payload={kind:'repair-native-home',sessionId:input.sessionId,target:{uuid:input.targetUuid,generation:input.targetGeneration},runner,local,project:input.project};
+    const scope=`communication:${input.sourceInputId}`;
+    const operation=db.transaction(()=>retainSessionInput({sessionId:input.sessionId,scope,actionId:input.actionId,kind:'action',origin:'agent',
+      payload:{...payload,actor:{sessionId:input.actorSessionId,inputId:input.sourceInputId,runId:input.sourceRunId,
+        authorityInputId:input.authorityInputId}},
+      sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId}))();
+    if(operation.duplicate){
+      const saved=JSON.parse(operation.input.receipt_json??'{}');
+      if(saved.state==='completed')return saved.result;
+      if(saved.state==='failed')throw new SessionOwnerError(saved.error.message,409,saved.error.code);
+      // The proof is read-only. A retry of the same immutable receipt may resume it after
+      // a process restart; final checks and transaction fencing decide which proof commits.
+    }
+    const settleFailure=(error:unknown)=>{
+      const message=error instanceof Error?error.message:String(error),code=error instanceof SessionOwnerError?error.code:'HOME_PROOF_UNAVAILABLE';
+      let completed:unknown;
+      db.transaction(()=>{
+        const receipt=JSON.parse((getAcceptedSessionInput(operation.input.id)?.receipt_json)??'{}');
+        if(receipt.state==='completed'){completed=receipt.result;return;}
+        if(receipt.state==='failed'){completed=receipt.error;return;}
+        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+          .run(JSON.stringify({state:'failed',error:{code,message}}),operation.input.id);
+      })();
+      if(completed!==undefined){
+        if((completed as any)?.message&&typeof (completed as any)?.code==='string')
+          throw new SessionOwnerError((completed as any).message,409,(completed as any).code);
+        return completed;
+      }
+      throw error instanceof SessionOwnerError?error:new SessionOwnerError(`The candidate machine could not prove this conversation home: ${message}`,424,code);
+    };
+    try {
+      const before=getSessionById(input.sessionId);
+      if(!before||before.provider_id!=='claude-code'||(sessionMetadata(before).origin??'native')!=='native'
+        ||!before.agent_session_uuid)throw new SessionOwnerError('Home repair applies only to a native Claude conversation with an exact provider session ID.',409,'HOME_REPAIR_UNSUPPORTED');
+      const initialMeta=sessionMetadata(before),uuid=before.agent_session_uuid,generation=before.binding_generation??1;
+      if(uuid!==input.targetUuid||generation!==input.targetGeneration)
+        throw new SessionOwnerError('The target native binding changed before this repair action began.',409,'HOME_REPAIR_STALE');
+      const idle=()=>!db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('queued','running','delivering') LIMIT 1").get(before.id);
+      if(before.status==='archived'||initialMeta.suspended||supersededBy(before.id))
+        throw new SessionOwnerError('An archived, paused or superseded conversation cannot have its home repaired.',409,'HOME_REPAIR_UNAVAILABLE');
+      if(!idle())throw new SessionOwnerError('This conversation has queued or running work; repair its home after it is idle.',409,'SESSION_BUSY');
+      const priorHome=this.nativeHome(before,initialMeta);
+      if(priorHome.known)throw new SessionOwnerError('This conversation already has a known machine home; the repair control will not replace it.',409,'HOME_ALREADY_KNOWN');
+      const launchedHome=lastLaunchedConversationHome(db,before.id,before.provider_id);
+      if(launchedHome?.supervisor==='runner'&&!launchedHome.runner)
+        throw new SessionOwnerError('A launched runner execution has an incomplete lease record; transcript presence cannot replace its missing custody receipt.',409,'PROVIDER_RUNNER_UNKNOWN');
+      const repairState=(session:SessionRow)=>{const meta=sessionMetadata(session);return stablePayload({status:session.status,provider:session.provider_id,
+        uuid:session.agent_session_uuid,cwd:meta.cwd??null,project:meta.project??null,projectName:meta.projectName??null,projectPath:meta.projectPath??null,
+        providerRunnerPresent:Object.hasOwn(meta,'providerRunner'),providerRunner:meta.providerRunner??null,
+        providerAccount:meta.providerAccount??null,claudeAccount:meta.claudeAccount??null,
+        origin:meta.origin??'native',suspended:meta.suspended??false,lineage:meta.lineage??null,resurrection:meta.resurrection??null,parent:session.parent_session_id??null});};
+      const stateBefore=repairState(before);
+      const recorded=typeof initialMeta.cwd==='string'?initialMeta.cwd:typeof initialMeta.project==='string'?initialMeta.project:null;
+      const location=await this.prepareProjectLocation(input.project,local?null:runner);
+      const projectName=location.name.split('/')[0]!;
+      if(typeof initialMeta.projectName==='string'&&(projectName!==initialMeta.projectName
+        ||location.path!==(initialMeta.projectPath??'')))throw new SessionOwnerError('The candidate project does not match the conversation’s recorded project and folder.',409,'PROJECT_MISMATCH');
+      if(!initialMeta.projectName&&recorded&&isAbsolute(recorded)&&basename(recorded)!==location.name)
+        throw new SessionOwnerError('The candidate project does not match the conversation’s recorded folder.',409,'PROJECT_MISMATCH');
+      let account:string|null=null,localHome:string|null=null;
+      let transcriptResolution:'local-exact'|'unique'|'shared'='local-exact';
+      if(local){
+        const saved=initialMeta.providerAccount??initialMeta.claudeAccount??null;
+        const selected=selectedClaudeHome()?.label??null;
+        const active=localDefaultClaudeAccount()?.label??null;
+        account=saved??selected??active;
+        if(!account||((saved!==null)&&account!==saved))
+          throw new SessionOwnerError('The local candidate cannot prove the conversation’s saved Claude account on this machine.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        const accountHome=localClaudeAccountHome(account);
+        if(accountHome){
+          localHome=sharedClaudeHome(account,accountHome,false,false);
+          if(!localHome)throw new SessionOwnerError('The saved Claude account home is not a complete shared local home.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        }else if(active===account&&claudeHomeHasLogin(join(homedir(),'.claude'))){
+          localHome=join(homedir(),'.claude');
+        }else throw new SessionOwnerError('The saved Claude account has no verifiable local account home.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        const home=join(localHome,'projects',location.cwd.replace(/[^a-zA-Z0-9]/g,'-'),`${uuid}.jsonl`);
+        let descriptor:number|undefined;
+        try{
+          descriptor=openSync(home,'r');const prefix=Buffer.alloc(262_144),size=readSync(descriptor,prefix,0,prefix.length,0);
+          if(!prefix.subarray(0,size).includes(Buffer.from(uuid)))throw new Error('the exact native transcript does not contain its session ID');
+        }catch(error){throw new SessionOwnerError(`The local candidate has no exact Claude transcript for this project: ${String((error as Error)?.message??error)}`,409,'NATIVE_TRANSCRIPT_UNAVAILABLE');}
+        finally{if(descriptor!==undefined)closeSync(descriptor);}
+      }else{
+        const saved=initialMeta.providerAccount??initialMeta.claudeAccount??null;
+        const query=async(accountFilter:string|null)=>runnerMachineCall<{account:string|null;resolution:'unique'|'shared'|'missing'|'ambiguous'}>(runner!,'accounts.transcript',
+          {provider:'claude-code',account:accountFilter,nativeId:uuid,cwd:location.cwd});
+        const found=await query(saved);
+        if(found.resolution==='ambiguous')throw new SessionOwnerError('The candidate machine has more than one exact account copy of this transcript.',409,'NATIVE_TRANSCRIPT_AMBIGUOUS');
+        if(found.resolution==='missing')throw new SessionOwnerError('The candidate machine has no exact Claude transcript in the registered project.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
+        if(found.resolution==='shared'){
+          transcriptResolution='shared';
+          account=saved??selectedClaudeHome(runner)?.label??null;
+          if(!account)throw new SessionOwnerError('A shared transcript needs an exact Claude account selection on the candidate machine.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+          const validation=await runnerMachineCall<{available:boolean}>(runner!,'accounts.validate',{provider:'claude-code',account});
+          if(!validation.available)throw new SessionOwnerError('The selected Claude account is unavailable on the candidate machine.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        }else {transcriptResolution='unique';account=found.account;}
+        if(!account)throw new SessionOwnerError('The transcript lookup did not prove its Claude account.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        const validation=await runnerMachineCall<{available:boolean}>(runner!,'accounts.validate',{provider:'claude-code',account});
+        if(!validation.available)throw new SessionOwnerError('The exact Claude account is unavailable on the candidate machine.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+      }
+      let transcriptStat:{sourceIdentity:string|null;size:number|null;mtimeMs:number|null}|null=null;
+      if(!local){
+        // The history adapter may find the exact account transcript in an older project
+        // bucket after a move. This proves UUID/account custody; project location is the
+        // separate registered-project proof above.
+        transcriptStat=await statRunnerClaudeTranscript({runner:runner!,account:account!,sessionUuid:uuid,cwd:location.cwd});
+        if(!transcriptStat.sourceIdentity||transcriptStat.size===null)
+          throw new SessionOwnerError('The exact Claude transcript was not found under the selected project and account.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
+      }
+      const evidence={uuid,priorStatus:before.status,priorState:JSON.parse(stateBefore),
+        priorHome:{known:false,reason:priorHome.reason??'home-unknown'},bindingGeneration:generation,
+        authorityInputId:input.authorityInputId,
+        runner,local,account,project:projectName,projectPath:location.path,transcriptResolution,transcriptStat,
+        proof:local?'exact-local-account-home-transcript':'accounts.transcript+accounts.validate+exact-uuid-account-transcript'};
+      const result=db.transaction(()=>{
+        input.validateActor?.();
+        const receipt=JSON.parse((getAcceptedSessionInput(operation.input.id)?.receipt_json)??'{}');
+        if(receipt.state==='completed')return receipt.result;
+        if(receipt.state==='failed')throw new SessionOwnerError(receipt.error.message,409,receipt.error.code);
+        const current=getSessionById(before.id);
+        if(!current||(current.binding_generation??1)!==generation||current.agent_session_uuid!==uuid)
+          throw new SessionOwnerError('The conversation identity changed during home verification; nothing was changed.',409,'HOME_REPAIR_STALE');
+        if(repairState(current)!==stateBefore)
+          throw new SessionOwnerError('The conversation project or lifecycle changed during home verification; nothing was changed.',409,'HOME_REPAIR_STALE');
+        if(!idle())throw new SessionOwnerError('Work started during home verification; nothing was changed.',409,'SESSION_BUSY');
+        const nowHome=this.nativeHome(current,sessionMetadata(current));
+        if(nowHome.known)throw new SessionOwnerError('The conversation acquired a machine home during verification; nothing was changed.',409,'HOME_REPAIR_STALE');
+        const metadata=sessionMetadata(current);
+        if(metadata.providerRunner!==undefined||metadata.providerAccount!==initialMeta.providerAccount||metadata.claudeAccount!==initialMeta.claudeAccount)
+          throw new SessionOwnerError('The conversation binding changed during verification; nothing was changed.',409,'HOME_REPAIR_STALE');
+        updateSessionMetadata(current.id,{providerRunner:runner,providerAccount:account,
+          cwd:location.cwd,project:location.cwd,projectName,projectPath:location.path});
+        const restored=getSessionById(current.id)!;
+        if(!this.nativeHome(restored,sessionMetadata(restored)).known)throw new Error('The saved home did not become authoritative.');
+        const result={sessionId:`concierge:${current.id}`,home:local?'local':runner,account,project:projectName,proof:evidence.proof,evidence};
+        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+          .run(JSON.stringify({state:'completed',result,evidence}),operation.input.id);
+        recordSessionEvent({eventId:`control:${operation.input.id}`,sessionId:current.id,inputId:operation.input.id,kind:'native_home_repaired',
+          payload:{...evidence,sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId}});
+        return result;
+      })();
+      return result;
+    }catch(error){return settleFailure(error);}
+  }
   private persistedProjectRunner(metadata:NativeSessionMetadata,session?:SessionRow):string|null {
     if(Object.hasOwn(metadata,'providerRunner'))return metadata.providerRunner??null;
     if(session?.agent_session_uuid){
+      if((metadata.origin??'native')==='native'&&['claude-code','antigravity'].includes(session.provider_id)){
+        const home=nativeConversationHome(db,session,metadata,getSessionById);
+        if(!home.known)throw new SessionOwnerError(home.reason??'The native conversation has no provable machine home.',424,'PROVIDER_RUNNER_UNKNOWN');
+        return home.runner;
+      }
       // Same rule as turn dispatch: a withdrawn, never-launched intent is not where the conversation lives.
       const last=lastLaunchedConversationHome(db,session.id,session.provider_id);
       if(!last&&metadata.lineage&&session.parent_session_id){
@@ -1870,7 +2053,7 @@ export class SessionOwner {
     return this.locateProject(agent.project);
   }
   private async locateProject(location:string,runnerOverride?:string|null):Promise<{name:string;path:string;cwd:string;runner:string|null}> {
-    const runner=runnerOverride??this.configuredProjectRunner();
+    const runner=runnerOverride===undefined?this.configuredProjectRunner():runnerOverride;
     if(runner) {
       const located=await this.runnerProjectCall<{project:string;path:string;cwd:string}>('projects.locate',{location},runner);
       if(!located)throw new SessionOwnerError('The configured project runner did not resolve this project.',424,'PROJECT_RUNNER_UNAVAILABLE');

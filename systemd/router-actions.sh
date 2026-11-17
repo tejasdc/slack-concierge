@@ -89,7 +89,7 @@ case "${1:-}" in
       sleep 1
     done
     ;;
-  sessions|external|projects|work|reports|requirements)
+  sessions|external|projects|work|reports|requirements|test-capture)
     command=$1
     shift
     # Native Codex helpers share their parent's Concierge source identity but have a distinct
@@ -108,6 +108,7 @@ case "${1:-}" in
       work) script=router-request-client ;;
       reports) script=router-reports ;;
       requirements) script=router-requirements ;;
+      test-capture) script=agent-test-capture ;;
     esac
     # Commands that talk to the owner always use the installed release's client on the server.
     # A running agent's pinned copy can outlive an update and reject an option the owner now
@@ -144,11 +145,6 @@ case "${1:-}" in
   todo-add)
     shift
     exec bun run "$BOT_DIR/scripts/router-todo.$ROUTER_SUFFIX" "$@"
-    ;;
-  test-capture)
-    # An agent testing a real delivery path, recorded as that agent, never as Tejas.
-    shift
-    exec bun run "$BOT_DIR/scripts/agent-test-capture.$ROUTER_SUFFIX" "$@"
     ;;
   report)
     shift

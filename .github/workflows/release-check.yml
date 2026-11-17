@@ -43,6 +43,9 @@ jobs:
         env:
           CONCIERGE_STATE_DIR: ${{ runner.temp }}/concierge-release-check
         run: bun run build
+      - name: Native conversation home repair acceptance
+        working-directory: bot
+        run: bun run scripts/native-home-repair-fixture.ts
       - name: Native history cache backup and crash acceptance
         run: |
           sudo apt-get update -qq

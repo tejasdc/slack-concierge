@@ -1,4 +1,4 @@
-import { claudeKeychainMayHoldLogin } from "./claude-keychain";
+import { claudeKeychainMayHoldLogin, claudeKeychainOauth } from "./claude-keychain";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -219,6 +219,35 @@ export function currentAccount(provider: AccountIdentityProvider): ProviderAccou
     : provider === "codex" ? codexAccount(credentials) : claudeAccount(credentials);
   memo.set(provider, { key, account });
   return account ?? (provider === "claude-code" ? claudeSignIn : codexSignIn);
+}
+
+/** The default Claude login on this machine, read only from its own config and credential home.
+ * This deliberately bypasses currentAccount's runner-aware identity and cache fallbacks. */
+export function localDefaultClaudeAccount(): ProviderAccount | null {
+  const home=CLAUDE_HOME;
+  let credentials=readJson(join(home,".credentials.json"));
+  if(process.platform==="darwin"){
+    const keychain=claudeKeychainOauth(home);
+    if(keychain)credentials={claudeAiOauth:keychain.oauth};
+  }
+  if(!credentials?.claudeAiOauth?.refreshToken)return null;
+  const localEmail=readJson(join(homedir(),".claude.json"))?.oauthAccount?.emailAddress;
+  if(typeof localEmail!=="string"||!localEmail.trim())return null;
+  const account=claudeAccount(credentials);
+  return account?.label===localEmail?account:null;
+}
+
+/** A named local Claude home must name itself beside its own credential; never recover its
+ * label from the current account cache, which may describe a runner or another home. */
+export function localClaudeAccountHome(account:string):string|null {
+  let id:string;try{id=profileId(account);}catch{return null;}
+  const home=accountHome('claude-code',id);
+  let named:string;try{named=readFileSync(join(home,'.account-email'),'utf8').trim();}catch{return null;}
+  if(named!==account)return null;
+  const credentials=readJson(join(home,'.credentials.json'));
+  const hasFileLogin=typeof credentials?.claudeAiOauth?.refreshToken==='string'&&!!credentials.claudeAiOauth.refreshToken;
+  const hasKeychainLogin=process.platform==='darwin'&&!!claudeKeychainOauth(home)?.oauth?.refreshToken;
+  return hasFileLogin||hasKeychainLogin?home:null;
 }
 
 /** Identity component of a usage-cache scope. Never a secret. */

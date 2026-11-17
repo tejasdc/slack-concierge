@@ -54,6 +54,7 @@ Any message the owner retained can become a note: a capture, a thread reply, a p
 With --add-to, --summary-file is the whole note as it should now read: read the note first (thnkr.ing /threads/<note>), weave the new capture into the right section and merge repeats. It replaces what agents wrote there; never send only the new part, and never a copy to stack. Lines he wrote himself stay, after your outline, so leave them out of your summary.
 router-actions.sh sessions title [--session <session-address>] <source-flags> --action-id A -- <title>
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
+router-actions.sh sessions repair-home <session-address> (--local | --runner <runner>) --project <registered-project> <source-flags> --action-id A
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--promise-request <open-request-id>] [--keep-working] [--notify] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--summary "<one line: what he must decide and the result it depends on>" (needs_you) --only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--text-file F | -- <text>]
@@ -716,6 +717,22 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     }
     if(!flags.get('--project')||!flags.get('--action-id'))invalid('move needs --project <project or project/folder> and a stable --action-id.');
     return {operation:'move',body:{source:sourceFrom(flags),action_id:flags.get('--action-id'),address,project:flags.get('--project')}} as SessionCommunicationRequest;
+  }
+  if(first==='repair-home') {
+    const address=args.shift();
+    if(!address||address.startsWith('--'))invalid('repair-home needs the exact session address first.');
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!;
+      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id','--project','--runner','--local'].includes(flag)||flags.has(flag))invalid(`Invalid repair-home option ${flag}.`);
+      if(flag==='--local'){flags.set(flag,'true');continue;}
+      const value=args.shift();
+      if(!value?.trim())invalid(`${flag} needs a value.`);
+      flags.set(flag,value);
+    }
+    if(!flags.get('--project')||!flags.get('--action-id')||flags.has('--local')===flags.has('--runner'))
+      invalid('repair-home needs --project, --action-id, and exactly one of --local or --runner <name>.');
+    return {operation:'repair-home',body:{source:sourceFrom(flags),action_id:flags.get('--action-id'),address,project:flags.get('--project'),
+      ...(flags.has('--runner')?{runner:flags.get('--runner')}:{local:true})}} as SessionCommunicationRequest;
   }
   if(first==='watch') {
     const sub=args.shift();
