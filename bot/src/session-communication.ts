@@ -1083,11 +1083,47 @@ export class SessionCommunicationCoordinator {
         if(!actor.inputId)throw new Error('Repairing a session home needs a native source input.');
         const grant=this.authority(actor);
         if(grant.scope!=='work')throw new Error('A machine-home repair needs a work-authorized source input.');
+        const resolveExactGrant=()=>{
+            let candidate=getAcceptedSessionInput(grant.authorityInputId??actor.inputId!);
+            const seen=new Set<string>();
+            while(candidate&&!seen.has(candidate.id)){
+                seen.add(candidate.id);
+                if(humanAuthored(candidate))return {inputId:candidate.id,requestId:null,peerDeliveryId:null};
+                const request=db.query(`SELECT request_id,payload_json FROM session_communication_requests
+                    WHERE target_input_id=? AND target_session_id=? LIMIT 1`).get(candidate.id,actor.session) as {request_id:string;payload_json:string}|null;
+                if(request&&JSON.parse(request.payload_json).requestedEffect==='work')
+                    return {inputId:candidate.id,requestId:request.request_id,peerDeliveryId:null};
+                const peer=db.query(`SELECT request_id,requested_effect FROM session_peer_deliveries
+                    WHERE target_input_id=? AND target_session_id=? LIMIT 1`).get(candidate.id,actor.session) as {request_id:string;requested_effect:string}|null;
+                if(peer?.requested_effect==='work')return {inputId:candidate.id,requestId:null,peerDeliveryId:peer.request_id};
+                if(candidate.origin!=='service'||!candidate.source_input_id||!candidate.source_run_id)break;
+                const parent=getAcceptedSessionInput(candidate.source_input_id);
+                const run=parent?.turn_id?db.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?')
+                    .get(parent.turn_id,parent.session_id) as {native_run_id:string|null}|null:null;
+                if(!parent||parent.session_id!==actor.session||run?.native_run_id!==candidate.source_run_id)break;
+                candidate=parent;
+            }
+            throw new Error('The work-authorized source has no exact same-session human grant or linked work request for home repair.');
+        };
+        const exactGrant=resolveExactGrant();
+        const validateExactGrant=()=>{
+            if(exactGrant.requestId){
+                const request=db.query('SELECT outcome FROM session_communication_requests WHERE request_id=? AND target_input_id=? AND target_session_id=?')
+                    .get(exactGrant.requestId,exactGrant.inputId,actor.session) as {outcome:string|null}|null;
+                if(!request||request.outcome!==null)throw new Error('The exact original work request was canceled or settled during home verification.');
+            }
+            if(exactGrant.peerDeliveryId){
+                const delivery=db.query('SELECT closed_at_ms FROM session_peer_deliveries WHERE request_id=? AND target_input_id=? AND target_session_id=?')
+                    .get(exactGrant.peerDeliveryId,exactGrant.inputId,actor.session) as {closed_at_ms:number|null}|null;
+                if(!delivery||delivery.closed_at_ms!==null)throw new Error('The exact original peer work delivery was closed during home verification.');
+            }
+        };
+        validateExactGrant();
         const target=resolveSessionAddress(input.address);
         return this.dependencies.owner.repairNativeConversationHome({sessionId:target.id,actorSessionId:actor.session,
             sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),actionId:input.action_id,project:input.project,
             targetUuid:target.agent_session_uuid,targetGeneration:target.binding_generation??1,
-            authorityInputId:grant.authorityInputId??actor.inputId,
+            authorityInputId:exactGrant.inputId,
             ...(input.runner?{runner:input.runner}:{}),local:input.local===true,validateActor:()=>{
                 const current=this.fenced(this.actor(input.source));
                 if(current.session!==actor.session||current.inputId!==actor.inputId||current.turn!==actor.turn)
@@ -1095,15 +1131,7 @@ export class SessionCommunicationCoordinator {
                 const currentGrant=this.authority(current);
                 if(currentGrant.scope!=='work'||(currentGrant.authorityInputId??current.inputId)!==(grant.authorityInputId??actor.inputId))
                     throw new Error('The work authority changed during home verification.');
-                const authorityInputId=grant.authorityInputId??actor.inputId!;
-                const linkedRequest=db.query(`SELECT outcome FROM session_communication_requests
-                    WHERE target_input_id=? AND target_session_id=? LIMIT 1`).get(authorityInputId,actor.session) as {outcome:string|null}|null;
-                const linkedPeer=db.query(`SELECT closed_at_ms FROM session_peer_deliveries
-                    WHERE target_input_id=? AND target_session_id=? LIMIT 1`).get(authorityInputId,actor.session) as {closed_at_ms:number|null}|null;
-                if(linkedRequest&&linkedRequest.outcome!==null)
-                    throw new Error('The exact work request was canceled or settled during home verification.');
-                if(linkedPeer&&linkedPeer.closed_at_ms!==null)
-                    throw new Error('The exact peer work delivery was closed during home verification.');
+                validateExactGrant();
             }});
     }
     /** Any agent may name any session here; a title Tejas set himself always wins [decision: agents-are-never-handcuffed]. */

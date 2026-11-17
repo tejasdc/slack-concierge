@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import * as os from 'node:os';
-import {mkdirSync,writeFileSync} from 'node:fs';
+import {mkdirSync,symlinkSync,writeFileSync} from 'node:fs';
 import {mock} from 'bun:test';
 
 const state=await mkdtemp(join(os.tmpdir(),'concierge-native-home-repair-'));
@@ -55,6 +55,7 @@ const [{db,getSessionById,claimNextQueuedTurn,markTurnProviderAdmissionIntended,
   {SessionOwner,sessionAddress},{SessionCommunicationCoordinator},{requestApiHandler},{parseRouterSessionsArgs}]=await Promise.all([
   import('../src/state'),import('../src/session-inputs'),import('../src/session-owner'),import('../src/session-communication'),
   import('../src/routed-request-api'),import('./router-sessions')]);
+const {setRunnerAccountInUse,localDefaultClaudeAccount}=await import('../src/provider-accounts');
 const owner=new SessionOwner({available:()=>true,wake(){},steer(){return false},async stop(){return false}} as any,workspace);
 const communication=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>true,onError:error=>{throw error;}});
 owner.communication=communication;communication.start();
@@ -72,10 +73,16 @@ const createTarget=(action:string)=>{
   bindSessionProvider(target.id,'claude-code',`12345678-1234-4123-8123-${String(target.id).padStart(12,'0')}`);
   return getSessionById(target.id)!;
 };
-const invoke=async(target:any,action:string,project='life-logistics')=>{
+const invoke=async(target:any,action:string,project='life-logistics',from=source)=>{
   const parsed=parseRouterSessionsArgs(['repair-home',sessionAddress(target),'--runner','ax41','--project',project,
-    '--source-input',source.input_id,'--source-run',source.run_id,'--action-id',action]);
+    '--source-input',from.input_id,'--source-run',from.run_id,'--action-id',action]);
   assert.equal(parsed.operation,'repair-home');
+  const response=await route(new Request('http://owner/session-communication/repair-home',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(parsed.body)}));
+  return {status:response.status,body:await response.json() as any};
+};
+const invokeLocal=async(target:any,action:string,from=source)=>{
+  const parsed=parseRouterSessionsArgs(['repair-home',sessionAddress(target),'--local','--project','life-logistics',
+    '--source-input',from.input_id,'--source-run',from.run_id,'--action-id',action]);
   const response=await route(new Request('http://owner/session-communication/repair-home',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(parsed.body)}));
   return {status:response.status,body:await response.json() as any};
 };
@@ -106,6 +113,33 @@ try{
     'a fresh informational ask is admitted after the exact home has been repaired');
   assert.equal(db.query("SELECT count(*) AS n FROM session_owner_events WHERE session_id=? AND kind='native_home_repaired'").get(target.id)?.n,1);
   assert.equal((await invoke(target,'repair-success','another-project')).status,400,'a changed payload conflicts with the retained action');
+
+  const makeServiceGrant=(tag:string)=>{
+    const requestId=`fixture-original-work-${tag}`,turnId=claim.turn_id;
+    const workInput=retainSessionInput({id:`agent-${tag}`,sessionId:actorSession.id,scope:`fixture-${tag}`,actionId:`agent-${tag}`,
+      kind:'input',origin:'agent',requestId,sourceInputId:source.input_id,sourceRunId:source.run_id,payload:{text:'Original assigned work.'}}).input;
+    db.query('UPDATE session_inputs SET turn_id=? WHERE id=?').run(turnId,workInput.id);
+    const now=Date.now();
+    db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
+        target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestId,'fixture',`source-${tag}`,turnId,actorSession.id,source.input_id,`request-${tag}`,
+        actorSession.id,'fixture',`target-${tag}`,JSON.stringify({requestedEffect:'work'}),`hash-${tag}`,now,now,source.input_id,workInput.id);
+    const service=retainSessionInput({id:`service-${tag}`,sessionId:actorSession.id,scope:`service-${tag}`,actionId:`service-${tag}`,
+      kind:'input',origin:'service',requestId,sourceInputId:workInput.id,sourceRunId:source.run_id,payload:{text:'Service continuation.'}}).input;
+    db.query('UPDATE session_inputs SET turn_id=? WHERE id=?').run(turnId,service.id);
+    return {requestId,serviceSource:{input_id:service.id,run_id:source.run_id},workInputId:workInput.id};
+  };
+  const inheritedGrant=makeServiceGrant('open'),serviceTarget=createTarget('service-open');
+  const serviceRepair=await invoke(serviceTarget,'repair-service-open','life-logistics',inheritedGrant.serviceSource);
+  assert.equal(serviceRepair.status,200,JSON.stringify(serviceRepair.body));
+  assert.equal(serviceRepair.body.evidence.authorityInputId,inheritedGrant.workInputId,
+    'repair custody records the original work input rather than the service continuation input');
+  const serviceRepairEvent=JSON.parse((db.query("SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='native_home_repaired'")
+    .get(serviceTarget.id) as {payload_json:string}).payload_json);
+  assert.equal(serviceRepairEvent.authorityInputId,inheritedGrant.workInputId,'the recovery event retains the normalized original work grant');
+  const serviceRepairAction=JSON.parse((db.query("SELECT payload_json FROM session_inputs WHERE session_id=? AND scope=? AND action_id='repair-service-open'")
+    .get(serviceTarget.id,`communication:${inheritedGrant.serviceSource.input_id}`) as {payload_json:string}).payload_json);
+  assert.equal(serviceRepairAction.actor.authorityInputId,inheritedGrant.workInputId,'the immutable receipt payload pins the original work grant');
 
   const rebound=createTarget('rebound');let projectStartedResolve!:()=>void;
   const projectStarted=new Promise<void>(resolve=>projectStartedResolve=resolve);projectLookupStarted=projectStartedResolve;pauseProjectLookup=true;
@@ -169,18 +203,48 @@ try{
   assert.notEqual(staleResult.status,200,'state changed during async proof must refuse');
   assert.equal(Object.hasOwn(sessionMetadata(getSessionById(stale.id)!), 'providerRunner'),false);
 
-  const canceled=createTarget('canceled'),requestId='fixture-cancel-during-home-proof';
-  const now=Date.now();
-  db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
-      target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestId,'fixture','cancel-source',claim.turn_id,actorSession.id,source.input_id,
-      'fixture-cancel-request',actorSession.id,'fixture','cancel-target',JSON.stringify({requestedEffect:'work'}),'fixture-hash',now,now,
-      source.input_id,source.input_id);
-  mutateAtStat=()=>communication.cancel({source,request_id:requestId,action_id:'fixture-cancel-during-proof'});
-  const canceledResult=await invoke(canceled,'repair-canceled-during-proof');
-  assert.notEqual(canceledResult.status,200,'a request canceled during transcript proof loses its repair authority');
-  assert.equal(Object.hasOwn(sessionMetadata(getSessionById(canceled.id)!), 'providerRunner'),false);
-  db.query('DELETE FROM session_communication_requests WHERE request_id=?').run(requestId);
+  setRunnerAccountInUse('claude-code',{id:'runner-account-a',label:'account-a@example.com'});
+  assert.equal(localDefaultClaudeAccount()?.label,'writer@example.com','the local home identity reader bypasses a different runner account');
+  const localMismatch=createTarget('local-mismatch');
+  updateSessionMetadata(localMismatch.id,{providerAccount:'account-a@example.com',claudeAccount:'account-a@example.com'});
+  const mismatchDir=join(privateHome,'.claude','projects',projectRoot.replace(/[^a-zA-Z0-9]/g,'-'));
+  mkdirSync(mismatchDir,{recursive:true});
+  writeFileSync(join(mismatchDir,`${localMismatch.agent_session_uuid}.jsonl`),JSON.stringify({sessionId:localMismatch.agent_session_uuid})+'\n');
+  const mismatchParsed=parseRouterSessionsArgs(['repair-home',sessionAddress(localMismatch),'--local','--project','life-logistics',
+    '--source-input',source.input_id,'--source-run',source.run_id,'--action-id','repair-local-runner-mismatch']);
+  const mismatchResponse=await route(new Request('http://owner/session-communication/repair-home',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(mismatchParsed.body)}));
+  assert.notEqual(mismatchResponse.status,200,'runner account A cannot certify local default home B');
+  assert.equal(Object.hasOwn(sessionMetadata(getSessionById(localMismatch.id)!), 'providerRunner'),false);
+  assert.equal(sessionMetadata(getSessionById(localMismatch.id)!).providerAccount,'account-a@example.com','mismatch refusal preserves the saved identity untouched');
+  const unknownLocal=createTarget('local-unknown');
+  updateSessionMetadata(unknownLocal.id,{providerAccount:'account-a@example.com',claudeAccount:'account-a@example.com'});
+  writeFileSync(join(privateHome,'.claude.json'),JSON.stringify({oauthAccount:{}}));
+  const unknownLocalDir=join(privateHome,'.claude','projects',projectRoot.replace(/[^a-zA-Z0-9]/g,'-'));
+  mkdirSync(unknownLocalDir,{recursive:true});
+  writeFileSync(join(unknownLocalDir,`${unknownLocal.agent_session_uuid}.jsonl`),JSON.stringify({sessionId:unknownLocal.agent_session_uuid})+'\n');
+  const unknownLocalParsed=parseRouterSessionsArgs(['repair-home',sessionAddress(unknownLocal),'--local','--project','life-logistics',
+    '--source-input',source.input_id,'--source-run',source.run_id,'--action-id','repair-local-unknown-identity']);
+  const unknownLocalResponse=await route(new Request('http://owner/session-communication/repair-home',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(unknownLocalParsed.body)}));
+  assert.notEqual(unknownLocalResponse.status,200,'a runner identity cannot fill an unknown local identity');
+  assert.equal(Object.hasOwn(sessionMetadata(getSessionById(unknownLocal.id)!), 'providerRunner'),false);
+  assert.equal(sessionMetadata(getSessionById(unknownLocal.id)!).providerAccount,'account-a@example.com','unknown local identity refusal preserves the saved identity');
+  writeFileSync(join(privateHome,'.claude.json'),JSON.stringify({oauthAccount:{emailAddress:'writer@example.com'}}));
+  setRunnerAccountInUse('claude-code',{id:'local-account-b',label:'writer@example.com'});
+  const namedHome=join(privateHome,'.claude-accounts','account-a-example-com');
+  mkdirSync(namedHome,{recursive:true});
+  writeFileSync(join(namedHome,'.credentials.json'),JSON.stringify({claudeAiOauth:{refreshToken:'named-account-a-token'}}));
+  writeFileSync(join(namedHome,'.account-email'),'account-a@example.com');
+  symlinkSync(join(privateHome,'.claude','projects'),join(namedHome,'projects'));
+  const namedLocal=createTarget('named-local');
+  updateSessionMetadata(namedLocal.id,{providerAccount:'account-a@example.com',claudeAccount:'account-a@example.com'});
+  const namedDir=join(privateHome,'.claude','projects',projectRoot.replace(/[^a-zA-Z0-9]/g,'-'));
+  mkdirSync(namedDir,{recursive:true});
+  writeFileSync(join(namedDir,`${namedLocal.agent_session_uuid}.jsonl`),JSON.stringify({sessionId:namedLocal.agent_session_uuid})+'\n');
+  const namedResult=await invokeLocal(namedLocal,'repair-local-named');
+  assert.equal(namedResult.status,200,JSON.stringify(namedResult.body));
+  assert.equal(sessionMetadata(getSessionById(namedLocal.id)!).providerAccount,'account-a@example.com',
+    'an exact signed-in named shared home remains a valid local candidate despite runner account B');
+  assert.equal(sessionMetadata(getSessionById(namedLocal.id)!).providerRunner,null);
 
   const local=createTarget('local'),localMeta=sessionMetadata(local),localUuid=local.agent_session_uuid!;
   const localDir=join(privateHome,'.claude','projects',projectRoot.replace(/[^a-zA-Z0-9]/g,'-')),localFile=join(localDir,`${localUuid}.jsonl`);
@@ -203,5 +267,13 @@ try{
     owner.moveSession(local.id,'life-logistics/moved',moved);
     assert.equal(sessionMetadata(getSessionById(local.id)!).providerRunner,null,'a project move preserves the explicit local binding');
   }
+  setRunnerAccountInUse('claude-code',null);
+  const canceledGrant=makeServiceGrant('cancel'),canceled=createTarget('service-canceled');
+  mutateAtStat=()=>communication.cancel({source,request_id:canceledGrant.requestId,action_id:'fixture-cancel-original-request'});
+  const canceledResult=await invoke(canceled,'repair-service-canceled','life-logistics',canceledGrant.serviceSource);
+  assert.notEqual(canceledResult.status,200,'canceling the original work request during proof revokes an inherited service continuation');
+  assert.equal(Object.hasOwn(sessionMetadata(getSessionById(canceled.id)!), 'providerRunner'),false);
+  assert.equal(sessionMetadata(getSessionById(canceled.id)!).providerAccount,'writer@example.com');
+  assert.equal((db.query('SELECT outcome FROM session_communication_requests WHERE request_id=?').get(canceledGrant.requestId) as {outcome:string|null}).outcome,'canceled');
   console.log('native home repair: command boundary, source authority, runner/local proof, refusal, move fence, both terminal races, idempotency, and agent-messageability fixture passed');
 }finally{await communication.stop();await rm(state,{recursive:true,force:true});}

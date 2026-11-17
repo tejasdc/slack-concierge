@@ -126,7 +126,7 @@ import {usageBreakdownForPage,usageAllowanceLookup,validUsageAllowanceLookup} fr
 import {chooseProviderForNewWork,newWorkCapacity,type AutomaticProvider} from './provider-start-choice';
 import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
-import {accountHome,currentAccount,listProfiles} from './provider-accounts';
+import {currentAccount,localDefaultClaudeAccount,localClaudeAccountHome} from './provider-accounts';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {PeerAccountAnswers} from './peer-account-answers';
 import {maybeStartStandingRoleFailover} from './standing-role-provider-failover';
@@ -1924,13 +1924,13 @@ export class SessionOwner {
       if(local){
         const saved=initialMeta.providerAccount??initialMeta.claudeAccount??null;
         const selected=selectedClaudeHome()?.label??null;
-        const active=currentAccount('claude-code')?.label??null;
+        const active=localDefaultClaudeAccount()?.label??null;
         account=saved??selected??active;
         if(!account||((saved!==null)&&account!==saved))
           throw new SessionOwnerError('The local candidate cannot prove the conversation’s saved Claude account on this machine.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
-        const profile=listProfiles('claude-code').find(item=>item.label===account&&item.signedIn);
-        if(profile){
-          localHome=sharedClaudeHome(account,accountHome('claude-code',profile.id),false,false);
+        const accountHome=localClaudeAccountHome(account);
+        if(accountHome){
+          localHome=sharedClaudeHome(account,accountHome,false,false);
           if(!localHome)throw new SessionOwnerError('The saved Claude account home is not a complete shared local home.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
         }else if(active===account&&claudeHomeHasLogin(join(homedir(),'.claude'))){
           localHome=join(homedir(),'.claude');
