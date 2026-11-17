@@ -1218,12 +1218,15 @@ backup/readback, page/detail/cursor/overlay, restore/retention, stopped duration
 net allocation checks still precede production conversion or pin release.
 
 Focused disposable verification (including a local native Restic repository;
-this is not an offsite production proof):
+this is not an offsite production proof). On a machine inheriting the live ledger,
+use the exact installed private command and Bun path printed by the guard's
+inherited-live refusal. The worktree source wrapper imports mutable worktree code
+and is not the sealed entrance. Run the following with those printed paths:
 
 ```bash
-bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-maintenance-fixture.ts
-bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-crash-fixture.ts
-bun run bot/scripts/private-code-command.ts -- bun run bot/scripts/history-cache-admission-fixture.ts
+<installed-bun> run <installed-private-command> -- bun run bot/scripts/history-cache-maintenance-fixture.ts
+<installed-bun> run <installed-private-command> -- bun run bot/scripts/history-cache-crash-fixture.ts
+<installed-bun> run <installed-private-command> -- bun run bot/scripts/history-cache-admission-fixture.ts
 ```
 
 The normal GitHub Release check runs these three native fixtures after its build
@@ -1387,7 +1390,17 @@ check is also consumed by the preceding installed builder, so the correction nee
 replacement. No tests or reviews were run by the autonomous repair; activation and health
 proof remain with the normal detached controller.
 Inside an already isolated check, descendants inherit the inaccessible directory rather
-than trying to create another user namespace. The wrapper supplies its own device directory,
+than trying to create another user namespace. "Already isolated" means the directory refuses
+access or is the boundary's own mask (an empty, mode-000 tmpfs) seen from inside a nested
+user namespace, where inherited mounts are locked. In the initial namespace (an agent shell
+under systemd's mask) root could unmount that mask, so the launcher still wraps. The private code entrance
+keeps permission override for its mount-capable children, so the mask reads as accessible
+there, and a permission probe alone sent the database-safety fixture into a nested namespace
+the kernel refuses ("setting up uid map", 2026-11-17). Through that entrance the fixture's
+ledger-opening children carry their own scoped test authorization, because the entrance marks
+everything it runs as a test; they open only the fixture's temporary ledger. Run it with the
+installed entrance followed by `-- bun run bot/scripts/database-safety-fixture.ts`; it reports
+fresh-boundary coverage as `not-exercised` there. The wrapper supplies its own device directory,
 which Bun requires to start. Owner startup and the checkpoint worker report their actual
 SQLite version and source identity through the existing bounded application log.
 

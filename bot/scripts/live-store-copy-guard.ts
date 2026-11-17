@@ -66,10 +66,14 @@ try{crawl=wholeMachineCrawlRefusal(command,String(hook.tool_name??''),input,cwd)
 // The sealed private entrance runs its code behind hidden live mounts, so only its typed
 // command is text-checked; its scripts' contents are not (they name live paths as test data).
 const sealed=!!command&&privateEntrance(command);
-const reason=liveStoreCopyRefusal(command,cwd,undefined,{inspectScripts:!sealed})??crawl
+const unsealedLaunch=!!command&&inheritedLiveState()&&codeLaunch(command)&&!sealed;
+// An unsealed launch is refused regardless of its source. Inspect its typed command first
+// so an explicit raw copy still receives the copy refusal; do not report fixture test data
+// inside a mutable worktree as an operation the command would perform.
+const reason=liveStoreCopyRefusal(command,cwd,undefined,{inspectScripts:!sealed&&!unsealedLaunch})??crawl
   ??(command?thinkeringRetentionCommandRefusal(command,cwd):null);
 if(reason)process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:reason}})+'\n');
-else if(command&&inheritedLiveState()&&codeLaunch(command)&&!sealed){
+else if(unsealedLaunch){
   const privatePath=process.env.CONCIERGE_PRIVATE_CODE_PATH;
   const bun=process.env.CONCIERGE_PRIVATE_CODE_BUN;
   const instruction=privatePath&&bun?`Run the check through: ${bun} run ${privatePath} -- <command> [args...]`:'Reinstall the Concierge machine hooks to get the private check command.';

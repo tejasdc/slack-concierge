@@ -17,6 +17,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { requestApiResponse } from './router-request-client';
+import { captureResponseSummary } from './agent-test-capture-response';
 
 const DROP_OFF = process.env.CONCIERGE_CAPTURE_URL ?? 'https://capture.tejas.nyc';
 const THNKRING = process.env.THINKERING_ORIGIN_URL ?? 'https://thnkr.ing';
@@ -41,7 +42,7 @@ const key = (file: string) => readFileSync(file, 'utf8').trim();
 async function send(url: string, init: RequestInit) {
   const response = await fetch(url, { ...init, signal: AbortSignal.timeout(60_000) });
   const body = await response.text();
-  console.log(JSON.stringify({ ok: response.ok, path, status: response.status, body: body.slice(0, 2000) }));
+  console.log(JSON.stringify({ ok: response.ok, path, status: response.status, ...captureResponseSummary(body) }));
   process.exit(response.ok ? 0 : 1);
 }
 
@@ -73,7 +74,8 @@ if (path === 'send-to-inbox' || path === 'bug-report') {
     id: flags.get('--source-id') ?? `agent-test-${randomUUID()}`,
     recordedAt: flags.get('--recorded-at') ?? new Date().toISOString(), title: 'Agent test',
     metadata: { agentSource: { inputId, runId } } }, text, files: [] });
-  console.log(JSON.stringify({ ok: result.ok, path, status: result.status, body: JSON.stringify(result.result).slice(0, 2000) }));
+  const body = JSON.stringify(result.result);
+  console.log(JSON.stringify({ ok: result.ok, path, status: result.status, ...captureResponseSummary(body, result.result) }));
   process.exit(result.ok ? 0 : 1);
 } else {
   fail('Choose a path: send-to-inbox, bug-report, pebble, iphone-share, action-button, watch, mac, notification-reply, monologue, alexa, voice-memo.');

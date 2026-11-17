@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, readdirSync, realpathSync, statSync, statfsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { liveStores } from './live-store-locations';
@@ -24,17 +24,32 @@ function loopBackingFiles(directories: string[]): string[] {
   return [...files];
 }
 
+const TMPFS_MAGIC = 0x01021994;
+/** True when the canonical state directory is already the boundary's own mask: an empty,
+ * mode-000 tmpfs. A permission probe alone is not enough: the private code entrance keeps
+ * CAP_DAC_OVERRIDE for its mount-capable children, so the mask still reads as accessible
+ * there, and a nested user namespace then fails with "setting up uid map" (2026-11-17).
+ * The mask counts only inside a non-initial user namespace, where inherited mounts are locked.
+ * In the initial namespace (an agent shell under systemd's own mask) root could unmount it,
+ * so the launcher still wraps the command to lock that mask for mount-capable children. */
+export function inheritedDatabaseBoundary(state = join(homedir(), '.local/state/concierge')): boolean {
+  try { accessSync(state, constants.R_OK | constants.X_OK); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'EACCES') return true; throw error; }
+  const initialUserNamespace = /^\s*0\s+0\s+4294967295\s*$/.test(readFileSync('/proc/self/uid_map', 'utf8'));
+  return !initialUserNamespace && (statSync(state).mode & 0o7777) === 0 && statfsSync(state).type === TMPFS_MAGIC
+    && readdirSync(state).length === 0;
+}
+
 /** Release fixtures cannot open live stores through raw SQLite or filesystem APIs.
  * Mount isolation is inherited by descendants and ends with the check process. */
 export function privateDatabaseCommand(command: string[], allowPrivateMounts = false): string[] {
   if (process.platform !== 'linux') return command;
   const state = join(homedir(), '.local/state/concierge');
   if (!existsSync(state)) return command;
-  // A child of this boundary inherits the inaccessible mount. Ordinary checks
+  // A child of this boundary inherits the masked directory. Ordinary checks
   // drop capabilities; the code launcher uses a second user namespace so its
   // mount-capable children cannot unmount the protected outer mounts.
-  try { accessSync(state, constants.R_OK | constants.X_OK); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'EACCES') return command; throw error; }
+  if (inheritedDatabaseBoundary(state)) return command;
   if (!existsSync('/usr/bin/bwrap')) throw new Error('Release database isolation requires bubblewrap.');
   // The ledger's own filesystem is reached directly too, not only through the state directory's
   // link, so every live directory that link record names is hidden (2026-10-16).

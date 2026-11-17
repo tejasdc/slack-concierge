@@ -25,6 +25,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [decision: agents-check-real-end-to-end-behavior]. The
   [agent test delivery](docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries)
   is for capture paths; use a feature's own socket or route when appropriate.
+  Its CLI response projection and bounded-preview contract are documented in that runbook.
 - Stable runtime commands follow the verified sealed control selection through
   [deployment dispatchers](docs/runbooks/DEPLOYMENT.md); preserve application-only
   rollback's separate controller and the disposable installed-command acceptance.

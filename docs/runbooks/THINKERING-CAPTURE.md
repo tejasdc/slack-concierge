@@ -74,6 +74,14 @@ start an Inbox turn. Exact retries return the retained result. See
 [requested phone delivery](../contracts/requested-phone-notifications.md) for the
 explicit-request rule and the owner-event versus physical-phone proof boundary.
 
+The CLI parses the complete response before limiting its `body` preview to 2,000
+characters. When present, it also emits compact top-level `operation` identity
+(`operationId`, `inputId`, `sessionId`, `origin`, `humanAuthored`, `kind`, `state`)
+and `agentTest` diagnostic (`notificationRequest`, `humanNotificationArmed`)
+fields. The full retained request remains only in the bounded preview; malformed
+responses produce that preview without failing after the capture may already have
+been accepted.
+
 His own messages show the door they came through ("You · iPhone Action Button", "You · Mac
 quick capture", "You · Pebble", "You · web", "You · web (password)"), derived by the owner from
 the capture's recorded source or the door thnkr.ing names for its own screens.
