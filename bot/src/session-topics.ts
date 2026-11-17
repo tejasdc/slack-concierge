@@ -1652,7 +1652,15 @@ export function verifiedHumanConversation(operationId:string,cursor:string|null=
   const roots=topicId?topicRoots(topicId):root?[root]:[];
   const inRoots=new Set(roots);
   const members=new Map<string,number>();
-  for(const [messageId,entry] of index.messages)if(entry.root&&inRoots.has(entry.root))members.set(messageId,entry.sequence);
+  // A message he sent straight to an ordinary session has no Inbox thread: its conversation is
+  // that session's own accepted messages, so a later "hold off" there is never missed. Their
+  // order is the session's accepted-input order rather than the Inbox event sequence.
+  const inboxSource=!!(db.query("SELECT 1 FROM sessions WHERE id=? AND json_extract(native_metadata_json,'$.inbox')=1").get(source.session_id));
+  const scope:'topic'|'thread'|'session'|'source'=topicId?'topic':root?'thread':inboxSource?'source':'session';
+  if(scope==='session'){
+    for(const row of db.query("SELECT rowid AS sequence,id FROM session_inputs WHERE session_id=? AND origin='human'").all(source.session_id) as {sequence:number;id:string}[])
+      members.set(row.id,row.sequence);
+  }else for(const [messageId,entry] of index.messages)if(entry.root&&inRoots.has(entry.root))members.set(messageId,entry.sequence);
   // The source is always part of its own conversation, even before its thread is placed.
   if(!members.has(source.id))members.set(source.id,index.messages.get(source.id)?.sequence??0);
   const human=[...members].map(([messageId,sequence])=>({input:getAcceptedSessionInput(messageId),sequence}))
@@ -1671,14 +1679,14 @@ export function verifiedHumanConversation(operationId:string,cursor:string|null=
       ...(typeof replyTo?.messageId==='string'?{replyToMessageId:replyTo.messageId}:{})};
   });
   const threadContext=root?{version:1 as const,rootInputId:root,topicId}:null;
-  const contextDigest=createHash('sha256').update(JSON.stringify({operationId:source.id,threadContext,roots,messages:all})).digest('hex');
+  const contextDigest=createHash('sha256').update(JSON.stringify({operationId:source.id,scope,threadContext,roots,messages:all})).digest('hex');
   if(after&&after.d!==contextDigest)
     throw new TopicError('His conversation changed since this read began; read it again from the start.',409,'CONVERSATION_CHANGED');
   const start=after?all.findIndex(message=>message.sequence>after!.s||(message.sequence===after!.s&&message.inputId>after!.i)):0;
   const page=start<0?[]:all.slice(start,start+size+1);
   const messages=page.slice(0,size);
   const last=messages[messages.length-1];
-  return {version:1 as const,operationId:source.id,threadContext,roots,contextDigest,
+  return {version:1 as const,operationId:source.id,scope,threadContext,roots,contextDigest,
     // The owner ledger position this answer reflects, for audit; compare contextDigest for consistency.
     revision:index.watermark,messages,
     nextCursor:page.length>size&&last?Buffer.from(JSON.stringify({d:contextDigest,s:last.sequence,i:last.inputId})).toString('base64url'):null,
