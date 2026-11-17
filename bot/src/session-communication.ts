@@ -1618,14 +1618,14 @@ export class SessionCommunicationCoordinator {
         if (turn.status === 'error' || turn.status === 'cancelled') turn = carryingTurn(turn.id) ?? turn;
         return !['done', 'error', 'cancelled'].includes(turn.status) || awaitingBankedContinuation(turn.id);
     }
-    /** The requirement records a request carries: the ones it named plus its Inbox thread's, for the route to read fresh. */
+    /** The requirement records a request carries, fixed when it was created: the ones named plus its thread's then. The route reads their states fresh; the thread is never looked up again. */
     requirementRefs(requestId:string):{ids:string[];topic:string|null}|null {
         const row=db.query('SELECT payload_json,topic_root_input_id FROM session_communication_requests WHERE request_id=?').get(requestId) as {payload_json:string;topic_root_input_id:string|null}|null;
         if(!row)return null;
         const payload=JSON.parse(row.payload_json) as {requirements?:unknown;requestedEffect?:string};
         if(payload.requestedEffect!=='work')return null;
         const ids=Array.isArray(payload.requirements)?payload.requirements.filter((id):id is string=>typeof id==='string'):[];
-        return {ids,topic:topicOf(row.topic_root_input_id||null)};
+        return {ids,topic:null};
     }
     private row(id: string): RequestRow {
         const row = db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(id) as RequestRow | null;
@@ -2481,7 +2481,10 @@ export class SessionCommunicationCoordinator {
             const address=sessionAddress(getSessionById(selected.session)!);
             const retainedBody=JSON.parse(encodedWith(extra));
             if(input.files)retainedBody.files=input.files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}));
-            const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(input.smallTask?{smallTask:true}:{}),...(fitNote?{newTopic:true}:{}),...(history?{history:{requests:history.requests,sessions:history.sessions,cases:history.cases,omissions:history.omissions.length}}:{}),...(forwardedFrom?{forwardedFrom}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
+            // The records are bound here, once: the ones named plus the ones tied to the thread at this moment.
+            // Closing reads exactly these (states fresh, membership fixed); a record made later during the
+            // work, even by the Inbox router filing it, never blocks a request that did not begin with it.
+            const retainedPayload=JSON.stringify({...retainedBody,...(requirementRecords.length?{requirements:[...new Set([...requirementIds,...requirementRecords.map(record=>record.id)])].sort()}:{}),...extra,address,...(input.smallTask?{smallTask:true}:{}),...(fitNote?{newTopic:true}:{}),...(history?{history:{requests:history.requests,sessions:history.sessions,cases:history.cases,omissions:history.omissions.length}}:{}),...(forwardedFrom?{forwardedFrom}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id,topic_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
                 .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest,
