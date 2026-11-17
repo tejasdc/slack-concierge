@@ -21,6 +21,14 @@ operation to its thread; on November 17 thnkr.ing had to resolve that through th
 which refuses while the display lags the ledger, so his explicit send was held during busy agent
 activity. `topicId` is `null` for a thread not yet placed in a topic. Lists do not carry it.
 
+`GET /operations/:id/human-conversation` gives a check that acts in his name his own words
+around one exact message of his: every message he authored, now, in its thread and in the
+topic's other threads, in ledger order, with the source always included. The live owner serves
+it from its thread index and the accepted inputs, never from the Threads display copy, so it
+never answers "still indexing". Pages agree through `contextDigest`, a hash over only that
+conversation, so unrelated Inbox activity cannot restart a read; an opaque cursor carries the
+digest, sequence and input ID, and a changed conversation answers `409 CONVERSATION_CHANGED`.
+
 The existing `sessions.id` is public as `concierge:<integer>`. An opaque address pins that row and its binding generation. Provider conversation IDs and original Slack roots remain exact bindings. A fork creates a distinct child with an exact boundary; a verified replacement binding advances the generation. Search ranking, a matching title, an import namespace or a provider UUID alone cannot establish ownership.
 
 Discovery matches current catalogue titles, summaries and project names alongside retained dialogue. A catalogue-only match has an empty dialogue evidence array and the exact current session view; it cannot fabricate a message or collapse equal titles. Context resolves the selected address before communication.

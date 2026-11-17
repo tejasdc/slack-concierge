@@ -105,7 +105,7 @@ import {openInboxObligationCount,openInboxObligations} from './session-topics';
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
-import {appendAgentReportObservation,closeQuestionsAnsweredByTodosSoon,createTopicByHuman,fileServiceNotices,inboxAttention,inboxMarkThrough,openAgentReport,refreshRootMemo,replyTargets,topicEntries,topicHumanAction,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
+import {appendAgentReportObservation,closeQuestionsAnsweredByTodosSoon,createTopicByHuman,fileServiceNotices,inboxAttention,inboxMarkThrough,openAgentReport,refreshRootMemo,replyTargets,topicEntries,topicHumanAction,verifiedHumanConversation,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,projectCoordinates,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -5407,6 +5407,10 @@ export class SessionOwner {
       // Exact operation reads authorize provider admission and recovery. A failed operation can be
       // reopened, so another reader's settled cache is not authority for its current execution.
       else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.exactOperationReceipt(this.input(parts[1]!));
+      else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===3&&parts[2]==='human-conversation'){
+        const input=this.input(parts[1]!);assertInputContent(input);
+        result=verifiedHumanConversation(input.id,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),200));
+      }
       else if(request.method==='GET'&&parts[0]==='events'&&parts.length===1) {
         const page=this.eventPage(Number(url.searchParams.get('after'))||0,url.searchParams.get('sessionId'),url.searchParams.get('runId'),
           {kind:url.searchParams.get('kind'),limit:boundedLimit(url.searchParams.get('limit'),1000)});
