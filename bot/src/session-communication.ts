@@ -1095,6 +1095,15 @@ export class SessionCommunicationCoordinator {
                 const currentGrant=this.authority(current);
                 if(currentGrant.scope!=='work'||(currentGrant.authorityInputId??current.inputId)!==(grant.authorityInputId??actor.inputId))
                     throw new Error('The work authority changed during home verification.');
+                const authorityInputId=grant.authorityInputId??actor.inputId!;
+                const linkedRequest=db.query(`SELECT outcome FROM session_communication_requests
+                    WHERE target_input_id=? AND target_session_id=? LIMIT 1`).get(authorityInputId,actor.session) as {outcome:string|null}|null;
+                const linkedPeer=db.query(`SELECT closed_at_ms FROM session_peer_deliveries
+                    WHERE target_input_id=? AND target_session_id=? LIMIT 1`).get(authorityInputId,actor.session) as {closed_at_ms:number|null}|null;
+                if(linkedRequest&&linkedRequest.outcome!==null)
+                    throw new Error('The exact work request was canceled or settled during home verification.');
+                if(linkedPeer&&linkedPeer.closed_at_ms!==null)
+                    throw new Error('The exact peer work delivery was closed during home verification.');
             }});
     }
     /** Any agent may name any session here; a title Tejas set himself always wins [decision: agents-are-never-handcuffed]. */

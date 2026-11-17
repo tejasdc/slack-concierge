@@ -9,6 +9,9 @@ import {mock} from 'bun:test';
 const state=await mkdtemp(join(os.tmpdir(),'concierge-native-home-repair-'));
 const workspace=join(state,'workspace'),projectRoot=join(workspace,'life-logistics'),privateHome=join(state,'provider-home');
 mkdirSync(privateHome,{recursive:true});
+mkdirSync(join(privateHome,'.claude'),{recursive:true});
+writeFileSync(join(privateHome,'.claude','.credentials.json'),JSON.stringify({claudeAiOauth:{refreshToken:'fixture-refresh-token',subscriptionType:'max'}}));
+writeFileSync(join(privateHome,'.claude.json'),JSON.stringify({oauthAccount:{emailAddress:'writer@example.com'}}));
 mkdirSync(join(projectRoot,'.git'),{recursive:true});writeFileSync(join(projectRoot,'AGENTS.md'),'fixture project');
 process.env.CONCIERGE_STATE_DIR=state;
 process.env.CONCIERGE_CAPTURE_STATE_DIR=join(state,'capture');
@@ -65,7 +68,7 @@ assert.equal(markTurnProviderAdmissionIntended(claim.turn_id,'native-home-repair
 acknowledgeTurnProviderInput(claim.turn_id,'native-home-repair-fixture',claim.dispatch_attempt,[]);
 const source={input_id:sourceInput.id,run_id:nativeRunId(claim.turn_id)};
 const createTarget=(action:string)=>{
-  const target=createNativeSession('claude-code',{title:`Fixture ${action}`,summary:undefined,projectName:'life-logistics',projectPath:'',cwd:projectRoot,claudeAccount:'writer@example.com'});
+  const target=createNativeSession('claude-code',{title:`Fixture ${action}`,summary:undefined,projectName:'life-logistics',projectPath:'',cwd:projectRoot,claudeAccount:'writer@example.com',providerAccount:'writer@example.com'});
   bindSessionProvider(target.id,'claude-code',`12345678-1234-4123-8123-${String(target.id).padStart(12,'0')}`);
   return getSessionById(target.id)!;
 };
@@ -90,6 +93,8 @@ try{
   assert.equal(first.body.home,'ax41');
   assert.equal(first.body.evidence.uuid,target.agent_session_uuid);
   assert.equal(first.body.evidence.transcriptResolution,'unique');
+  assert.equal(first.body.proof,'accounts.transcript+accounts.validate+exact-uuid-account-transcript');
+  assert.equal(Object.hasOwn(first.body.evidence.transcriptStat,'projectMatch'),false,'repair evidence does not claim history-bucket project equality');
   assert.equal(first.body.evidence.account,'writer@example.com');
   assert.equal(first.body.evidence.authorityInputId,source.input_id);
   assert.deepEqual(duplicate.body,first.body,'a same-action retry returns the exact saved result');
@@ -164,6 +169,19 @@ try{
   assert.notEqual(staleResult.status,200,'state changed during async proof must refuse');
   assert.equal(Object.hasOwn(sessionMetadata(getSessionById(stale.id)!), 'providerRunner'),false);
 
+  const canceled=createTarget('canceled'),requestId='fixture-cancel-during-home-proof';
+  const now=Date.now();
+  db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
+      target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestId,'fixture','cancel-source',claim.turn_id,actorSession.id,source.input_id,
+      'fixture-cancel-request',actorSession.id,'fixture','cancel-target',JSON.stringify({requestedEffect:'work'}),'fixture-hash',now,now,
+      source.input_id,source.input_id);
+  mutateAtStat=()=>communication.cancel({source,request_id:requestId,action_id:'fixture-cancel-during-proof'});
+  const canceledResult=await invoke(canceled,'repair-canceled-during-proof');
+  assert.notEqual(canceledResult.status,200,'a request canceled during transcript proof loses its repair authority');
+  assert.equal(Object.hasOwn(sessionMetadata(getSessionById(canceled.id)!), 'providerRunner'),false);
+  db.query('DELETE FROM session_communication_requests WHERE request_id=?').run(requestId);
+
   const local=createTarget('local'),localMeta=sessionMetadata(local),localUuid=local.agent_session_uuid!;
   const localDir=join(privateHome,'.claude','projects',projectRoot.replace(/[^a-zA-Z0-9]/g,'-')),localFile=join(localDir,`${localUuid}.jsonl`);
   mkdirSync(localDir,{recursive:true});
@@ -177,6 +195,7 @@ try{
     const savedLocal=sessionMetadata(getSessionById(local.id)!);
     assert.equal(Object.hasOwn(savedLocal,'providerRunner'),true,'local custody is pinned explicitly');
     assert.equal(savedLocal.providerRunner,null);
+    assert.equal(savedLocal.providerAccount,'writer@example.com','local repair preserves and validates the exact saved account');
     assert.equal(Object.hasOwn(localMeta,'providerRunner'),false,'fixture began without a saved local home');
     mkdirSync(join(projectRoot,'moved'),{recursive:true});
     const moved=await owner.prepareSessionProjectLocation(getSessionById(local.id)!,'life-logistics/moved');

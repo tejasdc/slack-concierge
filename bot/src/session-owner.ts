@@ -110,7 +110,7 @@ import {containingProject,projectCoordinates,sessionProject,sessionProjects} fro
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
 import {runnerMachineCall} from './runner-machine-calls';
-import {selectedClaudeHome} from './provider-account-dispatch';
+import {selectedClaudeHome,sharedClaudeHome,claudeHomeHasLogin} from './provider-account-dispatch';
 import {sessionSpace,type SessionSpace} from './session-roles';
 import {preparedSessionWindow,preparedSessionChanges,preparedInboxAttention,preparedLabRequestIds} from './presentation-session-reader';
 import {preparedReceiptWindow,preparedReceiptChanges} from './presentation-receipt-reader';
@@ -126,7 +126,7 @@ import {usageBreakdownForPage,usageAllowanceLookup,validUsageAllowanceLookup} fr
 import {chooseProviderForNewWork,newWorkCapacity,type AutomaticProvider} from './provider-start-choice';
 import {claudeAllowanceHeld,CLAUDE_ALLOWANCE_HOLD_MESSAGE} from './claude-allowance-hold';
 import {scheduleProviderAccountUsageRefresh} from './provider-account-usage';
-import {currentAccount} from './provider-accounts';
+import {accountHome,currentAccount,listProfiles} from './provider-accounts';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {PeerAccountAnswers} from './peer-account-answers';
 import {maybeStartStandingRoleFailover} from './standing-role-provider-failover';
@@ -1855,7 +1855,7 @@ export class SessionOwner {
   /** Repair one idle native Claude conversation from a transcript and project location proved
    * on the selected machine. The retained action makes retries exact and never replays input. */
   async repairNativeConversationHome(input:{sessionId:number;actorSessionId:number;sourceInputId:string;sourceRunId:string;
-    actionId:string;project:string;runner?:string|null;local?:boolean;targetUuid:string;targetGeneration:number;
+    actionId:string;project:string;runner?:string|null;local?:boolean;targetUuid:string|null;targetGeneration:number;
     authorityInputId:string;validateActor?:()=>void}) {
     const local=input.local===true,runner=input.runner??null;
     if(local===!!runner)throw new SessionOwnerError('Choose exactly one home candidate: --local or --runner.',400,'HOME_CANDIDATE_REQUIRED');
@@ -1919,10 +1919,23 @@ export class SessionOwner {
         ||location.path!==(initialMeta.projectPath??'')))throw new SessionOwnerError('The candidate project does not match the conversation’s recorded project and folder.',409,'PROJECT_MISMATCH');
       if(!initialMeta.projectName&&recorded&&isAbsolute(recorded)&&basename(recorded)!==location.name)
         throw new SessionOwnerError('The candidate project does not match the conversation’s recorded folder.',409,'PROJECT_MISMATCH');
-      let account:string|null=null;
+      let account:string|null=null,localHome:string|null=null;
       let transcriptResolution:'local-exact'|'unique'|'shared'='local-exact';
       if(local){
-        const home=join(homedir(),'.claude','projects',location.cwd.replace(/[^a-zA-Z0-9]/g,'-'),`${uuid}.jsonl`);
+        const saved=initialMeta.providerAccount??initialMeta.claudeAccount??null;
+        const selected=selectedClaudeHome()?.label??null;
+        const active=currentAccount('claude-code')?.label??null;
+        account=saved??selected??active;
+        if(!account||((saved!==null)&&account!==saved))
+          throw new SessionOwnerError('The local candidate cannot prove the conversation’s saved Claude account on this machine.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        const profile=listProfiles('claude-code').find(item=>item.label===account&&item.signedIn);
+        if(profile){
+          localHome=sharedClaudeHome(account,accountHome('claude-code',profile.id),false,false);
+          if(!localHome)throw new SessionOwnerError('The saved Claude account home is not a complete shared local home.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        }else if(active===account&&claudeHomeHasLogin(join(homedir(),'.claude'))){
+          localHome=join(homedir(),'.claude');
+        }else throw new SessionOwnerError('The saved Claude account has no verifiable local account home.',409,'PROVIDER_ACCOUNT_UNAVAILABLE');
+        const home=join(localHome,'projects',location.cwd.replace(/[^a-zA-Z0-9]/g,'-'),`${uuid}.jsonl`);
         let descriptor:number|undefined;
         try{
           descriptor=openSync(home,'r');const prefix=Buffer.alloc(262_144),size=readSync(descriptor,prefix,0,prefix.length,0);
@@ -1949,8 +1962,9 @@ export class SessionOwner {
       }
       let transcriptStat:{sourceIdentity:string|null;size:number|null;mtimeMs:number|null}|null=null;
       if(!local){
-        // The account-discovery scan is machine-wide. This second proof binds the UUID to
-        // the selected project and account without transferring transcript contents.
+        // The history adapter may find the exact account transcript in an older project
+        // bucket after a move. This proves UUID/account custody; project location is the
+        // separate registered-project proof above.
         transcriptStat=await statRunnerClaudeTranscript({runner:runner!,account:account!,sessionUuid:uuid,cwd:location.cwd});
         if(!transcriptStat.sourceIdentity||transcriptStat.size===null)
           throw new SessionOwnerError('The exact Claude transcript was not found under the selected project and account.',409,'NATIVE_TRANSCRIPT_UNAVAILABLE');
@@ -1959,7 +1973,7 @@ export class SessionOwner {
         priorHome:{known:false,reason:priorHome.reason??'home-unknown'},bindingGeneration:generation,
         authorityInputId:input.authorityInputId,
         runner,local,account,project:projectName,projectPath:location.path,transcriptResolution,transcriptStat,
-        proof:local?'exact-local-transcript':'accounts.transcript+accounts.validate+project-scoped-stat'};
+        proof:local?'exact-local-account-home-transcript':'accounts.transcript+accounts.validate+exact-uuid-account-transcript'};
       const result=db.transaction(()=>{
         input.validateActor?.();
         const receipt=JSON.parse((getAcceptedSessionInput(operation.input.id)?.receipt_json)??'{}');
@@ -1976,7 +1990,7 @@ export class SessionOwner {
         const metadata=sessionMetadata(current);
         if(metadata.providerRunner!==undefined||metadata.providerAccount!==initialMeta.providerAccount||metadata.claudeAccount!==initialMeta.claudeAccount)
           throw new SessionOwnerError('The conversation binding changed during verification; nothing was changed.',409,'HOME_REPAIR_STALE');
-        updateSessionMetadata(current.id,{providerRunner:runner,providerAccount:account??undefined,
+        updateSessionMetadata(current.id,{providerRunner:runner,providerAccount:account,
           cwd:location.cwd,project:location.cwd,projectName,projectPath:location.path});
         const restored=getSessionById(current.id)!;
         if(!this.nativeHome(restored,sessionMetadata(restored)).known)throw new Error('The saved home did not become authoritative.');

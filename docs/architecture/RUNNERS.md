@@ -640,8 +640,11 @@ For an idle, unbound native Claude conversation with an exact native UUID, an au
 request can use `sessions repair-home <exact-address> (--local | --runner <name>) --project
 <registered-project> <source-flags> --action-id <stable-id>`. The chosen machine is only a
 candidate: its own registered project resolver and exact UUID transcript/account proof must pass.
-Runner proof also checks the transcript under that project and account. Ambiguous, missing or
-unreachable evidence refuses without changing the session. The retained action can resume the
+For a runner, history lookup may find the exact account transcript in an older project bucket after
+a move; this proves UUID/account custody, while the registered project resolver separately proves
+the selected execution location. For a local repair, the saved account must resolve to a signed-in
+default or complete shared account home, and the exact transcript must be present there. Ambiguous,
+missing or unreachable evidence refuses without changing the session. The retained action can resume the
 same immutable read-only proof after interruption; completion rechecks authority, idle state,
 UUID, binding generation, project and lifecycle before saving the explicit home. It never replays
 conversation input or changes the provider or native UUID. This control is Claude-only; imported
