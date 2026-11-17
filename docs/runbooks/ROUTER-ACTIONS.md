@@ -444,7 +444,11 @@ compressed into one-line titles, built to the titles, and closed on the builder'
   `--words "<his exact words>" [--reading …]` with one `--source`, or `--json-file`.
 - `sessions ask --requirements <record>` (repeatable, work requests) stores the record ids in the
   request. A work request made from an Inbox thread also carries every record tied to that thread
-  (`GET /requirements?topic=`), so a router that forgets the flag still attaches it.
+  at that moment (`GET /requirements?topic=`), so a router that forgets the flag still attaches it.
+  The set is fixed when the request is created: closing reads exactly those records (states fresh)
+  and never looks the thread up again, so a record made later during the work (the Inbox router
+  filing one) does not block a request that did not begin with it; hand a running builder a new
+  record with `sessions ask --requirements`.
 - At ask time the target's first input gets a block after WHAT CAME BEFORE: each record's title and
   link, every requirement verbatim with id, state and source, each kept capture with the command
   that prints it whole, and the closing obligations. A named record that cannot be read refuses the
