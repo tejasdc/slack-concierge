@@ -70,6 +70,28 @@ for(const phrase of ['Ask ChatGPT, at extended thinking','Ask ChatGPT Pro at ext
   text=phrase;assert.equal(humanChoseChatGptEffort('human','high'),true,phrase);
 }
 text='Ask ChatGPT for a high-level summary';assert.equal(humanChoseChatGptEffort('human','high'),false);
+// Third review: unrecognized conditions, "neither", retraction in the next statement,
+// set-aside verbs, alternatives and written versions.
+for(const phrase of ['Should it fail, use Astra','Failing that, use Astra','Otherwise use Astra',
+  'As a last resort use Astra','Use Astra as a fallback','Use Astra on failure','Use Astra upon failure',
+  'Use Astra in the event it fails','Use Astra should it fail','Use Astra as needed','Use Astra later',
+  'Next time use Astra','Use Sol, otherwise Astra','Neither Astra nor Sol','Use Astra. No.',
+  'Use Astra. Never mind.','Use Astra. Actually, don’t.','Use Astra. Scratch that.','Use Astra. Ignore that.',
+  'Use Astra. Or maybe not.','Use Sol and ignore Astra','Use Sol and drop Astra','Never, ever use Astra',
+  'Nobody should use Astra','Exclude Astra','Rule out Astra','Use Sol or Astra','Use either Sol or Astra']){
+  text=phrase;assert.equal(astra(),false,phrase);
+}
+for(const phrase of ['Neither Astra nor Sol','Use Sol or Astra']){
+  text=phrase;assert.equal(humanChoseThinkingModel('human','gpt-6.1-sol'),false,phrase);
+}
+for(const phrase of ['Use Sol v6.1','Use Sol (6.1)']){
+  text=phrase;assert.equal(humanChoseThinkingModel('human','gpt-6.1-sol'),true,phrase);
+  assert.equal(humanChoseThinkingModel('human','gpt-6-sol'),false,phrase);
+}
+for(const phrase of ['We should use Astra','Keep using Astra','You should use Astra']){
+  text=phrase;assert.equal(astra(),true,phrase);
+}
+text='Use Antigravity';assert.equal(humanChoseProvider('human','antigravity'),true);
 text='Use Sol 6.1';assert.equal(humanChoseThinkingModel('human','gpt-6.1-sol'),true);
 assert.equal(humanChoseThinkingModel('human','gpt-6-sol'),false);
 text='Use gpt-6.1-sol';assert.equal(humanChoseThinkingModel('human','gpt-6.1-sol'),true);

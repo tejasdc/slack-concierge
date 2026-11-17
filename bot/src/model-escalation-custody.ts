@@ -35,17 +35,20 @@ export function containsHumanChoice(words:string,directive:RegExp):boolean {
 // a list of verbs that do or do not choose cannot be completed in either direction.
 const FILLER=/^(?:(?:ok(?:ay)?|so|and|but|then|just|hey|yes|yeah|alright|now|also|please|actually)\b[,\s]*)+/i;
 // A polite request or a stated want is his instruction, even phrased as a question.
-const REQUEST=/^(?:(?:can|could|would|will)\s+(?:you|we)|you\s+(?:can|should|must|need\s+to|have\s+to|will|'ll))\s+(?:please\s+)?/i;
+const REQUEST=/^(?:(?:can|could|would|will)\s+(?:you|we)|we\s+should|you\s+(?:can|should|must|need\s+to|have\s+to|will|'ll))\s+(?:please\s+)?/i;
 const WANT=/^(?:let(?:'s|\s+us)|(?:I|we)(?:'d|\s+would)?\s+(?:really\s+)?(?:want|need|like|prefer))\b/i;
 // Words that cannot open an imperative clause: a clause starting with one is a remark
 // ("I think Astra is overkill", "The Sol run failed") or an inquiry, not an instruction.
 const NOT_IMPERATIVE=/^(?:i|i'm|i've|you|he|she|it|it's|we|they|this|that|these|those|there|the|a|an|my|your|our|his|its|their|is|are|was|were|am|be|been|has|had|does|did|should|shall|may|must|might|what|which|who|why|how|where|whose|or|and|no|yes)\b/i;
-const NEGATION=/\b(?:not|never|no|avoid|stop|without|skip|except|disable|remove|ban)\b|n't\b|\bdont\b|\bdo\s+not\b/i;
+const NEGATION=/\b(?:not|never|no|nobody|neither|nor|avoid|stop|without|skip|except|disable|remove|ban|exclude|ignore|drop|block|forget|rule\s+out|lay\s+off)\b|n't\b|\bdont\b|\bdo\s+not\b/i;
 // The name is the thing set aside, not the thing chosen ("Prefer Sol over Astra").
-const SET_ASIDE=/\b(?:from|over|but|except|besides|instead\s+of|rather\s+than|other\s+than|than|replace)\s+(?:the\s+)?$/i;
-const RETRACTED=/\b(?:never\s*mind|actually\s+no|or\s+not|maybe\s+not|scratch\s+that|forget\s+(?:it|that))\b/i;
+const SET_ASIDE=/\b(?:from|over|but|except|besides|instead\s+of|rather\s+than|other\s+than|than|replace|or|either)\s+(?:the\s+)?$/i;
+const ALTERNATIVE=/^\s*(?:,\s*)?or\b/i;
+const RETRACTED=/\b(?:never\s*mind|actually\s+no|or\s+not|maybe\s+not|scratch\s+that|forget\s+(?:it|that)|ignore\s+that)\b/i;
+// A short next statement can take the previous one back ("Use Astra. Never mind.").
+const RETRACTS_PREVIOUS=/^\s*(?:no|nope|never\s*mind|scratch\s+that|ignore\s+that|forget\s+(?:it|that)|actually,?\s+(?:no|don't)|(?:or\s+)?maybe\s+not|wait,?\s+no)\b/i;
 // A condition or hedge makes it a rule for later, not a choice now ("if it fails, use Astra").
-const CONDITION=/\b(?:if|unless|when|whenever|once|after|until|provided|assuming|in\s+case|maybe|perhaps|might|whether)\b/i;
+const CONDITION=/\b(?:if|unless|when|whenever|once|after|until|provided|assuming|in\s+case|in\s+the\s+event|maybe|perhaps|might|whether|should\s+(?:it|that|this)|otherwise|failing|fallback|last\s+resort|on\s+failure|upon|as\s+needed|next\s+time|later|eventually)\b/i;
 const CLAUSE=/\s*[,:—–]\s*|\s+-\s+/;
 
 /**
@@ -54,7 +57,9 @@ const CLAUSE=/\s*[,:—–]\s*|\s+-\s+/;
  */
 export function hisWordsChoose(words:string,mention:RegExp,after?:RegExp):boolean {
   const find=new RegExp(mention.source,mention.flags.replace('g',''));
-  return statements(words.replace(/[’‘`]/g,"'")).some(raw=>{
+  const all=statements(words.replace(/[’‘`]/g,"'"));
+  return all.some((raw,position)=>{
+    if(RETRACTS_PREVIOUS.test(all[position+1]??''))return false;
     let statement=raw.trim().replace(FILLER,'');
     const question=statement.endsWith('?');
     statement=statement.replace(/[.!?;]+$/,'');
@@ -70,7 +75,10 @@ export function hisWordsChoose(words:string,mention:RegExp,after?:RegExp):boolea
       if(!found)return false;
       const pre=body.slice(0,found.index);
       const rest=[body.slice(found.index+found[0].length),...clauses.slice(index+1)].join(', ');
-      if(NEGATION.test(pre)||SET_ASIDE.test(pre)||RETRACTED.test(rest))return false;
+      // "Never, ever use Astra": a clause that is only "never" negates the next one; a lone
+      // "No," answers what came before ("No, use Astra").
+      const negatedBefore=index>0&&/^\s*(?:never|not\s+ever)\s*$/i.test(clauses[index-1]!);
+      if(negatedBefore||NEGATION.test(pre)||SET_ASIDE.test(pre)||ALTERNATIVE.test(rest)||RETRACTED.test(rest))return false;
       // A remark has the name or a pronoun as its subject; a command starts with its verb.
       const instruction=(index===0&&(want||!!request))||(pre!==''&&!NOT_IMPERATIVE.test(body));
       return instruction&&(!after||after.test(rest));
@@ -95,7 +103,7 @@ function humanWords(sourceInputId:string|undefined):{words:string|null;provenanc
 function modelMention(model:string):RegExp|null {
   const escape=(text:string)=>text.replace(/[.*+?^${}()|[\]\\-]/g,'\\$&');
   const versioned=(name:string,version:string,prefix:string)=>new RegExp(
-    `\\b${escape(model)}\\b|(?:\\b${prefix}\\s+${name}|(?<![\\w.-]|\\d\\s)${name})(?:\\s+${escape(version)}(?![\\d.]))?\\b(?!\\s+\\d|-\\d)`,'i');
+    `\\b${escape(model)}\\b|(?:\\b${prefix}\\s+${name}|(?<![\\w.-]|\\d\\s)${name})(?:\\s+\\(?v?${escape(version)}\\)?(?![\\d.]))?(?![\\w(]|\\s+\\(?v?\\d|-\\d)`,'i');
   if(topModel(model)==='astra')return versioned('Astra','6','GPT-?\\s?6');
   const claude=/^claude-(fable|opus)-(\d+)-(\d+)/i.exec(model);
   if(claude)return versioned(claude[1]![0]!.toUpperCase()+claude[1]!.slice(1),`${claude[2]}.${claude[3]}`,'Claude');
