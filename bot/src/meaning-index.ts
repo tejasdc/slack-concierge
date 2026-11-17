@@ -23,7 +23,7 @@ import {dirname,join} from 'node:path';
  *
  * Kept off the owner's hot path on purpose (2026-10-07 freezes): the model runs in its own
  * llama.cpp process; indexing reads the ledger in small pages and writes only its own database;
- * a query is one embedding call plus a scan of an in-memory int8 matrix (~20 ms). Nothing here
+ * a query is one embedding call plus a scan of an in-memory int8 matrix in yielding steps. Nothing here
  * reads a transcript file. Tool output and assistant streaming text are never indexed: they are
  * expensive and, as the September evaluation found, poor evidence of what a session was about.
  */
@@ -35,6 +35,8 @@ const PORT=Number(process.env.CONCIERGE_MEANING_PORT)||8796;
 const ARCHIVE_INDEX=process.env.CONCIERGE_ARCHIVE_SEARCH_INDEX||'/var/lib/thinkering/production/agents/sources/search.sqlite';
 /** EmbeddingGemma is Matryoshka-trained; 512 of 768 dimensions keep nearly all quality at two thirds the memory. */
 const DIMENSIONS=512;
+// Like the Inbox entry index warm-up, ranking yields the owner between time-bounded steps.
+const MEANING_RANK_STEP_MS=5;
 const INDEX_BATCH=4,PASSAGE_CHARS=800,SNIPPET_CHARS=400,PAGE=24,IDLE_POLL_MS=60_000;
 /** EmbeddingGemma's documented prompt format; each engine carries its own model's prefixes. */
 const GEMMA_QUERY_PREFIX='task: search result | query: ',GEMMA_DOCUMENT_PREFIX='title: none | text: ';
@@ -424,16 +426,19 @@ export class MeaningIndex {
         source:metadata};
     }catch{return null;}
   }
-  async search(query:string,limit:number):Promise<MeaningSearch> {
+  async search(query:string,limit:number,timing?:{embed_ms:number;rank_ms:number}):Promise<MeaningSearch> {
     const indexed=this.count;
     if(!this.engine.installed())return {available:false,hits:[],reason:'The meaning search engine is not installed on this machine.',indexed,pending:false};
     if(!indexed)return {available:false,hits:[],reason:'The meaning index is still being built.',indexed,pending:true};
     let vector:Float32Array;
+    const embedStarted=performance.now();
     this.searching++;
     try{[vector]=(await this.questions.embed([this.questions.queryPrefix+query.slice(0,PASSAGE_CHARS)],6_000)) as [Float32Array];}
     catch(error){return {available:false,hits:[],reason:`Meaning search unavailable: ${error instanceof Error?error.message:String(error)}`,indexed,pending:!this.caughtUp};}
-    finally{this.searching--;}
-    return this.ranked(vector,limit,indexed);
+    finally{this.searching--;if(timing)timing.embed_ms=Math.round(performance.now()-embedStarted);}
+    const rankStarted=performance.now();
+    try{return await this.ranked(vector,limit,indexed);}
+    finally{if(timing)timing.rank_ms=Math.round(performance.now()-rankStarted);}
   }
   /**
    * The same search for a question already embedded with queryVectors, so a caller comparing one
@@ -445,22 +450,41 @@ export class MeaningIndex {
     try{const [vector]=await this.questions.embed([this.questions.queryPrefix+query.slice(0,PASSAGE_CHARS)],6_000) as [Float32Array];return vector;}
     finally{this.searching--;}
   }
-  searchVector(vector:Float32Array,limit:number):MeaningSearch {
+  async searchVector(vector:Float32Array,limit:number):Promise<MeaningSearch> {
     const indexed=this.count;
     if(!indexed)return {available:false,hits:[],reason:'The meaning index is still being built.',indexed,pending:true};
     return this.ranked(vector,limit,indexed);
   }
-  private ranked(vector:Float32Array,limit:number,indexed:number):MeaningSearch {
+  private async ranked(vector:Float32Array,limit:number,indexed:number):Promise<MeaningSearch> {
+    // Capture the published row count once: indexing may append between steps, never mid-row.
+    const count=this.count;
+    let deadline=performance.now()+MEANING_RANK_STEP_MS;
+    const yieldOwner=async()=>{await new Promise<void>(resolve=>setImmediate(resolve));deadline=performance.now()+MEANING_RANK_STEP_MS;};
     // Best passage per session (or per archived prompt): one strong match is the signal, many weak ones are not.
     const best=new Map<string,{index:number;score:number}>();
-    for(let row=0;row<this.count;row++){
+    for(let row=0;row<count;row++){
       let dot=0;const offset=row*DIMENSIONS;
       for(let i=0;i<DIMENSIONS;i++)dot+=vector[i]!*this.matrix[offset+i]!;
       const score=dot*this.scales[row]!;
       const target=this.targets[row]!;const id=target.kind==='session'?`s:${target.sessionId}`:target.kind==='peer'?`p:${target.peer}:${target.remoteSessionId}`:this.keys[row]!;
       const prior=best.get(id);if(!prior||score>prior.score)best.set(id,{index:row,score});
+      if(performance.now()>=deadline)await yieldOwner();
     }
-    const ranked=[...best.values()].sort((a,b)=>b.score-a.score);
+    // A large archive also makes copying and sorting the best passages unbounded. Stable
+    // merges keep Map insertion order for ties, exactly as the former stable Array.sort did.
+    let ranked:{index:number;score:number}[]=[],scratch:typeof ranked=[];
+    for(const value of best.values()){ranked.push(value);if(performance.now()>=deadline)await yieldOwner();}
+    for(let width=1;width<ranked.length;width*=2){
+      for(let start=0;start<ranked.length;start+=width*2){
+        const middle=Math.min(start+width,ranked.length),end=Math.min(start+width*2,ranked.length);
+        let left=start,right=middle;
+        for(let out=start;out<end;out++){
+          scratch[out]=left<middle&&(right>=end||!(ranked[right]!.score>ranked[left]!.score))?ranked[left++]!:ranked[right++]!;
+          if((out&63)===0&&performance.now()>=deadline)await yieldOwner();
+        }
+      }
+      [ranked,scratch]=[scratch,ranked];
+    }
     const hits:MeaningHit[]=[],seen=new Set<string>();
     // The held read-only connection, a bounded number of lookups, and none at all when the
     // archive cannot be opened: a failing lookup must never walk every candidate on the owner's loop.
@@ -469,6 +493,10 @@ export class MeaningIndex {
     try{
       for(const {index,score} of ranked){
         if(hits.length>=limit)break;
+        if(performance.now()>=deadline){
+          await yieldOwner();
+          if(archive)try{archive=this.archive();}catch(error){archive=null;archiveReason=`Archive matches skipped: ${error instanceof Error?error.message:String(error)}`;}
+        }
         let target=this.targets[index]!;
         if(target.kind==='archive'){
           if(!archive||lookups>=limit*3)continue;

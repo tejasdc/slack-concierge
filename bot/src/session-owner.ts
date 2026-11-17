@@ -42,7 +42,8 @@ import {preparedIncoming,preparedTopicOverview,preparedTopicItems,preparedQuesti
 import {createAreaByHuman,areaHumanAction,AreaError} from './session-areas';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
-import {meaningIndex} from './meaning-index';
+import {meaningIndex,type MeaningSearch} from './meaning-index';
+import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {retainedArchiveSearchSource} from './archive-search-source';
 import {presentSessionForPeer} from './peer-identity';
 import {providerDisplayName,CHATGPT_THINKING_LEVELS,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,chatgptSessionModel,isRetiredChatgptGpt,CHATGPT_GPT_RETIREMENT,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES,AUTOMATIC_PROVIDER_ALIASES} from './aliases';
@@ -64,7 +65,7 @@ import {lastLaunchedConversationHome,nativeConversationHome} from './session-run
 import {runnerMachineCall} from './runner-machine-calls';
 import {statRunnerClaudeTranscript} from './runner-provider-history-client';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordHeldInputReceiptEvent,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
-import type {ChatGptBinding} from './session-capability-client';
+import type {ChatGptBinding,CapabilitySource} from './session-capability-client';
 import {INBOX_PURPOSE,REPAIR_AGENT_PURPOSE,purposeFromFirstWords} from './session-purpose';
 import {getRouterThreadContext} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
@@ -459,6 +460,13 @@ function boundedLimit(value:string|null,max:number) {
  */
 export type OwnerAdmission = {sessionId:number;inputId:string;origin:'agent'|'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;journalProcessing?:{version:1;rootId:string};attachments?:string[];delivery?:'queue'|'steer';alreadyPostedInThread?:boolean;threadReplyNotRequired?:boolean};
 type PreparedConsultation = {address:string;parent:SessionRow;source:any;packet:Array<{role:string;eventId:string;locator:string;textHash:string;text:string}>};
+type SearchMeaning=()=>Promise<MeaningSearch|null>;
+type SearchRoutingSource={beforeTs:string;excludeChannel:string;excludeRootTs:string};
+const searchTiming=()=>({word_ms:0,routing_ms:0,meaning_ms:0,meaning_embed_ms:0,meaning_rank_ms:0,archive_search_ms:0,archive_retention_ms:0,meaning_retention_ms:0});
+type SearchSource={source:CapabilitySource;meaning:boolean};
+type SearchMaterialization=SearchSource&{session:SessionRow};
+type SearchReadAnswer={response:{results:any[];coverage:any}|null;pending:SearchSource[];sources:SearchSource[];timing:ReturnType<typeof searchTiming>;worker_ms?:number};
+
 export type SessionOwnerRuntime = {
   readJournalEntry?(rootId:string):Promise<unknown>;
   wake():void;
@@ -662,6 +670,7 @@ function insideOfferSnapshots(real:string):boolean {
   return real.startsWith(`${root}/`);
 }
 export class SessionOwner {
+  private readonly searchMeanings=new Map<string,Promise<MeaningSearch|null>>();
   private readonly historyDetails=new HistoryDetailCache();
   projectSetup?:ProjectSetup;
   peerLinks?:PeerLinks;
@@ -4175,14 +4184,20 @@ export class SessionOwner {
     if(sources.history)return sources.history({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,cursor:null,limit:1,eventId:pin.eventId});
     return sources.context({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,eventId:pin.eventId,limit:1});
   }
-  private sourceSession(source:any):SessionRow {
+  private resolveSourceSession(source:any) {
     if(!source||!['codex','claude-code','chatgpt'].includes(source.provider)||typeof source.id!=='string'||typeof source.branch!=='string'||!/^[a-f0-9]{64}$/.test(source.version))throw new SessionOwnerError('Source adapter returned incomplete identity.',502);
     const existing=db.query("SELECT * FROM sessions WHERE json_extract(native_metadata_json,'$.origin')='imported' AND json_extract(native_metadata_json,'$.source.id')=? AND json_extract(native_metadata_json,'$.source.branch')=?").get(source.id,source.branch) as SessionRow|null;
     const {messages,...retained}=source;
+    const metadata=existing?sessionMetadata(existing):null,prior=metadata?.source;
+    const unchanged=!!existing&&prior?.version===source.version&&JSON.stringify(prior)===JSON.stringify(retained)
+      &&metadata!.title===source.title&&(metadata!.project??null)===(source.project??null);
+    return {existing,retained,unchanged};
+  }
+  private sourceSession(source:any):SessionRow {
+    const {existing,retained,unchanged}=this.resolveSourceSession(source);
+    if(unchanged)return existing!;
     if(existing) {
       const metadata=sessionMetadata(existing),prior=metadata.source;
-      if(prior?.version===source.version&&JSON.stringify(prior)===JSON.stringify(retained)
-        &&metadata.title===source.title&&(metadata.project??null)===(source.project??null))return existing;
       if(prior?.version!==source.version)db.query('UPDATE sessions SET binding_generation=binding_generation+1 WHERE id=?').run(existing.id);
       updateSessionMetadata(existing.id,{source:retained,title:source.title,project:source.project??null,
         ...(existing.provider_id==='chatgpt'&&source.scope&&source.nativeId?{nativeBinding:{accountScope:source.scope,sessionId:source.nativeId}}:{} )});
@@ -4201,18 +4216,101 @@ export class SessionOwner {
     }
     return session;
   }
-  async search(body:unknown,routingSource?:{beforeTs:string;excludeChannel:string;excludeRootTs:string}) {
-    const started=performance.now();
-    const timing={word_ms:0,routing_ms:0,meaning_ms:0,archive_search_ms:0,archive_retention_ms:0,meaning_retention_ms:0};
+  async search(body:unknown,routingSource?:SearchRoutingSource) {
+    const started=performance.now(),timing=searchTiming(),meaningTiming={embed_ms:0,rank_ms:0};
     const input=object(body);only(input,['query','limit','includeTools','everywhere']);
     if(typeof input.query!=='string'||!input.query.trim())throw new SessionOwnerError('Search query required.');
     const limit=Math.min(100,Math.max(1,Number(input.limit)||20));
-    // A peer without its own meaning index searches through this machine: the same search the
-    // Inbox gets here, covering this ledger, the archive of both machines and the live peers.
+    // Federation remains with the live owner, including a peer asking to use its meaning index.
     if(input.everywhere===true&&this.communication)return this.communication.searchEverywhere(input.query.trim(),limit);
-    // Word and meaning work run independently outside this request thread.
     const meaningStarted=performance.now();
-    const meaningSearch=meaningIndex()?.search(input.query.trim(),limit).finally(()=>{timing.meaning_ms=Math.round(performance.now()-meaningStarted);})??null;
+    // Start meaning before the executor so all four searches overlap; only this owner
+    // holds the index. Keep its result until both reads or the local fallback finish.
+    const meaning=Promise.resolve(meaningIndex()?.search(input.query.trim(),limit,meaningTiming)??null)
+      .catch((error:unknown)=>({available:false,hits:[],reason:String(error),indexed:0,pending:false}))
+      .finally(()=>{timing.meaning_ms=Math.round(performance.now()-meaningStarted);
+        timing.meaning_embed_ms=meaningTiming.embed_ms;timing.meaning_rank_ms=meaningTiming.rank_ms;});
+    const searchId=randomUUID();this.searchMeanings.set(searchId,meaning);
+    try {
+    let executorMs=0,workerMs=0,fallbackReason='unavailable',answer:SearchReadAnswer|undefined;
+    try {
+      const stateDir=process.env.CONCIERGE_STATE_DB?dirname(process.env.CONCIERGE_STATE_DB):process.env.CONCIERGE_STATE_DIR!;
+      const read=async(materialized:SearchMaterialization[]=[])=>{
+        const began=performance.now();
+        try {
+          const response=await fetch('http://localhost/internal/session-search',{
+            unix:join(stateDir,'requests.sock'),method:'POST',headers:{...contentReaderHeaders(),'content-type':'application/json'},
+            body:JSON.stringify({body:input,routingSource,searchId,materialized}),signal:AbortSignal.timeout(OWNER_READ_RESPONSE_MS),
+          } as RequestInit);
+          if(!response.ok){fallbackReason='refused';await response.body?.cancel();throw new Error('SEARCH_READ_REFUSED');}
+          const value=await response.json() as SearchReadAnswer;
+          if(!value||!Array.isArray(value.pending)||!Array.isArray(value.sources)||!value.timing||(!value.pending.length&&!value.response)){fallbackReason='invalid';throw new Error('SEARCH_READ_INVALID');}
+          workerMs+=value.worker_ms??0;
+          return value;
+        } finally {executorMs+=performance.now()-began;}
+      };
+      answer=await read();
+      if(answer.pending.length){
+        fallbackReason='materialization';
+        const materialized:SearchMaterialization[]=[];
+        // Replay the exact resolution order, including previously unchanged descriptors:
+        // an earlier write in this batch may change what the next resolution must do.
+        for(const source of answer.sources){
+          const native=source.meaning&&source.source.nativeId
+            ?db.query('SELECT * FROM sessions WHERE agent_session_uuid=? ORDER BY id LIMIT 1').get(source.source.nativeId) as SessionRow|null:null;
+          materialized.push({...source,session:native??this.sourceSession(source.source)});
+          await new Promise<void>(resolve=>setImmediate(resolve));
+        }
+        fallbackReason='unavailable';answer=await read(materialized);
+        if(answer.pending.length){fallbackReason='source_changed';throw new Error('SEARCH_READ_SOURCE_CHANGED');}
+      }
+    } catch(error) {
+      // Availability wins over isolation only on this explicit failure path. Never log search words.
+      if(error instanceof Error&&['TimeoutError','AbortError'].includes(error.name))fallbackReason='timeout';
+      // Search shares the archive lane's single reader with the owed-replies check and
+      // whole-transcript reads. A fallback that spent its budget queueing is a capacity problem,
+      // not a broken executor, and only this distinction tells us whether that lane needs its own.
+      const waited=Math.max(0,Math.round(executorMs-workerMs));
+      if(['timeout','unavailable'].includes(fallbackReason)&&waited>=executorMs/2&&executorMs>=1000)fallbackReason='queued';
+      log('warn','session_search_executor_fallback',{reason:fallbackReason,executor_ms:Math.round(executorMs),executor_wait_ms:waited});
+      answer=await this.localSearch(input,routingSource,()=>meaning,false);
+    }
+    Object.assign(timing,answer!.timing,{meaning_ms:timing.meaning_ms,meaning_embed_ms:timing.meaning_embed_ms,meaning_rank_ms:timing.meaning_rank_ms});
+    const response=answer!.response!,durationMs=Math.round(performance.now()-started);
+    if(durationMs>=500)log('warn','session_search_slow',{duration_ms:durationMs,...timing,
+      executor_ms:Math.round(executorMs),executor_wait_ms:Math.max(0,Math.round(executorMs-workerMs)),owner_ms:Math.max(0,Math.round(performance.now()-started-executorMs)),
+      results:response.results.length,evidence:response.results.reduce((sum:number,result:any)=>sum+result.evidence.length,0),
+      response_bytes:Buffer.byteLength(JSON.stringify(response))});
+    return response;
+    } finally {this.searchMeanings.delete(searchId);}
+  }
+  /** Only the root-owned owner socket exposes this search's already-running meaning phase. */
+  searchMeaning(searchId:string|null):Promise<MeaningSearch|null> {
+    const meaning=searchId?this.searchMeanings.get(searchId):null;
+    if(!meaning)throw new SessionOwnerError('That session search is no longer active.',404,'SEARCH_MEANING_NOT_FOUND');
+    return meaning;
+  }
+  /** Private executor entrance: fetch the owner's meaning hits at their original merge point. */
+  async searchRead(body:unknown,routingSource:SearchRoutingSource|undefined,meaning:SearchMeaning,materialized:SearchMaterialization[]=[]):Promise<SearchReadAnswer> {
+    const input=object(body);only(input,['query','limit','includeTools','everywhere']);
+    if(typeof input.query!=='string'||!input.query.trim())throw new SessionOwnerError('Search query required.');
+    return this.localSearch(input,routingSource,meaning,true,materialized);
+  }
+  private async localSearch(input:Record<string,any>,routingSource:SearchRoutingSource|undefined,meaningResult:SearchMeaning,deferSources:boolean,materialized:SearchMaterialization[]=[]):Promise<SearchReadAnswer> {
+    const timing=searchTiming(),pending:SearchSource[]=[],sources:SearchSource[]=[],receipts=[...materialized];
+    const sourceSession=(source:CapabilitySource,meaning=false)=>{
+      if(!deferSources)return this.sourceSession(source);
+      sources.push({source,meaning});
+      // One receipt per resolution, not just the final ledger state: word and meaning
+      // can retain different descriptors of the same imported conversation in one search.
+      const receipt=receipts.findIndex(item=>item.meaning===meaning&&JSON.stringify(item.source)===JSON.stringify(source));
+      if(receipt>=0)return receipts.splice(receipt,1)[0]!.session;
+      const {existing,unchanged}=this.resolveSourceSession(source);
+      if(!unchanged)pending.push({source,meaning});
+      return existing;
+    };
+    const limit=Math.min(100,Math.max(1,Number(input.limit)||20));
+    // Prepared word and historical routing searches keep their sealed subprocess entrance.
     const terms:string[]=input.query.trim().split(/\s+/).filter(Boolean);
     const wordStarted=performance.now();
     const wordSearch=searchPrepared(input.query.trim(),limit,input.includeTools===true)
@@ -4296,7 +4394,8 @@ export class SessionOwner {
           const source=retainedArchiveSearchSource(candidate.source,{sourceId:candidate.source.id,sourceVersion:candidate.source.version,
             branch:candidate.source.branch,eventId:candidate.matches[0].eventId},proof);
           if(!source){unavailable++;continue;}
-          const session=this.sourceSession(source);
+          const session=sourceSession(source);
+          if(!session)continue; // Pending imports are projected only by the second, fresh read.
           // An archived transcript dates the conversation, not each message in it. Half the
           // results showed no date at all; the conversation's own date answers "when was this"
           // without claiming a precision the archive does not have, so it stays a separate field.
@@ -4311,7 +4410,7 @@ export class SessionOwner {
     // (docs/brainstorms/2026-09-03-router-session-search-and-routing.md): a session both find rises.
     const lexicalRank=new Map([...results.keys()].map((id,rank)=>[id,rank] as const)),meaningRank=new Map<number,number>(),meaningScore=new Map<number,number>();
     const peerHits:{rank:number;view:any;evidence:any[];score:number}[]=[];
-    const meaning=meaningSearch?await meaningSearch.catch((error:unknown)=>({available:false,hits:[],reason:String(error),indexed:0,pending:false})):null;
+    const meaning=await meaningResult();
     if(meaning?.available) {
       // Archive matches that are not a session here are retained together, as the word path does above.
       const native=(nativeId:string|null|undefined)=>nativeId?db.query('SELECT * FROM sessions WHERE agent_session_uuid=? ORDER BY id LIMIT 1').get(nativeId) as SessionRow|null:null;
@@ -4338,7 +4437,7 @@ export class SessionOwner {
           if(!session&&outcome.status==='fulfilled'&&outcome.value){
             const source=retainedArchiveSearchSource(hit.target.source,{sourceId:hit.target.sourceId,
               sourceVersion:hit.target.sourceVersion,branch:hit.target.branch,eventId:hit.target.eventId},outcome.value);
-            if(source)session=this.sourceSession(source);
+            if(source)session=sourceSession(source,true);
           }
           if(!session){unretained++;continue;}
         }
@@ -4354,18 +4453,16 @@ export class SessionOwner {
     if(meaning&&(!meaning.available||meaning.reason))coverage.omissions.push(meaning.reason??'Meaning search unavailable.');
     if(!meaning)coverage.omissions.push('Meaning search is not running on this machine; results match words only.');
     coverage.meaning=meaning?{available:meaning.available,indexed:meaning.indexed,catchingUp:meaning.pending}:{available:false,indexed:0,catchingUp:false};
+    if(pending.length)return {response:null,pending,sources,timing};
     const fused=(id:number)=>(lexicalRank.has(id)?1/(60+lexicalRank.get(id)!):0)+(meaningRank.has(id)?1/(60+meaningRank.get(id)!):0);
     const anchors=[...results.keys()].sort((a,b)=>fused(b)-fused(a)).slice(0,3);
     const mutuals=sessionMutuals([...results.keys()]);
     const ranked=[...[...results.values()].map(entry=>({score:fused(entry.session.id)+mutualLift(entry.session.id,anchors,mutuals),result:()=>({session:this.view(entry.session),evidence:entry.evidence,match:{words:lexicalRank.has(entry.session.id),meaning:meaningScore.get(entry.session.id)??null},mutuals:(mutuals.get(entry.session.id)??[]).slice(0,8)})})),
       ...peerHits.map(hit=>({score:1/(60+hit.rank),result:()=>({session:hit.view,evidence:hit.evidence,match:{words:false,meaning:hit.score}})}))].sort((a,b)=>b.score-a.score);
     const response=boundSearchResponse({results:ranked.slice(0,limit).map(entry=>entry.result()),coverage});
-    const durationMs=Math.round(performance.now()-started);
-    if(durationMs>=500)log('warn','session_search_slow',{duration_ms:durationMs,...timing,
-      results:response.results.length,evidence:response.results.reduce((sum,result)=>sum+result.evidence.length,0),
-      response_bytes:Buffer.byteLength(JSON.stringify(response))});
-    return response;
+    return {response,pending,sources:[],timing};
   }
+
   async context(body:unknown) {
     const input=object(body);only(input,['address','sourceId','sourceVersion','eventId']);
     const session=resolveSessionAddress(input.address),meta=sessionMetadata(session);

@@ -19,6 +19,43 @@ boundary and has no response byte cap, since a retained message can exceed the o
 JSON event read's 2 MiB cap. Slow page logs report duration, event count, bytes and storage
 work without recording content.
 
+Session search keeps its public POST and peer federation on the canonical owner. The owner
+starts its meaning search, which ranks in yielding steps, and immediately calls the private
+`/internal/session-search` entrance on the root-owned local socket. Word, historical routing,
+archive and meaning work overlap. At the meaning merge point the executor awaits the result
+through `/internal/session-search-meaning` on the private owner socket, using that search's
+opaque identity. The owner retains the promise through both reads or fallback and removes it
+when the search finishes. Only the owner touches the meaning index. Neither private entrance
+is available to peer or agent listeners. The composed read-only `SessionOwner` resolves word, routing, archive and
+meaning hits, reads the peer catalogue and mutuals, and builds and bounds the returned session
+views in a read executor. Prepared word and historical routing searches still use their sealed
+subprocesses. Search uses the archive lane: it may occupy only one of the two readers, and
+interactive app reads pass its backlog, keeping capacity for the Sessions panel and other reads.
+That one archive reader is shared with the owed-replies check and whole-transcript reads, so
+concurrent searches queue behind them and the pool's response limit counts that wait. A search
+that spends its budget queueing falls back onto the owner, which is the block this moved off it,
+so the fallback separates `queued` from a broken or absent executor and `session_search_slow`
+carries `executor_wait_ms`. Giving search its own lane would let it and an archive read hold both
+readers at once and take away the free reader his interactive reads rely on; the measurement
+decides whether that trade is needed rather than assuming it.
+
+An unchanged imported source resolves without writing. Sources that need creation or a metadata
+update return as exact pending source descriptors, in discovery order, without a partial answer.
+The owner replays that pass's source resolutions in order, preserving meaning's
+native-session-first lookup, and asks the executor once more with each exact resolution's
+materialization receipt. The second projection can therefore use two different retained
+descriptors of one source without requesting the intermediate write again. The normal steady
+state has no pending sources and no owner ledger assembly. If the executor is unavailable, refuses, times out or
+still needs materialization after that second read, the owner runs the existing local assembly
+and logs `session_search_executor_fallback` with a content-free reason. No query, message or
+vector is logged. `session_search_slow` retains its existing phase fields and adds
+`executor_ms` (awaited gateway/read time, including queueing and both reads), `owner_ms`
+(request time outside executor waits, including rare writes), `meaning_embed_ms` and
+`meaning_rank_ms`. Meaning overlaps executor waits and retains its own phase timings; these
+elapsed values are not owner CPU measurements. A failed or unavailable meaning phase keeps
+its existing word-only degradation. Failure to fetch that private result refuses the executor
+read and uses the same owner-held promise in the local fallback.
+
 The owed-replies Stop check retains its command authority on the canonical owner.
 For an Inbox session only, the unfiled-input projection uses the same private
 gateway and read pool as retained stream pages. It runs in one physically
