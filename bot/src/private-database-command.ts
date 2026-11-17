@@ -41,6 +41,17 @@ export function inheritedDatabaseBoundary(state = join(homedir(), '.local/state/
     && readdirSync(state).length === 0;
 }
 
+function inheritedLegacyImageMask(): boolean {
+  if (/^\s*0\s+0\s+4294967295\s*$/.test(readFileSync('/proc/self/uid_map', 'utf8'))) return false;
+  try {
+    const image = statSync(LEDGER_IMAGE_PATH);
+    return image.isCharacterDevice() && image.rdev === statSync('/dev/null').rdev;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 /** Release fixtures cannot open live stores through raw SQLite or filesystem APIs.
  * Mount isolation is inherited by descendants and ends with the check process. */
 export function privateDatabaseCommand(command: string[], allowPrivateMounts = false): string[] {
@@ -50,7 +61,13 @@ export function privateDatabaseCommand(command: string[], allowPrivateMounts = f
   // A child of this boundary inherits the masked directory. Ordinary checks
   // drop capabilities; the code launcher uses a second user namespace so its
   // mount-capable children cannot unmount the protected outer mounts.
-  if (inheritedDatabaseBoundary(state)) return agentLedgerImageCommand(command);
+  if (inheritedDatabaseBoundary(state)) {
+    // The preceding sealed builder masks the image with /dev/null and drops capabilities.
+    // Its children cannot replace that mask or create the new launcher's user namespaces.
+    // Reuse that byte-isolation boundary only here; agent launches still require deny-open.
+    if (inheritedLegacyImageMask()) return command;
+    return agentLedgerImageCommand(command);
+  }
   if (!existsSync('/usr/bin/bwrap')) throw new Error('Release database isolation requires bubblewrap.');
   // The ledger's own filesystem is reached directly too, not only through the state directory's
   // link, so every live directory that link record names is hidden (2026-10-16).
