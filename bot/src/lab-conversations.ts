@@ -59,7 +59,8 @@ function participantChoices(value:unknown,min=1):LabParticipantChoice[]{
     }
     return choice as LabParticipantChoice;
   });
-  if(new Set(choices.map(choice=>choice.key)).size!==choices.length)throw new LabConversationError('Participant keys must be unique.');
+  const repeated=choices.map(choice=>choice.key).find((key,index,keys)=>keys.indexOf(key)!==index);
+  if(repeated)throw new LabConversationError(`Participant key '${repeated}' is used more than once; each voice needs its own key.`,400,'LAB_PARTICIPANT_KEY_REPEATED');
   return choices;
 }
 /** Typed Lab invocations share the existing accepted-input ledger and execution queue. */
