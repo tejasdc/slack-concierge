@@ -767,6 +767,14 @@ them with the request. Pro effort applies only to the ChatGPT route; an alternat
 provider uses its own default effort unless a compatible effort was explicitly
 supplied. Tejas's explicit provider, model or ChatGPT thinking-level
 choice is derived from the retained human source and carried over a peer hop.
+His words count as a choice when a statement names the model, provider or ChatGPT level
+and is a command ("Have Sol do it", "Put Opus on it"), a polite request ("Could you use
+Fable?") or a stated want ("I want Astra for this one"). A negation before the name, a
+condition or hedge anywhere in the statement ("if it fails, use Astra"), an inquiry or a
+remark ("Astra is too expensive") is not one. The rule reads sentence shape from closed
+grammatical word classes rather than a verb list, which missed his ordinary phrasing on
+2026-11-17 (`model-escalation-custody.ts`, checked by `model-choice-custody-check.ts`).
+Spoken ChatGPT levels Standard, Extended and Heavy map to medium, high and extra-high.
 Existing addressed requests and implementation handoffs
 retain their own routes. The usage report counts declared routes and reasons,
 and direct web research in top-model main conversations. Purpose is a declared
