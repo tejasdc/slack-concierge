@@ -25,7 +25,7 @@ activity. `topicId` is `null` for a thread not yet placed in a topic. Lists do n
 around one exact message of his: every message he authored, now, in its thread and in the
 topic's other threads, in ledger order, with the source always included. The live owner serves
 it from its thread index and the accepted inputs, never from the Threads display copy, so it
-never answers "still indexing". Pages agree through `contextDigest`, a hash over only that
+never answers "still indexing". Every message in it passes the same content admission as its own exact operation read, and one the reader may not see fails the whole read. Pages agree through `contextDigest`, a hash over only that
 conversation, so unrelated Inbox activity cannot restart a read; an opaque cursor carries the
 digest, sequence and input ID, and a changed conversation answers `409 CONVERSATION_CHANGED`.
 

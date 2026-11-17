@@ -8,6 +8,7 @@ import {localSessionNumber,receiveSessionFromPeer} from './peer-identity';
 import {db,getSessionById,type SessionRow} from './state';
 import {carryingTurn,getAcceptedSessionInput,humanAuthored,nativeRunId,sessionInputProvenance,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput,type RetainInputTiming} from './session-inputs';
 import {retainedReplyTarget} from './inbox-reply-lineage';
+import {assertInputContent} from './lab-content-disclosure';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import {askedAnswerPostIds,askedAnswerStatus,requireAskedAnswer} from './asked-answer';
 import {BUG_REPORT_OWN_THREAD,isBugReportInput,capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
@@ -1657,6 +1658,9 @@ export function verifiedHumanConversation(operationId:string,cursor:string|null=
   const human=[...members].map(([messageId,sequence])=>({input:getAcceptedSessionInput(messageId),sequence}))
     .filter((entry):entry is {input:AcceptedSessionInput;sequence:number}=>!!entry.input&&humanAuthored(entry.input))
     .sort((a,b)=>a.sequence-b.sequence||(a.input.id<b.input.id?-1:a.input.id>b.input.id?1:0));
+  // Every member passes the same content admission as its own exact operation read; one this
+  // reader may not see fails the whole read rather than being silently left out.
+  for(const {input} of human)assertInputContent(input);
   const all=human.map(({input,sequence})=>{
     const payload=JSON.parse(input.payload_json);
     const replyTo=retainedReplyTarget(input);
