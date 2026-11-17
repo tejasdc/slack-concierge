@@ -20,7 +20,7 @@ import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { holdsRequesterPlace } from './requester-place';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
+import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, notifyFiledAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
 import type {unfiledReceivedInputs} from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
@@ -2866,7 +2866,11 @@ export class SessionCommunicationCoordinator {
         })();
         // Uses the stored reply and original post identity; caller supplies neither replacement words
         // nor a disposition. Fresh requirement reads remain mandatory for the still-owed siblings.
-        this.postThreadEvent(request,event,payload,true);
+        const thread=this.answerThread(request);
+        if(!thread)throw new Error('The accepted final has no retained Inbox thread.');
+        notifyFiledAgentAnswer({inboxSessionId:request.source_session_id,root:thread.root,postId:upkeep.postId,
+            eventId:event.event_id,requestId:request.request_id,respondingSessionId:payload.responding_session_id,
+            notify:true,answerSource:{inputId:payload.source.input_id,runId:payload.source.run_id},checkedCompletionEventId:event.event_id});
         const recorded=messageAlreadyNotified(request.source_session_id,upkeep.postId);
         const receipt={state:recorded?'completed':'accepted',operationId:operation.id,requestId:request.request_id,
             replyEventId:event.event_id,postId:upkeep.postId,notificationRecorded:recorded};

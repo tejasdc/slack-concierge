@@ -108,19 +108,61 @@ export function dispatchedFromInput(inputId:string):boolean {
     .get(inputId,inputId,inputId,inputId,inputId);
 }
 
+/** Only an explicit reconciliation of the current checked final may pass an earlier turn ring. */
+function checkedCompletionRecovery(sessionId:number,root:string,messageId:string,runId:string|null,eventId:string):boolean {
+  const row=db.query(`SELECT event.request_id,event.payload_json,request.target_session_id,request.source_session_id,
+      request.outcome,request.result_json
+    FROM session_communication_events event JOIN session_communication_requests request ON request.request_id=event.request_id
+    WHERE event.event_id=? AND event.kind='final' AND event.superseded_by_event_id IS NULL`).get(eventId) as
+    {request_id:string;payload_json:string;target_session_id:number;source_session_id:number;outcome:string|null;result_json:string|null}|null;
+  if(!row||row.source_session_id!==sessionId||row.outcome!=='answered'||!row.result_json)return false;
+  const result=JSON.parse(row.result_json),payload=JSON.parse(row.payload_json);
+  if(result.event_id!==eventId||payload.final!==true||payload.notify!==true||payload.workDisposition!=='completed'
+    ||payload.responding_session_id!==`concierge:${row.target_session_id}`||!runId||payload.source?.run_id!==runId
+    ||typeof payload.source?.input_id!=='string'||typeof payload.closingLine!=='string'
+    ||!payload.closingLine.startsWith('Completed · Checked on the real system: ')
+    ||!payload.closingLine.slice('Completed · Checked on the real system: '.length).trim())return false;
+  const source=db.query(`SELECT input.session_id,turn.native_run_id FROM session_inputs input
+    JOIN turns turn ON turn.id=input.turn_id AND turn.session_id=input.session_id WHERE input.id=?`)
+    .get(payload.source.input_id) as {session_id:number;native_run_id:string|null}|null;
+  if(!source||source.session_id!==row.target_session_id||source.native_run_id!==runId)return false;
+  const closure=db.query(`SELECT coalesce(json_extract(payload_json,'$.threadRoot'),input_id) AS root,payload_json FROM session_owner_events
+    WHERE event_id=? AND session_id=? AND kind='answer_closure'`).get(`post:closure:${eventId}`,sessionId) as {root:string|null;payload_json:string}|null;
+  const details=closure?JSON.parse(closure.payload_json):null;
+  if(!closure?.root||details?.postId!==messageId||details.requestId!==row.request_id
+    ||details.closingLine!==payload.closingLine||!topic(sessionId,closure.root)
+    ||topic(sessionId,closure.root)!==topic(sessionId,root))return false;
+  const post=agentMessage(sessionId,root,messageId);
+  if(!post||post.payload.postedBySession!==payload.responding_session_id)return false;
+  let postSource=post.payload.answerSource;
+  if(!postSource&&typeof post.payload.answerGroup==='string'){
+    const original=db.query("SELECT event_id,payload_json FROM session_owner_events WHERE event_id=? AND session_id=? AND kind='post'")
+      .get(post.payload.answerGroup,sessionId) as {event_id:string;payload_json:string}|null;
+    const originalPayload=original?JSON.parse(original.payload_json):null;
+    if(original?.event_id.startsWith('post:forward:')
+      &&messageId===`post:forward:shared:${original.event_id.slice('post:forward:'.length)}:${topic(sessionId,root)}`
+      &&originalPayload.postedBySession===payload.responding_session_id)postSource=originalPayload.answerSource;
+  }
+  return postSource?.inputId===payload.source.input_id&&postSource?.runId===runId;
+}
+
 /** An explicitly notified post carries its own words and consumes any open topic arm. */
-export function notifyAgentPost(sessionId:number,root:string,messageId:string,text:string,force=true,runId:string|null=null):void {
+export function notifyAgentPost(sessionId:number,root:string,messageId:string,text:string,force=true,runId:string|null=null,checkedCompletionEventId?:string):void {
   if(!text.trim())throw new Error('--notify requires words in the message being posted.');
   if(agentMessage(sessionId,root,messageId)?.text!==text.trim())throw new Error('--notify requires the exact words of an existing agent post.');
   db.transaction(()=>{
+    const completionRecovery=checkedCompletionEventId!==undefined
+      ? force&&checkedCompletionRecovery(sessionId,root,messageId,runId,checkedCompletionEventId) : false;
+    if(checkedCompletionEventId!==undefined&&!completionRecovery)throw new Error('Notification recovery requires the exact accepted checked final and post custody.');
     const eventId=`needs_you:requested:${messageId}`;
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return;
     if(messageAlreadyNotified(sessionId,messageId))return;
     // A later accepted human request may ring again even in the same agent run.
     const asking=consumeThreadNotification(sessionId,root,messageId,false,runId);
-    if(threadRangThisRun(sessionId,root,runId)&&!asking)return;
+    if(threadRangThisRun(sessionId,root,runId)&&!asking&&!completionRecovery)return;
     if(!force&&!asking)return;
     recordSessionEvent({eventId,sessionId,inputId:root,kind:'needs_you',payload:{outcome:'response',question:text.trim().slice(0,2000),
-      inputId:root,postId:messageId,requestedNotification:true,...(asking?{notificationInputId:asking}:{}),...(runId?{runId}:{})}});
+      inputId:root,postId:messageId,requestedNotification:true,...(asking?{notificationInputId:asking}:{}),...(runId?{runId}:{}),
+      ...(completionRecovery?{completionReplyEventId:checkedCompletionEventId}:{})}});
   })();
 }
