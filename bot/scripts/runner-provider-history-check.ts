@@ -19,6 +19,18 @@ try{
   await Bun.write(source,transcript);
   const metadata=await call('provider-history.claude.transcript.stat',{account,sessionUuid,cwd}) as any;
   if(metadata.size!==transcript.length||!metadata.sourceIdentity)throw new Error('stat did not identify exact transcript');
+  const movedBucket=await call('provider-history.claude.transcript.stat',{account,sessionUuid,cwd:'/workspace/moved-project'}) as any;
+  if(movedBucket.size!==transcript.length||!movedBucket.sourceIdentity||Object.hasOwn(movedBucket,'projectMatch'))
+    throw new Error('history fallback must prove the exact account transcript without claiming it is in the current project bucket');
+  const missing=await call('provider-history.claude.transcript.stat',{account,sessionUuid:randomUUID(),cwd}) as any;
+  if(missing.sourceIdentity!==null||missing.size!==null)throw new Error('missing UUID transcript unexpectedly produced proof');
+  const duplicate=join(home,'projects','-workspace-another-project',`${sessionUuid}.jsonl`);
+  await mkdir(join(duplicate,'..'),{recursive:true});await Bun.write(duplicate,transcript);
+  let ambiguous=false;
+  try{await call('provider-history.claude.transcript.stat',{account,sessionUuid,cwd:'/workspace/moved-project'});}
+  catch(error){ambiguous=(error as Error).message==='AMBIGUOUS_PROVIDER_TRANSCRIPT';}
+  if(!ambiguous)throw new Error('duplicate UUID transcript buckets were not refused as ambiguous');
+  await rm(duplicate);
   const chunk=await call('provider-history.claude.transcript.read',{account,sessionUuid,cwd,offset:0,maxBytes:64,sourceIdentity:metadata.sourceIdentity,snapshotSize:metadata.size}) as any;
   if(Buffer.from(chunk.bytes,'base64').length!==64||chunk.eof)throw new Error('bounded transcript read failed');
   let changed=false;

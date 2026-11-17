@@ -296,7 +296,8 @@ export class SessionCommunicationCoordinator {
         if (!session) return true;
         const metadata = sessionMetadata(session);
         return session.provider_id !== 'chatgpt' && metadata.interactionPolicy !== 'consultation-only' && !metadata.canvasObservation
-            && !(metadata.origin === 'imported' && !this.dependencies.owner?.canSend(session)) && !this.frozenSession(session.id);
+            && !(metadata.origin === 'imported' && !this.dependencies.owner?.canSend(session))
+            && !!this.dependencies.owner?.canReceiveAgentWork(session) && !this.frozenSession(session.id);
     }
     /**
      * A session whose work was handed to a successor keeps its reads and its closing outcome, but
@@ -385,7 +386,7 @@ export class SessionCommunicationCoordinator {
             if (callable && !this.messageable(result)) {
                 const next=supersededAddress(session.id);
                 if(next)throw new Error(`This session is superseded. Send the request to ${next}.`);
-                throw new Error('The exact session is not currently messageable.');
+                throw new Error(this.dependencies.owner.canSendReason(session)??'The exact session is not currently messageable.');
             }
             return result;
         }
@@ -397,12 +398,12 @@ export class SessionCommunicationCoordinator {
         if (!session || session.id !== result.session)
             throw new Error('The addressed session binding changed. Discover the intended session again.');
         if (callable && !this.messageable(result))
-            throw new Error('The exact session is not currently messageable.');
+            throw new Error(this.dependencies.owner.canSendReason(session!)??'The exact session is not currently messageable.');
         return {...result,native:true};
     }
     private messageable(address: Address) {
         const session = getSessionById(address.session);
-        return !!session && this.dependencies.owner.canSend(session);
+        return !!session && this.dependencies.owner.canReceiveAgentWork(session);
     }
     /**
      * A Claude or Codex session Concierge started that is archived or paused (and not handed off):
@@ -445,7 +446,7 @@ export class SessionCommunicationCoordinator {
         const address = sessionAddress(session);
         const successor = supersededAddress(sessionId);
         if (successor) return `handed off; asking ${address} reaches the session that continues it, ${successor}`;
-        if (this.dependencies.owner.canSend(session))
+        if (this.dependencies.owner.canReceiveAgentWork(session))
             return session.provider_id === 'chatgpt' ? `ChatGPT, answers questions but has no tools: ${address}` : `can answer: ask ${address}`;
         const frozen = this.frozenSession(sessionId);
         if (frozen) return `${frozen.state}; a side copy of its conversation answers questions: ask ${address} --requested-effect informational`;
@@ -1063,8 +1064,7 @@ export class SessionCommunicationCoordinator {
         const target=resolveSessionAddress(input.address);
         const targetRow=getSessionById(target.id);
         if(!targetRow)throw new Error('That session address is unknown here.');
-        const binding=sessionMetadata(targetRow).providerRunner;
-        const projectLocation=await this.dependencies.owner!.prepareProjectLocation(input.project,typeof binding==='string'?binding:undefined);
+        const projectLocation=await this.dependencies.owner!.prepareSessionProjectLocation(targetRow,input.project);
         return db.transaction(()=>{
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
                 kind:'action',origin:'agent',payload:{kind:'move-session',session:target.id,project:input.project},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn)});
@@ -1074,6 +1074,65 @@ export class SessionCommunicationCoordinator {
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',moved}),saved.input.id);
             return {session:this.dependencies.owner!.view(getSessionById(target.id)!),...moved};
         })();
+    }
+    async repairHome(input:{source:CommunicationSource;action_id:string;address:string;project:string;runner?:string;local?:boolean}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.fenced(this.actor(input.source));
+        action(input.action_id);
+        if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
+        if(!actor.inputId)throw new Error('Repairing a session home needs a native source input.');
+        const grant=this.authority(actor);
+        if(grant.scope!=='work')throw new Error('A machine-home repair needs a work-authorized source input.');
+        const resolveExactGrant=()=>{
+            let candidate=getAcceptedSessionInput(grant.authorityInputId??actor.inputId!);
+            const seen=new Set<string>();
+            while(candidate&&!seen.has(candidate.id)){
+                seen.add(candidate.id);
+                if(humanAuthored(candidate))return {inputId:candidate.id,requestId:null,peerDeliveryId:null};
+                const request=db.query(`SELECT request_id,payload_json FROM session_communication_requests
+                    WHERE target_input_id=? AND target_session_id=? LIMIT 1`).get(candidate.id,actor.session) as {request_id:string;payload_json:string}|null;
+                if(request&&JSON.parse(request.payload_json).requestedEffect==='work')
+                    return {inputId:candidate.id,requestId:request.request_id,peerDeliveryId:null};
+                const peer=db.query(`SELECT request_id,requested_effect FROM session_peer_deliveries
+                    WHERE target_input_id=? AND target_session_id=? LIMIT 1`).get(candidate.id,actor.session) as {request_id:string;requested_effect:string}|null;
+                if(peer?.requested_effect==='work')return {inputId:candidate.id,requestId:null,peerDeliveryId:peer.request_id};
+                if(candidate.origin!=='service'||!candidate.source_input_id||!candidate.source_run_id)break;
+                const parent=getAcceptedSessionInput(candidate.source_input_id);
+                const run=parent?.turn_id?db.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?')
+                    .get(parent.turn_id,parent.session_id) as {native_run_id:string|null}|null:null;
+                if(!parent||parent.session_id!==actor.session||run?.native_run_id!==candidate.source_run_id)break;
+                candidate=parent;
+            }
+            throw new Error('The work-authorized source has no exact same-session human grant or linked work request for home repair.');
+        };
+        const exactGrant=resolveExactGrant();
+        const validateExactGrant=()=>{
+            if(exactGrant.requestId){
+                const request=db.query('SELECT outcome FROM session_communication_requests WHERE request_id=? AND target_input_id=? AND target_session_id=?')
+                    .get(exactGrant.requestId,exactGrant.inputId,actor.session) as {outcome:string|null}|null;
+                if(!request||request.outcome!==null)throw new Error('The exact original work request was canceled or settled during home verification.');
+            }
+            if(exactGrant.peerDeliveryId){
+                const delivery=db.query('SELECT closed_at_ms FROM session_peer_deliveries WHERE request_id=? AND target_input_id=? AND target_session_id=?')
+                    .get(exactGrant.peerDeliveryId,exactGrant.inputId,actor.session) as {closed_at_ms:number|null}|null;
+                if(!delivery||delivery.closed_at_ms!==null)throw new Error('The exact original peer work delivery was closed during home verification.');
+            }
+        };
+        validateExactGrant();
+        const target=resolveSessionAddress(input.address);
+        return this.dependencies.owner.repairNativeConversationHome({sessionId:target.id,actorSessionId:actor.session,
+            sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),actionId:input.action_id,project:input.project,
+            targetUuid:target.agent_session_uuid,targetGeneration:target.binding_generation??1,
+            authorityInputId:exactGrant.inputId,
+            ...(input.runner?{runner:input.runner}:{}),local:input.local===true,validateActor:()=>{
+                const current=this.fenced(this.actor(input.source));
+                if(current.session!==actor.session||current.inputId!==actor.inputId||current.turn!==actor.turn)
+                    throw new Error('The repair request actor changed during home verification.');
+                const currentGrant=this.authority(current);
+                if(currentGrant.scope!=='work'||(currentGrant.authorityInputId??current.inputId)!==(grant.authorityInputId??actor.inputId))
+                    throw new Error('The work authority changed during home verification.');
+                validateExactGrant();
+            }});
     }
     /** Any agent may name any session here; a title Tejas set himself always wins [decision: agents-are-never-handcuffed]. */
     title(input:{source:CommunicationSource;action_id:string;title:string;address?:string}) {
@@ -2420,7 +2479,7 @@ export class SessionCommunicationCoordinator {
                 throw new Error('The correction needs at least one attached file with changed bytes.');
         }
         const historical=!!targetSession&&sessionMetadata(targetSession).origin==='imported'&&!this.dependencies.owner?.canSend(targetSession);
-        if(target&&!historical&&!this.messageable(target))throw new Error('The exact session is not currently messageable.');
+        if(target&&!historical&&!this.messageable(target))throw new Error(targetSession?this.dependencies.owner.canSendReason(targetSession)??'The exact session is not currently messageable.':'The exact session is not currently messageable.');
         // Only an agent's ask is refused; his own message from thnkr.ing is the deliberate retry that can clear it.
         const inputRefusal=targetSession&&target&&!historical?this.dependencies.owner.inputRefusal(targetSession):null;
         if(inputRefusal)throw new Error(inputRefusal.reason);
@@ -2637,7 +2696,7 @@ export class SessionCommunicationCoordinator {
             return id;
         }
         const target=getSessionById(input.target.local!);
-        if(!target||!this.dependencies.owner.canSend(target))throw new Error('That session cannot take a message right now.');
+        if(!target||!this.dependencies.owner.canReceiveAgentWork(target))throw new Error(target?this.dependencies.owner.canSendReason(target)??'That session cannot take a message right now.':'That session cannot take a message right now.');
         this.dependencies.owner.assertNewChatgptInput(target);
         const id=randomUUID(),now=this.now();
         const address=sessionAddress(target);
@@ -3813,7 +3872,7 @@ export class SessionCommunicationCoordinator {
         const stuck = dependencyStuck(db, request.request_id, standing, now);
         const due = stuck ? 0 : requestLastWordMs(db, request) + QUIET_WAKE_MS;
         if (now < due) return recheck(due);
-        if (!holder || !this.dependencies.owner.canSend(holder)) {
+        if (!holder || !this.dependencies.owner.canReceiveAgentWork(holder)) {
             this.stallRequest(request, 'the holder session is paused, archived or no longer available', `stalled:concierge:${request.target_session_id}:quiet`);
             return;
         }
