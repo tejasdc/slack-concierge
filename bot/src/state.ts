@@ -5817,13 +5817,16 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
     -- 19 times in two minutes on 2026-11-12 (docs/incidents/2026-11-12-banked-pause-closed-its-request.md).
     AND NOT (COALESCE(turn.saved_kind,'')='banked' AND (turn.saved_manual_start=0 OR turn.saved_quiet_only=1))
     AND session.provider_id IN (SELECT value FROM json_each(?))))
-  AND NOT (session.provider_id='codex' AND ?=1)`;
+  AND NOT (session.provider_id='codex' AND ?=1
+    AND (?=1 OR COALESCE(json_type(session.native_metadata_json,'$.outside'),'null')<>'true'))`;
 
 // Runner replacements survive an owner restart, so their admission holders are restored from the
 // ledger and reconciled asynchronously before they can release queued Codex turns.
 const codexAdmissionHolders=new CodexAdmissionHolds();
-for(const row of db.query('SELECT holder FROM codex_admission_holds').all() as {holder:string}[])
-  codexAdmissionHolders.set(row.holder,true);
+for(const row of db.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[]){
+  let recovery:unknown;try{recovery=JSON.parse(row.recovery_json);}catch{}
+  codexAdmissionHolders.set(row.holder,true,recovery);
+}
 export type CodexAdmissionRecovery={kind:'runner-activation';runner:string;account:string;operationId:string}|{kind:'runner-rehome';runner:string}
   |{kind:'runner-runtime-maintenance';runner:string;operationId:string;sourceInputId:string;sourceRunId:string;actionId:string;requiredCommit:string};
 export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdmissionRecovery){
@@ -5831,7 +5834,7 @@ export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdm
     db.query('INSERT INTO codex_admission_holds(holder,recovery_json,created_at_ms) VALUES(?,?,?) ON CONFLICT(holder) DO UPDATE SET recovery_json=excluded.recovery_json')
       .run(holder,JSON.stringify(recovery),Date.now());
   }
-  const changed=codexAdmissionHolders.set(holder,held);
+  const changed=codexAdmissionHolders.set(holder,held,recovery);
   if(!held){db.query('DELETE FROM codex_admission_holds WHERE holder=?').run(holder);if(changed)executionChanged();}
 }
 export function codexAdmissionRecoveryHolds():Array<{holder:string;recovery:CodexAdmissionRecovery}>{
@@ -5842,7 +5845,7 @@ export function codexAdmissionRecoveryHolds():Array<{holder:string;recovery:Code
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
   const quietSettings=db.query('SELECT quiet_start_hour,quiet_end_hour,time_zone FROM saved_work_settings WHERE singleton=1').get() as {quiet_start_hour:number;quiet_end_hour:number;time_zone:string};
   return [nowMs,CLAUDE_ALLOWANCE_HOLD_UNTIL_MS,nowMs,nowMs,quietOnlyAdmits(nowMs,quietSettings)?1:0,nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds),nowMs,
-    survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHolders.isHeld ? 1 : 0] as const;
+    survivable ? 1 : 0,JSON.stringify(survivable?.providers ?? []),codexAdmissionHolders.isHeld ? 1 : 0,codexAdmissionHolders.isOutsideHeld ? 1 : 0] as const;
 }
 
 function currentClaimSurvivability() {
