@@ -35,7 +35,14 @@ const PORT=Number(process.env.CONCIERGE_MEANING_PORT)||8796;
 const ARCHIVE_INDEX=process.env.CONCIERGE_ARCHIVE_SEARCH_INDEX||'/var/lib/thinkering/production/agents/sources/search.sqlite';
 /** EmbeddingGemma is Matryoshka-trained; 512 of 768 dimensions keep nearly all quality at two thirds the memory. */
 const DIMENSIONS=512;
-// Like the Inbox entry index warm-up, ranking yields the owner between time-bounded steps.
+// Ranking yields the owner on a fixed row count, not an elapsed budget. An elapsed budget
+// yields more often exactly when the loop is busiest, and every extra yield then waits behind
+// the other searches: live on 2026-11-17 three concurrent searches stretched one 180 ms scan
+// to 2.4 s each. A fixed stride keeps the yield count the same whatever else is running, and
+// these strides are sized so one step is roughly ten milliseconds of work.
+const MEANING_RANK_ROWS=4096,MEANING_RANK_ENTRIES=16384;
+// The bounded hit loop keeps an elapsed budget: it runs at most limit*3 lookups, never cost
+// anything measurable, and its re-acquire point decides which archive entries are admitted.
 const MEANING_RANK_STEP_MS=5;
 const INDEX_BATCH=4,PASSAGE_CHARS=800,SNIPPET_CHARS=400,PAGE=24,IDLE_POLL_MS=60_000;
 /** EmbeddingGemma's documented prompt format; each engine carries its own model's prefixes. */
@@ -458,8 +465,8 @@ export class MeaningIndex {
   private async ranked(vector:Float32Array,limit:number,indexed:number):Promise<MeaningSearch> {
     // Capture the published row count once: indexing may append between steps, never mid-row.
     const count=this.count;
-    let deadline=performance.now()+MEANING_RANK_STEP_MS;
     const yieldOwner=async()=>{await new Promise<void>(resolve=>setImmediate(resolve));deadline=performance.now()+MEANING_RANK_STEP_MS;};
+    let deadline=performance.now()+MEANING_RANK_STEP_MS;
     // Best passage per session (or per archived prompt): one strong match is the signal, many weak ones are not.
     const best=new Map<string,{index:number;score:number}>();
     for(let row=0;row<count;row++){
@@ -468,19 +475,19 @@ export class MeaningIndex {
       const score=dot*this.scales[row]!;
       const target=this.targets[row]!;const id=target.kind==='session'?`s:${target.sessionId}`:target.kind==='peer'?`p:${target.peer}:${target.remoteSessionId}`:this.keys[row]!;
       const prior=best.get(id);if(!prior||score>prior.score)best.set(id,{index:row,score});
-      if(performance.now()>=deadline)await yieldOwner();
+      if(row%MEANING_RANK_ROWS===MEANING_RANK_ROWS-1)await yieldOwner();
     }
     // A large archive also makes copying and sorting the best passages unbounded. Stable
     // merges keep Map insertion order for ties, exactly as the former stable Array.sort did.
     let ranked:{index:number;score:number}[]=[],scratch:typeof ranked=[];
-    for(const value of best.values()){ranked.push(value);if(performance.now()>=deadline)await yieldOwner();}
+    for(const value of best.values()){ranked.push(value);if(ranked.length%MEANING_RANK_ENTRIES===0)await yieldOwner();}
     for(let width=1;width<ranked.length;width*=2){
       for(let start=0;start<ranked.length;start+=width*2){
         const middle=Math.min(start+width,ranked.length),end=Math.min(start+width*2,ranked.length);
         let left=start,right=middle;
         for(let out=start;out<end;out++){
           scratch[out]=left<middle&&(right>=end||!(ranked[right]!.score>ranked[left]!.score))?ranked[left++]!:ranked[right++]!;
-          if((out&63)===0&&performance.now()>=deadline)await yieldOwner();
+          if(out%MEANING_RANK_ENTRIES===MEANING_RANK_ENTRIES-1)await yieldOwner();
         }
       }
       [ranked,scratch]=[scratch,ranked];

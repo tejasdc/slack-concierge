@@ -13,7 +13,7 @@ process had used about 1.5 cores; moving it remains the goal, not an installed c
 | `concierge-workers-ai` Worker (`cloudflare/workers-ai`) | Cloudflare, `https://concierge-workers-ai.thnkring.workers.dev` | `POST /v1/transcribe` (16 kHz mono MP3, ≤10 min) → Whisper large-v3-turbo; optional `POST /v1/embed` (≤32 texts, the model's limit) → Qwen3-Embedding-0.6B. Every answer names its model. |
 | Shared key | Worker secret `CONCIERGE_KEY`; root-only `/etc/concierge/workers-ai.token` on each Concierge machine that uses it | Bearer key for both calls. A machine without the file (the Mac) keeps its own engines. |
 | Speech worker (`concierge-speech-worker.service`) | server | Converts a recording to MP3 pieces with ffmpeg, sends them to the Worker, joins the words. Engine name `workers-ai-whisper`. |
-| Meaning index (session search, earlier work, Inbox areas) | Concierge owner, server | Currently embeds locally. When explicitly enabled, builds a Worker-backed file named for its model beside the local index on the ledger disk. The in-memory int8 scan stays local and yields between time-bounded steps. |
+| Meaning index (session search, earlier work, Inbox areas) | Concierge owner, server | Currently embeds locally. When explicitly enabled, builds a Worker-backed file named for its model beside the local index on the ledger disk. The in-memory int8 scan stays local and yields the owner on a fixed row stride. |
 
 **Why a Worker and not the REST API.** The one Cloudflare token (`remote-box-workers-deploy`) can
 deploy Workers but is refused by the Workers AI and Vectorize APIs. A Worker's AI binding needs no
@@ -23,8 +23,14 @@ dashboard, and the Worker is also where a future Cloudflare-hosted control plane
 models from.
 
 **Local ranking.** Session search and earlier-work comparisons scan the in-memory int8 matrix
-in time-bounded steps that yield the owner between them, like the Inbox entry index warm-up.
-Each step targets five milliseconds, leaving room below ten for loop overhead; copying, stable ranking and candidate selection also yield.
+in steps that yield the owner between them, like the Inbox entry index warm-up. The scan and the
+ranking that follows it step on a fixed number of rows, not an elapsed budget: an elapsed budget
+yields more often exactly when the loop is busiest, and each extra yield waits behind whatever
+else is running, which is how three concurrent searches turned one 180 ms scan into 2.4 s each on
+2026-11-17. A fixed stride costs the same number of yields whatever else is running, and is sized
+so one step is a few milliseconds of work. The bounded candidate selection that follows keeps an
+elapsed budget, because it runs at most a few dozen lookups and its re-acquire point decides which
+archive entries are admitted.
 A scan captures its row count once and visits only those published rows, so indexing appends
 cannot extend it or expose a half-written row. Scoring, best-per-target selection, insertion-order
 ties, result limits and archive-lookup bounds are unchanged. Embedding remains an awaited engine
