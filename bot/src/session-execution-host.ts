@@ -2068,6 +2068,7 @@ export class SessionExecutionHost {
         remoteCall={provider:pin.provider,account,sessionUUID:pin.parentSessionUUID,boundary:pin.boundary,
           threadSource:retained.threadSource,location,additionalLocations};
       }
+      if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
       db.transaction(()=>{
         if(!markTurnProviderAdmissionIntended(claim.turn_id,this.options.instanceId,claim.dispatch_attempt))throw new Error('Native fork control lost its owner.');
         db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({...JSON.parse(operation.receipt_json!),fork:retained}),operation.id);
@@ -2081,6 +2082,8 @@ export class SessionExecutionHost {
       if(typeof result.sessionUUID!=='string'||result.sessionUUID===pin.parentSessionUUID)throw new Error('The runner did not return a distinct provider fork identity.');
       completeNativeFork(operation.id,this.options.instanceId,result);
     } catch(error) {
+      if(!effectIntended&&error instanceof OwnerDrainBeforeProviderAdmissionError
+        &&requeueOrphanedPreAdmissionTurn(claim.turn_id,this.options.instanceId))return;
       const reason=error instanceof Error?error.message:String(error);
       const confirmed=!effectIntended||error instanceof ProviderDispatchError&&error.terminalConfirmed||(error as any)?.outcome==='rejected';
       if(confirmed)failRunningTurnAndReleaseSession(claim.turn_id,this.options.instanceId,reason);
