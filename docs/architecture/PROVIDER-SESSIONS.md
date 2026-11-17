@@ -767,13 +767,19 @@ them with the request. Pro effort applies only to the ChatGPT route; an alternat
 provider uses its own default effort unless a compatible effort was explicitly
 supplied. Tejas's explicit provider, model or ChatGPT thinking-level
 choice is derived from the retained human source and carried over a peer hop.
-His words count as a choice when a statement names the model, provider or ChatGPT level
-and is a command ("Have Sol do it", "Put Opus on it"), a polite request ("Could you use
-Fable?") or a stated want ("I want Astra for this one"). A negation before the name, a
-condition or hedge anywhere in the statement ("if it fails, use Astra"), an inquiry or a
-remark ("Astra is too expensive") is not one. The rule reads sentence shape from closed
-grammatical word classes rather than a verb list, which missed his ordinary phrasing on
-2026-11-17 (`model-escalation-custody.ts`, checked by `model-choice-custody-check.ts`).
+His words count as a choice when a command ("Have Sol do it", "Put Opus on it"), a polite
+request ("Could you use Fable?") or a stated want ("I want Astra for this one") names the
+model. It does not count when that clause negates or sets the name aside ("Don’t use
+Astra", "Prefer Sol over Astra", "Switch from Astra to Sol"), when the statement is
+conditional or hedged ("if it fails, use Astra"), retracted ("never mind"), an inquiry or a
+remark ("Astra is too expensive"), or names a different version ("Opus 4"). The check is
+consulted only when an agent is about to use that exact model, so it errs toward his words
+counting: a mention that acts on the model ("Fix the Astra bug") also counts, because two
+reviews on 2026-11-17 showed a list of choosing or non-choosing verbs cannot be completed,
+and the old six-verb rule missed his ordinary phrasing. Known misses are name-first
+phrasing ("Astra please") and "after/when" used as a time; the agent's existing reason
+fields still cover those (`model-escalation-custody.ts`, checked by
+`model-choice-custody-check.ts`).
 Spoken ChatGPT levels Standard, Extended and Heavy map to medium, high and extra-high.
 Existing addressed requests and implementation handoffs
 retain their own routes. The usage report counts declared routes and reasons,

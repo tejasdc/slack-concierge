@@ -27,28 +27,54 @@ export function containsHumanChoice(words:string,directive:RegExp):boolean {
 // Whether he chose something is read from the shape of his sentence, not from a list of verbs:
 // on 2026-11-17 the six-verb rule (use|choose|run|start|switch to|go with) missed "Have Sol do
 // it", "Put Opus on it", "Could you use Fable?" and "I want Astra for this one", and the refusal
-// went to the agent while he was never asked. Only closed grammatical classes are listed here
-// (fillers, pronouns, auxiliaries, negators, conditionals), which English does not grow.
-const FILLER=/^(?:(?:ok(?:ay)?|so|and|but|then|just|hey|yes|yeah|alright|now|also|please)\b[,\s]*)+/i;
+// went to the agent while he was never asked. This check is consulted only when an agent is
+// about to use that exact model, so it errs toward his words counting: a statement counts when
+// it is a command, polite request or stated want that names the model, unless that clause
+// negates or sets the name aside, the statement is conditional or hedged, or he retracts it.
+// The lists are closed grammatical classes. Two independent reviews on 2026-11-17 showed that
+// a list of verbs that do or do not choose cannot be completed in either direction.
+const FILLER=/^(?:(?:ok(?:ay)?|so|and|but|then|just|hey|yes|yeah|alright|now|also|please|actually)\b[,\s]*)+/i;
 // A polite request or a stated want is his instruction, even phrased as a question.
-const REQUEST=/^(?:can|could|would|will)\s+(?:you|we)\b|^let(?:'s|\s+us)\b|^(?:I|we)(?:'d|\s+would)?\s+(?:really\s+)?(?:want|need|like|prefer)\b|^you\s+(?:can|should|must|need\s+to|have\s+to|may|will|'ll)\b/i;
-// Words that cannot open an imperative sentence: a statement starting with one is a remark
+const REQUEST=/^(?:(?:can|could|would|will)\s+(?:you|we)|you\s+(?:can|should|must|need\s+to|have\s+to|will|'ll))\s+(?:please\s+)?/i;
+const WANT=/^(?:let(?:'s|\s+us)|(?:I|we)(?:'d|\s+would)?\s+(?:really\s+)?(?:want|need|like|prefer))\b/i;
+// Words that cannot open an imperative clause: a clause starting with one is a remark
 // ("I think Astra is overkill", "The Sol run failed") or an inquiry, not an instruction.
-const NOT_IMPERATIVE=/^(?:i|i'm|i've|you|he|she|it|it's|we|they|this|that|these|those|there|the|a|an|my|your|our|his|its|their|is|are|was|were|am|been|has|had|does|did|should|shall|may|must|might|what|which|who|why|how|where|whose|or)\b/i;
-const NEGATION=/\b(?:not|never|no|avoid|stop|without|instead\s+of|rather\s+than|skip|except)\b|n't\b|\bdo\s+not\b/i;
+const NOT_IMPERATIVE=/^(?:i|i'm|i've|you|he|she|it|it's|we|they|this|that|these|those|there|the|a|an|my|your|our|his|its|their|is|are|was|were|am|be|been|has|had|does|did|should|shall|may|must|might|what|which|who|why|how|where|whose|or|and|no|yes)\b/i;
+const NEGATION=/\b(?:not|never|no|avoid|stop|without|skip|except|disable|remove|ban)\b|n't\b|\bdont\b|\bdo\s+not\b/i;
+// The name is the thing set aside, not the thing chosen ("Prefer Sol over Astra").
+const SET_ASIDE=/\b(?:from|over|but|except|besides|instead\s+of|rather\s+than|other\s+than|than|replace)\s+(?:the\s+)?$/i;
+const RETRACTED=/\b(?:never\s*mind|actually\s+no|or\s+not|maybe\s+not|scratch\s+that|forget\s+(?:it|that))\b/i;
 // A condition or hedge makes it a rule for later, not a choice now ("if it fails, use Astra").
 const CONDITION=/\b(?:if|unless|when|whenever|once|after|until|provided|assuming|in\s+case|maybe|perhaps|might|whether)\b/i;
+const CLAUSE=/\s*[,:—–]\s*|\s+-\s+/;
 
-/** True when one of his statements asks for the thing `mention` finds, now and without negation. */
-export function hisWordsChoose(words:string,mention:RegExp):boolean {
-  return statements(words).some(raw=>{
-    const statement=raw.trim().replace(FILLER,'');
-    const found=new RegExp(mention.source,mention.flags.replace('g','')).exec(statement);
-    if(!found)return false;
-    if(NEGATION.test(statement.slice(0,found.index))||CONDITION.test(statement))return false;
-    if(REQUEST.test(statement))return true;
-    if(statement.endsWith('?'))return false;
-    return found.index>0&&!NOT_IMPERATIVE.test(statement);
+/**
+ * True when one of his statements asks, now and without negation, for the thing `mention`
+ * finds. `after`, when given, must also be found later in that statement (ChatGPT's level).
+ */
+export function hisWordsChoose(words:string,mention:RegExp,after?:RegExp):boolean {
+  const find=new RegExp(mention.source,mention.flags.replace('g',''));
+  return statements(words.replace(/[’‘`]/g,"'")).some(raw=>{
+    let statement=raw.trim().replace(FILLER,'');
+    const question=statement.endsWith('?');
+    statement=statement.replace(/[.!?;]+$/,'');
+    if(!find.test(statement)||CONDITION.test(statement))return false;
+    const request=REQUEST.exec(statement);
+    if(question&&!request)return false;
+    if(request)statement=statement.slice(request[0].length);
+    const want=WANT.test(statement);
+    const clauses=statement.split(CLAUSE);
+    return clauses.some((clause,index)=>{
+      const body=clause.replace(FILLER,'');
+      const found=find.exec(body);
+      if(!found)return false;
+      const pre=body.slice(0,found.index);
+      const rest=[body.slice(found.index+found[0].length),...clauses.slice(index+1)].join(', ');
+      if(NEGATION.test(pre)||SET_ASIDE.test(pre)||RETRACTED.test(rest))return false;
+      // A remark has the name or a pronoun as its subject; a command starts with its verb.
+      const instruction=(index===0&&(want||!!request))||(pre!==''&&!NOT_IMPERATIVE.test(body));
+      return instruction&&(!after||after.test(rest));
+    });
   });
 }
 
@@ -64,14 +90,17 @@ function humanWords(sourceInputId:string|undefined):{words:string|null;provenanc
   return {words:typeof words==='string'?words:'',provenance};
 }
 
-// A versioned mention ("GPT-6.1 Sol") names only that version; a bare "Sol" names any Sol.
+// A versioned mention ("GPT-6.1 Sol", "Sol 6.1", "Opus 5.5") names only that version; a bare
+// name names any version. The model's own ID ("gpt-6.1-sol") is a mention too.
 function modelMention(model:string):RegExp|null {
-  const top=topModel(model);
-  if(top==='astra')return /\b(?:GPT-?\s?6\s+)?Astra\b/i;
-  if(top==='fable')return /\b(?:Claude\s+)?Fable\b/i;
-  if(/opus/i.test(model))return /\b(?:Claude\s+)?Opus\b/i;
+  const escape=(text:string)=>text.replace(/[.*+?^${}()|[\]\\-]/g,'\\$&');
+  const versioned=(name:string,version:string,prefix:string)=>new RegExp(
+    `\\b${escape(model)}\\b|(?:\\b${prefix}\\s+${name}|(?<![\\w.-]|\\d\\s)${name})(?:\\s+${escape(version)}(?![\\d.]))?\\b(?!\\s+\\d|-\\d)`,'i');
+  if(topModel(model)==='astra')return versioned('Astra','6','GPT-?\\s?6');
+  const claude=/^claude-(fable|opus)-(\d+)-(\d+)/i.exec(model);
+  if(claude)return versioned(claude[1]![0]!.toUpperCase()+claude[1]!.slice(1),`${claude[2]}.${claude[3]}`,'Claude');
   const sol=/^gpt-([\d.]+)-sol$/i.exec(model);
-  if(sol)return new RegExp(`(?:\\bGPT-?\\s?${sol[1]!.replace(/\./g,'\\.')}\\s+Sol|(?<![\\w.-]|\\d\\s)Sol)\\b`,'i');
+  if(sol)return versioned('Sol',sol[1]!,`GPT-?\\s?${escape(sol[1]!)}`);
   return null;
 }
 
@@ -120,8 +149,9 @@ export function humanChoseChatGptEffort(sourceInputId:string|undefined,effort:st
   if(!human)return false;
   if(human.words===null)return !!human.provenance?.originatingHuman
     &&Array.isArray(human.provenance.humanChatGptEfforts)&&human.provenance.humanChatGptEfforts.includes(effort);
-  const level=`(?:${SPOKEN_CHATGPT_LEVELS[effort]})`;
-  // The level must be said as ChatGPT's thinking level, in the same statement that names ChatGPT.
-  const said=new RegExp(`\\bChatGPT\\s+(?:(?:at|on|with|in)\\s+)?${level}\\b|\\b(?:at|on|with|in)\\s+${level}\\b|\\b${level}\\s+(?:thinking|effort|reasoning)\\b`,'i');
-  return statements(human.words).some(statement=>said.test(statement)&&hisWordsChoose(statement,/\bChatGPT\b/i));
+  // The level must be said as a level, after ChatGPT in the statement that chooses it
+  // ("Ask ChatGPT at extended thinking", "Ask ChatGPT Pro, on heavy", "Use ChatGPT high").
+  const spoken=`(?:${SPOKEN_CHATGPT_LEVELS[effort]})\\b(?!-)`;
+  const level=new RegExp(`^\\s+${spoken}|\\b(?:at|on|with|in|using)\\s+(?:its\\s+|the\\s+)?${spoken}|\\b${spoken}\\s+(?:thinking|effort|reasoning)\\b`,'i');
+  return hisWordsChoose(human.words,/\bChatGPT\b/i,level);
 }
