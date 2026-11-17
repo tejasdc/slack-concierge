@@ -165,3 +165,14 @@ export function outcomeLines(state:RequirementState):string{
   if(!state.available)return '';
   return state.records.map(record=>`Requirements: ${record.counts.delivered} delivered, ${record.counts.withdrawn} withdrawn · ${linkOf(record)}`).join('\n');
 }
+
+/** The line a builder reads when its work declared it delivers none of the thread's records. */
+export function declinedBlock(why:string):string{
+  return `Delivers none of this thread's requirement records: ${why}`;
+}
+
+/** Why a work request in a thread with requirement records is refused until it declares which it delivers. */
+export function threadRecordsRefusal(records:RecordCatalogue[]):string{
+  return `This thread has requirement records: ${records.map(record=>`"${record.title}" (${record.id})`).join('; ')}. A work request in it must say which it delivers; nothing is inherited. Nothing was sent. `
+    +'Add --requirements <record id> for each record this work delivers (any subset), or, for side work such as a review, sweep or question, --requirements none --requirements-why "<why this work delivers none of them>".';
+}
