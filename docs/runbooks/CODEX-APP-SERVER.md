@@ -134,7 +134,22 @@ resumes in a new turn, pass its new live source pair plus `--resume-operation <r
 the same worker session can progress/read the already retained operation, with its original
 source/action/runner/release unchanged. A terminal original source run is not a valid live actor.
 
-The distinct durable maintenance hold survives owner restart. The existing restart lock and
+The distinct durable maintenance hold survives owner restart. It blocks shared-daemon queue
+starts while genuine independent outside CLI turns remain eligible. The queue and stuck-work
+watch use the same predicate: outside placement must be the JSON Boolean `true`, matching the
+execution host. This exception applies only when every admission holder is a complete,
+source-bound runtime-maintenance recovery whose holder matches its runner and operation.
+Account activation, credential/re-home operations, legacy holders, unknown kinds and malformed
+recovery still block outside work, including in combination with maintenance. Settling one
+holder never releases another. Restore classifies the existing `holder` and `recovery_json`
+rows without a schema migration or rewriting the retained source, action or required release;
+unknown or incomplete recovery fails closed. All other queue controls still apply, and admission
+uses the existing protected outside launcher rather than another execution path.
+
+Replay `bun run scripts/codex-outside-admission-fixture.ts` from `bot/` for the real disposable
+queue/watch and pre-fix durable-row restore cases; it never launches a provider or opens live state.
+
+The existing restart lock and
 runner activation journal reserve the App Server before the first asynchronous preflight and
 restore auto-start/account/re-home fences on runner restart. Shared owned turns remain untouched;
 independent outside CLI runs do not self-block on a daemon they do not use. Native loaded-thread
