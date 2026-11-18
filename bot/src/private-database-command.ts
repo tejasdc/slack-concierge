@@ -2,10 +2,10 @@ import { accessSync, constants, existsSync, readFileSync, readdirSync, realpathS
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { liveStores } from './live-store-locations';
-import { agentLedgerImageCommand, LEDGER_IMAGE_PATH } from './agent-ledger-image-boundary';
+import { agentLedgerImageCommand, inaccessibleDevice, LEDGER_IMAGE_PATH } from './agent-ledger-image-boundary';
 
-function loopBackingFiles(directories: string[]): string[] {
-  const mounts = readFileSync('/proc/self/mountinfo', 'utf8').split('\n').flatMap(line => {
+export function loopBackingFiles(directories: string[], readText: (path: string) => string = path => readFileSync(path, 'utf8')): string[] {
+  const mounts = readText('/proc/self/mountinfo').split('\n').flatMap(line => {
     const parts = line.split(' ');
     const separator = parts.indexOf('-');
     if (separator < 0 || !/^\/dev\/loop\d+$/.test(parts[separator + 2] ?? '')) return [];
@@ -17,9 +17,9 @@ function loopBackingFiles(directories: string[]): string[] {
     const mount = mounts.filter(({ mountPoint }) => directory === mountPoint || directory.startsWith(`${mountPoint}/`))
       .sort((a, b) => b.mountPoint.length - a.mountPoint.length)[0];
     if (!mount) continue;
-    const backing = readFileSync(`/sys/block/${mount.device}/loop/backing_file`, 'utf8').trim();
+    const backing = readText(`/sys/block/${mount.device}/loop/backing_file`).trim();
     const file = realpathSync(backing);
-    if (!statSync(file).isFile()) throw new Error(`Live store loop backing is not a file: ${file}`);
+    if (!statSync(file).isFile() && !inaccessibleDevice(file)) throw new Error(`Live store loop backing is not a file: ${file}`);
     files.add(file);
   }
   return [...files];
