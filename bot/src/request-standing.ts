@@ -1,5 +1,5 @@
 import type {Database} from 'bun:sqlite';
-import {CodexAdmissionHolds} from './codex-admission-holds';
+import {codexAdmissionHoldFact} from './codex-admission-holds';
 import {holdIsStartPace} from './start-pace';
 import {snoozeReason} from './snooze';
 import {workingThrough,type CurrentWorker} from './topic-current-workers';
@@ -74,11 +74,10 @@ function heldWords(turn:{dispatch_hold:string|null;dispatch_failure_class:string
 function codexAdmissionWords(source:Database,sessionId:number):{words:string;untilMs:number|null}|null{
  const session=source.query('SELECT provider_id,native_metadata_json FROM sessions WHERE id=?').get(sessionId) as {provider_id:string;native_metadata_json:string}|null;
  if(session?.provider_id!=='codex')return null;
- const holds=new CodexAdmissionHolds();
- for(const row of source.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[])holds.set(row.holder,true,parse(row.recovery_json));
- const reason=holds.reasonFor(!!parse(session.native_metadata_json)?.outside);
- return reason?{words:reason==='account-switch'?'Waiting for Codex to finish switching accounts':reason==='codex-update'?'Waiting for Codex to finish updating'
-  :'Waiting for Codex to take new work again',untilMs:null}:null;
+ const hold=codexAdmissionHoldFact(source,!!parse(session.native_metadata_json)?.outside);
+ if(!hold)return null;
+ return {words:hold.kind==='runner-activation'?'Waiting for Codex to finish switching accounts':hold.kind==='runner-runtime-maintenance'?'Waiting for Codex to finish updating'
+  :'Waiting for Codex to take new work again',untilMs:hold.clearsAtMs};
 }
 
 function stalledReason(source:Database,requestId:string):string|null{

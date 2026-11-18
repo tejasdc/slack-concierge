@@ -53,7 +53,7 @@ import {turnBackgroundWait} from './background-waits';
 import {wakeWatchWorker} from './watches';
 import {turnProviderRetry,retainedTurnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
-import {db,codexAdmissionHoldFor,globalPauseState,globalPauseHoldsSession,focusCaptureReviewEnabled,focusHoldState,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
+import {db,globalPauseState,globalPauseHoldsSession,focusCaptureReviewEnabled,focusHoldState,survivableRunKinds,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,EARLIER_TURN_BLOCKS_SQL,queuePrecedesSql,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {provenRunKinds,turnContinuesThroughRestart,whyTurnHoldsUpdate} from './execution-survival';
 import {hostScriptDigest,hostScriptPath} from './execution-host-client';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -78,6 +78,7 @@ import {acceptedInputAuthor,authorSession,sessionAuthor,withCurrentAuthors} from
 import {routedMaterialSource} from './session-routed-material';
 import {commitSessionIdentity,localSessionNumber} from './peer-identity';
 import {humanAuthored,sessionInputProvenance} from './session-inputs';
+import {codexAdmissionHoldFact} from './codex-admission-holds';
 import {withdrawChatGptTasksForStoppedTurnByTejas} from './chatgpt-obligations';
 import {noticeTime} from './provider-free-notice';
 import {movedToCodex} from './provider-exhaustion-recovery';
@@ -212,7 +213,7 @@ const ownerStatusContext={
     const survivable=survivableRunKinds();
     return !(inputKind!=='fork'&&survivable.providers.includes(providerId));
   },
-  admissionHold:(providerId:string,outside:boolean)=>providerId==='codex'?codexAdmissionHoldFor(outside):null,
+  codexAdmissionHold:(outside:boolean)=>codexAdmissionHoldFact(db,outside),
   focusHold:(sessionId:number)=>{
     const state=focusHoldState();
     if(!state.held)return null;

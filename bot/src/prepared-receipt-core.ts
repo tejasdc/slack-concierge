@@ -1,6 +1,5 @@
 import type {Database} from 'bun:sqlite';
 import {inputExecutionFacts,receiptOperationState,type ReceiptTurnFacts,type ReceiptSteeringFacts} from './session-receipt-state';
-import {CodexAdmissionHolds} from './codex-admission-holds';
 import {receiptStatusFromFacts,type StatusContext,type InputStatusDetail} from './session-receipt-status';
 import {survivableRunKinds} from './execution-survival';
 import {modelDisplayName} from './aliases';
@@ -9,6 +8,7 @@ import {inputProvenance,existingRunIdFor} from './input-provenance';
 import {receiptAttachmentProjection,type ReceiptAttachment} from './receipt-attachments';
 import {codexAccountSwitchProjection} from './codex-account-switch-receipt';
 import {readInboxThreadLink} from './inbox-thread-link-read';
+import {codexAdmissionHoldFact} from './codex-admission-holds';
 
 type SourceInput={id:string;session_id:number;kind:string;origin:string;source_input_id:string|null;
   source_run_id:string|null;
@@ -176,14 +176,7 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
       const survivable=survivableRunKinds(source);
       return !(inputKind!=='fork'&&survivable.providers.includes(providerId));
     },
-    // Only holds with retained recovery are in the ledger; the live owner also sees in-memory ones.
-    admissionHold:(providerId,outside)=>{
-      if(providerId!=='codex')return null;
-      const rows=source.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[];
-      const holds=new CodexAdmissionHolds();
-      for(const row of rows)holds.set(row.holder,true,json(row.recovery_json));
-      return holds.reasonFor(outside);
-    },
+    codexAdmissionHold:(outside:boolean)=>codexAdmissionHoldFact(source,outside),
     focusHold:(sessionId)=>{
       const row=source.query(`SELECT hold.until_ms FROM focus_hold hold JOIN sessions session ON session.id=?
         WHERE hold.singleton=1 AND hold.until_ms>?

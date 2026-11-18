@@ -19,6 +19,8 @@ async function reconcileActivation(runner:string,account:string,operationId:stri
   if(activationReconciliations.has(operationId))return;
   const work=(async()=>{
     for(;;){
+      // An expired hold (CODEX_RUNNER_HOLD_BOUND_MS) ends this reconciliation; the switch is not retried.
+      if(!codexAdmissionRecoveryHolds().some(({recovery})=>recovery.kind==='runner-activation'&&recovery.operationId===operationId))return;
       try{
         const result=await withCodexRestartLock(()=>runnerMachineCall<any>(runner,"accounts.codex.activate",{account,operationId},130_000));
         if(terminalActivation(result)){if(activeActivationOperationId===operationId)activeActivationOperationId=null;holdCodexAdmission(`codex:runner-activation:${runner}:${operationId}`,false);return;}
@@ -32,6 +34,9 @@ async function reconcileActivation(runner:string,account:string,operationId:stri
 
 export async function activateRunnerCodexAccount(runner: string, account: string, operationId: string, excludeTurnId?: number): Promise<unknown> {
   if (!runner.trim() || !account.trim() || !operationId.trim()) throw new Error("A runner, Codex account and stable activation operation id are required.");
+  // A switch whose bounded hold expired (CODEX_RUNNER_HOLD_BOUND_MS) no longer blocks the next one.
+  if(activeActivationOperationId&&!codexAdmissionRecoveryHolds().some(({recovery})=>recovery.kind==='runner-activation'&&recovery.operationId===activeActivationOperationId))
+    activeActivationOperationId=null;
   if(activeActivationOperationId&&activeActivationOperationId!==operationId)
     return {status:'deferred',detail:'Another runner Codex account switch is unresolved; admission remains held until that exact operation is confirmed.'};
   activeActivationOperationId=operationId;

@@ -18,8 +18,8 @@ export type StatusContext={
   session:(sessionId:number)=>{status:string;providerId:string;suspended:boolean;outside:boolean};
   otherLiveTurn:(sessionId:number,turnId:number)=>boolean;
   deploymentHold:(providerId:string,inputKind:string)=>boolean;
-  /** A provider-wide admission hold (today only Codex's account switch, update or repair). */
-  admissionHold?:(providerId:string,outside:boolean)=>'account-switch'|'codex-update'|'app-server-repair'|'other'|null;
+  /** The oldest durable Codex admission hold this session's queued turn waits behind. */
+  codexAdmissionHold?:(outside:boolean)=>{kind:string;holder:string;sinceMs:number;clearsAtMs:number|null}|null;
   focusHold:(sessionId:number)=>number|null;
   olderBlockingTurn:(sessionId:number,turnId:number)=>BlockingTurnFact;
   dependencyPending:(turnId:number)=>boolean;
@@ -44,12 +44,6 @@ function chatGptHoldReason(reason:string):string|null {
   const match=/\bCHATGPT_[A-Z_]+:\s*(.+)$/s.exec(reason.replace(/^(?:ProviderDispatchError|ChatGptDispatchError|Error):\s*/,''));
   return match?match[1]!.trim().replace(/\s+/g,' ').slice(0,300):null;
 }
-const CODEX_HOLD_WORDS={
-  'account-switch':'Codex is switching to another account',
-  'codex-update':'Codex is being updated on this machine',
-  'app-server-repair':'Codex’s app server is being restarted',
-  other:'Codex is not taking new work for a moment',
-} as const;
 
 export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTurn|null;steering:StatusSteering|null;state:string},
   saved:any,context:StatusContext):InputStatusDetail|null {
@@ -149,8 +143,18 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
   if(focusUntil!==null)return {code:'FOCUS_HOLD',message:'Waiting for your focus session to end',clearsAt:new Date(focusUntil).toISOString(),automaticRetry:true};
   const session=context.session(input.session_id);
   if(context.deploymentHold(session.providerId,input.kind))return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
-  const admission=context.admissionHold?.(session.providerId,session.outside)??null;
-  if(admission)return {code:'PROVIDER_ADMISSION_HELD',message:`${CODEX_HOLD_WORDS[admission]}, so new Codex work waits until that finishes; it can take until the Codex work already running ends. ${waitingWork} is kept and starts by itself then.`,clearsAt:null,automaticRetry:true};
+  if(session.providerId==='codex'&&session.status!=='archived'&&!session.suspended&&!context.otherLiveTurn(input.session_id,turn.id)){
+    const hold=context.codexAdmissionHold?.(session.outside)??null;
+    if(hold){
+      const why=hold.kind==='runner-rehome'?'Concierge is putting Codex’s background service on the server back under its own management'
+        :hold.kind==='runner-activation'?'Codex on the server is switching accounts'
+        :hold.kind==='runner-runtime-maintenance'?'Codex on the server is being updated'
+        :`Codex admission is held (${hold.holder})`;
+      const until=hold.clearsAtMs!==null?` It starts by itself by ${context.formatTime(hold.clearsAtMs)} at the latest.`:' It starts by itself once that finishes.';
+      return {code:'CODEX_ADMISSION_HELD',message:`${why}, so new Codex work waits for that to finish. ${waitingWork} is kept here.${until}`,
+        clearsAt:hold.clearsAtMs!==null?new Date(hold.clearsAtMs).toISOString():null,automaticRetry:true};
+    }
+  }
   if(session.status==='archived'||session.suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
   const older=context.olderBlockingTurn(input.session_id,turn.id);
   if(older?.status==='parked')return {code:'EARLIER_INPUT_PARKED',message:'An earlier input is parked and must be reconciled before this queued input can run.',clearsAt:null,automaticRetry:false};

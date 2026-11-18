@@ -35,6 +35,8 @@ investigating sandbox, so which holder it was is the best explanation, not confi
    status would have read "ChatGPT is not answering right now".
 3. Codex-wide admission holds (`codex-admission-holds.ts`) were not among the status reasons, so a
    Codex request held behind one read as plain queue, and the thread standing as "No word yet".
+   PR #993 (merged the same evening) found a runner re-home holding Codex admission while it
+   waited for running work, and gave the input status its own code.
 
 ## Fix
 
@@ -44,8 +46,9 @@ investigating sandbox, so which holder it was is the best explanation, not confi
   held as a usage wait until then (`PROVIDER_USAGE_HELD`, ChatGPT's reset as `clearsAt`). The
   requester gets the existing immediate held notice. Other unsent ChatGPT refusals show
   ChatGPT's own reason.
-- A Codex-wide admission hold is `PROVIDER_ADMISSION_HELD` with words naming the switch, update
-  or repair, and the request standing reads "Waiting for Codex to finish …".
+- The request standing (the thread view) reads "Waiting for Codex to …" while a retained
+  Codex-wide admission hold holds the session; the input status code for it
+  (`CODEX_ADMISSION_HELD`) and the re-home wedge itself came in concurrently with PR #993.
 
 ## Acceptance scenario
 
