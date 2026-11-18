@@ -20,7 +20,7 @@ import { log } from "./log";
 import { quietOnlyAdmits } from './quiet-hours';
 import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
 import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
-import {CodexAdmissionHolds} from './codex-admission-holds';
+import {CodexAdmissionHolds,expiredCodexRunnerHolds} from './codex-admission-holds';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
@@ -5836,6 +5836,12 @@ export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdm
   }
   const changed=codexAdmissionHolders.set(holder,held,recovery);
   if(!held){db.query('DELETE FROM codex_admission_holds WHERE holder=?').run(holder);if(changed)executionChanged();}
+}
+/** Release runner holds past their bound (see CODEX_RUNNER_HOLD_BOUND_MS); returns what it released. */
+export function expireCodexRunnerHolds(nowMs=Date.now()):Array<{holder:string;kind:string;ageMs:number}>{
+  const expired=expiredCodexRunnerHolds(db,nowMs);
+  for(const hold of expired)holdCodexAdmission(hold.holder,false);
+  return expired;
 }
 export function codexAdmissionRecoveryHolds():Array<{holder:string;recovery:CodexAdmissionRecovery}>{
   return (db.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[])

@@ -18,6 +18,8 @@ export type StatusContext={
   session:(sessionId:number)=>{status:string;providerId:string;suspended:boolean;outside:boolean};
   otherLiveTurn:(sessionId:number,turnId:number)=>boolean;
   deploymentHold:(providerId:string,inputKind:string)=>boolean;
+  /** The oldest durable Codex admission hold this session's queued turn waits behind. */
+  codexAdmissionHold?:(outside:boolean)=>{kind:string;holder:string;sinceMs:number;clearsAtMs:number|null}|null;
   focusHold:(sessionId:number)=>number|null;
   olderBlockingTurn:(sessionId:number,turnId:number)=>BlockingTurnFact;
   dependencyPending:(turnId:number)=>boolean;
@@ -130,6 +132,18 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
   if(focusUntil!==null)return {code:'FOCUS_HOLD',message:'Waiting for your focus session to end',clearsAt:new Date(focusUntil).toISOString(),automaticRetry:true};
   const session=context.session(input.session_id);
   if(context.deploymentHold(session.providerId,input.kind))return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
+  if(session.providerId==='codex'&&session.status!=='archived'&&!session.suspended&&!context.otherLiveTurn(input.session_id,turn.id)){
+    const hold=context.codexAdmissionHold?.(session.outside)??null;
+    if(hold){
+      const why=hold.kind==='runner-rehome'?'Concierge is putting Codex’s background service on the server back under its own management'
+        :hold.kind==='runner-activation'?'Codex on the server is switching accounts'
+        :hold.kind==='runner-runtime-maintenance'?'Codex on the server is being updated'
+        :`Codex admission is held (${hold.holder})`;
+      const until=hold.clearsAtMs!==null?` It starts by itself by ${context.formatTime(hold.clearsAtMs)} at the latest.`:' It starts by itself once that finishes.';
+      return {code:'CODEX_ADMISSION_HELD',message:`${why}, so new Codex work waits for that to finish. ${waitingWork} is kept here.${until}`,
+        clearsAt:hold.clearsAtMs!==null?new Date(hold.clearsAtMs).toISOString():null,automaticRetry:true};
+    }
+  }
   if(session.status==='archived'||session.suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
   const older=context.olderBlockingTurn(input.session_id,turn.id);
   if(older?.status==='parked')return {code:'EARLIER_INPUT_PARKED',message:'An earlier input is parked and must be reconciled before this queued input can run.',clearsAt:null,automaticRetry:false};
