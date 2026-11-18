@@ -11,7 +11,8 @@ const root=restore?process.env.CONCIERGE_STATE_DIR!:mkdtempSync(join(tmpdir(),'c
 process.env.CONCIERGE_STATE_DIR=root;
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=CODEX_RUNTIME_MAINTENANCE_TEST_AUTHORIZATION;
-const {db,claimNextQueuedTurn,claimableNotClaimed,holdCodexAdmission,codexAdmissionRecoveryHolds}=await import('../src/state');
+const {db,claimNextQueuedTurn,claimableNotClaimed,holdCodexAdmission,codexAdmissionRecoveryHolds,expireCodexRunnerHolds}=await import('../src/state');
+const {codexAdmissionHoldFact,CODEX_RUNNER_HOLD_BOUND_MS}=await import('../src/codex-admission-holds');
 const {createNativeSession,retainSessionInput,enqueueSessionInput}=await import('../src/session-inputs');
 const recovery={kind:'runner-runtime-maintenance' as const,runner:'fixture-runner',operationId:`runtime:${'a'.repeat(40)}`,
   sourceInputId:'original-source',sourceRunId:'original-run',actionId:'original-action',requiredCommit:'b'.repeat(40)};
@@ -116,6 +117,29 @@ try{
     }
     holdCodexAdmission(holder,false);expectClaim(shared);
     console.log('PASS: real queue and stuck-work watch scope maintenance-only outside admission; combined/account/legacy/unknown holds, independent holders, auth, usage, retry, Pause, archive and serialization remain enforced');
+
+    // 2026-11-17: a runner re-home hold must not outlive the bounded runner call it guards.
+    for(const [rehome,details] of [['codex:runner-rehome:fixture-runner',{kind:'runner-rehome',runner:'fixture-runner'}],
+      ['codex:runner-activation:fixture-runner:bounded',{kind:'runner-activation',runner:'fixture-runner',account:'fixture-account',operationId:'bounded'}]] as const){
+      const bounded=queued(`bounded-${details.kind}`,false);
+      holdCodexAdmission(rehome,true,details as any);
+      assert.equal(claim(),null,`${details.kind} holds shared Codex admission while fresh`);
+      const fact=codexAdmissionHoldFact(db,false);
+      assert.equal(fact?.kind,details.kind);assert.equal(fact?.clearsAtMs,fact!.sinceMs+CODEX_RUNNER_HOLD_BOUND_MS,'the receipt names when the hold ends');
+      assert.deepEqual(expireCodexRunnerHolds(),[],'a fresh hold is not expired');
+      db.query('UPDATE codex_admission_holds SET created_at_ms=? WHERE holder=?').run(Date.now()-CODEX_RUNNER_HOLD_BOUND_MS-1,rehome);
+      holdCodexAdmission(rehome,true,details as any);
+      assert.equal(expireCodexRunnerHolds().map(row=>row.holder).join(),rehome,'re-holding keeps the original start, so the bound still applies');
+      assert.equal(codexAdmissionHoldFact(db,false),null);
+      expectClaim(bounded);
+    }
+    holdCodexAdmission(holder,true,recovery);
+    assert.equal(codexAdmissionHoldFact(db,true),null,'an outside run is not told it waits on shared-runtime maintenance');
+    assert.equal(codexAdmissionHoldFact(db,false)?.clearsAtMs,null,'maintenance is not bounded by the runner-call bound');
+    db.query('UPDATE codex_admission_holds SET created_at_ms=0 WHERE holder=?').run(holder);
+    assert.deepEqual(expireCodexRunnerHolds(),[],'source-bound maintenance holds are not expired here');
+    holdCodexAdmission(holder,false);
+    console.log('PASS: runner re-home and account-switch holds expire after their bound, keep their original start, and name it on the receipt');
 
     // Seed the historical SQL table/JSON shape directly in the disposable ledger. No new scope
     // column or migration is needed; the next process must classify this retained row as-is.

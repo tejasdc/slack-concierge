@@ -78,6 +78,7 @@ import {acceptedInputAuthor,authorSession,sessionAuthor,withCurrentAuthors} from
 import {routedMaterialSource} from './session-routed-material';
 import {commitSessionIdentity,localSessionNumber} from './peer-identity';
 import {humanAuthored,sessionInputProvenance} from './session-inputs';
+import {codexAdmissionHoldFact} from './codex-admission-holds';
 import {withdrawChatGptTasksForStoppedTurnByTejas} from './chatgpt-obligations';
 import {noticeTime} from './provider-free-notice';
 import {movedToCodex} from './provider-exhaustion-recovery';
@@ -212,6 +213,7 @@ const ownerStatusContext={
     const survivable=survivableRunKinds();
     return !(inputKind!=='fork'&&survivable.providers.includes(providerId));
   },
+  codexAdmissionHold:(outside:boolean)=>codexAdmissionHoldFact(db,outside),
   focusHold:(sessionId:number)=>{
     const state=focusHoldState();
     if(!state.held)return null;
