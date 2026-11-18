@@ -680,7 +680,7 @@ available at that moment. A default title uses a stable board-derived folder nam
 does not move the project, as the workspace organizer policy says a title change must not silently move a folder that sessions or links may use. The browser sends each later title revision under a distinct action identity, while the owner records it only with a newer board revision clock; the project catalogue shows that current Canvas title beside the stable folder name. `GET /sessions/v1/canvas-projects/:board` returns `pending`, `ready`, or
 `failed`. `ready` means the server scaffold exists and the Canvas can use it; private GitHub setup
 and the durable Mac order continue after that local boundary. A Mac path appears only after that Concierge confirms
-the registered peer project. A later remote failure stays visible without making the local Canvas unusable. Reusing an existing project requires its explicit registered name and
+the registered peer project; the status read answers from that stored confirmation and re-checks it in the background, so it never waits on the runner or a sleeping Mac. A later remote failure stays visible without making the local Canvas unusable. Reusing an existing project requires its explicit registered name and
 optional inside folder; title similarity never attaches a board to a project.
 For a deliberate retrofit, `projects canvas-bind <board-id> --title <title> --existing <project>
 [--inside <folder>]` records that exact association without creating or moving a project;

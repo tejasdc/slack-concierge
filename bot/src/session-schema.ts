@@ -698,6 +698,7 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
       add('session_handoffs','handoff_kind',"handoff_kind TEXT NOT NULL DEFAULT 'ordinary'");
       add('session_handoffs','canonical_input_id','canonical_input_id TEXT');
       add('canvas_project_ensures','title_clock','title_clock INTEGER NOT NULL DEFAULT 0');
+      for(const column of ['server_cwd TEXT','server_checked_at_ms INTEGER','mac_path TEXT','mac_checked_at_ms INTEGER'])add('canvas_project_ensures',column.split(' ')[0]!,column);
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.
       add('session_attachments','transcript_text','transcript_text TEXT');
