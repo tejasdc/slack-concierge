@@ -1,5 +1,6 @@
 /** Owner-only guard around a runner's Codex App Server account replacement. */
-import { codexAdmissionRecoveryHolds, holdCodexAdmission, codexRuntimeMaintenanceReceipt, recordCodexRuntimeMaintenanceProgress } from "./state";
+import { codexAdmissionHeld, codexAdmissionHoldSince, codexAdmissionRecoveryHolds, holdCodexAdmission, openCodexAdmissionKeepingIntent, codexRuntimeMaintenanceReceipt, recordCodexRuntimeMaintenanceProgress } from "./state";
+import { isSharedRuntimeMaintenance, RUNTIME_MAINTENANCE_DRAIN_BOUND_MS } from "./codex-admission-holds";
 import { runningCodexTurns } from "./provider-activation";
 import { runnerMachineCall } from "./runner-machine-calls";
 import {withCodexRestartLock} from './codex-restart-lock';
@@ -88,7 +89,9 @@ export function progressRunnerCodexRuntimeMaintenance(runner:string,binding:Runt
   const receipt=codexRuntimeMaintenanceReceipt(runner,binding);
   if(receipt?.phase==='applied')return Promise.resolve(receipt);
   const pending=runtimeMaintenanceFlights.get(holder);if(pending)return pending;
-  const work=withCodexRestartLock(async()=>{
+  // Past its drain bound the maintenance holds admission only around its own swap attempt.
+  let swapOnly=false;
+  const work=withCodexRestartLock(async()=>{try{
     const current=codexRuntimeMaintenanceReceipt(runner,binding);
     if(current?.phase==='applied')return current;
     let result:Record<string,unknown>,applied:RuntimeMaintenanceState|null=null;
@@ -102,12 +105,17 @@ export function progressRunnerCodexRuntimeMaintenance(runner:string,binding:Runt
       if(applied&&!observed.verified)throw new Error(observed.detail??'The exact applied replacement is unverified.');
       if(!applied){
         // Only an unfinished operation closes admission and reaches the ordinary idle/drain guard.
-        holdCodexAdmission(holder,true,recovery);
-        const owned=(db.query(`SELECT COUNT(*) AS count FROM turns JOIN sessions ON sessions.id=turns.session_id
+        const busy=()=>(db.query(`SELECT COUNT(*) AS count FROM turns JOIN sessions ON sessions.id=turns.session_id
           WHERE sessions.provider_id='codex' AND turns.status IN ('running','delivering')
-          AND COALESCE(json_extract(sessions.native_metadata_json,'$.outside'),0)=0`).get() as {count:number}).count;
-        const external=externallyRunningCodexTurns();
-        if(owned!==0||external!==0)return recordCodexRuntimeMaintenanceProgress(runner,binding,{phase:'waiting',operationId:binding.operationId,detail:'Admission is held; existing owned or native work remains active or uncertain.'});
+          AND COALESCE(json_extract(sessions.native_metadata_json,'$.outside'),0)=0`).get() as {count:number}).count!==0||externallyRunningCodexTurns()!==0;
+        // The drain is bounded (RUNTIME_MAINTENANCE_DRAIN_BOUND_MS): after it, waiting for running work
+        // never holds new Codex work; admission closes only for a swap at an idle moment (2026-11-18).
+        const since=codexAdmissionHoldSince(holder);
+        swapOnly=since!==null&&Date.now()-since>=RUNTIME_MAINTENANCE_DRAIN_BOUND_MS;
+        if(swapOnly&&busy())return recordCodexRuntimeMaintenanceProgress(runner,binding,{phase:'waiting',operationId:binding.operationId,
+          detail:'Admission is open: the drain bound passed while owned or native work stayed active; maintenance runs at the next idle moment.'});
+        holdCodexAdmission(holder,true,recovery);
+        if(busy())return recordCodexRuntimeMaintenanceProgress(runner,binding,{phase:'waiting',operationId:binding.operationId,detail:'Admission is held; existing owned or native work remains active or uncertain.'});
         const progressed=await runnerMachineCall<RuntimeMaintenanceState>(runner,'accounts.codex.runtimeMaintenance',{binding},130_000);
         if(progressed.phase!=='applied')return recordCodexRuntimeMaintenanceProgress(runner,binding,progressed as unknown as Record<string,unknown>);
         if(!sameRuntimeMaintenanceBinding(progressed.binding,binding))throw new Error('The runner result changed its retained binding.');
@@ -131,8 +139,19 @@ export function progressRunnerCodexRuntimeMaintenance(runner:string,binding:Runt
       result=applied as unknown as Record<string,unknown>;
     }catch(error){result={phase:'uncertain',operationId:binding.operationId,...(applied?{applied}:{}),detail:error instanceof Error?error.message:String(error)};}
     return recordCodexRuntimeMaintenanceProgress(runner,binding,result);
-  }).finally(()=>runtimeMaintenanceFlights.delete(holder));
+  }finally{if(swapOnly)openCodexAdmissionKeepingIntent(holder);}}).finally(()=>runtimeMaintenanceFlights.delete(holder));
   runtimeMaintenanceFlights.set(holder,work);return work;
+}
+
+/** Reopen admission for maintenance drains past their bound; a swap in flight keeps its hold. */
+export function boundRuntimeMaintenanceDrains(nowMs=Date.now()):string[]{
+  const opened:string[]=[];
+  for(const {holder,recovery} of codexAdmissionRecoveryHolds()){
+    if(!isSharedRuntimeMaintenance(holder,recovery)||runtimeMaintenanceFlights.has(holder)||!codexAdmissionHeld(holder))continue;
+    const since=codexAdmissionHoldSince(holder);
+    if(since!==null&&nowMs-since>=RUNTIME_MAINTENANCE_DRAIN_BOUND_MS){openCodexAdmissionKeepingIntent(holder);opened.push(holder);}
+  }
+  return opened;
 }
 
 /** Existing startup/execution-change recovery advances the same retained intent, never a new turn. */

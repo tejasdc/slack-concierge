@@ -20,7 +20,7 @@ import { log } from "./log";
 import { quietOnlyAdmits } from './quiet-hours';
 import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
 import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
-import {CodexAdmissionHolds,expiredCodexRunnerHolds} from './codex-admission-holds';
+import {CodexAdmissionHolds,codexAdmissionHoldFact,codexHoldKind,expiredCodexRunnerHolds,isSharedRuntimeMaintenance,runtimeMaintenanceDrainOver} from './codex-admission-holds';
 import {sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState} from './codex-runtime-maintenance';
 import {isProcessIdentity} from './runtime-identity';
 
@@ -5825,8 +5825,10 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
 // Runner replacements survive an owner restart, so their admission holders are restored from the
 // ledger and reconciled asynchronously before they can release queued Codex turns.
 const codexAdmissionHolders=new CodexAdmissionHolds();
-for(const row of db.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[]){
+for(const row of db.query('SELECT holder,recovery_json,created_at_ms FROM codex_admission_holds').all() as {holder:string;recovery_json:string;created_at_ms:number}[]){
+  // A maintenance whose drain bound has passed keeps its row but holds admission only for its swap.
   let recovery:unknown;try{recovery=JSON.parse(row.recovery_json);}catch{}
+  if(isSharedRuntimeMaintenance(row.holder,recovery)&&runtimeMaintenanceDrainOver(codexHoldKind(row.recovery_json),row.created_at_ms,Date.now()))continue;
   codexAdmissionHolders.set(row.holder,true,recovery);
 }
 if(codexAdmissionHolders.isHeld)log('warn','codex_admission_holders_restored',{holders:codexAdmissionHolders.names});
@@ -5842,6 +5844,17 @@ export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdm
   // hour and the journal could not say which holder kept it.
   if(changed)log('info','codex_admission_holders_changed',{holder,held,durable:!!recovery,holders:codexAdmissionHolders.names});
   if(!held){db.query('DELETE FROM codex_admission_holds WHERE holder=?').run(holder);if(changed)executionChanged();}
+}
+/** When a durable hold was first taken, or null. */
+export function codexAdmissionHoldSince(holder:string):number|null{
+  return (db.query('SELECT created_at_ms FROM codex_admission_holds WHERE holder=?').get(holder) as {created_at_ms:number}|null)?.created_at_ms??null;
+}
+export function codexAdmissionHeld(holder:string):boolean{return codexAdmissionHolders.names.includes(holder);}
+/** Reopen admission for a holder while keeping its durable row (its operation's retained intent). */
+export function openCodexAdmissionKeepingIntent(holder:string):void{
+  if(!codexAdmissionHolders.set(holder,false))return;
+  log('info','codex_admission_holders_changed',{holder,held:false,durable:true,intent_kept:true,holders:codexAdmissionHolders.names});
+  executionChanged();
 }
 /** Release runner holds past their bound (see CODEX_RUNNER_HOLD_BOUND_MS); returns what it released. */
 export function expireCodexRunnerHolds(nowMs=Date.now()):Array<{holder:string;kind:string;ageMs:number}>{
@@ -5923,6 +5936,52 @@ export function claimableNotClaimed(nowMs=Date.now(),activeSessionIds:readonly n
       AND session.status<>'archived' AND unixepoch(turn.started_at)*1000<=?
     ORDER BY turn.id LIMIT ?`).all(...claimableQueuedTurnParameters(nowMs,activeSessionIds,survivable),nowMs-olderThanMs,bounded) as Array<{turn_id:number;session_id:number;queued_at:string}>)
     .map(row=>({turnId:row.turn_id,sessionId:row.session_id,queuedAt:row.queued_at}));
+}
+
+export type HeldQueuedRow=ClaimableNotClaimedRow&{hold:string;reason:string;clearsAtMs:number|null};
+function codexHoldReason(kind:string):string{
+  return kind==='runner-rehome'?'Codex on the server is being restarted under Concierge’s management'
+    :kind==='runner-activation'?'Codex on the server is switching accounts'
+    :kind==='runner-runtime-maintenance'?'Codex on the server is being updated'
+    :'Codex on the server has not finished restarting';
+}
+/**
+ * Queued turns the queue would start now but for an admission gate (a Codex admission hold or an
+ * update install), older than `olderThanMs`, each with the gate's name. Everything else the claim
+ * rule leaves out (scheduled, banked or snoozed work, per-session order, Pause, Stop, archive,
+ * usage and retry waits) stays out. On 2026-11-17 Codex work sat held for over an hour and the
+ * stuck-work watch, which counted only claimable turns, could not see it.
+ */
+export function heldNotClaimable(nowMs=Date.now(),activeSessionIds:readonly number[]=[],olderThanMs=10*60_000,limit=30):HeldQueuedRow[] {
+  const bounded=Math.max(0,Math.min(30,Math.trunc(limit)));
+  if(!bounded)return [];
+  const survivable=currentClaimSurvivability();
+  const ungated=[...claimableQueuedTurnParameters(nowMs,activeSessionIds,null)];
+  ungated[ungated.length-2]=0;ungated[ungated.length-1]=0;
+  const candidates=db.query(`SELECT turn.id AS turn_id,turn.session_id,strftime('%Y-%m-%dT%H:%M:%fZ',turn.started_at) AS queued_at,
+      session.provider_id,COALESCE(json_type(session.native_metadata_json,'$.outside'),'null')='true' AS outside
+    FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    WHERE ${CLAIMABLE_QUEUED_TURN_WHERE}
+      AND session.status<>'archived' AND unixepoch(turn.started_at)*1000<=?
+    ORDER BY turn.id LIMIT 200`).all(...ungated,nowMs-olderThanMs) as Array<{turn_id:number;session_id:number;queued_at:string;provider_id:string;outside:number}>;
+  if(!candidates.length)return [];
+  const claimable=new Set((survivable&&!survivable.providers.length?[]:db.query(`SELECT turn.id AS turn_id
+    FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    WHERE ${CLAIMABLE_QUEUED_TURN_WHERE} AND turn.id IN (SELECT value FROM json_each(?))`)
+    .all(...claimableQueuedTurnParameters(nowMs,activeSessionIds,survivable),JSON.stringify(candidates.map(row=>row.turn_id))) as {turn_id:number}[])
+    .map(row=>row.turn_id));
+  const held:HeldQueuedRow[]=[];
+  for(const row of candidates){
+    if(claimable.has(row.turn_id))continue;
+    const codexHeld=row.provider_id==='codex'&&(row.outside?codexAdmissionHolders.isOutsideHeld:codexAdmissionHolders.isHeld);
+    const hold=codexHeld?`codex-admission:${codexAdmissionHolders.names.join(',')}`:survivable?'update-install':null;
+    if(!hold)continue;
+    const fact=codexHeld?codexAdmissionHoldFact(db,!!row.outside,nowMs):null;
+    held.push({turnId:row.turn_id,sessionId:row.session_id,queuedAt:row.queued_at,hold,
+      reason:codexHeld?codexHoldReason(fact?.kind??'local'):'Concierge is installing an update',clearsAtMs:fact?.clearsAtMs??null});
+    if(held.length>=bounded)break;
+  }
+  return held;
 }
 
 export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(), activeSessionIds: readonly number[] = [], activeTurnIds: readonly number[] = []): QueuedTurnClaimRow | null {
