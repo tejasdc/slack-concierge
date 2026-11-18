@@ -4,8 +4,12 @@ import type {Database} from 'bun:sqlite';
 /** A product reference is custody/correlation evidence, never a grant to send. */
 export type HeldMessageResolution={kind:'held-message';id:string;originalRequestId:string;taskId:string;messageId:string;
   sourceInputId:string;failedReadingId:string;failedReadingSha256:string};
+export const HELD_RESOLUTION_KINDS=['human-choice','revise-content','repair'] as const;
+export const HELD_RESOLUTION_STATES=['pending','admitted'] as const;
+export type HeldMessageSnapshot=Omit<HeldMessageResolution,'kind'>&{version:1;callerSession:string;failedReadingJson:string;contextHash:string;envelopeHash:string;
+  resolutionKind:typeof HELD_RESOLUTION_KINDS[number];reason:string;question:string|null;supportingQuote:string|null;state:typeof HELD_RESOLUTION_STATES[number];eligible:true;consumed:false};
 export type HeldMessageBinding={version:1;resolution:HeldMessageResolution;originalInputId:string;requestId:string;
-  sessionId:number;inboxSessionId:number;threadRootInputId:string;sourceInputId:string;continuationOnly:true};
+  sessionId:number;inboxSessionId:number;threadRootInputId:string;sourceInputId:string;continuationOnly:true;snapshot:HeldMessageSnapshot};
 type Input={id:string;session_id:number;scope:string;origin:string;kind:string;source_input_id:string|null;
   source_run_id:string|null;request_id:string|null;payload_json:string};
 export const HELD_RESOLUTION_SCOPE='feature:held-message-resolution';
@@ -27,7 +31,7 @@ export function heldMessageBinding(database:Database,input:Input):HeldMessageBin
     .get(`feature-resolution:${input.id}`,input.id,input.session_id) as {payload_json:string}|null;
   if(!row)return null;
   const binding=JSON.parse(row.payload_json) as HeldMessageBinding;
-  if(binding.version!==1||binding.continuationOnly!==true||binding.sessionId!==input.session_id
+  if(binding.version!==1||binding.snapshot?.version!==1||binding.continuationOnly!==true||binding.sessionId!==input.session_id
     ||binding.originalInputId!==input.source_input_id||binding.requestId!==input.request_id
     ||!isDeepStrictEqual(payload.featureResolution,binding))return null;
   return binding;

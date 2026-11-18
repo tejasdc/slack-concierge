@@ -1388,6 +1388,9 @@ export class SessionCommunicationCoordinator {
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
         if(input.outcome==='needs_you'||input.outcome==='response')this.fenced(actor);
+        const heldResolution=heldMessageBinding(db,getAcceptedSessionInput(actor.inputId)!);
+        if(input.outcome==='needs_you'&&heldResolution&&heldResolution.snapshot.resolutionKind!=='human-choice')
+            throw new Error('FEATURE_RESOLUTION_REPAIR_REQUIRED: system/model/content failures go to the existing repair owner, not a human question.');
         if(!['done','response','needs_you','failed'].includes(input.outcome))throw new Error('Invalid turn outcome.');
         const journalPending=pendingJournalProcessing(actor.inputId,nativeRunId(actor.turn));
         if(journalPending&&input.outcome!=="failed")throw new Error(journalPending);
@@ -3063,6 +3066,10 @@ export class SessionCommunicationCoordinator {
         // they leave it open; completed work carries what was checked live. Folded into the words
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
         const asksHim=input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.todo!==undefined||input.decision_id!==undefined||input.approval_action!==undefined;
+        const resolutionInput=input.source?.input_id?getAcceptedSessionInput(input.source.input_id):null;
+        const heldResolution=resolutionInput?heldMessageBinding(db,resolutionInput):null;
+        if((input.workDisposition==='needs_decision'||asksHim)&&heldResolution&&heldResolution.snapshot.resolutionKind!=='human-choice')
+            throw new Error('FEATURE_RESOLUTION_REPAIR_REQUIRED: this retained resolution belongs to repair.');
         // "Could not finish" that names what only he can do is waiting on him, not finished: it is
         // recorded as the question it is, so it reaches his device. A failed reply files only a quiet
         // reading item, and that is how the Uber Eats agent's photo request reached nobody (2026-11-02).

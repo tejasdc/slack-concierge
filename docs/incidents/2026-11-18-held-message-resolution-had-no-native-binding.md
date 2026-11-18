@@ -44,3 +44,15 @@ The foreign-authorship predicate remains unchanged.
   Fenced work cannot execute. No new send, test push or manufactured human question.
 - **Replayable offline:** yes (isolated native owner/ledger composition; product
   byte freshness and physical device display require product-owned acceptance).
+
+
+## Caller custody clarification before first release
+
+The product owner confirmed that retained task operations may use a bare native
+communication UUID and that a direct-human operation is also possible. Resolve
+only owner-proven request aliases; refuse the direct-human shape explicitly in
+this release. Historical Rohan examples are already sent and must not be invoked.
+The product owner supplies a trusted, side-effect-free pending-resolution read;
+native admission checks current task/message/source/reading/envelope identity,
+verifies exact diagnostic bytes, then rechecks native custody before its write.
+Repair/model failures cannot become a native human question through this binding.
