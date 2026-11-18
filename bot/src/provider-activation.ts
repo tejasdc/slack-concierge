@@ -5,12 +5,13 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { forgetAccountFiles } from "./account-files-memo";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, watch, type FSWatcher } from "node:fs";
-import { authHeldInputCount, codexAdmissionRecoveryHolds, db, holdCodexAdmission, observeExecutionChanges, releaseAuthHeldWork } from "./state";
+import { authHeldInputCount, codexAdmissionRecoveryHolds, db, expireCodexRunnerHolds, holdCodexAdmission, observeExecutionChanges, releaseAuthHeldWork } from "./state";
 import { log } from "./log";
 import { recordSessionEvent } from "./session-inputs";
 import { SMALLEST_CLAUDE_MODEL } from "./aliases";
 import { releaseUsageHeldWork } from "./provider-usage";
 import { releaseUsageContinuationHolds } from "./state";
+import { CODEX_RUNNER_HOLD_BOUND_MS } from "./codex-admission-holds";
 import { credentialPath, currentAccount, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { MANAGED_CODEX, controlSocketListeners, holdCodexDaemonAutoStart, startCodexDaemonInOwnScope } from "./codex-daemon-file-limit";
@@ -233,33 +234,49 @@ const RUNNER_REPAIR_TIMEOUT_MS=220_000;
 async function reconcileRunnerCodexRepair(runner:string):Promise<void>{
   if(runnerRepairReconciliations.has(runner))return;
   runnerRepairReconciliations.add(runner);
+  const repairHold=`codex:runner-rehome:${runner}`;
   try{
+      // The runner answers a repeat of an in-flight re-home with that same re-home's result, so any
+      // answer here means no swap is still running on it and new Codex work can be admitted again.
       const result=await withRetry({operation:'runner-codex-rehome-reconcile',key:runner,
         policy:RETRY_POLICIES.peerRequest,
-        run:()=>withCodexRestartLock(()=>runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS)),
+        // Released under the same lock, so it can never drop a hold a newer re-home has just taken.
+        run:()=>withCodexRestartLock(async()=>{
+          const answer=await runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS);
+          holdCodexAdmission(repairHold,false);return answer;}),
         classifyError:()=> 'transient'});
       if(result.status==='busy'){
-        // A busy runner has not proved that a previously lost repair response was harmless.
-        // Keep its durable hold until the execution-change repair path can check it again.
-        pendingCodexRepair=true;return;
+        // Busy: the runner has an active turn and refused to swap. Retry when work finishes.
+        pendingCodexRepair=true;
+        log('info','codex_runner_rehome_reconciled',{runner,status:result.status,detail:result.detail??null});
+        return;
       }
+      pendingCodexRepair=false;
       if(result.status!=='repaired'&&result.status!=='managed_or_absent'){
         log('error','codex_runner_rehome_unproven',{runner,status:result.status,detail:result.detail??null});
         return;
       }
-      pendingCodexRepair=false;holdCodexAdmission(`codex:runner-rehome:${runner}`,false);
-      if(result.status==='repaired')log('warn','codex_unmanaged_server_repaired_on_runner',{runner,detail:result.detail??null});
+      log(result.status==='repaired'?'warn':'info','codex_runner_rehome_reconciled',{runner,status:result.status,detail:result.detail??null});
       return;
   }catch(error){
+    // Still bounded: the expiry sweep releases this hold CODEX_RUNNER_HOLD_BOUND_MS after it was taken.
     log('error','codex_runner_rehome_reconcile_exhausted',{runner,error:error instanceof Error?error.message:String(error)});
   }finally{runnerRepairReconciliations.delete(runner);}
 }
+/** Concierge and outside Codex turns now running, or null when none run. */
+function codexActivity():{running:number;external:number}|null{
+  const running=runningCodexTurns(),external=externallyRunningCodexTurns();
+  return running!==0||external!==0?{running,external}:null;
+}
 /**
  * Puts a server started outside its manager back under it, at a moment nothing would be cut: no
- * Concierge Codex turn running, none observed running from another client, and new Codex work held
- * for the seconds it takes. Unlike an account switch it changes no account, so it releases no held
- * work. Server only. Retried on execution changes while it is waiting for running work; a finished
- * attempt, successful or not, is not repeated until the next start or account switch.
+ * Concierge Codex turn running, none observed running from another client. Waiting for running work
+ * never holds new Codex work: running work is counted first, new work is held only for the swap
+ * itself, and counted again under that hold so a turn claimed between the two counts is seen. On
+ * 2026-11-17 the hold was taken before the count and kept while six-hour turns ran, which queued
+ * every new server Codex turn. Unlike an account switch it changes no account, so it releases no
+ * held work. Server only. Retried on execution changes while it is waiting for running work; a
+ * finished attempt, successful or not, is not repeated until the next start or account switch.
  */
 function repairUnmanagedCodexServer(): Promise<void> {
   return oneCodexRestartAtATime(async () => {
@@ -268,30 +285,32 @@ function repairUnmanagedCodexServer(): Promise<void> {
       if(process.platform!=='linux'){pendingCodexRepair=false;return;}
       pendingCodexRepair=true;
       const repairHold=`codex:runner-rehome:${runner}`;
-      const recovering=codexAdmissionRecoveryHolds().some(({holder})=>holder===repairHold);
+      const waiting=codexActivity();
+      if(waiting){log('info','codex_unmanaged_server_repair_waiting',{runner,...waiting,admission:'open'});return;}
       holdCodexAdmission(repairHold,true,{kind:'runner-rehome',runner});
-      let retainAdmission=recovering;
+      let retainAdmission=false;
       try{
-        const running=runningCodexTurns(),external=externallyRunningCodexTurns();
-        if(running!==0||external!==0){log('info','codex_unmanaged_server_repair_waiting',{runner,running,external});return;}
+        const raced=codexActivity();
+        if(raced){log('info','codex_unmanaged_server_repair_waiting',{runner,...raced,admission:'open'});return;}
         const result=await runnerMachineCall<{status:string;detail?:string}>(runner,'accounts.codex.repairUnmanaged',{},RUNNER_REPAIR_TIMEOUT_MS);
         if(result.status==='busy'){
-          log('info','codex_unmanaged_server_repair_waiting',{runner,reason:result.detail??'runner_has_active_turn'});
-          retainAdmission=recovering;
-          return;
-        }
-        if(result.status!=='repaired'&&result.status!=='managed_or_absent'){
-          retainAdmission=true;
-          log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
+          log('info','codex_unmanaged_server_repair_waiting',{runner,reason:result.detail??'runner_has_active_turn',admission:'open'});
           return;
         }
         pendingCodexRepair=false;
-        retainAdmission=false;
+        if(result.status!=='repaired'&&result.status!=='managed_or_absent'){
+          // The runner answered, so no swap is in flight; holding new work would not change its answer.
+          log('error','codex_unmanaged_server_repair_refused_on_runner',{runner,status:result.status,detail:result.detail??null});
+          return;
+        }
         if(result.status==='repaired')log('warn','codex_unmanaged_server_repaired_on_runner',{runner});
       }catch(error){
         log('error','codex_unmanaged_server_repair_unconfirmed_on_runner',{runner,error:error instanceof Error?error.message:String(error)});
-        retainAdmission=recovering||!(error instanceof RunnerCallNotSentError);
-        if(retainAdmission)void reconcileRunnerCodexRepair(runner);
+        retainAdmission=!(error instanceof RunnerCallNotSentError);
+        if(retainAdmission){
+          log('warn','codex_admission_held_for_unconfirmed_rehome',{runner,bound_ms:CODEX_RUNNER_HOLD_BOUND_MS});
+          void reconcileRunnerCodexRepair(runner);
+        }
       }finally{if(!retainAdmission)holdCodexAdmission(repairHold,false);}
       return;
     }
@@ -545,6 +564,14 @@ export function watchAuthHeldCredentials(): () => void {
   let repairing=false;
   const repair=()=>{if(stopped||repairing)return;repairing=true;
     void repairUnmanagedCodexServer().catch(error=>log('error','codex_unmanaged_server_repair_failed',{error:String(error)})).finally(()=>{repairing=false;});};
+  // Runner holds are bounded: one whose runner call has certainly ended is released, here at start
+  // and every 30 s, so no hold outlives the swap it guarded (2026-11-17).
+  const expireRunnerHolds=()=>{
+    try{for(const hold of expireCodexRunnerHolds())log('warn','codex_admission_hold_expired',{holder:hold.holder,kind:hold.kind,age_ms:hold.ageMs});}
+    catch(error){log('error','codex_admission_hold_expiry_failed',{error:error instanceof Error?error.message:String(error)});}
+  };
+  expireRunnerHolds();
+  const holdExpiry=setInterval(expireRunnerHolds,30_000);
   const durableCodexHolds=codexAdmissionRecoveryHolds();
   if(durableCodexHolds.some(({recovery})=>recovery.kind==='runner-rehome'))pendingCodexRepair=true;
   void import('./runner-provider-account-owner').then(module=>module.resumeRunnerCodexAdmissionHolds())
@@ -559,7 +586,7 @@ export function watchAuthHeldCredentials(): () => void {
   });
   for(const provider of providers)check(provider,'startup');
   updateInterval();
-  return ()=>{stopped=true;detach();if(interval)clearInterval(interval);
+  return ()=>{stopped=true;detach();clearInterval(holdExpiry);if(interval)clearInterval(interval);
     for(const timer of debounce.values())clearTimeout(timer);for(const watcher of watchers)watcher.close();};
 }
 

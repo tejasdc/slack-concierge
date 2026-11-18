@@ -20,6 +20,13 @@ the run back under the same turn, run and input identities.
 | Ledger table `executions` (`bot/src/state.ts`, custody in `bot/src/executions.ts`) | Concierge's SQLite | which host holds which run, custody state, what adoption needs |
 | Adoption at startup (`claimAdoptableExecutions`) | both runtime compositions, before steering and turn recovery | taking a run back |
 
+Startup takes custody of live executions before the request API opens. Releasing a host whose
+turn has already settled is separate cleanup after the request API opens, on both runtime
+compositions. A runner that cannot answer that release may retain its settled execution record
+until a later startup; its timeout cannot hold the request entrance or cause another provider run.
+The provider usage watch also starts after the request entrance, so its first reading and
+notice pass cannot run inside a prolonged recovery.
+
 The host holds no policy. Inactivity limits, background-job waits, steering, Stop semantics, what a
 frame means and every settlement stay in the coordinator, which a restart replaces. A running host is
 never patched.

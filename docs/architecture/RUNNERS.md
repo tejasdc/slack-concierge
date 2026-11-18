@@ -525,9 +525,18 @@ count is nonzero or unreadable, including turns observed from another Codex clie
 re-home has a separate admission holder, so settling or deferring one operation cannot release the
 other operation's hold. The owner serializes account switches and re-homes through one restart
 queue; the runner also refuses a switch during a re-home and a re-home during a switch. A `busy`
-reply means the runner started no new replacement. A first attempt releases only its own holder;
-after a lost reply, the durable holder stays until the runner proves the App Server's account and
-runner environment. A call that failed before sending leaves no replacement to reconcile. The
+reply means the runner started no new replacement. A re-home counts running Concierge and outside
+Codex turns before it takes any hold, and while any run it only waits, with admission open; it holds
+new Codex work only for the swap itself, counting again under the hold. Any runner answer (`busy`,
+refused, unproven or done) releases its holder. After a lost reply the durable holder stays while
+the owner asks the runner again; any answer releases it. Re-home and account-switch holders are
+bounded: five minutes after a holder was first taken its runner call has ended, so the owner
+releases it at start and on a 30-second sweep (`codex_admission_hold_expired`) and drops a stale
+account-switch reconciliation with it. A queued Codex input behind a durable holder shows receipt
+status `CODEX_ADMISSION_HELD` with that bound as `clearsAt`. On 2026-11-17 a re-home holder taken
+before the count was kept while six-hour turns ran and queued every new server Codex turn
+(`docs/incidents/2026-11-17-codex-rehome-hold-queued-all-codex-work.md`). A call that failed before
+sending leaves no replacement to reconcile. The
 runner checks an already managed, same-account App Server without requiring all hosted turns to
 finish; only a stop and restart needs an idle runner.
 

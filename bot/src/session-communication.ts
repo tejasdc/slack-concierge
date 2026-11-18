@@ -13,7 +13,7 @@ import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, obs
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, stablePayload, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
-import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, SessionOwnerError, type SessionOwner } from './session-owner';
+import { heldRequestNotice, inputHold, inputWaitDetail, readInputExecution, resolveSessionAddress, sessionAddress, SessionOwnerError, type SessionOwner } from './session-owner';
 import { retainedInboxCapture, inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
@@ -1887,7 +1887,14 @@ export class SessionCommunicationCoordinator {
             ? db.query('SELECT status,provider_sent_at FROM turn_steering_messages WHERE id=?').get(binding.steering_id) as any
             : db.query('SELECT status,provider_sent_at FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?').get(binding.turn_id, binding.message_ts) as any : null;
         const legacyPending = !row.outcome && (!row.source_input_id || !row.target_input_id);
+        // Why it is not running yet and when it goes again, read live: a ChatGPT Pro limit read as
+        // plain "admitted, queued" here while only the owner journal named the reset (2026-11-17).
+        // Only the single-request reads carry it; the Inbox's receipts list stays as cheap as before.
+        const targetInput = withTarget && !row.outcome && row.target_input_id ? getAcceptedSessionInput(row.target_input_id) : null;
+        const hold = targetInput ? inputWaitDetail(targetInput) : null;
+        const standing = withTarget && !row.outcome ? requestStanding(db, row.request_id, this.now()) : null;
         return { request_id: row.request_id, status: legacyPending ? 'uncertain' : row.status,
+            ...(withTarget && !row.outcome ? { hold, standing } : {}),
             ...(legacyPending ? {error:'Legacy delivery requires owner reconciliation; no request or return has been replayed.'} : {}), outcome: row.outcome, source_session_id: `concierge:${row.source_session_id}`,
             target_address:sessionAddress(getSessionById(row.target_session_id)!),
             ...(withTarget ? { target: this.dependencies.owner?.view(getSessionById(row.target_session_id)!) } : {}),

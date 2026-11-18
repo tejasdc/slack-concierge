@@ -23,7 +23,7 @@ Every open request in a thread has exactly one displayed holder and one standing
   text, since:ISO|null, until:ISO|null, progress:{text,at}|null, remindedAt:ISO|null }
 ```
 - working: something down the holder's chain is running or queued to run ("Working now", or "Working through <title>" when the chain is longer than the holder).
-- held: the holder has no running turn and its next turn is held (usage, snooze, scheduled, banked, chosen time, sign-in, start pacing); words follow `receiptStatusFromFacts`, shortened; `until` is when it clears.
+- held: the holder has no running turn and its next turn is held (usage, snooze, scheduled, banked, chosen time, sign-in, start pacing, or for Codex a retained Codex-wide admission hold: account switch, update or repair); words follow `receiptStatusFromFacts`, shortened; `until` is when it clears.
 - waiting: the holder sent a request it still waits on ("Waiting on <title> · no word from it"), or a watch its partial named ("Waiting for a Concierge release").
 - stalled: the request has `stalled_at_ms` ("Stopped without finishing" plus the recorded reason).
 - quiet: none of the above ("No word yet").

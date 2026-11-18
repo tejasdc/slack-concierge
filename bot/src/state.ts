@@ -20,7 +20,7 @@ import { log } from "./log";
 import { quietOnlyAdmits } from './quiet-hours';
 import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
 import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
-import {CodexAdmissionHolds} from './codex-admission-holds';
+import {CodexAdmissionHolds,expiredCodexRunnerHolds} from './codex-admission-holds';
 import {sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState} from './codex-runtime-maintenance';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
@@ -5828,6 +5828,7 @@ for(const row of db.query('SELECT holder,recovery_json FROM codex_admission_hold
   let recovery:unknown;try{recovery=JSON.parse(row.recovery_json);}catch{}
   codexAdmissionHolders.set(row.holder,true,recovery);
 }
+if(codexAdmissionHolders.isHeld)log('warn','codex_admission_holders_restored',{holders:codexAdmissionHolders.names});
 export type CodexAdmissionRecovery={kind:'runner-activation';runner:string;account:string;operationId:string}|{kind:'runner-rehome';runner:string}
   |{kind:'runner-runtime-maintenance';runner:string;operationId:string;sourceInputId:string;sourceRunId:string;actionId:string;requiredCommit:string};
 export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdmissionRecovery){
@@ -5836,7 +5837,16 @@ export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdm
       .run(holder,JSON.stringify(recovery),Date.now());
   }
   const changed=codexAdmissionHolders.set(holder,held,recovery);
+  // Every change names the whole holder set: on 2026-11-17 Codex admission stayed closed for an
+  // hour and the journal could not say which holder kept it.
+  if(changed)log('info','codex_admission_holders_changed',{holder,held,durable:!!recovery,holders:codexAdmissionHolders.names});
   if(!held){db.query('DELETE FROM codex_admission_holds WHERE holder=?').run(holder);if(changed)executionChanged();}
+}
+/** Release runner holds past their bound (see CODEX_RUNNER_HOLD_BOUND_MS); returns what it released. */
+export function expireCodexRunnerHolds(nowMs=Date.now()):Array<{holder:string;kind:string;ageMs:number}>{
+  const expired=expiredCodexRunnerHolds(db,nowMs);
+  for(const hold of expired)holdCodexAdmission(hold.holder,false);
+  return expired;
 }
 export function codexAdmissionRecoveryHolds():Array<{holder:string;recovery:CodexAdmissionRecovery}>{
   return (db.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[])
