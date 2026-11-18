@@ -78,6 +78,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [agent issue reports](docs/contracts/native-inbox.md#agent-issue-reports).
   Do not edit the Inbox router's standing instructions here; ask its bound
   session to change them. See [router actions](docs/runbooks/ROUTER-ACTIONS.md).
+- [Direct thread notices](docs/contracts/native-inbox.md) from a worker follow
+  its open Inbox work and delegated request chain, preserving the posting agent.
 - A request closes through an explicit reply command, never an agent's prose or
   silence. Follow the per-run `REQUEST_PROTOCOL` and `sessions --help`; they
   carry the live syntax and enforcement. The [request and return contract](docs/architecture/SESSION-OWNER.md#requests-and-returns)

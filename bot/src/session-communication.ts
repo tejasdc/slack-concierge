@@ -1296,8 +1296,8 @@ export class SessionCommunicationCoordinator {
             if(saved.duplicate)return {post:receipt,duplicate:true};
             if((promisesAnswer||input.promise_request)&&!topicId)throw new Error('Place this thread in the Inbox before promising an answer. Nothing was posted.');
             if(topicId&&(promisesAnswer||input.promise_request)
-                &&!hasOpenInboxWorkForSource(topicId,sourceInputId,input.promise_request))
-                throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open topic request with --promise-request. Nothing was posted.');
+                &&!hasOpenInboxWorkForSource(topicId,sourceInputId,input.promise_request,actor.session))
+                throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open Inbox request or its linked work dispatch with --promise-request. Nothing was posted.');
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
                 payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),postSource:{inputId:sourceInputId,runId:nativeRunId(actor.turn)},...(attachments.length?{attachments}:{})}});
             if(input.notify||router&&!input.keep_working&&!dispatchedFromInput(sourceInputId))notifyAgentPost(session.id,rootInputId,messageId,text,input.notify===true,nativeRunId(actor.turn));

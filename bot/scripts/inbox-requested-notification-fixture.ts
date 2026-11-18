@@ -82,5 +82,25 @@ try{
  communication.post({source:router.source,action_id:'quiet-outcome-answer',thread:quietOutcome,text:'The receipt is retained.',keep_working:true});
  recordTurnOutcome({eventId:'outcome:quiet',sessionId:inboxId,turnId:router.actor.turnId,inputId:quietOutcome,outcome:'done',text:null,quiet:'The send went as requested.'});
  assert.equal(rings().length,4);assert.equal(hasPendingThreadNotification(inboxId,quietOutcome),false,'Quiet router outcome consumes without a ring');
+ const noticeRoot=capture("Check the direct notices.");
+ const noticeTopic=topicsCommand(router.actor,{verb:"create",action_id:"notice-topic",title:"Direct notices",roots:[noticeRoot],area_ids:[area.id]}).topic.topicId;
+ const parentTarget=await owner.create({clientActionId:randomUUID(),provider:"codex",purpose:"chat"});
+ const parent=await communication.ask({source:router.source,action_id:"dispatch-notice-work",address:parentTarget.session.address,routeMessageId:noticeRoot,summary:"Check direct notices",requestedEffect:"work"});
+ await communication.idle();const parentRun=run();
+ const childTarget=await owner.create({clientActionId:randomUUID(),provider:"codex",purpose:"chat"});
+ const child=await communication.ask({source:parentRun.source,action_id:"delegate-notice-work",address:childTarget.session.address,summary:"Check a delegated notice",text:"Post and notify in the marked test thread.",requestedEffect:"work"});
+ await communication.idle();const childRun=run();
+ assert.equal(childRun.source.input_id,`request:${child.request_id}`);
+ const notice={thread:noticeRoot,topic:noticeTopic,text:"Please check the test now. I will reply here.",keep_working:true,notify:true};
+ const parentPost=communication.post({...notice,source:parentRun.source,action_id:"parent-notice",promise_request:parent.request_id});
+ assert.equal(parentPost.duplicate,false,"An exact linked dispatch ID is a valid promise reference");
+ const childPost=communication.post({...notice,source:childRun.source,action_id:"child-notice"});
+ assert.equal(childPost.duplicate,false,"A worker can post through its parent’s linked work");
+ assert.equal(communication.post({...notice,source:childRun.source,action_id:"child-notice"}).duplicate,true);
+ const directRings=rings().slice(4);
+ assert.deepEqual(directRings.map(ring=>ring.postId),[parentPost.post.messageId,childPost.post.messageId]);
+ assert.throws(()=>communication.post({...notice,source:worker.source,action_id:"foreign-promise",promise_request:parent.request_id}),/without a matching open Inbox request/);
+ assert.equal(communication.inspect(parent.request_id).outcome,null);
+ assert.equal(communication.inspect(child.request_id).outcome,null);
  assert.deepEqual(errors,[]);console.log(JSON.stringify({fixture:'inbox-requested-notification',explicitHumanRequest:true,progressQuiet:true,promptAnswer:true,explicitPartial:true,bodylessFinal:true,quietConsumes:true}));
 }finally{await communication.stop();rmSync(scratch,{recursive:true,force:true});}

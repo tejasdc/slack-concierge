@@ -548,11 +548,17 @@ own request sourced to the exact message; sharing a thread does not prove that t
 messages ask for the same work. This covers
 the November 4 failure in which an exact human reply went to an agent without being
 linked, while an earlier attempt's completion closed the only tracked task.
-An agent's post promising a future answer is refused unless the exact
-source already belongs to an open request or it names that request with
-`--promise-request`. A post cannot create a promise merely by saying it; send the
-work first. A retry of the same accepted post returns its original receipt even after
-that work closes; the open-work guard applies to new posts. `sessions topics obligations` reads all open requests in
+An agent can use `sessions post --thread <message-id> --keep-working --notify`
+to put a notice in the Conversation under its own name and request a notification.
+Use it when Tejas needs attention. Routine coordination stays in the agent layer.
+A post that promises a future answer still needs an open request in that topic.
+Concierge follows the posting session’s open work and the retained chain of work
+it was delegated, so a return that woke the agent and a worker launched by that
+agent can both use the same thread. `--promise-request` accepts an open Inbox
+request ID or the exact linked dispatch in the posting session’s work chain.
+A post creates no request, closes no worker’s work, and starts no provider turn.
+A retry of an accepted post returns the original receipt even after the request
+closes. `sessions topics obligations` reads all open requests in
 one view with their current destination and age, without creating another store. The
 reported owner follows live attempts and existing decision waits, including a decision
 in another thread that holds an agent's work; ended attempts return to Inbox recovery.

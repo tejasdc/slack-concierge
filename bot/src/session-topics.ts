@@ -1519,19 +1519,49 @@ export function openInboxObligations() {
   return {count:items.length,asOf:new Date(now).toISOString(),items};
 }
 
-/** A future-answer post may name only work already recorded for its exact source. */
-export function hasOpenInboxWorkForSource(topicId:string,sourceInputId:string,promiseRequestId?:string):boolean {
-  const dispatchId=sourceInputId.startsWith('request:')?sourceInputId.slice('request:'.length):null;
-  return topicRequests(topicId).some(request=>request.state==='open'&&(
-    promiseRequestId?request.requestId===promiseRequestId:
-    request.sources.some(source=>source.inputId===sourceInputId)
-    ||request.dispatches.some((dispatch:any)=>{
+/** A future-answer post relies on existing work in its resolved Inbox topic. */
+export function hasOpenInboxWorkForSource(topicId:string,sourceInputId:string,promiseRequestId?:string,postingSessionId?:number):boolean {
+  const open=topicRequests(topicId).filter(request=>request.state==='open');
+  if(promiseRequestId&&open.some(request=>request.requestId===promiseRequestId))return true;
+  if(!open.length)return false;
+
+  // A later turn can start on a provider return while its session still holds thread work.
+  // Delegated requests retain their sending input and, when different, the work input that
+  // authorized the ask. Follow those owner-recorded links without changing the post author.
+  const workInputs=new Set<string>();
+  if(postingSessionId!==undefined){
+    const rows=db.query(`WITH RECURSIVE lineage(id) AS (
+      SELECT target_input_id FROM session_communication_requests
+        WHERE target_session_id=? AND outcome IS NULL
+          AND json_extract(payload_json,'$.requestedEffect')='work' AND target_input_id IS NOT NULL
+      UNION
+      SELECT request.source_input_id FROM lineage
+        JOIN session_communication_requests request ON request.request_id=substr(lineage.id,9)
+          AND request.target_input_id=lineage.id AND request.outcome IS NOT 'canceled'
+        WHERE request.source_input_id IS NOT NULL
+      UNION
+      SELECT json_extract(request.payload_json,'$.authorityInputId') FROM lineage
+        JOIN session_communication_requests request ON request.request_id=substr(lineage.id,9)
+          AND request.target_input_id=lineage.id AND request.outcome IS NOT 'canceled'
+        WHERE json_extract(request.payload_json,'$.authorityInputId') IS NOT NULL
+      UNION
+      SELECT input.source_input_id FROM lineage JOIN session_inputs input ON input.id=lineage.id
+        WHERE input.origin='service' AND input.source_input_id IS NOT NULL
+    ) SELECT id FROM lineage`).all(postingSessionId) as {id:string}[];
+    for(const row of rows)workInputs.add(row.id);
+  }
+
+  return open.some(request=>{
+    if(!promiseRequestId&&request.sources.some(source=>source.inputId===sourceInputId||workInputs.has(source.inputId)))return true;
+    return request.dispatches.some((dispatch:any)=>{
       const id=String(dispatch.requestId??'');
-      if(id===dispatchId)return true;
-      const local=db.query('SELECT source_input_id FROM session_communication_requests WHERE request_id=?').get(id) as {source_input_id:string|null}|null;
-      const peer=local?null:db.query('SELECT source_input_id FROM session_peer_requests WHERE request_id=?').get(id) as {source_input_id:string|null}|null;
+      if(promiseRequestId)return id===promiseRequestId&&workInputs.has(`request:${id}`);
+      if(sourceInputId===`request:${id}`||workInputs.has(`request:${id}`))return true;
+      const local=db.query("SELECT source_input_id FROM session_communication_requests WHERE request_id=?").get(id) as {source_input_id:string|null}|null;
+      const peer=local?null:db.query("SELECT source_input_id FROM session_peer_requests WHERE request_id=?").get(id) as {source_input_id:string|null}|null;
       return (local?.source_input_id??peer?.source_input_id)===sourceInputId;
-    })));
+    });
+  });
 }
 
 function topicHistory(sessionId:number,topicId:string) {
