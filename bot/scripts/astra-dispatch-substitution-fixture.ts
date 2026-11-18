@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {CURRENT_ASTRA_MODEL as ASTRA,CURRENT_SOL_MODEL as SOL} from '../src/aliases';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 
 const scratch=mkdtempSync(join(tmpdir(),'concierge-astra-dispatch-'));
@@ -15,10 +16,10 @@ const [{db,claimNextQueuedTurn},{createNativeSession,retainSessionInput,enqueueS
 const events=(turnId:number,kind:string)=>(db.query('SELECT payload_json FROM session_owner_events WHERE turn_id=? AND kind=?').all(turnId,kind) as {payload_json:string}[]).map(row=>JSON.parse(row.payload_json));
 try{
   const owner=new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false,steer:()=>false,
-    capabilities:()=>({models:['gpt-6-astra','gpt-6-sol']})} as any,scratch);
+    capabilities:()=>({models:[ASTRA,'gpt-6-sol']})} as any,scratch);
   const communication=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>true,onError:()=>{}});
   // An Astra-bound session whose work comes from agents, as sessions 8245, 3081 and 3558 were.
-  const session=createNativeSession('codex',{title:'agent-bound astra',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6-astra'});
+  const session=createNativeSession('codex',{title:'agent-bound astra',summary:undefined,purpose:'develop',origin:'native',model:ASTRA});
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('astra-thread',session.id);
   let n=0;
   const start=(origin:'agent'|'human',payload:Record<string,unknown>)=>{
@@ -30,20 +31,20 @@ try{
     return {input,turn,providerTurnId:`provider-${id}`};
   };
   const dispatch=(turn:{input:{id:string};turn:number})=>dispatchModelForTurn({sessionId:session.id,turnId:turn.turn,inputId:turn.input.id,
-    model:'gpt-6-astra',providerSessionId:'astra-thread',dispatchAttempt:1});
-  const gate=(turn:{providerTurnId:string})=>communication.modelStartGate({providerSessionId:'astra-thread',model:'gpt-6-astra',providerTurnId:turn.providerTurnId});
+    model:ASTRA,providerSessionId:'astra-thread',dispatchAttempt:1});
+  const gate=(turn:{providerTurnId:string})=>communication.modelStartGate({providerSessionId:'astra-thread',model:ASTRA,providerTurnId:turn.providerTurnId});
   const finish=(turn:{turn:number})=>db.query("UPDATE turns SET status='done' WHERE id=?").run(turn.turn);
 
   const agent=start('agent',{});
-  assert.equal(dispatch(agent),'gpt-6.1-sol','an agent turn to an Astra-bound session is dispatched on Sol');
+  assert.equal(dispatch(agent),SOL,'an agent turn to an Astra-bound session is dispatched on Sol');
   const substitution=events(agent.turn,'model_substitution');
   assert.equal(substitution.length,1);
   assert.deepEqual({from:substitution[0].from,to:substitution[0].to,turnId:substitution[0].turnId,inputId:substitution[0].inputId},
-    {from:'gpt-6-astra',to:'gpt-6.1-sol',turnId:agent.turn,inputId:agent.input.id});
+    {from:ASTRA,to:SOL,turnId:agent.turn,inputId:agent.input.id});
   assert.match(substitution[0].reason,/Astra|escalat/i);
-  assert.equal(dispatch(agent),'gpt-6.1-sol');
+  assert.equal(dispatch(agent),SOL);
   assert.equal(events(agent.turn,'model_substitution').length,1,'the substitution is recorded once per attempt');
-  assert.equal(sessionMetadata(db.query('SELECT * FROM sessions WHERE id=?').get(session.id) as any).model,'gpt-6-astra','the stored binding is not changed');
+  assert.equal(sessionMetadata(db.query('SELECT * FROM sessions WHERE id=?').get(session.id) as any).model,ASTRA,'the stored binding is not changed');
   assert.equal(astraDenialStatus(agent.turn),null,'no denial before the hook has refused anything');
   const denied=gate(agent);
   assert.equal(denied.allowed,false,'the gate itself still refuses this turn');
@@ -51,19 +52,19 @@ try{
   const denials=events(agent.turn,'model_start_denied');
   assert.equal(denials.length,1,'a denial is recorded once per turn');
   assert.equal(denials[0].message,denied.message);
-  assert.equal(denials[0].model,'gpt-6-astra');
+  assert.equal(denials[0].model,ASTRA);
   assert.match(astraDenialStatus(agent.turn)!,/^Blocked by the Astra escalation check: /);
   assert.ok(astraDenialStatus(agent.turn)!.includes(denied.message!));
   finish(agent);
 
   const human=start('human',{});
-  assert.equal(dispatch(human),'gpt-6-astra','a human-authored input stays on Astra');
+  assert.equal(dispatch(human),ASTRA,'a human-authored input stays on Astra');
   assert.equal(events(human.turn,'model_substitution').length,0);
   assert.equal(gate(human).allowed,true);
   finish(human);
 
   const reason=start('agent',{escalationReason:'Third failed fix of the same issue; ChatGPT Pro answer failed to hold.'});
-  assert.equal(dispatch(reason),'gpt-6-astra','an input with a recorded escalation reason stays on Astra');
+  assert.equal(dispatch(reason),ASTRA,'an input with a recorded escalation reason stays on Astra');
   assert.equal(events(reason.turn,'model_substitution').length,0);
   assert.equal(gate(reason).allowed,true);
   finish(reason);
@@ -82,14 +83,24 @@ try{
     async notify(){},onNotification(listener:(event:any)=>void){listeners.add(listener);return ()=>listeners.delete(listener);},
     onDisconnect(){return ()=>true;},waitForDisconnect(){return new Promise<void>(()=>{});}};
   await runCodexTurn({prompt:'substituted turn',cwd:scratch,additionalDirs:[],sessionUUID:'astra-thread',appServerClient:client as any,
-    model:'gpt-6.1-sol',turnModelOverride:'gpt-6.1-sol',reasoning_effort:'xhigh',clientUserMessageId:'slack-concierge:turn:1:attempt:1'});
-  assert.equal(calls.find(call=>call.method==='thread/resume')!.params.model,'gpt-6.1-sol');
+    model:SOL,turnModelOverride:SOL,reasoning_effort:'xhigh',clientUserMessageId:'slack-concierge:turn:1:attempt:1'});
+  assert.equal(calls.find(call=>call.method==='thread/resume')!.params.model,SOL);
   const turnStart=calls.find(call=>call.method==='turn/start')!.params;
-  assert.equal(turnStart.model,'gpt-6.1-sol');
+  assert.equal(turnStart.model,SOL);
   assert.equal(turnStart.effort,'xhigh','the session reasoning effort is kept');
   calls.length=0;
   await runCodexTurn({prompt:'astra turn',cwd:scratch,additionalDirs:[],sessionUUID:'astra-thread',appServerClient:client as any,
-    model:'gpt-6-astra',reasoning_effort:'xhigh',clientUserMessageId:'slack-concierge:turn:2:attempt:1'});
+    model:ASTRA,reasoning_effort:'xhigh',clientUserMessageId:'slack-concierge:turn:2:attempt:1'});
   assert.equal('model' in calls.find(call=>call.method==='turn/start')!.params,false,'an Astra turn sends no override');
+  // Every Astra id ever bound passes the one predicate, and a session still bound to the retired id stays gated.
+  const {isAstraModel}=await import('../src/aliases');
+  assert.equal(isAstraModel('gpt-6-astra'),true);
+  assert.equal(isAstraModel('gpt-6.2-astra'),true);
+  assert.equal(isAstraModel(SOL),false);
+  const retired=start('agent',{});
+  assert.equal(dispatchModelForTurn({sessionId:session.id,turnId:retired.turn,inputId:retired.input.id,model:'gpt-6-astra',
+    providerSessionId:'astra-thread',dispatchAttempt:1}),SOL,'an agent turn on the retired Astra id is refused and run on the current Sol');
+  assert.equal(communication.modelStartGate({providerSessionId:'astra-thread',model:'gpt-6-astra',providerTurnId:retired.providerTurnId}).allowed,false,
+    'the start hook gate refuses the retired Astra id without a reason');
   console.log('Astra dispatch: refused agent turns run on Sol with a recorded substitution; human and reasoned turns stay on Astra; denials are recorded once and shown');
 }finally{rmSync(scratch,{recursive:true,force:true});}

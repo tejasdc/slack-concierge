@@ -3,6 +3,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Database} from 'bun:sqlite';
+import {CURRENT_ASTRA_MODEL as ASTRA,CURRENT_SOL_MODEL as SOL} from '../src/aliases';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 
 const scratch=mkdtempSync(join(tmpdir(),'concierge-edit-gate-'));
@@ -18,7 +19,7 @@ try{
   assert.equal(isCodeEditTool('Bash',{command:"zsh -lc 'apply_patch --help'"}),true);
   assert.equal(isCodeEditTool('Bash',{command:"sed -i.bak 's/a/b/' file.ts"}),true);
   assert.equal(isCodeEditTool('Bash',{command:"sed --in-place 's/a/b/' file.ts"}),true);
-  const parent=createNativeSession('codex',{title:'parent',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6.1-sol'});
+  const parent=createNativeSession('codex',{title:'parent',summary:undefined,purpose:'develop',origin:'native',model:SOL});
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('parent-thread',parent.id);
   const source=retainSessionInput({id:'source',sessionId:parent.id,scope:'fixture',actionId:'source',kind:'input',origin:'agent',payload:{text:'design'}}).input;
   enqueueSessionInput(source.id);
@@ -43,7 +44,7 @@ try{
   const cheapTurn=claimNextQueuedTurn('fixture')!.turn_id;
   db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('luna-parent-turn',cheapTurn);
   const strongHelper=(toolId:string)=>implementationEditDecision({providerSessionId:'luna-parent-thread',ownerTurnId:cheapTurn,
-    providerTurnId:'sol-helper-turn',providerModel:'gpt-6.1-sol',providerAgentId:'sol-helper',toolId,toolName:'apply_patch'});
+    providerTurnId:'sol-helper-turn',providerModel:SOL,providerAgentId:'sol-helper',toolId,toolName:'apply_patch'});
   for(let i=0;i<4;i++)assert.equal(strongHelper(`sol-helper-${i}`).hold,false);
   assert.equal(strongHelper('sol-helper-fifth').hold,true,'Sol helper under Luna parent holds its own fifth edit');
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(cheapTurn) as any).count,0,
@@ -58,16 +59,16 @@ try{
 
   const chosenParent=createNativeSession('codex',{title:'human chosen helper',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6-luna'});
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('chosen-parent-thread',chosenParent.id);
-  const chosenInput=retainSessionInput({id:'chosen-helper-source',sessionId:chosenParent.id,scope:'fixture',actionId:'chosen-helper',kind:'input',origin:'human',payload:{text:'Use GPT-6.1 Sol for the helper.'}}).input;
+  const chosenInput=retainSessionInput({id:'chosen-helper-source',sessionId:chosenParent.id,scope:'fixture',actionId:'chosen-helper',kind:'input',origin:'human',payload:{text:'Use GPT-6.2 Sol for the helper.'}}).input;
   enqueueSessionInput(chosenInput.id);
   const chosenTurn=claimNextQueuedTurn('fixture')!.turn_id;
   db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('chosen-parent-turn',chosenTurn);
   for(let i=0;i<5;i++)assert.equal(implementationEditDecision({providerSessionId:'chosen-parent-thread',ownerTurnId:chosenTurn,
-    providerTurnId:'chosen-sol-helper',providerModel:'gpt-6.1-sol',toolId:`chosen-${i}`,toolName:'apply_patch'}).hold,false,
+    providerTurnId:'chosen-sol-helper',providerModel:SOL,toolId:`chosen-${i}`,toolName:'apply_patch'}).hold,false,
     'a verified human model choice exempts the chosen helper');
 
   // Shared-daemon hooks carry no owner turn ID: the reported model decides, the single running turn is the parent.
-  const daemon=createNativeSession('codex',{title:'daemon parent',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6.1-sol'});
+  const daemon=createNativeSession('codex',{title:'daemon parent',summary:undefined,purpose:'develop',origin:'native',model:SOL});
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('daemon-thread',daemon.id);
   const daemonSource=retainSessionInput({id:'daemon-source',sessionId:daemon.id,scope:'fixture',actionId:'daemon-source',kind:'input',origin:'agent',payload:{text:'design'}}).input;
   enqueueSessionInput(daemonSource.id);
@@ -91,7 +92,7 @@ try{
   db.query("UPDATE turns SET status='done' WHERE id IN (SELECT turn_id FROM session_inputs WHERE id IN ('daemon-two-a','daemon-two-b'))").run();
 
   // A helper's first mismatched edit binds its exact child turn to the unique running parent.
-  const lifecycle=createNativeSession('codex',{title:'helper lifecycle',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6.1-sol'});
+  const lifecycle=createNativeSession('codex',{title:'helper lifecycle',summary:undefined,purpose:'develop',origin:'native',model:SOL});
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('lifecycle-thread',lifecycle.id);
   const lifecycleInput=retainSessionInput({id:'lifecycle-input',sessionId:lifecycle.id,scope:'fixture',actionId:'lifecycle',kind:'input',origin:'agent',payload:{text:'design'}}).input;
   enqueueSessionInput(lifecycleInput.id);
@@ -108,8 +109,8 @@ try{
   assert.equal(codexEdit('paused-before-bind','early-pause','gpt-6-luna').hold,true,'pause before first edit cannot create a binding');
   db.query("UPDATE sessions SET native_metadata_json=json_remove(native_metadata_json,'$.suspended') WHERE id=?").run(lifecycle.id);
   assert.equal(codexEdit('native-luna-child','luna-first','gpt-6-luna').exempt,'codex-helper');
-  for(let i=0;i<4;i++)assert.equal(codexEdit('native-sol-child',`sol-${i}`,'gpt-6.1-sol').hold,false);
-  assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,true,'Sol helper fifth edit uses its own execution budget');
+  for(let i=0;i<4;i++)assert.equal(codexEdit('native-sol-child',`sol-${i}`,SOL).hold,false);
+  assert.equal(codexEdit('native-sol-child','sol-fifth',SOL).hold,true,'Sol helper fifth edit uses its own execution budget');
   const bindingCount=(db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='implementation_codex_helper_binding'").get(lifecycle.id) as any).count;
   assert.equal(bindingCount,2,'both Luna and Sol child turns retain exact parent bindings');
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='implementation_helper_edit' AND input_id=?").get(lifecycle.id,lifecycleInput.id) as any).count,5,
@@ -118,8 +119,8 @@ try{
     'binding identity resolves by the existing unique event ID index');
   recordImplementationEditReason(lifecycleTurn,lifecycle.id,lifecycleInput.id,'This exact turn needs its thinking model to finish the fixed design.','fixture-reason');
   db.query("UPDATE turns SET status='done' WHERE id=?").run(lifecycleTurn);
-  for(let i=0;i<4;i++)assert.equal(codexEdit('native-sol-child',`sol-${i}`,'gpt-6.1-sol').exempt,'codex-helper','duplicate retries retain original receipt after completion');
-  assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6.1-sol').hold,false,'reason recorded while the parent was running permits its retained child edit');
+  for(let i=0;i<4;i++)assert.equal(codexEdit('native-sol-child',`sol-${i}`,SOL).exempt,'codex-helper','duplicate retries retain original receipt after completion');
+  assert.equal(codexEdit('native-sol-child','sol-fifth',SOL).hold,false,'reason recorded while the parent was running permits its retained child edit');
   assert.equal(codexEdit('native-sol-child','sol-fifth','gpt-6-luna').hold,true,'a changed child model cannot inherit the binding');
   assert.equal(codexEdit('unseen-child','no-parent','gpt-6-luna').hold,true,'unknown child without a running parent remains refused');
   assert.equal(codexEdit('unseen-child','missing-model','').hold,true,'missing model evidence remains refused');
@@ -142,7 +143,7 @@ try{
   const newerInput=retainSessionInput({id:'lifecycle-new-input',sessionId:lifecycle.id,scope:'fixture',actionId:'new-turn',kind:'input',origin:'agent',payload:{text:'new'}}).input;
   enqueueSessionInput(newerInput.id);
   const newerTurn=claimNextQueuedTurn('fixture')!.turn_id;
-  assert.equal(codexEdit('native-sol-child','old-child-stays-old','gpt-6.1-sol').hold,false,'new parent does not reassign known child');
+  assert.equal(codexEdit('native-sol-child','old-child-stays-old',SOL).hold,false,'new parent does not reassign known child');
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_helper_edit' AND json_extract(payload_json,'$.providerTurnId')='native-sol-child'").get(lifecycleTurn) as any).count,6);
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(lifecycleTurn) as any).count,0);
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(newerTurn) as any).count,0);
@@ -188,8 +189,8 @@ try{
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_helper_edit'").get(claudeTurn) as any).count,5);
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit'").get(claudeTurn) as any).count,4);
   const owner=new SessionOwner({available:()=>true,wake:()=>{},stop:async()=>false,steer:()=>false,
-    capabilities:()=>({models:['gpt-6-astra','gpt-6-sol']})} as any,scratch);
-  const human=await owner.create({clientActionId:'human-astra',provider:'codex',purpose:'chat',model:'gpt-6-astra'});
+    capabilities:()=>({models:[ASTRA,'gpt-6-sol']})} as any,scratch);
+  const human=await owner.create({clientActionId:'human-astra',provider:'codex',purpose:'chat',model:ASTRA});
   const humanId=Number(human.session.id.replace('concierge:',''));
   db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run('human-astra-thread',humanId);
   const communication=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>true,onError:()=>{}});
@@ -197,8 +198,8 @@ try{
   enqueueSessionInput(humanInput.id);
   const humanTurn=claimNextQueuedTurn('fixture')!.turn_id;
   db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('human-turn',humanTurn);
-  const humanPrompt={providerSessionId:'human-astra-thread',model:'gpt-6-astra',providerTurnId:'human-turn'};
-  assert.equal(sessionMetadata((db.query('SELECT * FROM sessions WHERE id=?').get(humanId) as any)).explicitThinkingModelChoice,'gpt-6-astra');
+  const humanPrompt={providerSessionId:'human-astra-thread',model:ASTRA,providerTurnId:'human-turn'};
+  assert.equal(sessionMetadata((db.query('SELECT * FROM sessions WHERE id=?').get(humanId) as any)).explicitThinkingModelChoice,ASTRA);
   assert.equal((db.query("SELECT json_extract(payload_json,'$.reason') AS reason FROM session_owner_events WHERE session_id=? AND kind='model_escalation'").get(humanId) as any).reason,'explicit human model choice');
   assert.equal(communication.modelStartGate(humanPrompt).allowed,true);
   assert.equal(communication.modelStartGate({...humanPrompt,providerTurnId:'astra-helper-turn',providerAgentId:'helper-one'}).allowed,true);
@@ -206,7 +207,7 @@ try{
   owner.action(human.session.id,{clientActionId:'human-sol',action:{kind:'model',value:'gpt-6-sol'}});
   assert.equal(sessionMetadata((db.query('SELECT * FROM sessions WHERE id=?').get(humanId) as any)).explicitThinkingModelChoice,'gpt-6-sol');
   assert.equal(communication.modelStartGate(humanPrompt).allowed,false);
-  owner.action(human.session.id,{clientActionId:'human-astra-again',action:{kind:'model',value:'gpt-6-astra'}});
+  owner.action(human.session.id,{clientActionId:'human-astra-again',action:{kind:'model',value:ASTRA}});
   assert.equal((db.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE session_id=? AND kind='model_escalation'").get(humanId) as any).count,3);
   assert.equal(communication.modelStartGate(humanPrompt).allowed,true);
   db.query("UPDATE turns SET status='done' WHERE id=?").run(humanTurn);
@@ -214,7 +215,7 @@ try{
   enqueueSessionInput(agentInput.id);
   const agentTurn=claimNextQueuedTurn('fixture')!.turn_id;
   db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('agent-turn',agentTurn);
-  const agentPrompt={providerSessionId:'human-astra-thread',model:'gpt-6-astra',providerTurnId:'agent-turn'};
+  const agentPrompt={providerSessionId:'human-astra-thread',model:ASTRA,providerTurnId:'agent-turn'};
   assert.equal(communication.modelStartGate(agentPrompt).allowed,false,'agent turn does not inherit the human continuation');
   db.query("UPDATE turns SET status='done' WHERE id=?").run(agentTurn);
   const serviceInput=retainSessionInput({id:'service-astra-continuation',sessionId:humanId,scope:'fixture',actionId:'service-continuation',
@@ -225,7 +226,7 @@ try{
   enqueueSessionInput(serviceInput.id);
   const serviceTurn=claimNextQueuedTurn('fixture')!.turn_id;
   db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('service-turn',serviceTurn);
-  assert.equal(communication.modelStartGate({providerSessionId:'human-astra-thread',model:'gpt-6-astra',providerTurnId:'service-turn'}).allowed,true,
+  assert.equal(communication.modelStartGate({providerSessionId:'human-astra-thread',model:ASTRA,providerTurnId:'service-turn'}).allowed,true,
     'same-session service continuation inherits only the retained work request and verified session model choice');
   db.query("UPDATE turns SET status='done' WHERE id=?").run(serviceTurn);
   const qualified='Third failed fix of the same issue; ChatGPT Pro answer failed to hold.';
@@ -233,20 +234,20 @@ try{
   enqueueSessionInput(reasonInput.id);
   const reasonTurn=claimNextQueuedTurn('fixture')!.turn_id;
   db.query('UPDATE turns SET provider_turn_id=? WHERE id=?').run('reason-turn',reasonTurn);
-  assert.equal(communication.modelStartGate({providerSessionId:'human-astra-thread',model:'gpt-6-astra',providerTurnId:'reason-turn'}).allowed,true);
+  assert.equal(communication.modelStartGate({providerSessionId:'human-astra-thread',model:ASTRA,providerTurnId:'reason-turn'}).allowed,true);
   assert.equal((db.query("SELECT json_extract(payload_json,'$.reason') AS reason FROM session_owner_events WHERE turn_id=? AND kind='model_escalation'").get(reasonTurn) as any).reason,qualified);
-  const outside=createNativeSession('codex',{title:'outside',summary:undefined,purpose:'develop',origin:'native',model:'gpt-6.1-sol',outside:true});
+  const outside=createNativeSession('codex',{title:'outside',summary:undefined,purpose:'develop',origin:'native',model:SOL,outside:true});
   const outsideInput=retainSessionInput({id:'outside-input',sessionId:outside.id,scope:'fixture',actionId:'outside-input',kind:'input',origin:'agent',payload:{text:'Write a separate note'}}).input;
   enqueueSessionInput(outsideInput.id);
   const outsideTurn=claimNextQueuedTurn('fixture')!.turn_id;
-  const outsidePrompt={providerSessionId:'outside-thread',model:'gpt-6.1-sol',providerTurnId:'outside-provider-turn',ownerTurnId:outsideTurn,sourceRunId:nativeRunId(outsideTurn)};
+  const outsidePrompt={providerSessionId:'outside-thread',model:SOL,providerTurnId:'outside-provider-turn',ownerTurnId:outsideTurn,sourceRunId:nativeRunId(outsideTurn)};
   assert.notEqual(communication.modelStartGate({...outsidePrompt,ownerTurnId:999999}).allowed,true);
   assert.equal(communication.modelStartGate(outsidePrompt).allowed,true);
   assert.equal(communication.modelStartGate({...outsidePrompt,model:'gpt-6-luna',providerTurnId:'outside-helper-turn',providerAgentId:'helper-one'}).allowed,true);
   assert.equal((db.query('SELECT agent_session_uuid FROM sessions WHERE id=?').get(outside.id) as any).agent_session_uuid,'outside-thread');
   assert.equal((db.query('SELECT provider_turn_id FROM turns WHERE id=?').get(outsideTurn) as any).provider_turn_id,'outside-provider-turn');
-  for(let i=0;i<4;i++)assert.equal(implementationEditDecision({providerSessionId:'outside-thread',ownerTurnId:outsideTurn,providerTurnId:'outside-provider-turn',providerModel:'gpt-6.1-sol',toolId:`outside-${i}`,toolName:'apply_patch'}).hold,false);
-  assert.equal(implementationEditDecision({providerSessionId:'outside-thread',ownerTurnId:outsideTurn,providerTurnId:'outside-provider-turn',providerModel:'gpt-6.1-sol',toolId:'outside-fifth',toolName:'apply_patch'}).hold,true);
+  for(let i=0;i<4;i++)assert.equal(implementationEditDecision({providerSessionId:'outside-thread',ownerTurnId:outsideTurn,providerTurnId:'outside-provider-turn',providerModel:SOL,toolId:`outside-${i}`,toolName:'apply_patch'}).hold,false);
+  assert.equal(implementationEditDecision({providerSessionId:'outside-thread',ownerTurnId:outsideTurn,providerTurnId:'outside-provider-turn',providerModel:SOL,toolId:'outside-fifth',toolName:'apply_patch'}).hold,true);
   const gatePath=new URL('../src/implementation-edit-gate.ts',import.meta.url).pathname;
   const statePath=new URL('../src/state.ts',import.meta.url).pathname;
   const reopened=Bun.spawnSync(['bun','-e',`const [{implementationEditDecision},{db}]=await Promise.all([import(${JSON.stringify(gatePath)}),import(${JSON.stringify(statePath)})]);

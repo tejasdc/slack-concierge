@@ -99,12 +99,13 @@ function humanWords(sourceInputId:string|undefined):{words:string|null;provenanc
 }
 
 // A versioned mention ("GPT-6.1 Sol", "Sol 6.1", "Opus 5.5") names only that version; a bare
-// name names any version. The model's own ID ("gpt-6.1-sol") is a mention too.
+// name names any version. The model's own ID is a mention too.
 function modelMention(model:string):RegExp|null {
   const escape=(text:string)=>text.replace(/[.*+?^${}()|[\]\\-]/g,'\\$&');
   const versioned=(name:string,version:string,prefix:string)=>new RegExp(
     `\\b${escape(model)}\\b|(?:\\b${prefix}\\s+${name}|(?<![\\w.-]|\\d\\s)${name})(?:\\s+\\(?v?${escape(version)}\\)?(?![\\d.]))?(?![\\w(]|\\s+\\(?v?\\d|-\\d)`,'i');
-  if(topModel(model)==='astra')return versioned('Astra','6','GPT-?\\s?6');
+  const astra=/^gpt-([\d.]+)-astra$/i.exec(model);
+  if(astra)return versioned('Astra',astra[1]!,`GPT-?\\s?${escape(astra[1]!)}`);
   const claude=/^claude-(fable|opus)-(\d+)-(\d+)/i.exec(model);
   if(claude)return versioned(claude[1]![0]!.toUpperCase()+claude[1]!.slice(1),`${claude[2]}.${claude[3]}`,'Claude');
   const sol=/^gpt-([\d.]+)-sol$/i.exec(model);

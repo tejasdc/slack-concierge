@@ -1,13 +1,14 @@
 import type { CodexAppServerClientLike } from './codex-app-server-client';
 import type {CustodyNativeConnection} from './codex-custody-connection';
 import {assertCustodyEndpoint} from './codex-custody-colocation';
+import {isAstraModel} from './aliases';
 import {rewriteRelayedCodexRequest} from './runner-machine';
 
 /** Owner-derived construction facts. Persistence and eligibility remain with session-owner. */
 export interface CodexSuccessorPlan {
   readonly operationId: string;
   readonly ownerSessionId?:number;
-  readonly model: 'gpt-6-astra';
+  readonly model: string;
   readonly provider: string;
   readonly cwd: string;
   readonly runtimeWorkspaceRoots: readonly string[];
@@ -150,7 +151,7 @@ export class CodexSuccessorNativeAdapter {
 
 function assertCommitted(plan: CodexSuccessorPlan): void {
   nonempty(plan.operationId, 'operation id');
-  if (plan.model !== 'gpt-6-astra') throw new Error('Successor model must preserve the retained Astra binding.');
+  if (!isAstraModel(plan.model)) throw new Error('Successor model must preserve the retained Astra binding.');
   if (plan.custodyCommitted !== true || plan.predecessorExcluded !== true)
     throw new Error('Native construction requires owner-committed custody and predecessor exclusion.');
   if (!plan.cwd.startsWith('/') || plan.runtimeWorkspaceRoots.length === 0)

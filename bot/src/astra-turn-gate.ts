@@ -2,9 +2,10 @@ import {db,getSessionById} from './state';
 import {getAcceptedSessionInput,humanAuthored,recordSessionEvent,sessionMetadata} from './session-inputs';
 import {humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
+import {CURRENT_ASTRA_MODEL,CURRENT_SOL_MODEL,isAstraModel} from './aliases';
 
-export const ASTRA_MODEL='gpt-6-astra';
-export const ASTRA_FALLBACK_MODEL='gpt-6.1-sol';
+export const ASTRA_MODEL=CURRENT_ASTRA_MODEL;
+export const ASTRA_FALLBACK_MODEL=CURRENT_SOL_MODEL;
 
 export type AstraTurnDecision=
   |{allowed:true;basis:'custody'|'human'|'service-continuation'|'escalation-reason'}
@@ -17,8 +18,9 @@ export type AstraTurnDecision=
  * start a prompt, and the dispatcher asks it first so Concierge never sends a turn it would refuse.
  */
 export function astraAllowedForTurn(input:{sessionId:number;turnId:number;acceptedInputId:string;
-    providerSessionId:string;providerAgentId?:string}):AstraTurnDecision {
-  const model=ASTRA_MODEL;
+    providerSessionId:string;providerAgentId?:string;model?:string}):AstraTurnDecision {
+  // A session bound to a retired Astra keeps that exact model; the gate rules are the same for every Astra.
+  const model=input.model??ASTRA_MODEL;
   const session=getSessionById(input.sessionId)!;
   const metadata=sessionMetadata(session);
   const accepted=getAcceptedSessionInput(input.acceptedInputId);
@@ -77,13 +79,13 @@ export function astraAllowedForTurn(input:{sessionId:number;turnId:number;accept
  * Codex end the turn without recording the input.
  */
 export function dispatchModelForTurn(input:{sessionId:number;turnId:number;inputId:string;model:string|undefined;providerSessionId:string;dispatchAttempt:number}):string|undefined {
-  if(input.model!==ASTRA_MODEL)return input.model;
+  if(!isAstraModel(input.model))return input.model;
   // A custody successor's own plan fixes its model and effort; the hook still guards it.
   if(db.query('SELECT 1 FROM codex_custody_successors WHERE successor_session_id=? LIMIT 1').get(input.sessionId))return input.model;
-  const decision=astraAllowedForTurn({sessionId:input.sessionId,turnId:input.turnId,acceptedInputId:input.inputId,providerSessionId:input.providerSessionId});
+  const decision=astraAllowedForTurn({sessionId:input.sessionId,turnId:input.turnId,acceptedInputId:input.inputId,providerSessionId:input.providerSessionId,model:input.model});
   if(decision.allowed)return input.model;
   recordSessionEvent({eventId:`model-substitution:${input.turnId}:${input.dispatchAttempt}`,sessionId:input.sessionId,inputId:input.inputId,
     turnId:input.turnId,kind:'model_substitution',
-    payload:{turnId:input.turnId,inputId:input.inputId,from:ASTRA_MODEL,to:ASTRA_FALLBACK_MODEL,reason:decision.message}});
+    payload:{turnId:input.turnId,inputId:input.inputId,from:input.model,to:ASTRA_FALLBACK_MODEL,reason:decision.message}});
   return ASTRA_FALLBACK_MODEL;
 }

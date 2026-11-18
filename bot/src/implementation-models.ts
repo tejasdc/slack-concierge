@@ -1,4 +1,4 @@
-import {PROVIDER_ALIASES} from './aliases';
+import {PROVIDER_ALIASES,isAstraModel} from './aliases';
 import {parseShell} from './history-rewrite-policy';
 
 export const IMPLEMENTATION_ALIASES = ['cc-haiku','cc-sonnet','cx-luna','cx-terra','cx-sol'] as const;
@@ -15,7 +15,7 @@ export function implementationAlias(parent:'claude-code'|'codex',choice:string|u
 
 /** Includes older bound models so resumed conversations get the same reminder. */
 export function isThinkingModel(model:string|null|undefined):boolean {
-  return !!model&&(/claude-(?:opus|fable)-/.test(model)||/^gpt-(?:5\.6|6(?:\.1)?)-sol$/.test(model)||model==='gpt-6-astra'||model==='opus[1m]');
+  return !!model&&(/claude-(?:opus|fable)-/.test(model)||/^gpt-(?:5\.6|6(?:\.\d)?)-sol$/.test(model)||isAstraModel(model)||model==='opus[1m]');
 }
 
 /** Recognized code-editing tool calls. Scripted writes without a named edit operation are unknown. */

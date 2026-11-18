@@ -188,8 +188,8 @@ Model aliases:
 | `cc-opus-1m` | Claude Code | `opus[1m]` (Claude Code's latest Opus with extended context) |
 | `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5-5` |
 | `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-5-5` |
-| `cx`, `cx-sol` | Codex | `gpt-6.1-sol` |
-| `cx-astra` | Codex | `gpt-6-astra` |
+| `cx`, `cx-sol` | Codex | `gpt-6.2-sol` |
+| `cx-astra` | Codex | `gpt-6.2-astra` |
 | `cx-terra`, `cx-medium` | Codex | `gpt-6.1-terra` |
 | `cx-luna`, `cx-fast` | Codex | `gpt-6-luna` |
 | `google` | Antigravity | `gemini-4-argon-medium` |
@@ -219,6 +219,19 @@ but no live turn ran because both accounts' weekly allowance was spent that day.
 spends the same cap; Concierge treats every `claude-fable-*` name as Fable. Sessions
 already bound to an older name keep it, keep their readable name, and keep their place
 in the Claude usage fallback chain.
+
+**The 2026-11-18 move.** GPT-6.2 Astra and GPT-6.2 Sol (released 2026-11-17) replaced
+GPT-6 Astra and GPT-6.1 Sol after live turns on both ran on the server's Codex CLI
+0.166.0 and the rollouts showed the exact requested model. Terra (6.1) and Luna (6) did
+not move. `aliases.ts` is the only file that names these ids: it exports the current Astra
+and Sol ids, the list of every Astra id ever bound (the current one and the retired
+`gpt-6-astra`) and the `isAstraModel` predicate. Every Astra gate (the prompt hook, the
+launcher, dispatch, custody successors, handoff staging and the ledger queries, which
+build their `IN (...)` list from the same export) asks that predicate, so the next Astra
+version is one edit there. The first live 6.2 check found the old gate keyed on the literal
+`gpt-6-astra`: a `gpt-6.2-astra` start ran with no escalation reason and no record.
+A session bound to a retired Astra keeps its model and stays gated; a refused Astra turn
+falls back to the current Sol.
 
 Each side has a client-version floor, and below it the model is unreachable no
 matter what this table says:
@@ -806,7 +819,7 @@ authorization so an older selection cannot authorize a new prompt after a
 change away from Astra.
 The Astra rule is one owner decision with two callers: the prompt hook (above) and
 Concierge's own dispatch. Before it starts a turn on a session bound to Astra, Concierge
-asks the same rule. A turn it would refuse runs on GPT-6.1 Sol for that turn only (same
+asks the same rule. A turn it would refuse runs on GPT-6.2 Sol for that turn only (same
 native thread, same reasoning effort, the model sent on the turn's start request), records
 a `model_substitution` event with the rule's reason, and leaves the stored binding alone, so
 a later turn Tejas explicitly gives Astra still runs on Astra. Custody successors keep their
@@ -839,8 +852,8 @@ the session then codes from its findings itself. The big guns for second opinion
 deep research and building expertise are ChatGPT Pro on Tejas's own subscription,
 reached with `sessions ask --provider chatgpt --effort pro` and the evidence attached
 as files, because it spends no Claude or Codex allowance (October 9, 2026
-[decision: chatgpt-pro-is-the-big-guns]). GPT-6.1 Sol remains the read-only
-investigator when the second opinion must read the repository itself. GPT-6 Astra is
+[decision: chatgpt-pro-is-the-big-guns]). GPT-6.2 Sol remains the read-only
+investigator when the second opinion must read the repository itself. GPT-6.2 Astra is
 brought in only when the same issue has come back three or more times and ChatGPT Pro
 is unavailable or its answer did not hold (Tejas, September 23, 2026, replacing his
 September 22 Astra-first rule). Fable 5.2 stands in only when the named model is
@@ -853,10 +866,10 @@ Model roles for both directions:
 | --- | --- | --- |
 | `cc-opus` | `claude-opus-5-5` | Default parent: judgment, design, diagnosis, and review of delegated output. |
 | `cc-fable` | `claude-fable-5-2` | Fallback investigator only when the named GPT model is unavailable, or Tejas explicitly chose it. |
-| `cx`, `cx-sol` | `gpt-6.1-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
+| `cx`, `cx-sol` | `gpt-6.2-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
 | `cx-medium` | `gpt-6.1-terra` | Balanced quality, latency, and cost. |
 | `cx-fast` | `gpt-6-luna` | Mechanical edits, reproductions, and checking stated claims. |
-| `cx-astra` | `gpt-6-astra` | Read-only investigator after three reports or failed fixes and an unavailable or unhelpful ChatGPT Pro answer, or by Tejas's explicit choice. |
+| `cx-astra` | `gpt-6.2-astra` | Read-only investigator after three reports or failed fixes and an unavailable or unhelpful ChatGPT Pro answer, or by Tejas's explicit choice. |
 
 Concierge starts Claude helpers on Sonnet and Codex helpers on Luna by default;
 explicit child choices still win. Agent-created Fable/Astra sessions and handoffs

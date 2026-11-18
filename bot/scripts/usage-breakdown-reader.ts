@@ -12,6 +12,7 @@ import {collectRunnerUsageReports} from '../src/provider-usage-report-client';
 import {attributeWeeklyAllowance,nameAllowanceRows,weeklyReadings} from '../src/weekly-allowance-attribution';
 import {isCodeEditTool,isThinkingModel} from '../src/implementation-models';
 import {topModel} from '../src/model-escalation';
+import {CURRENT_SOL_MODEL} from '../src/aliases';
 
 type Counts={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type FileRow={offset:number;size:number;mtime:number;total_json:string};
@@ -248,13 +249,15 @@ const pricing:Record<string,{input:number;cacheWrite:number;cacheWrite1h:number;
   'claude-haiku-5-5':{input:.1,cacheWrite:.125,cacheWrite1h:.2,cacheRead:.01,output:.5},
   'claude-haiku-4-5':{input:1,cacheWrite:1.25,cacheWrite1h:2,cacheRead:.1,output:5},
   'claude-haiku-4-5-20251001':{input:1,cacheWrite:1.25,cacheWrite1h:2,cacheRead:.1,output:5},
+  'gpt-6.2-sol':{input:2,cacheWrite:2.5,cacheWrite1h:0,cacheRead:.1,output:10},
+  'gpt-6.2-astra':{input:8,cacheWrite:10,cacheWrite1h:0,cacheRead:.4,output:40},
   'gpt-6.1-sol':{input:2,cacheWrite:2.5,cacheWrite1h:0,cacheRead:.1,output:10},
   'gpt-6-sol':{input:2,cacheWrite:2.5,cacheWrite1h:0,cacheRead:.2,output:10},
   'gpt-5.6-sol':{input:4,cacheWrite:5,cacheWrite1h:0,cacheRead:.4,output:20},
   'gpt-6-astra':{input:10,cacheWrite:12.5,cacheWrite1h:0,cacheRead:1,output:50},
   'gpt-6-luna':{input:.1,cacheWrite:.125,cacheWrite1h:0,cacheRead:.01,output:.5},
 };
-function price(provider:string,model:string|null){return pricing[model??'']??(provider==='claude-code'?pricing['claude-opus-5-5']!:pricing['gpt-6.1-sol']!);}
+function price(provider:string,model:string|null){return pricing[model??'']??(provider==='claude-code'?pricing['claude-opus-5-5']!:pricing[CURRENT_SOL_MODEL]!);}
 type RecordRow={path:string;record_id:string;provider:string;conversation:string;helper:number;at_ms:number;model:string|null;
   input:number;cache_write:number;cache_write_1h:number;cache_read:number;output:number;provider_turn_id:string|null;client_version:string|null;
   source_account:string|null;parent_thread_id:string|null;first_usage:number};

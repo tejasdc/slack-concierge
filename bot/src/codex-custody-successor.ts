@@ -5,6 +5,7 @@ import {db,getSessionById,executionChanged} from './state';
 import {getAcceptedSessionInput,retainSessionInput,nativeRunId,sessionMetadata,updateSessionMetadata,recordSessionEvent} from './session-inputs';
 import {stageRecoveryHandoff,commitRecoveryHandoff,supersededBy} from './session-handoff';
 import {CodexSuccessorNativeAdapter,CodexSuccessorConstructionMismatchError,type CodexSuccessorPlan,type CodexSuccessorConstruction} from './codex-successor-native';
+import {isAstraModel} from './aliases';
 import {codexOwnedThreadConfig} from './codex';
 import {providerOwnerEnvironment} from './provider-owner-environment';
 import {requireCustodyReader,assertInstalledCustodyController} from './codex-custody-compatibility';
@@ -77,7 +78,7 @@ function selectedFacts(requestId:string,client:CodexAppServerClientLike) {
   const effort=admission?.reasoningEffort??(db.query(`SELECT json_extract(payload_json,'$.effort') AS effort
     FROM session_owner_events WHERE event_id=? AND session_id=? AND turn_id=? AND kind='prompt_cache_identity'`)
     .get(`prompt-cache-identity:${turn?.id}:${turn?.dispatch_attempt}`,session.id,turn?.id) as any)?.effort;
-  if(metadata.model!=='gpt-6-astra'||metadata.reasoningEffort!=='medium'||metadata.outside||metadata.interactionPolicy
+  if(!isAstraModel(metadata.model)||metadata.reasoningEffort!=='medium'||metadata.outside||metadata.interactionPolicy
     ||session.status==='archived'||(metadata.suspended&&!transferred)||!turn
     ||!['done','parked','error'].includes(turn.status)||turn.owner_instance_id!==null||turn.stop_requested_at!==null
     ||turn.provider_input_acknowledged_at!==null||turn.dispatch_attempt<1
@@ -281,13 +282,13 @@ export async function recoverCustodySuccessor(input:CustodySuccessorRequest,clie
       payload:JSON.parse(facts.selected.payload_json),sourceInputId:facts.selected.id,sourceRunId:nativeRunId(facts.turn.id),requestId:input.requestId}).input;
     const payload=JSON.parse(placement.payload_json);
     const turn=db.query(`INSERT INTO turns(session_id,user_text,status,turn_kind,accepted_input_id,requested_by_user_id,
-      provider_model,reasoning_effort,replay_text) VALUES(?,?,'queued','native',?,'service','gpt-6-astra','medium',?)`)
-      .run(successorId,payload.text,placement.id,payload.text);
+      provider_model,reasoning_effort,replay_text) VALUES(?,?,'queued','native',?,'service',?,'medium',?)`)
+      .run(successorId,payload.text,placement.id,facts.metadata.model,payload.text);
     const turnId=Number(turn.lastInsertRowid);nativeRunId(turnId);
     db.query('UPDATE session_inputs SET turn_id=? WHERE id=?').run(turnId,placement.id);
     const ownerEnvironment=providerOwnerEnvironment();
     const {CONCIERGE_COMMIT_PROVENANCE:_provenance,CONCIERGE_COMMIT_INPUT:_commitInput,...shellEnvironment}=ownerEnvironment;
-    const plan:CodexSuccessorPlan={operationId:staged.handoffId,ownerSessionId:successorId,model:'gpt-6-astra',provider:snapshot.provider,
+    const plan:CodexSuccessorPlan={operationId:staged.handoffId,ownerSessionId:successorId,model:facts.metadata.model!,provider:snapshot.provider,
       cwd:facts.metadata.cwd!,runtimeWorkspaceRoots:[...new Set([facts.metadata.cwd!,...(facts.metadata.additionalDirs??[])])],environmentId:'local',
       config:codexOwnedThreadConfig(nativeConnection.endpoint?.relayRunner?withoutMachinePaths(shellEnvironment):shellEnvironment),
       approvalPolicy:'never',sandbox:'danger-full-access',custodyCommitted:true,predecessorExcluded:true,nativeConnection,
@@ -381,8 +382,8 @@ async function constructCustodySuccessor(input:CustodySuccessorRequest,relation:
       const obligation=db.query(`SELECT 1 FROM session_communication_requests WHERE request_id=? AND target_session_id=?
         AND outcome IS NULL AND json_extract(payload_json,'$.requestedEffect')='work'`).get(relation.request_id,successorId);
       if(!placement||!obligation||!accepted||!source||!successor||source.binding_generation!==snapshot.bindingGeneration
-        ||source.agent_session_uuid!==snapshot.threadId||sourceMetadata?.model!=='gpt-6-astra'||sourceMetadata.reasoningEffort!=='medium'
-        ||!sourceMetadata.suspended||!successorMetadata?.suspended||successorMetadata.model!=='gpt-6-astra'
+        ||source.agent_session_uuid!==snapshot.threadId||!isAstraModel(sourceMetadata?.model)||sourceMetadata.reasoningEffort!=='medium'
+        ||!sourceMetadata.suspended||!successorMetadata?.suspended||successorMetadata.model!==sourceMetadata.model
         ||successorMetadata.reasoningEffort!=='medium'||successor.agent_session_uuid!==null
         ||!original||hash(original.payload_json)!==snapshot.payloadHash||supersededBy(source.id)!==`concierge:${successorId}`)
         fail('Current custody, accepted binding or source changed before native construction.');
@@ -461,7 +462,7 @@ export async function consumeCustodyAttempt(turnId:number,ownerInstanceId:string
       ||placement.payload_json!==original.payload_json||hash(original.payload_json)!==snapshot.payloadHash
       ||session.agent_session_uuid!==current.native_thread_id
       ||supersededBy(current.predecessor_session_id)!==`concierge:${current.successor_session_id}`
-      ||metadata.model!=='gpt-6-astra'||metadata.reasoningEffort!=='medium'||metadata.suspended||metadata.outside
+      ||metadata.model!==plan.model||metadata.reasoningEffort!=='medium'||metadata.suspended||metadata.outside
       ||metadata.cwd!==plan.cwd||JSON.stringify([...new Set([metadata.cwd,...(metadata.additionalDirs??[])])])!==JSON.stringify(plan.runtimeWorkspaceRoots))
       fail('Canonical successor attempt is spent, changed, stopped, or no longer exclusively owned.');
     if(db.query(`UPDATE codex_custody_successors SET state='admitting',attempt_spent_at=CURRENT_TIMESTAMP,dispatch_attempt=?
@@ -498,7 +499,7 @@ export function protectedCustodyRun(turnId:number,ownerInstanceId:string,dispatc
       const plan=JSON.parse(row.plan_json) as CodexSuccessorPlan;
       const current=custodySuccessor(row.canonical_input_id)!;
       assertCustodyRunnerBinding(metadata.providerRunner,plan.nativeConnection?.endpoint??undefined);
-      if(!live||!['admitted','acknowledged'].includes(current.state)||session.agent_session_uuid!==row.native_thread_id||metadata.suspended||metadata.model!=='gpt-6-astra'
+      if(!live||!['admitted','acknowledged'].includes(current.state)||session.agent_session_uuid!==row.native_thread_id||metadata.suspended||metadata.model!==plan.model
         ||metadata.reasoningEffort!=='medium'||metadata.cwd!==plan.cwd
         ||JSON.stringify([...new Set([metadata.cwd,...(metadata.additionalDirs??[])])])!==JSON.stringify(plan.runtimeWorkspaceRoots)
         ||supersededBy(row.predecessor_session_id)!==`concierge:${session.id}`)
@@ -525,7 +526,7 @@ export function protectedCustodyRun(turnId:number,ownerInstanceId:string,dispatc
         assertNativeCutoff(row.canonical_input_id);
         const latest=getSessionById(row.successor_session_id)!;
         const latestMetadata=sessionMetadata(latest),latestRelation=custodySuccessor(row.canonical_input_id)!;
-        if(latestMetadata.suspended||latest.agent_session_uuid!==row.native_thread_id||latestMetadata.model!=='gpt-6-astra'
+        if(latestMetadata.suspended||latest.agent_session_uuid!==row.native_thread_id||latestMetadata.model!==plan.model
           ||latestMetadata.reasoningEffort!=='medium'||latestMetadata.cwd!==plan.cwd
           ||JSON.stringify([...new Set([latestMetadata.cwd,...(latestMetadata.additionalDirs??[])])])!==JSON.stringify(plan.runtimeWorkspaceRoots)
           ||latestRelation.plan_json!==row.plan_json||latestRelation.state!=='acknowledged'

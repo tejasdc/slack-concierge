@@ -15,10 +15,10 @@ Bolt acknowledges events before its listener finishes, so SQLite contention at r
 `bot/src/aliases.ts` owns both providers' explicit main/default models. Bare `@cc`,
 the configured Claude bot mention, and channel defaults `cc` or `claude-code`
 resolve through the same entry; `cc-fable` selects the same Fable release.
-Bare `@cx` and `@cx-sol` resolve to `gpt-6.1-sol`. A channel that never chose a
+Bare `@cx` and `@cx-sol` resolve to `gpt-6.2-sol`. A channel that never chose a
 provider still stores the column's `codex` sentinel; that reads as no selection
 and takes the configured `cc-opus` default instead.
-`@cx-astra` explicitly selects `gpt-6-astra`. Reasoning effort is a separate axis appended to
+`@cx-astra` explicitly selects `gpt-6.2-astra`. Reasoning effort is a separate axis appended to
 any alias, such as `@cx-sol-xhigh` or `@cc-opus-max`, and defaults to `medium`
 for Codex. New sessions persist both and pass them to Claude's `--model` and
 `--effort` arguments, or to the Codex thread's `model` and `reasoningEffort`
