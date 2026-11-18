@@ -120,8 +120,11 @@ watches its own queues (`stuck-work-watch.ts`, below), so the outside supervisor
 is reviving Concierge when it is down or frozen.
 
 Concierge checks once a minute for work that should already be moving: turns queued more than
-ten minutes that the queue's own admission predicate would accept (update drain, per-session
-ordering, active execution, saved-work, dependency and artifact gates included), and results
+ten minutes that the queue's own admission predicate would accept (per-session ordering, active
+execution, saved-work, dependency and artifact gates included), turns queued as long that it would
+accept but for an admission gate (a Codex admission hold or an update install), named in the
+notice and in `stuck_work` events as `holds` (since 2026-11-18; on 2026-11-17 held Codex work waited
+over an hour unseen), and results
 still undelivered after the return audit's ten-minute grace. It wakes its own queue,
 communication, peer, project and watch paths once, without replaying any input, and if the same
 work is still waiting five minutes later files one provider-free Inbox notice, which closes

@@ -532,7 +532,10 @@ reply means the runner started no new replacement. A re-home counts running Conc
 Codex turns before it takes any hold, and while any run it only waits, with admission open; it holds
 new Codex work only for the swap itself, counting again under the hold. Any runner answer (`busy`,
 refused, unproven or done) releases its holder. After a lost reply the durable holder stays while
-the owner asks the runner again; any answer releases it. Re-home and account-switch holders are
+the owner asks the runner again; any answer releases it. Shared-runtime maintenance drains Codex
+admission for at most five minutes from when its holder was first taken; after that admission
+reopens (`codex_runtime_maintenance_drain_bounded`), its durable row stays as the retained intent,
+and it holds new work only around its own swap at an idle moment. Re-home and account-switch holders are
 bounded: five minutes after a holder was first taken its runner call has ended, so the owner
 releases it at start and on a 30-second sweep (`codex_admission_hold_expired`) and drops a stale
 account-switch reconciliation with it. A queued Codex input behind a durable holder shows receipt

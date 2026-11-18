@@ -569,6 +569,9 @@ export function watchAuthHeldCredentials(): () => void {
   const expireRunnerHolds=()=>{
     try{for(const hold of expireCodexRunnerHolds())log('warn','codex_admission_hold_expired',{holder:hold.holder,kind:hold.kind,age_ms:hold.ageMs});}
     catch(error){log('error','codex_admission_hold_expiry_failed',{error:error instanceof Error?error.message:String(error)});}
+    void import('./runner-provider-account-owner').then(module=>{
+      for(const holder of module.boundRuntimeMaintenanceDrains())log('warn','codex_runtime_maintenance_drain_bounded',{holder});
+    }).catch(error=>log('error','codex_admission_hold_expiry_failed',{error:String(error)}));
   };
   expireRunnerHolds();
   const holdExpiry=setInterval(expireRunnerHolds,30_000);

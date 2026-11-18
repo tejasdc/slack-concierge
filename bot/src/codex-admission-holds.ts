@@ -44,15 +44,27 @@ export function expiredCodexRunnerHolds(source:Source,nowMs:number):Array<{holde
     .flatMap(row=>{const kind=holdKind(row);
       return kind&&BOUNDED_KINDS.has(kind)&&nowMs-row.created_at_ms>=CODEX_RUNNER_HOLD_BOUND_MS?[{holder:row.holder,kind,ageMs:nowMs-row.created_at_ms}]:[];});
 }
+/**
+ * Shared-runtime maintenance drains Codex admission for at most this long while running work
+ * finishes. After it, admission reopens and the maintenance holds new work only around its own swap
+ * at an idle moment, as the re-home does; its durable row stays as the operation's retained intent.
+ */
+export const RUNTIME_MAINTENANCE_DRAIN_BOUND_MS=CODEX_RUNNER_HOLD_BOUND_MS;
+export function runtimeMaintenanceDrainOver(kind:string|null,createdAtMs:number,nowMs:number):boolean{
+  return kind==='runner-runtime-maintenance'&&nowMs-createdAtMs>=RUNTIME_MAINTENANCE_DRAIN_BOUND_MS;
+}
+export function codexHoldKind(recoveryJson:string):string|null{return holdKind({holder:'',recovery_json:recoveryJson,created_at_ms:0});}
 export type CodexAdmissionHoldFact={kind:string;holder:string;sinceMs:number;clearsAtMs:number|null};
 /**
  * Why a queued Codex turn is not admitted, from the durable holds both the owner and the read-only
  * presentation worker can see. An independent outside run passes a shared-runtime maintenance hold.
  */
-export function codexAdmissionHoldFact(source:Source,outside:boolean):CodexAdmissionHoldFact|null{
+export function codexAdmissionHoldFact(source:Source,outside:boolean,nowMs=Date.now()):CodexAdmissionHoldFact|null{
   const rows=(source.query('SELECT holder,recovery_json,created_at_ms FROM codex_admission_holds ORDER BY created_at_ms').all() as HoldRow[])
+    .filter(row=>{let recovery:unknown;try{recovery=JSON.parse(row.recovery_json);}catch{}
+      return !(isSharedRuntimeMaintenance(row.holder,recovery)&&runtimeMaintenanceDrainOver(holdKind(row),row.created_at_ms,nowMs));})
     .filter(row=>{if(!outside)return true;let recovery:unknown;try{recovery=JSON.parse(row.recovery_json);}catch{}return !isSharedRuntimeMaintenance(row.holder,recovery);});
   const row=rows[0];if(!row)return null;
   const kind=holdKind(row)??'unknown';
-  return {kind,holder:row.holder,sinceMs:row.created_at_ms,clearsAtMs:BOUNDED_KINDS.has(kind)?row.created_at_ms+CODEX_RUNNER_HOLD_BOUND_MS:null};
+  return {kind,holder:row.holder,sinceMs:row.created_at_ms,clearsAtMs:BOUNDED_KINDS.has(kind)||kind==='runner-runtime-maintenance'?row.created_at_ms+CODEX_RUNNER_HOLD_BOUND_MS:null};
 }
