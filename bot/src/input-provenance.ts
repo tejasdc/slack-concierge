@@ -1,3 +1,4 @@
+import {heldMessageBinding} from './held-message-resolution';
 import type {Database} from 'bun:sqlite';
 import {receiveSessionFromPeer} from './peer-identity';
 import {CHATGPT_THINKING_LEVELS,THINKING_MODEL_CHOICES} from './aliases';
@@ -10,7 +11,7 @@ import {CHATGPT_THINKING_LEVELS,THINKING_MODEL_CHOICES} from './aliases';
  * the capture, and thnkr.ing's send check refused his explicit send.
  * Resolves retained delegation links only, never actor or provenance claims inside message text.
  */
-export type ProvenanceInput={id:string;session_id:number;kind:string;origin:string;
+export type ProvenanceInput={id:string;session_id:number;scope:string;kind:string;origin:string;
   source_input_id:string|null;source_run_id:string|null;request_id:string|null;turn_id:number|null;payload_json:string};
 export type HumanIdentity={inputId:string;runId:string;sessionId:string;captureId?:string};
 export type InputProvenance={source:{inputId:string;runId:string;sessionId:string;peer?:string};requestId:string|null;
@@ -67,6 +68,15 @@ export function inputProvenance(database:Database,input:ProvenanceInput,runIdFor
       ||details?.forwardedReply?.inboxInputId!==source.id||details?.requestedEffect!=='work')return null;
     return {inputId:source.id,runId:'',sessionId:`concierge:${source.session_id}`};
   };
+  const resolution=heldMessageBinding(database,input as ProvenanceInput & {scope:string});
+  if(resolution){
+    const original=accepted(resolution.originalInputId);
+    if(!original||original.id===input.id||original.origin!=='agent'||original.session_id!==input.session_id)return null;
+    const inherited=inputProvenance(database,original,runIdForTurn);
+    if(inherited?.originatingHuman?.inputId!==resolution.sourceInputId)return null;
+    return {source:{inputId:original.id,runId:original.turn_id?runIdForTurn(original.turn_id):'',sessionId:`concierge:${original.session_id}`},
+      requestId:resolution.requestId,effectScope:'informational',originatingHuman:inherited.originatingHuman};
+  }
   if(!input.source_input_id||!input.source_run_id){
     // Typed Lab execution has no fictional sending turn. Its retained binding and
     // activation, rather than text claiming an origin, prove this service edge.

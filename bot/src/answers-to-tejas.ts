@@ -1,3 +1,4 @@
+import {heldMessageBinding} from './held-message-resolution';
 import { db } from './state';
 import { approvalDecision, decisionRecord, decisionSection } from './decision-approval';
 import { getAcceptedSessionInput, humanAuthored, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
@@ -100,6 +101,9 @@ function hisMessagesOnChain(actor: AcceptedSessionInput): AcceptedSessionInput[]
   let current: AcceptedSessionInput | null = actor;
   for (let hop = 0; current && hop < CHAIN_HOPS && !seen.has(current.id); hop++) {
     seen.add(current.id);
+    const quoteSource=heldMessageBinding(db,current)?.snapshot.quoteSourceInputId;
+    const quoteInput=quoteSource?getAcceptedSessionInput(quoteSource):null;
+    if(quoteInput&&humanAuthored(quoteInput))found.set(quoteInput.id,quoteInput);
     if (humanAuthored(current)) found.set(current.id, current);
     else for (const match of wordsOf(current).matchAll(CITED_INPUT_ID)) {
       if (cited >= CITED_INPUTS) break;

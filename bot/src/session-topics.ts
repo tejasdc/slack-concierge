@@ -1,3 +1,4 @@
+import {heldMessageBinding,heldResolutionIsCurrent} from './held-message-resolution';
 import {acceptedInputAuthor,sessionAuthor,withCurrentAuthors} from './session-message-author';
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
@@ -3371,31 +3372,39 @@ function mirrorLinkedAnswer(answer:{inboxSessionId:number;sourceRoot:string;sour
  */
 export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string;todoId?:string|null}):string|null {
   const turnInput=getAcceptedSessionInput(input.turnInputId);
+  const resolution=turnInput?heldMessageBinding(db,turnInput):null;
   const provenance=turnInput?sessionInputProvenance(turnInput):null;
   const human=provenance?.originatingHuman;
   const askedIn=human?conciergeSessionNumber(human.sessionId):null;
-  const inbox=askedIn!==null?getSessionById(askedIn):null;
+  const inbox=resolution?getSessionById(resolution.inboxSessionId):askedIn!==null?getSessionById(askedIn):null;
   if(!human||!inbox||!sessionMetadata(inbox).inbox||inbox.id===input.respondingSessionId)return null;
   // Only the request that delivered this turn can name its thread. A prior request to the
   // same worker may belong to another topic and must not capture this question. A router
   // handoff moves the request's custody to the successor Inbox; its thread stays.
+  const dispatchInput=resolution&&turnInput&&heldResolutionIsCurrent(db,turnInput)?resolution.originalInputId:input.turnInputId;
   const request=(db.query(`SELECT request_id,thread_root_input_id FROM session_communication_requests
       WHERE request_id=? AND target_session_id=? AND source_session_id IN (${INBOX_LINEAGE_SQL}) AND target_input_id=? AND thread_root_input_id IS NOT NULL
       LIMIT 1`)
-    .get(provenance?.requestId,input.respondingSessionId,inbox.id,input.turnInputId)) as {request_id:string;thread_root_input_id:string}|null;
+    .get(provenance?.requestId,input.respondingSessionId,inbox.id,dispatchInput)) as {request_id:string;thread_root_input_id:string}|null;
   if(!request)return null;
-  const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id)??request.thread_root_input_id;
+  const root=resolution?.threadRootInputId??inboxRequestRoot(db,request.request_id,request.thread_root_input_id)??request.thread_root_input_id;
   refreshRootMemo();
   const topicId=topicOfRoot(root);
   if(!topicId)return null;
   const respondingSessionId=`concierge:${input.respondingSessionId}`;
-  const covered=topicQuestions(topicId).find(question=>sameAsk(question,respondingSessionId,input.runId));
+  const covered=topicQuestions(topicId).find(question=>resolution?question.owner?.heldResolutionInputId===input.turnInputId:sameAsk(question,respondingSessionId,input.runId));
   if(covered)return covered.questionId;
   const post=postForwardedThreadAnswer({inboxSessionId:inbox.id,eventId:`need:${input.eventId}`,requestId:request.request_id,root,
     inboxInputId:request.thread_root_input_id,respondingSessionId,text:input.text,attachments:[],stalled:false,final:false,workDisposition:null});
   if(!post)return null;
   fileAgentAnswer({inboxSessionId:inbox.id,root,postId:post,eventId:`need:${input.eventId}`,dispatchRequestId:request.request_id,
-    respondingSessionId,respondingTitle:sessionAuthor(respondingSessionId)?.title??null,disposition:'needs_decision',text:input.text,askedInRun:input.runId,todoId:input.todoId??null});
+    respondingSessionId,respondingTitle:sessionAuthor(respondingSessionId)?.title??null,disposition:'needs_decision',text:input.text,askedInRun:input.runId,todoId:input.todoId??null,...(resolution?{resolutionInputId:input.turnInputId}:{})});
+  if(resolution){
+    const question=topicQuestions(topicId).find(question=>question.owner?.heldResolutionInputId===input.turnInputId);
+    if(!question)throw new Error('FEATURE_RESOLUTION_THREAD_UNAVAILABLE: no exact resolution question was filed.');
+    recordSessionEvent({eventId:`feature-resolution-question:${input.turnInputId}`,sessionId:input.respondingSessionId,inputId:input.turnInputId,
+      kind:'feature_resolution_question',payload:{questionId:question.questionId,postId:post,topicId,requestId:request.request_id,root}});
+  }
   return post;
 }
 /** Keep an Inbox-origin question reachable when its exact dispatch has no usable thread. */
@@ -3636,7 +3645,7 @@ export function notifyFiledAgentAnswer(answer:{checkedCompletionEventId?:string;
     answer.askedInRun??source?.runId??null,answer.checkedCompletionEventId);
 }
 
-function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;summary?:string|null;quiet?:string|null;notify?:boolean;askedInRun?:string|null;answerSource?:{inputId:string;runId:string}|null;todoId?:string|null}) {
+function fileAgentAnswer(answer:{resolutionInputId?:string;inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;summary?:string|null;quiet?:string|null;notify?:boolean;askedInRun?:string|null;answerSource?:{inputId:string;runId:string}|null;todoId?:string|null}) {
   const session=getSessionById(answer.inboxSessionId);
   if(!session||!sessionMetadata(session).inbox)return;
   refreshRootMemo();
@@ -3690,8 +3699,8 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
         known:'',choices:[],uncertain:[],answerable:'Your reply in this thread, which goes to the agent that asked.'}
       :{decision:answer.disposition==='failed'?`Not done: ${lead}`:!fragmentReason(lead)?lead:lead?`${agent} answered: ${lead}`:'An agent answered in this thread.',
         why:{text:'',sources:[answer.postId]},known:'',choices:[],uncertain:[],answerable:'',reads:[answer.postId]};
-    if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)
-      ||sameAsk(question,answer.respondingSessionId,answer.askedInRun??null))){
+    if(decision&&open.some(question=>answer.resolutionInputId?question.owner?.heldResolutionInputId===answer.resolutionInputId:
+      decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)||sameAsk(question,answer.respondingSessionId,answer.askedInRun??null))){
       if(words&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyFiledAgentAnswer(answer);
       return;
     }
@@ -3702,7 +3711,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId,revision:1,state:'open',blocking:decision,optional:false,context:'ready',brief,
       // A decision belongs to the agent that asked, so its later final reply or the request's closure ends it;
       // a reading item is the Inbox's and ends only with his Read.
-      owner:decision?{sessionId:answer.respondingSessionId,dispatchRequestId:answer.dispatchRequestId,...(answer.askedInRun?{askedInRun:answer.askedInRun}:{}),...(answer.todoId?{todoId:answer.todoId}:{})}:{sessionId:`concierge:${session.id}`,answeredBy:answer.respondingSessionId,answersRequest:answer.dispatchRequestId},
+      owner:decision?{sessionId:answer.respondingSessionId,dispatchRequestId:answer.dispatchRequestId,...(answer.resolutionInputId?{heldResolutionInputId:answer.resolutionInputId}:{}),...(answer.askedInRun?{askedInRun:answer.askedInRun}:{}),...(answer.todoId?{todoId:answer.todoId}:{})}:{sessionId:`concierge:${session.id}`,answeredBy:answer.respondingSessionId,answersRequest:answer.dispatchRequestId},
       sources:[answer.root,answer.postId],replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:null,
       kind:decision?'decision':'reading',origin:'declared',generation,createdAt:at,updatedAt:at};
     const topic=topicRow(topicId),topicNext=bumped(topic);
