@@ -11,9 +11,6 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 
 ## Work and delivery
 
-- History projection subprocess admission and pre-drain retirement follow
-  [history process retirement](docs/architecture/PROVIDER-HISTORY-INDEX.md#history-process-retirement).
-
 - Tejas deprecated Slack as a product surface on September 15, 2026 (inputs
   `1789490232.840229` and `1789490293.092859`). Do not build Slack features,
   preserve Slack parity, run Slack-specific tests or sandboxes, or treat historical
@@ -28,20 +25,11 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [decision: agents-check-real-end-to-end-behavior]. The
   [agent test delivery](docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries)
   is for capture paths; use a feature's own socket or route when appropriate.
-  Its CLI response projection and bounded-preview contract are documented in that runbook.
 - Stable runtime commands follow the verified sealed control selection through
   [deployment dispatchers](docs/runbooks/DEPLOYMENT.md); preserve application-only
   rollback's separate controller and the disposable installed-command acceptance.
   Native release acceptance explicitly selects the host's GNU timeout dependency;
   see [durability acceptance](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md#isolated-acceptance-and-live-gate).
-- Agent execution units and shared Codex starts/restarts mask the ledger backing image;
-  [execution host isolation](docs/architecture/EXECUTION-HOST.md#ledger-backing-image-isolation)
-  owns the boundary and the separate idle activation gate for already-running work.
-- Mac disk upkeep shares the existing automatic update job; log retention, identity staging,
-  finished-worktree proof, pressure notices and partial-effect receipts live in
-  [Mac disk maintenance](docs/runbooks/MAC-DISK-MAINTENANCE.md).
-- Provider-change handoffs move accepted inputs only under the exact safety rules in
-  [session ownership](docs/architecture/SESSION-OWNER.md#provider-change-handoff).
 - Merge a checked pull request with `scripts/merge-pr.sh <number>`, which serialises
   merges so concurrent fixes stop invalidating each other's required check; see
   [merge lane](docs/runbooks/DEPLOYMENT.md#merge-lane).
@@ -60,14 +48,6 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [agent security](docs/security/2026-10-07-agent-security-review.md).
 - Agent session commands use each machine's installed wrapper, which selects
   the current release; see [runner command paths](docs/architecture/RUNNERS.md#agent-session-commands).
-  `test-capture` also selects the current installed client on Linux; see the
-  [agent test delivery](docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries) contract.
-- Native Claude conversation homes, agent-messageability and the source-bound repair control are governed by [runner home custody](docs/architecture/RUNNERS.md#native-conversation-home-custody).
-- A leftover sign-in command is reconciled at the runner's next successful start, on proven
-  identity only, and what became of it is recorded: ended, already gone, still running, or not
-  establishable. See [provider accounts on runners](docs/architecture/RUNNERS.md#provider-accounts-on-runners).
-- Hosted-run shutdown custody follows the [execution host](docs/architecture/EXECUTION-HOST.md)
-  contract; preserve exact accepted input and provider-result ownership across releases.
 - Claude history payload retirement preserves full SDK rows and the runner
   mirror until the [exact-generation maintenance gate](docs/runbooks/DEPLOYMENT.md#history-cache-maintenance)
   proves production custody, recovery, and page/detail behavior. The
@@ -85,44 +65,14 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   The [protected durability observation](docs/architecture/PROTECTED-DURABILITY-OBSERVATION.md)
   defines the private host read, lane boundaries and coverage gaps; it changes no
   admission policy and authorizes no additional live trial.
-- Commit attribution resolves the current running accepted input, including Mac commits over SSH; see [peer commit identity](docs/runbooks/PEER-INSTANCES.md#commits-a-mac-session-makes-on-the-server).
-- Exact ChatGPT answer handling, peer version-hold reconciliation and attachment corrections preserve provider-return evidence and the still-open question; see [answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md#explicit-confirmation-after-a-supported-tool-read) and the [peer request wire contract](docs/contracts/session-owner-v1.md).
-- Managed native Codex helper edit identity and parent-turn retention follow [provider sessions](docs/architecture/PROVIDER-SESSIONS.md); the Nov 13 lifecycle failure and replay are [here](docs/incidents/2026-11-13-codex-helper-lifetime.md), preserving the earlier [Nov 12 attribution incident](docs/incidents/2026-11-12-codex-helper-edit-gate.md).
+- Exact ChatGPT answer handling after a supported tool read preserves provider-return evidence; see [answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md#explicit-confirmation-after-a-supported-tool-read).
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
-- Withdrawn handoffs terminalize successor queues without replaying earlier attempts;
-  startup repairs historical queues through the same owner transition. See
-  [session ownership](docs/architecture/SESSION-OWNER.md).
-- Owner-generated no-reply notices may finish without posting or automatic closing-text
-  relay; genuine agent questions and worker answers keep their thread obligation. See
-  [quiet service notices](docs/contracts/native-inbox.md#quiet-service-notices).
-- Exact operation reads used for provider admission and recovery read current retained state;
-  see [receipt freshness](docs/architecture/SESSION-OWNER.md#identity-and-admission).
-- SQLite-owning Bun threads emit bounded startup identity before opening databases;
-  see [native worker attribution](docs/architecture/LEDGER-DURABILITY.md#native-worker-attribution).
-- Exact predecessor/successor file-watch inspection and quiet retirement use retained recovery
-  and work-delegation custody, not cross-session list/cancel; see
-  [watch custody](docs/architecture/WATCHES.md#exact-pair-recovery-custody).
 
 ## Session and Inbox obligations
 
-- The Inbox stays in its current Claude Code conversation, across saved-account switches;
-  only a retained explicit human instruction can move it. Automatic exhaustion waits in place.
-  See [Inbox conversation pin](docs/architecture/PROVIDER-STATE-FLOW.md#inbox-conversation-pin).
-- Saved context is a settled input, never queued work. Preserve its exact attribution,
-  attachments and chosen recipient; only a later active message brings it to the provider.
-  See [passive session context](docs/contracts/session-owner-v1.md#passive-session-context).
-
-- New journal keeper processing requires a source-validated structured disposition and durable Inbox handoff for actionable portions; delivery and tracker observations alone cannot complete it. See [journal processing dispositions](docs/contracts/native-inbox.md#journal-processing-dispositions).
-
-- Source-verified cross-owner Lab publication uses the typed service post and immutable peer
-  intent in the [native Inbox contract](docs/contracts/native-inbox.md); publication never becomes
-  human input or a returned work answer.
-
-- Native custody mutation admission and its source-bound, inventory-free result use the
-  [current owner port](docs/contracts/session-owner-v1.md#current-mutation-admission);
-  ordinary obligations reads do not confer mutation authority.
-
+- Keep the Inbox in its current Claude Code conversation unless Tejas explicitly
+  directs a move; see [Inbox conversation pin](docs/architecture/PROVIDER-STATE-FLOW.md#inbox-conversation-pin).
 - Route agent issue reports through `router-actions.sh report`, which opens the
   Inbox thread and request before routing. See
   [agent issue reports](docs/contracts/native-inbox.md#agent-issue-reports).
@@ -133,11 +83,6 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   carry the live syntax and enforcement. The [request and return contract](docs/architecture/SESSION-OWNER.md#requests-and-returns)
   and [prompt thread answers](docs/architecture/PROMPT-THREAD-ANSWERS.md)
   own return position, partial answers and final disposition.
-- Recorded unsent obligations and direct-answer source checks are described in the
-  [native Inbox contract](docs/contracts/native-inbox.md); sharing a thread does not establish completion evidence.
-- Asked-question clocks, exact retained-answer recovery and owner-derived delay status follow
-  [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md); historical questions stay in the
-  one Inbox's [prepared global views](docs/architecture/PREPARED-TOPICS.md).
 - Preserve exact accepted input, run, action, source-message and target
   identity; do not replay ambiguous or acknowledged effects. Keep human
   authorship distinct from agent and service inputs. See the
@@ -150,19 +95,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#stop-while-taking-back-an-existing-codex-turn).
   The one-time source-bound native recovery controls and post-release acceptance procedure are
   documented in [the Codex recovery runbook](docs/runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md).
-  Custody-successor terminal continuation follows [exact recovery](docs/runbooks/ROUTER-ACTIONS.md#exact-codex-report-back-recovery);
-  transferred peer-duty status and final proof follow [the peer wire contract](docs/contracts/session-owner-v1.md#peer-instances).
 - Empty, unacknowledged service report-backs use a separate exact-input recovery with durable
   deduplication and immutable result history; see [router actions](docs/runbooks/ROUTER-ACTIONS.md#exact-codex-report-back-recovery)
   and [the incident evidence](docs/runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md).
-  The [custody-successor mode](docs/runbooks/ROUTER-ACTIONS.md#custody-successor-recovery)
-  preserves a separate canonical attempt allowance, control state and obligation custody;
-  its current source-review holds are not satisfied by disposable fixture success.
-- The explicit Astra Medium custody-successor mode preserves the original reminder and
-  attempts, commits custody before native construction, and spends one shared allowance
-  before admission. It has no cold-resume fallback; see the [custody-successor contract](docs/runbooks/ROUTER-ACTIONS.md#custody-successor-recovery).
-  Protected co-located relay association, runner preparation and worktree-inventory
-  diagnostics follow [the runner contract](docs/architecture/RUNNERS.md#codex-app-server-on-a-runner-built-off-until-concierge_codex_runner-is-set).
 - Final replies expire only questions linked to that dispatch; repair an older
   sibling expiry through the exact-event restoration described in the
   [native Inbox contract](docs/contracts/native-inbox.md).
@@ -174,13 +109,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   requests close only on evidence for their exact obligation. See
   [native Inbox](docs/contracts/native-inbox.md),
   [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping),
-  and [requested phone delivery](docs/contracts/requested-phone-notifications.md): explicit human notification requests
-  survive progress and dispatch acknowledgements until a substantive answer or quiet completion;
-  the contract also owns explicit-request classification and marked-agent diagnostic receipts
-  that never grant human notification authority.
-- Cross-router filing displays and bounded repair follow [prepared topics](docs/architecture/PREPARED-TOPICS.md);
-  the existing [filing upkeep](docs/contracts/native-inbox.md#filing-before-stopping)
-  retains a thirty-minute inspection for a busy Inbox without replaying captures.
+  and [requested phone delivery](docs/contracts/requested-phone-notifications.md).
 
 ## Find the authority
 
@@ -190,13 +119,13 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Outside agent asks and exact unstarted withdrawal | [Session owner wire contract](docs/contracts/session-owner-v1.md), [router actions](docs/runbooks/ROUTER-ACTIONS.md#outside-agents) |
 | Inbox topics, routing, areas, thread replies, attention and prepared-worker catch-up | [Native Inbox](docs/contracts/native-inbox.md), [areas](docs/architecture/AREAS-OF-INTEREST.md), [prompt answers](docs/architecture/PROMPT-THREAD-ANSWERS.md), [prepared topics](docs/architecture/PREPARED-TOPICS.md) |
 | Provider binding, accounts, usage, fresh Claude commands from agent shells, history and external workers | [Provider state flow](docs/architecture/PROVIDER-STATE-FLOW.md), [provider sessions](docs/architecture/PROVIDER-SESSIONS.md), [usage](docs/architecture/PROVIDER-USAGE.md), [history index](docs/architecture/PROVIDER-HISTORY-INDEX.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
-| Google quota disagreement evidence, conflicting meter readings and current-input outcome attribution | [Google quota diagnostics](docs/architecture/PROVIDER-USAGE.md#google-quota-disagreement-evidence), [native input attribution](docs/architecture/PROVIDER-SESSIONS.md#antigravity-sessions) |
+| Google quota disagreement evidence and current-input attribution | [Provider usage](docs/architecture/PROVIDER-USAGE.md#google-quota-disagreement-evidence), [provider sessions](docs/architecture/PROVIDER-SESSIONS.md#antigravity-sessions) |
 | Explicit ChatGPT projects, custom GPT retirement and retained-run recovery | [ChatGPT requests](docs/runbooks/ROUTER-ACTIONS.md#agent-session-communication), [wire contract](docs/contracts/session-owner-v1.md) |
 | Provider sign-in renewal through the Mac's saved browser account, including its bounded pre-auth browser retry | [Sign-in approval](docs/runbooks/CLAUDE-SIGNIN-APPROVAL.md), [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md) |
 | Exact thnkr.ing Mac web-app inspection, native AX update recovery, human authorization and direct Codex update proof | [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Isolated headless Mac browser fallback and thnkr.ing's source-bound read ticket | [Peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Shared Codex App Server lifecycle, post-turn process audit and session observation | [Execution host](docs/architecture/EXECUTION-HOST.md), [Codex App Server](docs/runbooks/CODEX-APP-SERVER.md), [external Codex turns](docs/architecture/SESSION-OWNER.md#externally-submitted-codex-turns) |
-| Source-bound runtime maintenance: outside queue admission, durable hold restore and monotonic terminal receipt reconciliation | [Runtime maintenance](docs/runbooks/CODEX-APP-SERVER.md#source-bound-runtime-maintenance) |
+| Source-bound runtime maintenance and exact Codex recovery | [Runtime maintenance](docs/runbooks/CODEX-APP-SERVER.md#source-bound-runtime-maintenance), [recovery runbook](docs/runbooks/CODEX-NATIVE-RECOVERY-ACCEPTANCE.md) |
 | Codex CLI project trust, 0.166/0.169 compatibility, and isolated launch exemptions | [Command-line project trust](docs/runbooks/CODEX-APP-SERVER.md#project-trust-for-command-line-work) |
 | Owner on its own app server, agents' network entrance and tokens, runner lease protocol | [Runners](docs/architecture/RUNNERS.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
 | Runner reads of report source chains and bounded report windows | [Runners](docs/architecture/RUNNERS.md) |
@@ -211,7 +140,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Filtered Mac Messages reads, including bounded historical conversation windows and code withholding | [Router actions](docs/runbooks/ROUTER-ACTIONS.md#reading-his-texts-mac) |
 | Canvas project binding and current board title beside stable project folders | [Router actions](docs/runbooks/ROUTER-ACTIONS.md), [wire contract](docs/contracts/session-owner-v1.md#peer-instances) |
 | Mac and server Lab reads and writes | [Router actions](docs/runbooks/ROUTER-ACTIONS.md#discussing-in-the-lab); the server holds the Lab key and the peer channel carries Mac calls under their own source identity |
-| Selective Lab groups, revisioned rosters and original provider answers | [Lab conversations](docs/architecture/LAB-CONVERSATIONS.md); existing queue custody, immutable accepted conditions, explicit response targets and original-output publication |
+| Selective Lab groups, revisioned rosters and original provider answers | [Lab conversations](docs/architecture/LAB-CONVERSATIONS.md) |
 | Captures, audio, speech and Canvas observations | [Capture ingress](docs/architecture/CAPTURE-INGRESS.md), [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md), [speech](docs/architecture/SPEECH-FALLBACK-JOBS.md), [Workers AI speech and search embeddings](docs/architecture/WORKERS-AI.md), [Canvas think-aloud](docs/architecture/canvas-think-aloud.md) |
 | Current-versus-historical documentation | [Documentation index](docs/README.md); plans and incidents are evidence, not authority for current behavior |
 
