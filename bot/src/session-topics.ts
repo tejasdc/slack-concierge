@@ -1,3 +1,4 @@
+import {heldMessageBinding,heldResolutionIsCurrent} from './held-message-resolution';
 import {acceptedInputAuthor,sessionAuthor,withCurrentAuthors} from './session-message-author';
 import {questionDisplay} from './topic-display-rules';
 import {topicReplyTargets,type ReplyTargets} from './reply-target-rules';
@@ -3371,20 +3372,22 @@ function mirrorLinkedAnswer(answer:{inboxSessionId:number;sourceRoot:string;sour
  */
 export function fileWorkerNeedInThread(input:{respondingSessionId:number;turnInputId:string;runId:string;eventId:string;text:string;todoId?:string|null}):string|null {
   const turnInput=getAcceptedSessionInput(input.turnInputId);
+  const resolution=turnInput?heldMessageBinding(db,turnInput):null;
   const provenance=turnInput?sessionInputProvenance(turnInput):null;
   const human=provenance?.originatingHuman;
   const askedIn=human?conciergeSessionNumber(human.sessionId):null;
-  const inbox=askedIn!==null?getSessionById(askedIn):null;
+  const inbox=resolution?getSessionById(resolution.inboxSessionId):askedIn!==null?getSessionById(askedIn):null;
   if(!human||!inbox||!sessionMetadata(inbox).inbox||inbox.id===input.respondingSessionId)return null;
   // Only the request that delivered this turn can name its thread. A prior request to the
   // same worker may belong to another topic and must not capture this question. A router
   // handoff moves the request's custody to the successor Inbox; its thread stays.
+  const dispatchInput=resolution&&turnInput&&heldResolutionIsCurrent(db,turnInput)?resolution.originalInputId:input.turnInputId;
   const request=(db.query(`SELECT request_id,thread_root_input_id FROM session_communication_requests
       WHERE request_id=? AND target_session_id=? AND source_session_id IN (${INBOX_LINEAGE_SQL}) AND target_input_id=? AND thread_root_input_id IS NOT NULL
       LIMIT 1`)
-    .get(provenance?.requestId,input.respondingSessionId,inbox.id,input.turnInputId)) as {request_id:string;thread_root_input_id:string}|null;
+    .get(provenance?.requestId,input.respondingSessionId,inbox.id,dispatchInput)) as {request_id:string;thread_root_input_id:string}|null;
   if(!request)return null;
-  const root=inboxRequestRoot(db,request.request_id,request.thread_root_input_id)??request.thread_root_input_id;
+  const root=resolution?.threadRootInputId??inboxRequestRoot(db,request.request_id,request.thread_root_input_id)??request.thread_root_input_id;
   refreshRootMemo();
   const topicId=topicOfRoot(root);
   if(!topicId)return null;

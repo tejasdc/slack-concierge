@@ -1,3 +1,4 @@
+import {HELD_RESOLUTION_SCOPE,heldMessageBinding,heldResolutionIsCurrent} from './held-message-resolution';
 import {adoptContentSource,assertCommunicationContent,assertInputContent,contentReaderHeaders,outsideContentReader,withContentSource} from './lab-content-disclosure';
 import {pendingJournalProcessing} from "./journal-processing";
 import { readFileSync } from 'node:fs';
@@ -266,6 +267,13 @@ export class SessionCommunicationCoordinator {
             UNION ALL SELECT 1 FROM session_peer_deliveries
             WHERE target_input_id=? AND target_session_id=? AND closed_at_ms IS NULL AND requested_effect='work' LIMIT 1`)
             .get(input.id,actor.session,input.id,actor.session);
+        const resolutionInput=getAcceptedSessionInput(actor.inputId)!;
+        const resolution=heldMessageBinding(db,resolutionInput);
+        if(resolution){
+            const original=getAcceptedSessionInput(resolution.originalInputId);
+            return heldResolutionIsCurrent(db,resolutionInput)&&original&&openWorkInput(original)&&scope(original)==='work'
+                ?{actor,scope:'work',authorityInputId:original.id}:{actor,scope:'informational'};
+        }
         const holder = (db.query("SELECT * FROM session_inputs WHERE turn_id=? AND session_id=? AND origin IN ('human','agent') ORDER BY rowid").all(actor.turn, actor.session) as AcceptedSessionInput[])
             .find(input => input.id !== actor.inputId && scope(input) === 'work' && (humanAuthored(input)||openWorkInput(input)));
         if (holder) return {actor, scope:'work', authorityInputId:holder.id};
@@ -306,6 +314,8 @@ export class SessionCommunicationCoordinator {
      * every owner write from it is refused with the successor's address (provider-change handoff).
      */
     private fenced(actor: Actor): Actor {
+        const input=actor.inputId?getAcceptedSessionInput(actor.inputId):null;
+        if(input?.scope===HELD_RESOLUTION_SCOPE&&!heldResolutionIsCurrent(db,input))throw new Error('FEATURE_RESOLUTION_FENCED: the original resolution binding is no longer current.');
         const next = supersededAddress(actor.session);
         if (next) throw new Error(`This session's work was handed off; its obligations and authority moved to ${next}. Reads and your closing sessions outcome still work.`);
         if (withdrawnSuccessor(actor.session)) throw new Error('This session was proposed as a successor and the handoff was withdrawn; it holds no obligations.');
@@ -1377,6 +1387,7 @@ export class SessionCommunicationCoordinator {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
+        if(input.outcome==='needs_you'||input.outcome==='response')this.fenced(actor);
         if(!['done','response','needs_you','failed'].includes(input.outcome))throw new Error('Invalid turn outcome.');
         const journalPending=pendingJournalProcessing(actor.inputId,nativeRunId(actor.turn));
         if(journalPending&&input.outcome!=="failed")throw new Error(journalPending);
@@ -1439,10 +1450,12 @@ export class SessionCommunicationCoordinator {
             // A worker on an Inbox thread waiting on him reaches him through that thread; its own
             // needs_you is left to the Inbox by thnkr.ing, which would otherwise never hear of it.
             if(input.outcome==='needs_you'&&!sessionMetadata(getSessionById(actor.session)!).inbox){
-                const need={respondingSessionId:actor.session,turnInputId:actor.inputId!,runId:nativeRunId(actor.turn),eventId:saved.input.id,text:leadFirst(lead,stated),todoId};
+                const boundResolution=heldMessageBinding(db,getAcceptedSessionInput(actor.inputId!)!);
+                const need={respondingSessionId:actor.session,turnInputId:actor.inputId!,runId:nativeRunId(actor.turn),eventId:saved.input.id,text:boundResolution?content:leadFirst(lead,stated),todoId};
                 let filed:string|null=null;
                 try{filed=db.transaction(()=>fileWorkerNeedInThread(need))();}
-                catch(error){log('error','worker_need_thread_filing_failed',{session:actor.session,input:saved.input.id,message:error instanceof Error?error.message:String(error)});}
+                catch(error){if(boundResolution)throw error;log('error','worker_need_thread_filing_failed',{session:actor.session,input:saved.input.id,message:error instanceof Error?error.message:String(error)});}
+                if(!filed&&boundResolution)throw new Error('FEATURE_RESOLUTION_THREAD_UNAVAILABLE: the bound question was not filed in its original thread.');
                 if(!filed)fileWorkerNeedWithoutThread(need);
                 this.dependencies.peers?.recordTurnNeed(this.peerActor(actor),`turn_outcome:action:${saved.input.id}`,leadFirst(lead,stated));
             }

@@ -1,3 +1,4 @@
+import {HELD_RESOLUTION_SCOPE,heldResolutionCurrentSql} from './held-message-resolution';
 import {renumberWaitingStarts,START_ORDER_SQL,decideStart,deferStart,ensureStartPaceTables,recordStart,slotWaitingStarts,startIsExempt,startPaceConfig,type StartPaceConfig} from './start-pace';
 import { initializeSessionOwnerSchema } from "./session-schema";
 import {threadOnlyReturnInputSql} from './inbox-request-root';
@@ -5753,6 +5754,8 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
     AND COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router')
   AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=turn.accepted_input_id
     AND ${threadOnlyReturnInputSql('input')})
+  AND NOT EXISTS (SELECT 1 FROM session_inputs input WHERE input.id=turn.accepted_input_id
+    AND input.scope='${HELD_RESOLUTION_SCOPE}' AND NOT (${heldResolutionCurrentSql('input')}))
   AND NOT EXISTS (SELECT 1 FROM global_pause pause WHERE pause.singleton=1 AND pause.paused=1
     AND (COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router' OR turn.saved_kind IS NOT NULL)
     AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=pause.generation AND allowed.machine='${localPauseMachine}' AND allowed.session_id=session.id))
