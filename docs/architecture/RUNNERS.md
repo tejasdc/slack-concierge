@@ -518,6 +518,12 @@ process:
   `provider_signin_leftover_survived`. The claim is about the provider CLI, not the shell that
   ran it: a CLI that ignores `SIGTERM` outlives a shell that does not, which a review reproduced
   on 2026-11-17 against an earlier version of this code that reported success anyway.
+  Before forcing, the group is read again, and only while a recorded member is still alive
+  inside it: a group's number cannot pass to a new group while any old member lives, so whatever
+  joined since the first read (a CLI the shell started a moment late, a CLI's helper) is the
+  sign-in's and is forced on its own identity too. On 2026-11-18 GitHub's runner read the group
+  before the stubborn CLI existed; it survived the "ended" claim and held every release check for
+  ten minutes.
 - **Already gone:** nothing is signalled and nothing is claimed.
 - **Identity not provable:** nothing is signalled, and the detail says the leftover could not be
   established. A reused process id would otherwise name a stranger.

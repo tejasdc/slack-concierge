@@ -39,6 +39,9 @@ jobs:
           ln -s "$concierge_timeout" "$RUNNER_TEMP/concierge-native-bin/timeout"
           echo "$RUNNER_TEMP/concierge-native-bin" >> "$GITHUB_PATH"
       - name: Build and check candidate
+        # About two minutes when healthy; a check that stalls fails here, by name, instead of
+        # silently spending the whole job's budget (release-checks-under-two-minutes-or-nightly).
+        timeout-minutes: 6
         working-directory: bot
         env:
           CONCIERGE_STATE_DIR: ${{ runner.temp }}/concierge-release-check
