@@ -47,6 +47,16 @@ reconcile under later active work without recreating a holder or repeating the e
 or missing replacement retains historical completion and reports uncertainty separately. Pending
 operations keep the ordinary owned/native idle guards and all original binding/session checks.
 
+Pre-release specialist checks found and reproduced three additional defects in the first local
+candidate: a default proof client/ordinary receiver could manage a missing daemon; failed terminal
+journal publication dropped the runner fence and trapped retry; malformed replacement identity
+could compare equal through missing fields and release the owner holder. None was released.
+Proof now uses non-managing direct access plus a retained protected lane on the persistent owner
+client, leaving ordinary active RPCs/recovery intact. Durable runner completion requires both
+applied phase and published applied status; failed publication retains fences, and the same
+operation can reprove/publish only its existing terminal effect after storage returns. Observation
+remains read-only. One valid process-identity predicate guards comparison and terminal settlement.
+
 ## State card
 
 - **Entity/writer:** the original retained maintenance action and exact holder are written only by
@@ -64,6 +74,9 @@ operations keep the ordinary owned/native idle guards and all original binding/s
 - **Falsifier:** automatic completion, restart, response loss, stale waiting, active pending work,
   generation mismatch and persistence failure run through real disposable action/hold/journal
   boundaries. The original source fails the missing-terminal-receipt assertion.
+  Actual-client/receiver disappearance checks, runner write/fsync/rename failure/recovery and the
+  demonstrated malformed replacement response also fail the first local candidate and pass the
+  correction without real runtime effects.
 
 ## Acceptance scenario
 
@@ -77,5 +90,8 @@ operations keep the ordinary owned/native idle guards and all original binding/s
   Stale responses cannot regress it. Incomplete active operations still wait. Generation/health
   uncertainty retains history without another drain; failed persistence keeps durable and
   projected admission conservative. Other account/re-home/maintenance holders remain intact.
+  Terminal publication failure keeps runner fences until same-operation persistence-only recovery;
+  read-only proof cannot manage the daemon; malformed identities cannot release admission.
 - **Replayable offline:** yes; run `bun run scripts/runtime-terminal-reconciliation-fixture.ts`
   and `bun run scripts/codex-runtime-maintenance-fixture.ts` from `bot/`.
+  Run `bun run scripts/runtime-terminal-proof-fixture.ts` for actual client/receiver proof boundaries.

@@ -1,23 +1,23 @@
-import type {ProcessIdentity} from './runtime-identity';
+import {isProcessIdentity,type ProcessIdentity} from './runtime-identity';
 
 export type RuntimeMaintenanceBinding={operationId:string;sourceInputId:string;sourceRunId:string;actionId:string;requiredCommit:string};
 export type RuntimeMaintenanceState={binding:RuntimeMaintenanceBinding;phase:'waiting'|'draining'|'starting'|'applied'|'uncertain';
   original?:ProcessIdentity;replacement?:ProcessIdentity;detail?:string};
 export type RuntimeSnapshot={identity:ProcessIdentity;masked:boolean;supported:boolean};
-export type RuntimeMaintenanceObservation={applied:RuntimeMaintenanceState|null;verified:boolean;detail?:string};
+export type RuntimeMaintenanceObservation={applied:RuntimeMaintenanceState|null;verified:boolean;persisted:boolean;detail?:string};
 export type RuntimeMaintenanceServices={
   persist():void; snapshot():Promise<RuntimeSnapshot|null>; alive(identity:ProcessIdentity):boolean;
   nativeIdle():Promise<boolean>; signal(identity:ProcessIdentity):void; start():Promise<void>;
   prove(identity:ProcessIdentity):Promise<void>;
 };
-export function sameRuntime(a:ProcessIdentity,b:ProcessIdentity){return a.pid===b.pid&&a.bootId===b.bootId&&a.startTicks===b.startTicks;}
+export function sameRuntime(a:unknown,b:unknown){return isProcessIdentity(a)&&isProcessIdentity(b)&&a.pid===b.pid&&a.bootId===b.bootId&&a.startTicks===b.startTicks;}
 export function sameRuntimeMaintenanceBinding(a:RuntimeMaintenanceBinding,b:RuntimeMaintenanceBinding):boolean{
   return (['operationId','sourceInputId','sourceRunId','actionId','requiredCommit'] as const).every(key=>a?.[key]===b?.[key]);
 }
 
 /** Historical completion never authorizes another drain, including when current health changed. */
 export async function observeAppliedRuntimeMaintenance(state:RuntimeMaintenanceState|undefined,
-  services:Pick<RuntimeMaintenanceServices,'snapshot'|'prove'>):Promise<RuntimeMaintenanceObservation>{
+  services:Pick<RuntimeMaintenanceServices,'snapshot'|'prove'>):Promise<Omit<RuntimeMaintenanceObservation,'persisted'>>{
   if(state?.phase!=='applied')return {applied:null,verified:false};
   const applied=structuredClone(state);
   try{

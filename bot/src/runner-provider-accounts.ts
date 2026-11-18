@@ -30,7 +30,8 @@ const activationOperations = new Map<string, ActivationOperation>();
 let unmanagedRepair:Promise<{status:string;detail?:string}>|null=null;
 let codexRepairActive=false;
 let runtimeMaintenanceReserved=false;
-function runtimeMaintenancePending(){return runtimeMaintenanceReserved||[...activationOperations.values()].some(row=>row.runtimeMaintenance&&row.runtimeMaintenance.phase!=='applied');}
+function runtimeMaintenanceDurable(row:ActivationOperation){return row.status==='applied'&&row.runtimeMaintenance?.phase==='applied';}
+function runtimeMaintenancePending(){return runtimeMaintenanceReserved||[...activationOperations.values()].some(row=>row.runtimeMaintenance&&!runtimeMaintenanceDurable(row));}
 export function runnerCodexRepairActive():boolean{return codexRepairActive||runtimeMaintenancePending();}
 
 export function runnerCodexServerNeedsRehome(versionOutput:string,hasRunnerState:boolean|null):boolean {
@@ -631,7 +632,7 @@ async function runtimeMaintenanceSnapshot(){
   return {identity,masked:image.isCharacterDevice()&&image.rdev===0,supported:version.code===0&&version.output.trim()==='codex-cli 0.166.0'};
 }
 async function proveRuntimeMaintenanceReplacement(identity:import('./runtime-identity').ProcessIdentity){
-  const probe=new CodexAppServerClient();try{
+  const probe=new CodexAppServerClient(undefined,undefined,{manageDaemon:false});try{
     const models=await probe.request('model/list',{}, {requestTimeoutMs:20_000});
     if(!Array.isArray(models?.data)||!models.data.length)throw new Error('The replacement provider model API did not answer.');
     const after=await runtimeMaintenanceSnapshot();if(!after?.masked||!sameRuntime(after.identity,identity))throw new Error('The replacement listener changed during provider proof.');
@@ -644,19 +645,24 @@ async function runnerRuntimeMaintenance(params:Record<string,unknown>,botDir?:st
   const prior=activationOperations.get(binding.operationId);
   if(prior&&!prior.runtimeMaintenance)throw new Error('This operation identity already belongs to an account change.');
   if(prior?.runtimeMaintenance&&!sameRuntimeMaintenanceBinding(prior.runtimeMaintenance.binding,binding))throw new Error('A runtime operation cannot change its source or required release.');
-  // This branch never reserves, persists, signals, starts, or progresses a pending operation.
+  if(params.persistOnly===true&&prior?.runtimeMaintenance?.phase!=='applied')
+    throw new Error('Persistence-only completion requires the same already-proved runtime effect.');
+  // Observation never writes or progresses; an unpublished applied effect can only retry publication.
   if(params.observeOnly===true||prior?.runtimeMaintenance?.phase==='applied'){
-    const observed=prior?.runtimeMaintenance?.phase==='applied'&&prior.status!=='applied'
-      ?{applied:structuredClone(prior.runtimeMaintenance),verified:false,detail:'The runner terminal journal has not confirmed persistence.'}
-      :await observeAppliedRuntimeMaintenance(prior?.runtimeMaintenance,{snapshot:runtimeMaintenanceSnapshot,prove:proveRuntimeMaintenanceReplacement});
-    if(params.observeOnly===true)return observed;
+    const observed=await observeAppliedRuntimeMaintenance(prior?.runtimeMaintenance,{snapshot:runtimeMaintenanceSnapshot,prove:proveRuntimeMaintenanceReplacement});
+    if(params.observeOnly===true)return {...observed,persisted:!!prior&&runtimeMaintenanceDurable(prior)};
     if(!observed.verified)throw new Error(observed.detail);
+    if(prior&&!runtimeMaintenanceDurable(prior)){
+      prior.status='applied';
+      try{writeActivationState();}catch(error){prior.status='uncertain';holdCodexDaemonAutoStart(true);throw error;}
+      if(!runtimeMaintenancePending()&&!codexActivationFlight&&!unmanagedRepair)holdCodexDaemonAutoStart(false);
+    }
     return observed.applied!;
   }
   if(runtimeMaintenanceFlight)return runtimeMaintenanceFlight.then(()=>runnerRuntimeMaintenance(params,botDir));
   if(codexActivationFlight||unmanagedRepair)throw new Error('Another App Server operation is active; no drain was requested.');
   if(runtimeMaintenanceReserved)throw new Error('A runtime maintenance preflight already owns the App Server reservation.');
-  if([...activationOperations.values()].some(row=>row.runtimeMaintenance&&row.id!==binding.operationId&&row.runtimeMaintenance.phase!=='applied'))
+  if([...activationOperations.values()].some(row=>row.runtimeMaintenance&&row.id!==binding.operationId&&!runtimeMaintenanceDurable(row)))
     throw new Error('Another exact runtime maintenance operation remains unresolved.');
   if(!botDir||process.platform!=='linux')throw new Error('Runtime maintenance requires the installed Linux runner.');
   const manifest=readJson(join(botDir,'../..','manifest.json'));
@@ -697,6 +703,7 @@ async function runnerRuntimeMaintenance(params:Record<string,unknown>,botDir?:st
 
 export async function serveRunnerAccountCall(method: string, params: Record<string, unknown>,context:{activeTurns:number;botDir?:string}={activeTurns:0}): Promise<unknown> {
   if(method==='accounts.codex.runtimeMaintenance.observe')return runnerRuntimeMaintenance({...params,observeOnly:true},context.botDir);
+  if(method==='accounts.codex.runtimeMaintenance.publish')return runnerRuntimeMaintenance({...params,persistOnly:true},context.botDir);
   if(method==='accounts.codex.runtimeMaintenance')return runnerRuntimeMaintenance(params,context.botDir);
   if (method === "accounts.identity") {
     if(params.provider==='antigravity'){

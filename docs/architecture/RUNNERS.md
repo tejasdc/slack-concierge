@@ -513,8 +513,11 @@ clearing stale usage evidence and releasing held work only after a confirming re
 
 Source-bound runtime maintenance uses the same journal but no account change.
 `accounts.codex.runtimeMaintenance.observe` accepts its exact retained binding and returns
-`{applied,verified,detail?}`: `applied` is the historical terminal result or null for unfinished
-work, while `verified` requires its exact live masked replacement and provider API proof.
+`{applied,verified,persisted,detail?}`: `applied` is the historical terminal result or null for unfinished
+work, `verified` requires its exact live masked replacement/API, and `persisted` confirms terminal
+journal publication. Unpublished completion keeps all existing runner fences. The same operation's
+`accounts.codex.runtimeMaintenance.publish` read/prove-and-publication call can publish that already-applied result without a signal/start or
+an idle wait; the receiver refuses this mode unless it already retains the exact applied effect.
 This read never progresses, reserves, writes, signals or starts anything. Older runners refuse
 the distinct method. The owner atomically saves terminal action completion and releases only
 its exact holder; see [runtime maintenance](../runbooks/CODEX-APP-SERVER.md#source-bound-runtime-maintenance).

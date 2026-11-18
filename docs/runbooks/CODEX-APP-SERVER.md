@@ -165,8 +165,16 @@ before signal cannot accidentally invoke a forced second-signal path.
 
 After the original generation exits, the runner starts through the installed image mask, or
 reconciles a replacement already present. It proves the exact listener sees the inaccessible
-0:0 image device and `model/list` answers; the owner must reconnect its persistent API and repeat
-that model read before releasing its exact hold. Direct requests and automatic recovery commit
+0:0 image device and `model/list` answers. The owner repeats the model read through a retained
+protected proof lane owned by its persistent API client, at that client's exact socket/runner.
+The direct proof client disables daemon management and the owner lane uses the existing protected
+receiver, so neither successful reads nor reconnect failures can tune, move or start the daemon.
+The lane has its own connection/error lifetime and closes with its owning client; active ordinary
+RPCs and their normal recovery behavior remain untouched. This proves the owner proof lane's
+reconnect/API access, not the ordinary active bridge's reconnect. Ordinary admitted provider work
+remains separate installed acceptance.
+
+Direct requests and automatic recovery commit
 the full applied result to the original retained action together with deletion of only its exact
 durable holder, then publish the admission change. Failed persistence leaves the hold in place;
 a stale waiting/uncertain result cannot overwrite an applied owner receipt.
@@ -185,9 +193,23 @@ uncertainty separately; they never authorize draining a different generation. Un
 observations or an older runner cannot fall through to mutating progress. Confirmed unfinished
 operations still close admission and obey the existing owned/native idle guards.
 
+Runner completion is durable only when both the runtime phase and published operation status
+are applied. Until then all existing runner fences/exclusions remain held, including after failed
+write, fsync or rename. Observation reports historical effect, current proof and publication as
+separate facts and never repairs persistence itself. For an already-proved but unpublished effect,
+the same operation's distinct `accounts.codex.runtimeMaintenance.publish` retry rechecks the exact masked replacement/API and republishes
+only its terminal journal. It cannot drain/start, waits for no later work, and fails closed if the
+retained effect or replacement is missing/changed. Older receivers reject this distinct method,
+including if the runner reconnects to an older process after observation. Only successful publication can release that
+runner fence; the owner still commits its own receipt/hold transaction afterwards. Valid process
+identities are required before generation equality or terminal admission; missing fields cannot
+become equal generations.
+
 Replay `bun run scripts/runtime-terminal-reconciliation-fixture.ts` from `bot/` for composed
 disposable owner action/hold and runner-journal recovery, atomic rollback, stale-response,
 version-skew and exact-generation checks. No provider or production state is used.
+`bun run scripts/runtime-terminal-proof-fixture.ts` exercises the actual client and receiver
+boundaries with private sockets and daemon-effect counters, including ordinary recovery controls.
 
 For unfinished maintenance, unknown generation, unsupported runtime,
 response loss or failed proof keeps admission held and the original request open. Terminal-only

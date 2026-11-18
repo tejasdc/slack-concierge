@@ -7,6 +7,7 @@ import {externallyRunningCodexTurns} from './provider-activation';
 import {db} from './state';
 import {sharedCodexAppServerClient} from './codex-app-server-client';
 import {sameRuntime,sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState,type RuntimeMaintenanceObservation} from './codex-runtime-maintenance';
+import {isProcessIdentity} from './runtime-identity';
 
 const activationReconciliations=new Map<string,Promise<void>>();
 let activeActivationOperationId:string|null=null;
@@ -93,7 +94,8 @@ export function progressRunnerCodexRuntimeMaintenance(runner:string,binding:Runt
     let result:Record<string,unknown>,applied:RuntimeMaintenanceState|null=null;
     try{
       const observed=await runnerMachineCall<RuntimeMaintenanceObservation>(runner,'accounts.codex.runtimeMaintenance.observe',{binding},130_000);
-      if(!observed||typeof observed.verified!=='boolean'||(observed.applied===null?observed.verified:observed.applied?.phase!=='applied'))
+      if(!observed||typeof observed.verified!=='boolean'||typeof observed.persisted!=='boolean'
+        ||(observed.applied===null?observed.verified||observed.persisted:observed.applied?.phase!=='applied'))
         throw new Error('The runner did not return an exact terminal observation.');
       if(observed.applied&&!sameRuntimeMaintenanceBinding(observed.applied.binding,binding))throw new Error('The terminal observation changed its retained binding.');
       applied=observed.applied;
@@ -111,11 +113,20 @@ export function progressRunnerCodexRuntimeMaintenance(runner:string,binding:Runt
         if(!sameRuntimeMaintenanceBinding(progressed.binding,binding))throw new Error('The runner result changed its retained binding.');
         applied=progressed;
       }
-      if(!sameRuntimeMaintenanceBinding(applied.binding,binding)||!applied.replacement)throw new Error('The runner result changed its retained operation or replacement.');
-      const models=await sharedCodexAppServerClient().request('model/list',{}, {requestTimeoutMs:20_000});
-      if(!Array.isArray(models?.data)||!models.data.length)throw new Error('The owner provider API did not reconnect to the replacement.');
+      if(!sameRuntimeMaintenanceBinding(applied.binding,binding)||!isProcessIdentity(applied.replacement)
+        ||applied.original!==undefined&&!isProcessIdentity(applied.original))throw new Error('The runner result changed its retained operation or replacement.');
+      if(observed.applied&&!observed.persisted){
+        const published=await runnerMachineCall<RuntimeMaintenanceState>(runner,'accounts.codex.runtimeMaintenance.publish',{binding},130_000);
+        if(published.phase!=='applied'||!sameRuntimeMaintenanceBinding(published.binding,binding)
+          ||!sameRuntime(published.replacement,applied.replacement))throw new Error('The exact runtime completion was not durably published.');
+        applied=published;
+      }
+      const client=sharedCodexAppServerClient();
+      if(client.nativeEndpoint.relayRunner!==runner)throw new Error('The persistent owner API is bound to a different runner.');
+      const models=await client.observeModels({requestTimeoutMs:20_000});
+      if(!Array.isArray(models?.data)||!models.data.length)throw new Error('The owner protected model proof did not answer.');
       const confirmed=await runnerMachineCall<RuntimeMaintenanceObservation>(runner,'accounts.codex.runtimeMaintenance.observe',{binding},130_000);
-      if(confirmed?.verified!==true||confirmed.applied?.phase!=='applied'||!confirmed.applied.replacement||!sameRuntimeMaintenanceBinding(confirmed.applied.binding,binding)
+      if(confirmed?.verified!==true||confirmed.persisted!==true||confirmed.applied?.phase!=='applied'||!confirmed.applied.replacement||!sameRuntimeMaintenanceBinding(confirmed.applied.binding,binding)
         ||!sameRuntime(confirmed.applied.replacement,applied.replacement))throw new Error(confirmed?.detail??'The exact applied replacement changed during owner proof.');
       result=applied as unknown as Record<string,unknown>;
     }catch(error){result={phase:'uncertain',operationId:binding.operationId,...(applied?{applied}:{}),detail:error instanceof Error?error.message:String(error)};}

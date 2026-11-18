@@ -5,7 +5,8 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {mock,spyOn} from 'bun:test';
 
-const cases=['automatic','historical','pending','mismatch','persistence','compatibility','response-loss'];
+const cases=['automatic','historical','pending','mismatch','persistence','compatibility','response-loss','malformed-replacement',
+  'journal-write','journal-fsync','journal-rename','journal-generation-change'];
 if(!process.argv.includes('--case')){
   for(const name of cases){
     const root=fs.mkdtempSync(join(os.tmpdir(),'concierge-runtime-terminal-'));
@@ -45,7 +46,7 @@ else{
 }
 const original={pid:800001,startTicks:'111',bootId:'fixture-boot'},replacement={pid:800002,startTicks:'222',bootId:'fixture-boot'};
 const journal=join(runnerState,'codex-activation-state.json');
-const pending=name==='automatic'||name==='pending'||name==='response-loss';
+const pending=name==='automatic'||name==='pending'||name==='response-loss'||name.startsWith('journal-');
 if(!restarting)fs.writeFileSync(journal,JSON.stringify([{id:binding.operationId,account:'',status:pending?'starting':'applied',
   runtimeMaintenance:{binding,phase:pending?'waiting':'applied',original,...(pending?{}:{replacement,detail:'Masked replacement and provider API confirmed.'})}}]));
 const holder=`codex:runner-runtime-maintenance:fixture-runner:${binding.operationId}`;
@@ -55,9 +56,12 @@ const isHeld=()=>codexAdmissionRecoveryHolds().some(row=>row.holder===holder);
 let snapshot:any={identity:pending?original:replacement,masked:!pending,supported:true};
 let oldAlive=pending,signals=0,starts=0,mutations=0,observations=0,ownerProofs=0,nativeIdle=false,external=0;
 let badObservation:unknown=null,lost=false,changeAtOwnerProof=false,ownerProofFailure=false;
+let storageFailure=name.startsWith('journal-'),autoStartHeld=false,terminalWrites=0,journalFd=-1;
+const originalFs={writeFileSync:fs.writeFileSync,openSync:fs.openSync,fsyncSync:fs.fsyncSync,renameSync:fs.renameSync,statSync:fs.statSync};
+const publishingTerminal=()=>fs.existsSync(journal+'.tmp')&&JSON.parse(fs.readFileSync(journal+'.tmp','utf8'))[0]?.runtimeMaintenance?.phase==='applied';
 const daemon=await import('../src/codex-daemon-file-limit');
 mock.module('../src/codex-daemon-file-limit',()=>({...daemon,
-  controlSocketListeners:()=>snapshot?[snapshot.identity.pid]:[],holdCodexDaemonAutoStart:()=>{},
+  controlSocketListeners:()=>snapshot?[snapshot.identity.pid]:[],holdCodexDaemonAutoStart:(held:boolean)=>{autoStartHeld=held;},
   startCodexDaemonInOwnScope:async()=>{starts++;snapshot={identity:replacement,masked:true,supported:true};return {code:0};},
 }));
 const identities=await import('../src/runtime-identity');
@@ -66,7 +70,17 @@ mock.module('../src/runtime-identity',()=>({...identities,
   isProcessIdentityAlive:(identity:any)=>identity.pid===original.pid?oldAlive:!!snapshot&&identity.startTicks===snapshot.identity.startTicks,
 }));
 mock.module('node:fs',()=>({...fs,statSync:(path:any,...args:any[])=>String(path).startsWith('/proc/80000')
-  ?{isCharacterDevice:()=>snapshot?.masked,rdev:snapshot?.masked?0:123}:Reflect.apply(fs.statSync,fs,[path,...args])}));
+  ?{isCharacterDevice:()=>snapshot?.masked,rdev:snapshot?.masked?0:123}:Reflect.apply(originalFs.statSync,fs,[path,...args]),
+  writeFileSync:(path:any,data:any,...args:any[])=>{
+    if(path===journal+'.tmp'&&JSON.parse(String(data))[0]?.runtimeMaintenance?.phase==='applied'){
+      terminalWrites++;if(storageFailure&&(name==='journal-write'||name==='journal-generation-change'))throw new Error('fixture terminal journal write refused');
+    }
+    return Reflect.apply(originalFs.writeFileSync,fs,[path,data,...args]);
+  },
+  openSync:(path:any,...args:any[])=>{const fd=Reflect.apply(originalFs.openSync,fs,[path,...args]);if(path===journal+'.tmp')journalFd=fd;return fd;},
+  fsyncSync:(fd:number)=>{if(storageFailure&&name==='journal-fsync'&&fd===journalFd&&publishingTerminal())throw new Error('fixture terminal journal fsync refused');return originalFs.fsyncSync(fd);},
+  renameSync:(from:any,to:any)=>{if(storageFailure&&name==='journal-rename'&&from===journal+'.tmp'&&publishingTerminal())throw new Error('fixture terminal journal rename refused');return originalFs.renameSync(from,to);},
+}));
 const client=await import('../src/codex-app-server-client');
 mock.module('../src/codex-app-server-client',()=>({...client,
   CodexAppServerClient:class{
@@ -78,11 +92,13 @@ mock.module('../src/codex-app-server-client',()=>({...client,
     }
     async close(){}
   },
-  sharedCodexAppServerClient:()=>({request:async(method:string)=>{assert.equal(method,'model/list');ownerProofs++;
+  sharedCodexAppServerClient:()=>({nativeEndpoint:{relayRunner:'fixture-runner'},request:async(method:string)=>{assert.equal(method,'model/list');return modelProof();},observeModels:()=>modelProof()}),
+}));
+async function modelProof(){ownerProofs++;
     if(ownerProofFailure)throw new Error('owner API proof refused');
     if(changeAtOwnerProof)snapshot={...snapshot,identity:{...replacement,startTicks:'changed'}};
-    return {data:[{id:'fixture'}]};}}),
-}));
+    return {data:[{id:'fixture'}]};
+}
 const activation=await import('../src/provider-activation');
 mock.module('../src/provider-activation',()=>({...activation,externallyRunningCodexTurns:()=>external}));
 mock.module('../src/codex-updater-settings',()=>({codexUpdaterDisabled:()=>true}));
@@ -92,8 +108,8 @@ mock.module('../src/runner-machine-calls',()=>({
   runnerMachineCall:async(runner:string,method:string,params:any)=>{
     assert.equal(runner,'fixture-runner');
     if(method.endsWith('.observe')){observations++;if(badObservation==='unsupported')throw new Error('this runner does not answer terminal observation');
-      if(badObservation!==null)return badObservation;}
-    else{assert.equal(method,'accounts.codex.runtimeMaintenance');mutations++;}
+      if(badObservation!==null)return typeof badObservation==='function'?badObservation():badObservation;}
+    else if(method!=='accounts.codex.runtimeMaintenance.publish'){assert.equal(method,'accounts.codex.runtimeMaintenance');mutations++;}
     const answer=await serve(method,params,{activeTurns:0,botDir:join(root,'release','control','bot')});
     if(lost&&!method.endsWith('.observe')&&answer.phase==='applied'){lost=false;throw new Error('response lost after runner applied');}
     return answer;
@@ -144,8 +160,44 @@ try{
     assert.equal((await progress()).phase,'applied');assert.equal(mutations+observations+signals+starts,0);assert.equal(isHeld(),false);
   }else if(name==='pending'){
     activeWork();assert.equal((await progress()).phase,'waiting');assert.equal(mutations+signals+starts,0);assert(isHeld());
+    await assert.rejects(()=>serve('accounts.codex.runtimeMaintenance.publish',{binding}),/Persistence-only/);
     external=-1;db.query("UPDATE turns SET status='done' WHERE id<>?").run(turn);
     assert.equal((await progress()).phase,'waiting');assert.equal(mutations+signals+starts,0);
+  }else if(name==='malformed-replacement'){
+    activeWork();
+    const malformed={binding,phase:'applied',replacement:'invalid'};
+    for(const payload of [{verified:true,applied:malformed},{verified:true,persisted:true,applied:malformed}]){
+      badObservation=payload;assert.equal((await progress()).phase,'uncertain','malformed replacement cannot terminalize its retained action');assert(isHeld());assert.equal(mutations+signals+starts,0);
+    }
+    let reads=0;badObservation=()=>({verified:true,persisted:true,applied:{binding,phase:'applied',replacement:++reads===1?replacement:'invalid'}});
+    assert.equal((await progress()).phase,'uncertain');assert(isHeld());assert.equal(reads,2);
+    assert.throws(()=>state.recordCodexRuntimeMaintenanceProgress('fixture-runner',binding,malformed),/Terminal maintenance proof/);
+    assert(isHeld());assert.notEqual(receipt().phase,'applied');
+    const {sameRuntime}=await import('../src/codex-runtime-maintenance');
+    const {isProcessIdentity}=await import('../src/runtime-identity');
+    assert.equal(sameRuntime('invalid','invalid'),false);assert.equal(sameRuntime({},{}),false);
+    assert.equal(isProcessIdentity({pid:42,bootId:'boot',startTicks:'Mon Nov 17 12:00:00 2026'}),true,'macOS start identity semantics remain valid');
+  }else if(name.startsWith('journal-')){
+    nativeIdle=true;assert.equal((await progress()).phase,'draining');
+    assert.equal((await progress()).phase,'uncertain');assert(isHeld());
+    const runner=await import('../src/runner-provider-accounts');
+    assert.equal(runner.runnerCodexRepairActive(),true,'unpublished completion retains runner exclusion');
+    assert.equal(autoStartHeld,true,'unpublished completion retains the existing auto-start fence');
+    const durableBefore=fs.readFileSync(journal,'utf8');assert.notEqual(JSON.parse(durableBefore)[0].runtimeMaintenance.phase,'applied');
+    const effects=[signals,starts],writes=terminalWrites;
+    const observed=await serve('accounts.codex.runtimeMaintenance.observe',{binding});
+    assert.equal(observed.applied.phase,'applied');assert.equal(observed.persisted,false);assert.equal(observed.verified,true);
+    assert.equal(terminalWrites,writes,'observation must not retry publication');assert.equal(fs.readFileSync(journal,'utf8'),durableBefore);
+    storageFailure=false;activeWork();
+    if(name==='journal-generation-change'){
+      snapshot=null;assert.equal((await progress()).phase,'uncertain');assert.equal(runner.runnerCodexRepairActive(),true);
+      assert.equal(fs.readFileSync(journal,'utf8'),durableBefore);assert.deepEqual([signals,starts],effects);
+      snapshot={identity:replacement,masked:true,supported:true};
+    }
+    const results=await Promise.all([progress(),progress()]);assert(results.every(result=>result.phase==='applied'));
+    assert.equal(terminalWrites,writes+1,'storage recovery publishes the same effect exactly once');
+    assert.equal(JSON.parse(fs.readFileSync(journal,'utf8'))[0].status,'applied');assert.equal(isHeld(),false);
+    assert.equal(runner.runnerCodexRepairActive(),false);assert.equal(autoStartHeld,false);assert.deepEqual([signals,starts],effects);
   }else if(name==='compatibility'){
     activeWork();
     for(const malformed of ['unsupported',undefined,{}, {verified:true,applied:null}]){

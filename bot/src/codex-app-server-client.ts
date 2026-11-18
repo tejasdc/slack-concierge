@@ -139,6 +139,7 @@ export class CodexAppServerClient {
   private generation = 0;
   private requestId = 0;
   private closed = false;
+  private modelObservationClient:CodexAppServerClient|null=null;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly notificationListeners = new Set<NotificationListener>();
   private readonly disconnectListeners = new Set<DisconnectListener>();
@@ -160,6 +161,15 @@ export class CodexAppServerClient {
   get activeGeneration() { return this.active?.generation ?? null; }
   get nativeEndpoint(){return {socketPath:this.socketPath,relayRunner:this.options.relayRunner??null,serverInfo:this.active?.serverInfo??null,
     ...(this.active?.relayAssociation?{relayAssociation:this.active.relayAssociation}:{})};}
+
+  /** Keep maintenance reads on this owner's endpoint without disturbing ordinary pending RPCs.
+   * Both this client and its receiver lack daemon-management authority on the retained proof lane. */
+  observeModels(options:Pick<CodexRequestOptions,'requestTimeoutMs'>={}):Promise<any>{
+    if(this.closed)return Promise.reject(new CodexAppServerClientError('Codex app-server client is closed.','ambiguous'));
+    this.modelObservationClient??=new CodexAppServerClient(this.socketPath,this.nodeExecutable,
+      {...this.options,manageDaemon:false,protectedRelay:true});
+    return this.modelObservationClient.request('model/list',{},options);
+  }
 
   connect(): Promise<number> {
     if (this.closed) {
@@ -279,6 +289,11 @@ export class CodexAppServerClient {
   async close(options: { immediate?: boolean } = {}) {
     if (this.closed) return;
     this.closed = true;
+    const proof=this.modelObservationClient;this.modelObservationClient=null;
+    await Promise.all([proof?.close(options),this.closeConnection(options)]);
+  }
+
+  private async closeConnection(options: {immediate?:boolean}) {
     const connection = this.active;
     if (!connection) return;
     if (options.immediate) {

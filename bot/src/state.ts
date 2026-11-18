@@ -22,6 +22,7 @@ import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
 import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
 import {CodexAdmissionHolds,expiredCodexRunnerHolds} from './codex-admission-holds';
 import {sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState} from './codex-runtime-maintenance';
+import {isProcessIdentity} from './runtime-identity';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
@@ -5877,7 +5878,8 @@ export function recordCodexRuntimeMaintenanceProgress(runner:string,binding:Runt
     if(previous?.phase==='applied')return previous as Record<string,unknown>;
     if(result.phase==='applied'){
       const applied=result as unknown as RuntimeMaintenanceState;
-      if(!sameRuntimeMaintenanceBinding(applied.binding,binding)||!applied.replacement)throw new Error('Terminal maintenance proof does not match its retained action.');
+      if(!sameRuntimeMaintenanceBinding(applied.binding,binding)||!isProcessIdentity(applied.replacement)
+        ||applied.original!==undefined&&!isProcessIdentity(applied.original))throw new Error('Terminal maintenance proof does not match its retained action.');
       const held=db.query('SELECT recovery_json FROM codex_admission_holds WHERE holder=?').get(holder) as {recovery_json:string}|null;
       if(held){const recovery=JSON.parse(held.recovery_json);
         if(recovery.kind!=='runner-runtime-maintenance'||recovery.runner!==runner||!sameRuntimeMaintenanceBinding(recovery,binding))
