@@ -498,6 +498,44 @@ operation outcome and does not launch or submit twice. A different active sign-i
 provider is refused. If the runner restarts during sign-in, the pending operation becomes
 `interrupted`; the caller must start a new operation. If the runner is unreachable, the call has no
 answer and its outcome is unknown until the same operation ID is queried again.
+
+**A leftover sign-in command is reconciled at the runner's next successful start, and what became
+of it is always recorded.** That is the guarantee; it is deliberately not "a sign-in never
+outlives its operation", because a leftover does live from the runner's death until its next
+start, and an identity that cannot be proven is left running on purpose.
+
+The journal records which process the sign-in is, by `runtime-identity`'s pid, boot and start
+time, from the moment the command exists and only while the operation is active; a terminal
+operation's row carries no process. At start, an operation that was active in the previous run is
+reconciled before it is recorded, and its own detail is written by what actually became of the
+process:
+
+- **Proven alive:** the group's members are read first, each by its own identity, while the
+  leader still lives and the group is therefore provably this sign-in's. The group is signalled,
+  then each member that ignored it is forced on its own identity, and only then does the detail
+  say the command has been ended. Until that is established the detail says ending is under way,
+  and a member that survives both signals leaves the detail saying so and logs
+  `provider_signin_leftover_survived`. The claim is about the provider CLI, not the shell that
+  ran it: a CLI that ignores `SIGTERM` outlives a shell that does not, which a review reproduced
+  on 2026-11-17 against an earlier version of this code that reported success anyway.
+- **Already gone:** nothing is signalled and nothing is claimed.
+- **Identity not provable:** nothing is signalled, and the detail says the leftover could not be
+  established. A reused process id would otherwise name a stranger.
+
+The **first** signal goes to the group, because a shell runs the provider CLI, and the group form
+is used only on proof that the process leads its own group — the runner's children otherwise
+share the runner's group, which is every agent session on the machine. **Every escalation after
+it addresses exactly one process**, each recorded member on its own proven identity, through a
+separate single-process call rather than the group one. Two reasons: after the leader exits the
+group number is no longer provably this sign-in's, and a member can gain group followers after it
+was recorded, so its own identity is the only thing that stays proven. The live-runner teardown
+follows the same rule.
+
+This cannot be left to the unit's cgroup: `remote-box-concierge-runner.service` is
+`KillMode=process` so release restarts keep the long-lived children it means to own, and on
+2026-11-06 a `claude auth login` outlived its interrupted operation by eleven days and many
+restarts. `bot/scripts/provider-signin-leftover-fixture.ts` proves each branch against real
+processes, including the shell that exits while its CLI ignores the signal.
 When runner readings or an exact runner turn refusal show a saved Claude login has stopped working,
 the owner creates the existing Mac-browser renewal request for that account; it does not try the
 owner's local Claude home. A Codex turn refusal likewise names the account that actually ran.
