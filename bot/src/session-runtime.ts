@@ -30,7 +30,7 @@ import {providerAccountUsage} from './provider-account-usage';
 import {startBackgroundJobWatch} from './background-waits';
 import {startUpdateWaitWatch} from './update-wait-notices';
 import {startMachineWatchWorker,wakeWatchWorker} from './watches';
-import {claimAdoptableExecutions,forgetTrackedHostedExecutionsOfTurn,hostedTurns,watchHeldExecution,type Adoption} from './executions';
+import {claimAdoptableExecutions,forgetTrackedHostedExecutionsOfTurn,hostedTurns,releaseSettledExecutionsAfterServing,watchHeldExecution,type Adoption} from './executions';
 import {interruptOrphanedTurn,failUnacknowledgedClaudeParkedTurns} from './state';
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
 import {moveStandingRolesOffSpentProviders} from './standing-role-provider-failover';
@@ -132,6 +132,10 @@ export async function startSessionRuntime() {
   const wake=()=>{queue.wake();communication.wake();peers?.wake();projectSetup.wake();peerLinks.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
   const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null);
   host.markOwnerServing();
+  setImmediate(() => {
+    if (!draining) void releaseSettledExecutionsAfterServing(() => draining)
+      .catch(error => log('warn','settled_execution_cleanup_failed',errorFields(error)));
+  });
   // Retained pause intent outlives the coordinator and a sleeping peer. Reissue native
   // cancellation after execution-host adoption, and deliver the latest generation on contact.
   void host.owner.syncGlobalPausePeers();

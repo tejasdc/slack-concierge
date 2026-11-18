@@ -361,10 +361,6 @@ export async function claimAdoptableExecutions(input: { instanceId: string; only
     adopted.push({ execution, claim, processor: JSON.parse(execution.processor_json), mode });
   }
   if (adopted.length || held.length) executionChanged();
-  if (!input.onlyParked) {
-    await releaseSettledExecutions();
-    await retireFinishedHostJobs();
-  }
   return { adopted, held };
 }
 
@@ -401,13 +397,25 @@ export function watchHeldExecution(held: HeldExecution, handlers: {
 }
 
 /** Hosts still holding the record of a run whose turn has already settled let it go. */
-async function releaseSettledExecutions() {
+export async function releaseSettledExecutionsAfterServing(shouldStop: () => boolean) {
   // Match the existing partial index's predicate before narrowing to settled-host states.
-  // Otherwise SQLite scans every historical released execution during owner recovery.
+  // Otherwise SQLite scans every historical released execution during cleanup.
   const settled = db.query(`SELECT e.* FROM executions e JOIN turns t ON t.id=e.turn_id
       WHERE e.state IN ('intended','live','exited') AND e.state IN ('live','exited')
         AND (t.status NOT IN ('running','delivering') OR t.dispatch_attempt<>e.dispatch_attempt)`).all() as ExecutionRow[];
-  for (const execution of settled) await releaseExecution(execution);
+  for (const execution of settled) {
+    if (shouldStop()) return;
+    // A result may settle while this pass awaits another runner. Check current custody
+    // before each release so a stale snapshot cannot release a newly running attempt.
+    const eligible = db.query(`SELECT 1 FROM executions e JOIN turns t ON t.id=e.turn_id
+      WHERE e.execution_id=? AND e.dispatch_attempt=? AND e.state IN ('live','exited')
+        AND (t.status NOT IN ('running','delivering') OR t.dispatch_attempt<>e.dispatch_attempt)`)
+      .get(execution.execution_id, execution.dispatch_attempt);
+    if (!eligible) continue;
+    try { await releaseExecution(execution); }
+    catch (error) { log('warn', 'settled_execution_release_failed', { execution_id: execution.execution_id, ...errorFields(error) }); }
+  }
+  if (!shouldStop()) await retireFinishedHostJobs();
 }
 
 /**
