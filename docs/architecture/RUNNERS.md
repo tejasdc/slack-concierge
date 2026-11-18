@@ -511,6 +511,14 @@ Codex reset-credit redemption also runs on the runner after the owner sends the 
 a one-use operation ID. The runner returns its provider outcome; the owner remains responsible for
 clearing stale usage evidence and releasing held work only after a confirming reading.
 
+Source-bound runtime maintenance uses the same journal but no account change.
+`accounts.codex.runtimeMaintenance.observe` accepts its exact retained binding and returns
+`{applied,verified,detail?}`: `applied` is the historical terminal result or null for unfinished
+work, while `verified` requires its exact live masked replacement and provider API proof.
+This read never progresses, reserves, writes, signals or starts anything. Older runners refuse
+the distinct method. The owner atomically saves terminal action completion and releases only
+its exact holder; see [runtime maintenance](../runbooks/CODEX-APP-SERVER.md#source-bound-runtime-maintenance).
+
 Codex account activation uses `accounts.codex.activate` with an operation ID. The owner wrapper
 holds Codex admission under that activation's identity and refuses the switch while an active-turn
 count is nonzero or unreadable, including turns observed from another Codex client. App Server
@@ -522,6 +530,7 @@ after a lost reply, the durable holder stays until the runner proves the App Ser
 runner environment. A call that failed before sending leaves no replacement to reconcile. The
 runner checks an already managed, same-account App Server without requiring all hosted turns to
 finish; only a stop and restart needs an idle runner.
+
 The runner holds its App Server auto-start, moves only credential files, restarts its own daemon and
 asks that daemon to refresh and report the requested account. It rolls back on a definite failure;
 an unconfirmed rollback is durably `uncertain` and blocks another switch until reconciled. Repeating

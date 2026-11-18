@@ -21,6 +21,7 @@ import { quietOnlyAdmits } from './quiet-hours';
 import { OWNER_DRAIN_WITHDRAWAL_REASON } from './runner-leases';
 import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
 import {CodexAdmissionHolds} from './codex-admission-holds';
+import {sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState} from './codex-runtime-maintenance';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
@@ -5840,6 +5841,47 @@ export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdm
 export function codexAdmissionRecoveryHolds():Array<{holder:string;recovery:CodexAdmissionRecovery}>{
   return (db.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[])
     .flatMap(row=>{try{const recovery=JSON.parse(row.recovery_json);return recovery&&typeof recovery.runner==='string'?[{holder:row.holder,recovery}]:[];}catch{return [];}});
+}
+
+function retainedRuntimeMaintenanceAction(runner:string,binding:RuntimeMaintenanceBinding){
+  const row=db.query("SELECT id,payload_json,receipt_json,source_input_id,source_run_id FROM session_inputs WHERE scope=? AND action_id=? AND kind='action' AND origin='agent'")
+    .get(`communication:${binding.sourceInputId}`,binding.actionId) as {id:string;payload_json:string;receipt_json:string|null;source_input_id:string;source_run_id:string}|null;
+  const payload=row?JSON.parse(row.payload_json):null;
+  if(!row||payload?.kind!=='codex-runtime-maintenance'||payload.runner!==runner||!sameRuntimeMaintenanceBinding(payload.binding,binding)
+    ||row.source_input_id!==binding.sourceInputId||row.source_run_id!==binding.sourceRunId)
+    throw new Error('The retained maintenance action cannot change its source, runner or release.');
+  return row;
+}
+export function codexRuntimeMaintenanceReceipt(runner:string,binding:RuntimeMaintenanceBinding):Record<string,unknown>|null{
+  const row=retainedRuntimeMaintenanceAction(runner,binding);
+  return row.receipt_json?JSON.parse(row.receipt_json):null;
+}
+
+/** Direct and automatic progress share one monotonic receipt/hold commit. Publish only afterwards. */
+export function recordCodexRuntimeMaintenanceProgress(runner:string,binding:RuntimeMaintenanceBinding,result:Record<string,unknown>){
+  const holder=`codex:runner-runtime-maintenance:${runner}:${binding.operationId}`;
+  let released=false;
+  const retained=db.transaction(()=>{
+    const row=retainedRuntimeMaintenanceAction(runner,binding);
+    const previous=row.receipt_json?JSON.parse(row.receipt_json):null;
+    if(previous?.phase==='applied')return previous as Record<string,unknown>;
+    if(result.phase==='applied'){
+      const applied=result as unknown as RuntimeMaintenanceState;
+      if(!sameRuntimeMaintenanceBinding(applied.binding,binding)||!applied.replacement)throw new Error('Terminal maintenance proof does not match its retained action.');
+      const held=db.query('SELECT recovery_json FROM codex_admission_holds WHERE holder=?').get(holder) as {recovery_json:string}|null;
+      if(held){const recovery=JSON.parse(held.recovery_json);
+        if(recovery.kind!=='runner-runtime-maintenance'||recovery.runner!==runner||!sameRuntimeMaintenanceBinding(recovery,binding))
+          throw new Error('The maintenance admission holder has different recovery custody.');
+      }
+    }
+    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(result),row.id);
+    if(result.phase==='applied'){
+      db.query('DELETE FROM codex_admission_holds WHERE holder=?').run(holder);released=true;
+    }
+    return result;
+  })();
+  if(released){codexAdmissionHolders.set(holder,false);executionChanged();}
+  return retained;
 }
 
 function claimableQueuedTurnParameters(nowMs:number,activeSessionIds:readonly number[],survivable:ReturnType<typeof survivableRunKinds>|null) {
