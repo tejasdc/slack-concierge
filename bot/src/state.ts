@@ -5827,6 +5827,7 @@ for(const row of db.query('SELECT holder,recovery_json FROM codex_admission_hold
   let recovery:unknown;try{recovery=JSON.parse(row.recovery_json);}catch{}
   codexAdmissionHolders.set(row.holder,true,recovery);
 }
+if(codexAdmissionHolders.isHeld)log('warn','codex_admission_holders_restored',{holders:codexAdmissionHolders.names});
 export type CodexAdmissionRecovery={kind:'runner-activation';runner:string;account:string;operationId:string}|{kind:'runner-rehome';runner:string}
   |{kind:'runner-runtime-maintenance';runner:string;operationId:string;sourceInputId:string;sourceRunId:string;actionId:string;requiredCommit:string};
 export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdmissionRecovery){
@@ -5835,6 +5836,9 @@ export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdm
       .run(holder,JSON.stringify(recovery),Date.now());
   }
   const changed=codexAdmissionHolders.set(holder,held,recovery);
+  // Every change names the whole holder set: on 2026-11-17 Codex admission stayed closed for an
+  // hour and the journal could not say which holder kept it.
+  if(changed)log('info','codex_admission_holders_changed',{holder,held,durable:!!recovery,holders:codexAdmissionHolders.names});
   if(!held){db.query('DELETE FROM codex_admission_holds WHERE holder=?').run(holder);if(changed)executionChanged();}
 }
 /** Release runner holds past their bound (see CODEX_RUNNER_HOLD_BOUND_MS); returns what it released. */

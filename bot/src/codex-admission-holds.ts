@@ -11,6 +11,7 @@ export class CodexAdmissionHolds {
     return this.holders.delete(holder);
   }
   get isHeld():boolean{return this.holders.size>0;}
+  get names():string[]{return [...this.holders.keys()];}
   get isOutsideHeld():boolean{return [...this.holders.values()].some(sharedRuntimeOnly=>!sharedRuntimeOnly);}
 }
 

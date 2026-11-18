@@ -1,7 +1,7 @@
 ---
 failure: Every new server Codex turn sat "queued" with no explanation for over an hour while the Codex re-home repair waited for long-running turns to finish.
 date: 2026-11-17
-fix_commits: []
+fix_commits: [3afae032]
 cause_status: confirmed in code; the exact origin of the retained holder row was not readable from the investigating runner shell
 ---
 
@@ -44,9 +44,15 @@ server is never. The queued receipts had no status for an admission hold, so nob
 - A queued Codex input behind a durable holder shows `CODEX_ADMISSION_HELD` with a plain message and
   `clearsAt`, computed from the ledger so the owner and the presentation worker agree.
 
-Releasing the wedge needed no manual ledger edit: installing this release restarts the owner, whose
-start-up sweep releases the expired holder; running turns are untouched and queued inputs keep
-their identity.
+Releasing the wedge needed no manual ledger edit: installing release 5f6d544a at 01:22:57Z on
+November 18 restarted the owner and queued Codex work started (concierge:7302, 9680 and 10069 ran
+and completed); running turns 10028 and 8756 were untouched. The new owner logged
+`codex_unmanaged_server_repair_waiting` with `admission:"open"` and no `codex_admission_hold_expired`,
+so no aged durable holder row survived: the holder that kept admission closed in the old process was
+held in memory only, and the journal never named it. The hold-before-count ordering above is a
+proven way to close admission while waiting; whether it was that holder this time is unconfirmed.
+A follow-up commit logs every holder-set change (`codex_admission_holders_changed`) and any holders
+restored at start (`codex_admission_holders_restored`), so the next occurrence names its holder.
 
 ## Acceptance scenario
 
