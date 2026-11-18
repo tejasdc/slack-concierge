@@ -246,7 +246,7 @@ import { legacyProgressChunks, progressActivityIdAfterChunks, type SlackAgentPro
 import { beginAgentProgressMessages, createProgressMessageClient, hasAgentProgressMessages, queueAgentProgressMessages, projectAgentProgressMessages } from "./agent-progress-messages";
 import { handleAgentSessionStop } from "./agent-session-stop";
 import { GHOST_TURN_INTERRUPT_AGE_MS, reconcileRecoverableTurns, sweepGhostRunningTurns } from "./turn-recovery";
-import { claimAdoptableExecutions, forgetTrackedHostedExecutionsOfTurn, hostedTurns, watchHeldExecution, type Adoption } from "./executions";
+import { claimAdoptableExecutions, forgetTrackedHostedExecutionsOfTurn, hostedTurns, releaseSettledExecutionsAfterServing, watchHeldExecution, type Adoption } from "./executions";
 import { beginRunnerTurnDrain } from "./runner-host-access";
 import { interruptOrphanedTurn, observeExecutionChanges } from "./state";
 import {recoverExhaustedClaudeWork} from './provider-exhaustion-recovery';
@@ -4041,7 +4041,9 @@ async function reconcilePriorInstanceTurns() {
 // One in-flight pass is owned by the reader itself, so a credential change and this
 // watch cannot start competing reads of the same accounts. Each reading is followed by the
 // forecast check, which is what turns a number on a screen into a warning before the wall.
-startProviderUsageWatch({ stopped: () => draining, urgent: bankedUpkeep.hasActiveUnattendedBanked, onReading: () => { bankedUpkeep.onReading(); void keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission), (requestId, replacedBy) => sessionCommunication?.withdrawSupersededAttempt(requestId, replacedBy) ?? false).catch(error => log('error','inbox_recovery_pass_failed',errorFields(error))); reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); moveStandingRolesOffSpentProviders(); moveHeldWork(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); void closeQuestionsAnsweredByTodos((admission) => sessionExecutionHost.owner.admit(admission)).catch(() => {}); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
+function startServingProviderUsageWatch() {
+  startProviderUsageWatch({ stopped: () => draining, urgent: bankedUpkeep.hasActiveUnattendedBanked, onReading: () => { bankedUpkeep.onReading(); void keepThreadsCurrent((admission) => sessionExecutionHost.owner.admit(admission), (requestId, replacedBy) => sessionCommunication?.withdrawSupersededAttempt(requestId, replacedBy) ?? false).catch(error => log('error','inbox_recovery_pass_failed',errorFields(error))); reconcileCoveredTasteRequest(); recoverOctoberBudgetPauses(); recoverExhaustedClaudeWork(); moveStandingRolesOffSpentProviders(); moveHeldWork(); wakeDeferredQuestions(Date.now(), (admission) => sessionExecutionHost.owner.admit(admission)); void closeQuestionsAnsweredByTodos((admission) => sessionExecutionHost.owner.admit(admission)).catch(() => {}); publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); refreshUsageBreakdownIfStale(); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
+}
 const stopBackgroundJobWatch = startBackgroundJobWatch(admission => sessionExecutionHost.owner.admit(admission));
 const stopUpdateWaitWatch = startUpdateWaitWatch({admit: admission => sessionExecutionHost.owner.admit(admission), stateDir: process.env.CONCIERGE_STATE_DIR!});
 const stopWatchWorker = startMachineWatchWorker(admission => sessionExecutionHost.owner.admit(admission), () => draining);
@@ -4372,6 +4374,11 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             const wakeOwnerPaths=()=>{sessionTurnQueue?.wake();sessionCommunication?.wake();sessionPeers?.wake();projectSetup.wake();peerLinks.wake();wakeWatchWorker();return ['turn-queue','request-delivery','peers','project-setup','watches'];};
             routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner,peering.listen?{...peering.listen,token:peering.token!,onContact:()=>{projectSetup.wake();peerLinks.wake();}}:null));
             sessionExecutionHost.markOwnerServing();
+            startServingProviderUsageWatch();
+            setImmediate(() => {
+              if (!draining) void releaseSettledExecutionsAfterServing(() => draining)
+                .catch(error => log('warn', 'settled_execution_cleanup_failed', errorFields(error)));
+            });
             await sessionExecutionHost.owner.refreshGlobalPauseFromOwner(true);
             void sessionExecutionHost.owner.syncGlobalPausePeers();
             const globalPauseReconcile=setInterval(()=>void sessionExecutionHost.owner.syncGlobalPausePeers(),5_000);
