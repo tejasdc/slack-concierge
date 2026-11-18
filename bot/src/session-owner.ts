@@ -245,6 +245,17 @@ export function inputHold(input:AcceptedSessionInput):InputStatusDetail|null {
   return ['PROVIDER_AUTH_HELD','PROVIDER_USAGE_HELD'].includes(detail.code)||!detail.automaticRetry?detail:null;
 }
 
+/**
+ * Why an open request's accepted input is not running yet, whatever the reason, for the
+ * request's own status (`sessions get`). `inputHold` above is the narrower set worth an
+ * immediate notice; a requester reading the status is owed every known reason and its time.
+ */
+export function inputWaitDetail(input:AcceptedSessionInput):InputStatusDetail|null {
+  const observed=readInputExecution(input);
+  if(!['queued','waiting','running'].includes(observed.state))return null;
+  return inputStatusDetail(input,observed,input.receipt_json?JSON.parse(input.receipt_json):{});
+}
+
 /** The words a sender reads about a hold, the same from a local or a peer recipient. */
 export function heldRequestNotice(hold:InputStatusDetail):string {
   return hold.message;

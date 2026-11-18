@@ -39,6 +39,12 @@ export function providerTroubleText(status:number|null,offer:OutageFact=null):st
   return 'Claude’s API call failed.';
 }
 
+/** ChatGPT's own words for why nothing was sent, without its code prefix, or null. */
+function chatGptHoldReason(reason:string):string|null {
+  const match=/\bCHATGPT_[A-Z_]+:\s*(.+)$/s.exec(reason.replace(/^(?:ProviderDispatchError|ChatGptDispatchError|Error):\s*/,''));
+  return match?match[1]!.trim().replace(/\s+/g,' ').slice(0,300):null;
+}
+
 export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTurn|null;steering:StatusSteering|null;state:string},
   saved:any,context:StatusContext):InputStatusDetail|null {
   const {turn,steering,state}=observed;
@@ -117,12 +123,17 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     if(turn.dispatch_hold==='release_pace')return {code:'RETRY_SCHEDULED',message:when
       ?`${product} can take work again. Held work restarts a few sessions at a time so the server is not swamped; ${waitingWork.toLowerCase()} starts at ${when}.`
       :`${product} can take work again, and ${waitingWork.toLowerCase()} is starting now.`,clearsAt:next,automaticRetry:true};
+    if(/\bCHATGPT_PRO_LIMIT_REACHED\b/.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
+      ?`ChatGPT Pro’s usage limit is reached, so nothing was sent. ChatGPT reports it resets at ${when}; ${waitingWork.toLowerCase()} is kept and is sent then by itself.`
+      :`ChatGPT Pro’s usage limit is reached, so nothing was sent. ${waitingWork} is kept and is sent when the limit resets.`,clearsAt:next,automaticRetry:true};
     if(turn.dispatch_hold==='usage'||context.continuationRefusal(turn.id)==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
       ?`No ${product} account available on this machine has room now. The earliest reported reset is ${when}; Concierge will check again then. ${waitingWork} is kept here and will run when an account on this machine is ready.`
       :`No ${product} account available on this machine has room now, and none has reported a reset time. ${waitingWork} is kept here and will run when an account on this machine is ready.`,clearsAt:next,automaticRetry:true};
     const again=when?`at ${when}`:'now';
     if(isModelCapacityRefusal(reason))return {code:'RETRY_SCHEDULED',message:`${product} says its model is at capacity right now. ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
+    const chatGpt=chatGptHoldReason(reason);
     return {code:'RETRY_SCHEDULED',message:status?`${providerTroubleText(status,context.outage(turn.id))} ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`
+      :chatGpt?`ChatGPT did not take it yet: ${chatGpt} ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`
       :`${product} is not answering right now. ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
   }
   if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',message:`This account could not sign in. ${waitingWork} is kept and will start automatically after this machine can use its credentials again.`,clearsAt:null,automaticRetry:true};

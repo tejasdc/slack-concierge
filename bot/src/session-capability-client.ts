@@ -211,9 +211,21 @@ export class ChatGptDispatchError extends ProviderDispatchError {
     super({ message: evidence.message,
       failureClass: !evidence.uncertain && ["CHATGPT_NOT_SENT", "CHATGPT_SEND_FAILED"].includes(evidence.code) ? "retryable" : "parked_terminal",
       terminalConfirmed: !evidence.uncertain,
+      // A proven-unsent Pro limit names its reset: the turn is held until then as a usage wait
+      // instead of being retried every minute while nothing can be sent (2026-11-17).
+      clearsAtMs: !evidence.uncertain && ["CHATGPT_NOT_SENT", "CHATGPT_SEND_FAILED"].includes(evidence.code)
+        ? chatGptLimitResetMs(evidence.message) : null,
       providerSessionId: binding?.sessionId, providerTurnId: turnId });
     this.name = "ChatGptDispatchError";
   }
+}
+
+/** The reset instant Thinkering reports with CHATGPT_PRO_LIMIT_REACHED, or null. */
+export function chatGptLimitResetMs(message: string): number | null {
+  if (!/\bCHATGPT_PRO_LIMIT_REACHED\b/.test(message)) return null;
+  const reset = /usage limit reached; resets (\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:?\d\d))/i.exec(message)?.[1];
+  const ms = reset ? Date.parse(reset) : NaN;
+  return Number.isFinite(ms) ? ms : null;
 }
 
 const providerPath = "/session-capabilities/v1/provider/";
