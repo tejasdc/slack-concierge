@@ -848,6 +848,11 @@ addColumn("channels", "canvas_id", "canvas_id TEXT");
 addColumn("channels", "canvas_projected_commit", "canvas_projected_commit TEXT");
 addColumn("channels", "list_id", "list_id TEXT");
 addColumn("canvas_project_ensures", "title_clock", "title_clock INTEGER NOT NULL DEFAULT 0");
+// Prepared Canvas binding: the last confirmed server and Mac paths, so status reads never wait on them.
+addColumn("canvas_project_ensures", "server_cwd", "server_cwd TEXT");
+addColumn("canvas_project_ensures", "server_checked_at_ms", "server_checked_at_ms INTEGER");
+addColumn("canvas_project_ensures", "mac_path", "mac_path TEXT");
+addColumn("canvas_project_ensures", "mac_checked_at_ms", "mac_checked_at_ms INTEGER");
 addColumn("channels", "list_title_column_id", "list_title_column_id TEXT");
 addColumn("channels", "list_completed_column_id", "list_completed_column_id TEXT");
 addColumn("channels", "list_access_level", "list_access_level TEXT");

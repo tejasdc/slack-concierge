@@ -7,7 +7,7 @@ import {db,getSessionById} from './state';
 import {projectTemplate,type ProjectTemplate} from './project-templates';
 import {projectSetupJobId} from './runner-project-setup';
 import {runnerLedger} from './runner-ledger';
-import {runnerMachineCall} from './runner-machine-calls';
+import {runnerMachineCall,RunnerUnreachableError} from './runner-machine-calls';
 import {ledgerDurable} from './ledger-durability-barrier';
 import {containingProject,sessionProject} from './session-projects';
 import {standingAgentSession} from './standing-agents';
@@ -32,7 +32,10 @@ export const PROJECT_FOLDERS_OPERATION='project.setup.placement.v1';
 export const PROJECT_NESTED_EXPERTISE_OPERATION='project.setup.expertise.v1';
 const GROUP=/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const LAB_EXPERTISE_GROUP='agent-ecology/expertise';
-type CanvasEnsureRow={board_id:string;client_action_id:string;project:string;inside:string|null;title:string;title_clock:number;purpose:string;template:string;state:'awaiting_policy'|'creating'|'ready'|'failed';policy_revision_id:string|null;created_project:number;error:string|null;created_at_ms:number;updated_at_ms:number};
+type CanvasEnsureRow={board_id:string;client_action_id:string;project:string;inside:string|null;title:string;title_clock:number;purpose:string;template:string;state:'awaiting_policy'|'creating'|'ready'|'failed';policy_revision_id:string|null;created_project:number;error:string|null;created_at_ms:number;updated_at_ms:number;
+  server_cwd:string|null;server_checked_at_ms:number|null;mac_path:string|null;mac_checked_at_ms:number|null};
+// A status read answers from the prepared binding; a background check re-confirms it after this age.
+const CANVAS_BINDING_RECHECK_MS=60_000;
 type CanvasPolicyRow={revision_id:string;group_name:string;template:string;consultation_request_id:string;source_session_id:number;source_input_id:string;source_run_id:string;created_at_ms:number};
 const canvasBoard=(value:unknown)=>{
   if(typeof value!=='string'||!value.trim()||value.length>200||/[\r\n\0]/.test(value))throw new Error('Canvas identity is invalid.');
@@ -177,6 +180,8 @@ export class ProjectSetup {
   private running=false;
   private readonly localOperations=new Map<string,Promise<unknown>>();
   private readonly canvasLocalReadiness=new Map<string,Promise<void>>();
+  private readonly canvasBindingChecks=new Map<string,Promise<void>>();
+  private readonly canvasBindingQueued=new Map<string,Promise<void>>();
   private readonly sending=new Set<string>();
   private readonly receiving=new Set<string>();
   constructor(private readonly workspace:string,private readonly self:string,private readonly clients:Map<string,PeerClient>,private readonly owner:()=>SessionOwner,private readonly onRecorded?:()=>void){}
@@ -351,31 +356,71 @@ export class ProjectSetup {
     }
     throw new Error('No unique project name is available for this Canvas identity.');
   }
-  private async peerProjectPath(peer:string,project:string,inside:string|null){
+  // A peer path is a fact only when that peer's catalogue answered: null means it answered without the
+  // project, undefined means it could not answer (asleep, unreachable), so the last confirmed fact stands.
+  private async peerProjectPath(peer:string,project:string,inside:string|null):Promise<string|null|undefined>{
     const client=this.clients.get(peer);if(!client)return null;
-    try{
-      const root=(await client.request<{projects?:Array<{name:string;cwd:string}>}>('GET','/sessions/v1/projects',undefined,5000)).projects?.find(item=>item.name===project);
-      if(!root)return null;
-      if(!inside)return root.cwd;
-      await client.request('GET',`/sessions/v1/projects/${encodeURIComponent(project)}/files?path=${encodeURIComponent(inside)}`,undefined,5000);
-      return join(root.cwd,inside);
-    }
-    catch{return null;}
+    let root:{name:string;cwd:string}|undefined;
+    try{root=(await client.request<{projects?:Array<{name:string;cwd:string}>}>('GET','/sessions/v1/projects',undefined,5000)).projects?.find(item=>item.name===project);}
+    catch{return undefined;}
+    if(!root)return null;
+    if(!inside)return root.cwd;
+    try{await client.request('GET',`/sessions/v1/projects/${encodeURIComponent(project)}/files?path=${encodeURIComponent(inside)}`,undefined,5000);return join(root.cwd,inside);}
+    catch(error){return error instanceof PeerError&&error.status===404?null:undefined;}
   }
-  private async canvasView(row:CanvasEnsureRow){
-    const sessionName=row.inside?`${row.project}/${row.inside}`:row.project;
-    const local=await this.projectLocation(sessionName).catch(()=>null);
+  private macPathExpected(row:CanvasEnsureRow){
     const order=(db.query("SELECT state FROM project_setup_orders WHERE project=? AND peer='mac' ORDER BY created_at_ms DESC,rowid DESC LIMIT 1").get(row.project) as {state:string}|null)?.state??null;
-    const explicit=row.policy_revision_id===null&&!row.created_project;
-    const macPath=explicit||order==='done'||order==='already_present'?await this.peerProjectPath('mac',row.project,row.inside):null;
+    return {order,expected:row.policy_revision_id===null&&!row.created_project||order==='done'||order==='already_present'};
+  }
+  // Re-confirms one board's server and Mac paths off the read path and stores them. Setup, Mac setup
+  // results, peer contact and owner start call it, so a status read never waits on the runner or Mac.
+  // A check asked for while one runs follows it, so a transition is never answered by a check that began before it.
+  private checkCanvasBinding(board:string){
+    const queued=this.canvasBindingQueued.get(board);if(queued)return queued;
+    const underway=this.canvasBindingChecks.get(board);
+    if(underway){
+      const next=underway.then(()=>{this.canvasBindingQueued.delete(board);return this.checkCanvasBinding(board);});
+      this.canvasBindingQueued.set(board,next);return next;
+    }
+    const check=(async()=>{
+      const row=this.canvasRow(board);if(!row)return;
+      const sessionName=row.inside?`${row.project}/${row.inside}`:row.project;
+      let server:string|null|undefined;
+      try{server=(await this.projectLocation(sessionName)).cwd;}
+      catch(error){server=error instanceof RunnerUnreachableError?undefined:null;}
+      const mac=this.macPathExpected(row).expected?await this.peerProjectPath('mac',row.project,row.inside):null;
+      const now=Date.now();
+      if(server!==undefined)db.query('UPDATE canvas_project_ensures SET server_cwd=?,server_checked_at_ms=? WHERE board_id=?').run(server,now,board);
+      if(mac!==undefined)db.query('UPDATE canvas_project_ensures SET mac_path=?,mac_checked_at_ms=? WHERE board_id=?').run(mac,now,board);
+      if(server!==row.server_cwd&&server!==undefined||mac!==row.mac_path&&mac!==undefined)
+        log('info','canvas_project_binding_changed',{board_id:board,project:row.project,server_ready:server===undefined?null:!!server,mac_ready:mac===undefined?null:!!mac});
+    })().catch(error=>log('warn','canvas_project_binding_check_failed',{board_id:board,...errorFields(error)}))
+      .finally(()=>{if(this.canvasBindingChecks.get(board)===check)this.canvasBindingChecks.delete(board);});
+    this.canvasBindingChecks.set(board,check);return check;
+  }
+  private checkStaleCanvasBindings(){
+    const before=Date.now()-CANVAS_BINDING_RECHECK_MS;
+    for(const {board_id} of db.query('SELECT board_id FROM canvas_project_ensures WHERE server_checked_at_ms IS NULL OR server_checked_at_ms<=? OR mac_checked_at_ms IS NULL OR mac_checked_at_ms<=?').all(before,before) as {board_id:string}[])
+      void this.checkCanvasBinding(board_id);
+  }
+  private canvasView(row:CanvasEnsureRow){
+    const sessionName=row.inside?`${row.project}/${row.inside}`:row.project;
+    const {order,expected}=this.macPathExpected(row);
+    const local=row.server_cwd,macPath=expected?row.mac_path:null;
     const macState=macPath?'ready':order&&TERMINAL.has(order)?'unavailable':order||row.state==='creating'&&!!local?'pending':'unavailable';
     const state=local?'ready':row.state==='failed'?'failed':'pending';
     const created=!!row.created_project||!!row.policy_revision_id&&!!local;
     return {state,boardId:row.board_id,title:row.title,project:{name:row.project,inside:row.inside,sessionProject:sessionName,ownerId:this.self,
-      serverPath:local?.cwd??null,macPath,macState,
+      serverPath:local,macPath,macState,
       template:row.template,created},retryAfterMs:state==='pending'||row.state==='creating'||macState==='pending'?1000:null,policyRevisionId:row.policy_revision_id,error:row.error};
   }
-  async canvas(boardValue:unknown){const board=canvasBoard(boardValue),row=this.canvasRow(board);return row?this.canvasView(row):null;}
+  // Only a binding never confirmed (a board retained before prepared bindings) waits for its first check.
+  async canvas(boardValue:unknown){
+    const board=canvasBoard(boardValue);let row=this.canvasRow(board);if(!row)return null;
+    if(row.server_checked_at_ms===null){await this.checkCanvasBinding(board);row=this.canvasRow(board)!;}
+    else if(Math.min(row.server_checked_at_ms,row.mac_checked_at_ms??0)<=Date.now()-CANVAS_BINDING_RECHECK_MS)void this.checkCanvasBinding(board);
+    return this.canvasView(row);
+  }
   private async advanceCanvas(row:CanvasEnsureRow){
     if(row.state==='ready'||row.state==='failed'||row.inside)return;
     const policy=row.policy_revision_id?db.query('SELECT * FROM canvas_project_policies WHERE revision_id=?').get(row.policy_revision_id) as CanvasPolicyRow|null:this.canvasPolicy();
@@ -393,6 +438,7 @@ export class ProjectSetup {
     void operation.then(()=>{
       db.query("UPDATE canvas_project_ensures SET state='ready',created_project=?,error=NULL,updated_at_ms=? WHERE board_id=?")
         .run(1,Date.now(),row.board_id);
+      void this.checkCanvasBinding(row.board_id);
     },error=>{
       db.query("UPDATE canvas_project_ensures SET state=?,error=?,updated_at_ms=? WHERE board_id=?")
         .run(classify(error)==='permanent'?'failed':'creating',message(error).slice(0,1000),Date.now(),row.board_id);
@@ -420,21 +466,23 @@ export class ProjectSetup {
       }
     }
     if(!row){
-      let project:string,inside:string|null=null,state:'ready'|'awaiting_policy'='awaiting_policy',created=0;
+      let project:string,inside:string|null=null,state:'ready'|'awaiting_policy'='awaiting_policy',created=0,preparedServer:string|null=null;
       if(requestedExisting){
         const name=requestedExisting.name;inside=requestedExisting.inside;
         const requested=inside?`${name}/${inside}`:name,resolved=await this.projectLocation(requested);
         if(!resolved||resolved.project!==name)throw new Error('The existing Canvas project is not registered at that folder.');
-        project=name;state='ready';
+        project=name;state='ready';preparedServer=resolved.cwd;
       }else project=await this.canvasName(title,board);
       const purpose=canvasPurpose(title),now=Date.now(),policy=state==='ready'?null:this.canvasPolicy();
       db.query(`INSERT INTO canvas_project_ensures(board_id,client_action_id,project,inside,title,title_clock,purpose,template,state,policy_revision_id,created_project,created_at_ms,updated_at_ms)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(board,actionId,project,inside,title,titleClock,purpose,policy?.template??'writing',state==='ready'?'ready':policy?'creating':'awaiting_policy',policy?.revision_id??null,created,now,now);
+      if(preparedServer){db.query('UPDATE canvas_project_ensures SET server_cwd=?,server_checked_at_ms=? WHERE board_id=?').run(preparedServer,now,board);void this.checkCanvasBinding(board);}
       row=this.canvasRow(board)!;
     }
-    if(row.state==='ready')return this.canvasView(row);
-    if(row.state==='failed')return this.canvasView(row);
+    if(row.state==='ready'||row.state==='failed')return this.canvas(board);
     await this.advanceCanvas(row);
+    // Local creation just finished: confirm the new server path before answering the command.
+    await this.checkCanvasBinding(board);
     return this.canvasView(this.canvasRow(board)!);
   }
   setCanvasPolicy(input:unknown){
@@ -530,6 +578,7 @@ export class ProjectSetup {
     db.query('UPDATE project_setup_orders SET state=?,result_json=? WHERE order_id=?').run(outcome.state,JSON.stringify(outcome),row.order_id);
     log('info','project_setup_order_settled',{order_id:row.order_id,peer:row.peer,project:row.project,state:outcome.state,failure_class:outcome.failureClass??null,commit:outcome.commit??null});
     this.attemptReturn(row.order_id);
+    if(row.peer==='mac')for(const {board_id} of db.query('SELECT board_id FROM canvas_project_ensures WHERE project=?').all(row.project) as {board_id:string}[])void this.checkCanvasBinding(board_id);
     if(outcome.state==='refused'||outcome.state==='failed'&&outcome.failureClass==='permanent')this.notice(row,outcome.state,`Project ${row.project} could not be set up on ${machineName(row.peer)}: ${REASONS[outcome.reason??'']??outcome.reason??outcome.state}.`);
     this.onRecorded?.();
   }
@@ -570,7 +619,7 @@ export class ProjectSetup {
       }
     }finally{this.sending.delete(row.order_id);}
   }
-  wake(){if(this.running)return;this.running=true;queueMicrotask(async()=>{try{
+  wake(){this.checkStaleCanvasBindings();if(this.running)return;this.running=true;queueMicrotask(async()=>{try{
     for(const row of db.query("SELECT * FROM canvas_project_ensures WHERE state='awaiting_policy' OR (state='creating' AND updated_at_ms<=?) ORDER BY created_at_ms").all(Date.now()-30_000) as CanvasEnsureRow[])await this.advanceCanvas(row);
     for(const notice of db.query("SELECT order_id FROM project_setup_orders WHERE notice_kind LIKE 'pending:%'").all() as {order_id:string}[])await this.sendNotice(notice.order_id);
     for(const pending of db.query("SELECT order_id FROM project_setup_orders WHERE source_session_id IS NOT NULL AND state IN ('done','already_present','refused','failed','cancelled') AND return_input_id IS NULL").all() as {order_id:string}[])this.attemptReturn(pending.order_id);
