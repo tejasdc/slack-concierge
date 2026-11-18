@@ -19,6 +19,10 @@ nativeIdle=false;await progressRuntimeMaintenance(state,services);assert.equal(s
 state=structuredClone(durable);await progressRuntimeMaintenance(state,services);assert.equal(signals,3);assert.equal(starts,0);
 live=false;await progressRuntimeMaintenance(state,services);assert.equal(state.phase,'applied');assert.equal(starts,1);assert.equal(proofs,1);
 await progressRuntimeMaintenance(state,services);assert.equal(starts,1);assert.equal(proofs,2);
+const applied=structuredClone(state),terminalStarts=starts,terminalSignals=signals;
+await assert.rejects(progressRuntimeMaintenance(state,{...services,snapshot:async()=>null}),/replacement/);
+assert.deepEqual(state,applied,'failed terminal health observation cannot regress completion');
+assert.equal(starts,terminalStarts);assert.equal(signals,terminalSignals);
 // Lost successful start response reconciles the existing masked replacement without another start.
 masked=false;state={binding,phase:'draining',original:old};
 await progressRuntimeMaintenance(state,{...services,start:async()=>{starts++;masked=true;throw new Error('response lost');}});
@@ -57,8 +61,9 @@ try{
   coordinator.authority=(actor:unknown)=>({actor,scope:'work'});
   process.env.CONCIERGE_CODEX_RUNNER='owned-runner';
   const input={source:{input_id:accepted.id,run_id:'owned-run'},action_id:'stable-maintenance',required_commit:'b'.repeat(40)};
-  const waiting=await coordinator.codexMaintenance(input);assert.equal(waiting.phase,'waiting');
-  assert.equal((db.query('SELECT COUNT(*) AS count FROM codex_admission_holds').get() as {count:number}).count,1);
+  const unconfirmed=await coordinator.codexMaintenance(input);assert.equal(unconfirmed.phase,'uncertain');
+  assert.equal((db.query('SELECT COUNT(*) AS count FROM codex_admission_holds').get() as {count:number}).count,0,
+    'an unavailable terminal observer cannot authorize progress or recreate a hold for an effect that may already be applied');
   await assert.rejects(coordinator.codexMaintenance({...input,required_commit:'c'.repeat(40)}),/Idempotency conflict/);
   // A terminal receipt retains the same payload identity even after its admission holder is gone.
   db.query('UPDATE session_inputs SET receipt_json=? WHERE scope=? AND action_id=?').run(JSON.stringify({phase:'applied'}),`communication:${accepted.id}`,input.action_id);
@@ -69,9 +74,9 @@ try{
   // A fresh live run in the same worker session reads/progresses the retained effect identity.
   const resumedTurn=(db.query("INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status) VALUES(?,?,?,'running') RETURNING id").get(session.id,'resumed','Resume exact retained effect') as {id:number}).id;
   coordinator.actor=()=>({turn:resumedTurn,session:session.id,inputId:'resumed-worker-input'});
-  const resumedInput={...input,action_id:'read-retained',resume_operation:waiting.operationId};
+  const resumedInput={...input,action_id:'read-retained',resume_operation:unconfirmed.operationId};
   const resumed=await coordinator.codexMaintenance(resumedInput);
-  assert.equal(resumed.phase,'applied');assert.equal(resumed.operationId,waiting.operationId);assert.equal(resumed.duplicate,true);
+  assert.equal(resumed.phase,'applied');assert.equal(resumed.operationId,unconfirmed.operationId);assert.equal(resumed.duplicate,true);
   await assert.rejects(coordinator.codexMaintenance({...resumedInput,required_commit:'c'.repeat(40)}),/Idempotency conflict/);
   coordinator.actor=()=>({turn:resumedTurn,session:session.id+1,inputId:'other-worker-input'});
   await assert.rejects(coordinator.codexMaintenance(resumedInput),/no such retained/);

@@ -958,7 +958,6 @@ export class SessionCommunicationCoordinator {
           payload:{kind:'codex-runtime-maintenance',runner,binding},sourceInputId:actor.inputId,sourceRunId});
         if(retained.input.receipt_json){const receipt=JSON.parse(retained.input.receipt_json);if(receipt.phase==='applied')return {...receipt,operationId:binding.operationId,actionInputId:retained.input.id,duplicate:true};}
         const result=await progressRunnerCodexRuntimeMaintenance(runner,binding);
-        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(result),retained.input.id);
         return {...result as Record<string,unknown>,operationId:binding.operationId,actionInputId:retained.input.id};
     }
     private owedRunning(input:{provider:string;provider_session_id:string;run_id?:string}):OwedRunning|null {
