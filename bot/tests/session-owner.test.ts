@@ -120,7 +120,7 @@ test('Stop cancels only its run while Inbox requests continue the same provider 
       expect(next.input.id).toBe(request.target_input_id);
       expect(next.claim.session_id).toBe(before.id);
       const call=calls.at(-1)!;
-      expect(call).toMatchObject({sessionUUID:before.agent_session_uuid,cwd:'/tmp',model:'gpt-6-astra',reasoning_effort:'xhigh'});
+      expect(call).toMatchObject({sessionUUID:before.agent_session_uuid,cwd:'/tmp',model:'gpt-6.2-astra',reasoning_effort:'xhigh'});
       expect(nativeMessage(call.prompt).input).toMatchObject({origin:'agent',provenance:{effectScope:'work',
         source:{inputId:source.input_id,runId:source.run_id,sessionId:inbox.inbox.sessionId},
         originatingHuman:{inputId:source.input_id,captureId:inbox.item.captureId}}});

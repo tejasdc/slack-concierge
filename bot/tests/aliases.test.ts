@@ -28,7 +28,7 @@ describe("provider aliases", () => {
     expect(selectProviderForComparison({ sourceProvider: "claude-code" })).toEqual({
       alias: "cx",
       provider: "codex",
-      model: "gpt-6-astra",
+      model: "gpt-6.2-astra",
       reasoning_effort: "medium",
       source: "comparison_counterpart",
     });
@@ -42,7 +42,7 @@ describe("provider aliases", () => {
     expect(selectProviderForComparison({ sourceProvider: "codex", targetAlias: "cx-sol", targetEffort: "xhigh" })).toEqual({
       alias: "cx-sol",
       provider: "codex",
-      model: "gpt-6.1-sol",
+      model: "gpt-6.2-sol",
       reasoning_effort: "xhigh",
       source: "comparison_explicit_alias",
     });
@@ -71,7 +71,7 @@ describe("provider aliases", () => {
     expect(providerAliasFromText("@cx do it", { topLevel: true })).toMatchObject({
       alias: "cx",
       provider: "codex",
-      model: "gpt-6-astra",
+      model: "gpt-6.2-astra",
       reasoning_effort: "medium",
     });
     expect(providerAliasFromText("@cx-fast do it", { topLevel: true })).toMatchObject({
@@ -87,22 +87,22 @@ describe("provider aliases", () => {
     expect(providerAliasFromText("@cx-sol do it", { topLevel: true })).toMatchObject({
       alias: "cx-sol",
       provider: "codex",
-      model: "gpt-6.1-sol",
+      model: "gpt-6.2-sol",
     });
   });
 
   test("pins the Codex default model and effort in the alias table", () => {
     // The default must not depend on the host CLI's model_reasoning_effort.
-    expect(PROVIDER_ALIASES.cx).toEqual({ provider: "codex", model: "gpt-6-astra" });
+    expect(PROVIDER_ALIASES.cx).toEqual({ provider: "codex", model: "gpt-6.2-astra" });
     expect(resolveProviderAlias("cx")).toEqual({
       alias: "cx",
       provider: "codex",
-      model: "gpt-6-astra",
+      model: "gpt-6.2-astra",
       reasoning_effort: "medium",
     });
     expect(resolveProviderDefault("codex")).toMatchObject({
       alias: "cx",
-      model: "gpt-6-astra",
+      model: "gpt-6.2-astra",
       reasoning_effort: "medium",
     });
     // Nothing configured resolves to DEFAULT_PROVIDER_ALIAS, not to Codex.
@@ -126,7 +126,7 @@ describe("provider aliases", () => {
     expect(parseProviderSelector("cx-sol-bogus")).toBeNull();
 
     expect(resolveProviderAlias("cx-sol", "xhigh")).toMatchObject({
-      provider: "codex", model: "gpt-6.1-sol", reasoning_effort: "xhigh",
+      provider: "codex", model: "gpt-6.2-sol", reasoning_effort: "xhigh",
     });
     // Claude keeps no configured default, so its own CLI default applies.
     expect(resolveProviderAlias("cc").reasoning_effort).toBeUndefined();
@@ -135,11 +135,11 @@ describe("provider aliases", () => {
     });
 
     expect(providerAliasFromText("@cx-sol-extra-high do it", { topLevel: true })).toMatchObject({
-      alias: "cx-sol", model: "gpt-6.1-sol", reasoning_effort: "xhigh", token: "@cx-sol-extra-high",
+      alias: "cx-sol", model: "gpt-6.2-sol", reasoning_effort: "xhigh", token: "@cx-sol-extra-high",
     });
     expect(stripProviderAliases("@cx-sol-xhigh run it")).toBe("run it");
     expect(resolveProviderDefault("cx-high")).toMatchObject({
-      alias: "cx", model: "gpt-6-astra", reasoning_effort: "high",
+      alias: "cx", model: "gpt-6.2-astra", reasoning_effort: "high",
     });
   });
 
@@ -160,13 +160,13 @@ describe("provider aliases", () => {
     expect(resolveProviderAlias("cx-sol")).toEqual({
       alias: "cx-sol",
       provider: "codex",
-      model: "gpt-6.1-sol",
+      model: "gpt-6.2-sol",
       reasoning_effort: "medium",
     });
     expect(selectProviderForComparison({ sourceProvider: "claude-code", targetAlias: "cx-sol" })).toEqual({
       alias: "cx-sol",
       provider: "codex",
-      model: "gpt-6.1-sol",
+      model: "gpt-6.2-sol",
       source: "comparison_explicit_alias",
     });
     expect(stripProviderAliases("@cx-sol run the suite")).toBe("run the suite");
@@ -364,7 +364,7 @@ describe("selectProviderForTurn", () => {
     // The Claude channel default must not leak across the override; the
     // overridden provider supplies its own alias-table default instead.
     expect(selection.selectedModel).not.toBe("claude-haiku-5-5");
-    expect(selection.selectedModel).toBe("gpt-6-astra");
+    expect(selection.selectedModel).toBe("gpt-6.2-astra");
     expect(selection.selectedReasoningEffort).toBe("medium");
   });
 });

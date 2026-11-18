@@ -242,7 +242,7 @@ Repair an unmanaged listener once Concierge admission is idle (`turns` has no no
 2. `kill -KILL <app-server-pid> <code-mode-host-pid>`, then rename the orphaned socket to `app-server-control.sock.stale-<UTC timestamp>` as in the 2026-08-24 repair. Never delete it.
 3. `/root/.local/bin/codex app-server daemon start`; `daemon version` must then show `backend: pid` and matching `managedCodexVersion` / `appServerVersion`.
 4. Concierge's observer reconnects by itself: one `codex_remote_observer_disconnected` warning at the kill, then a burst of `codex_remote_thread_subscribed` events. No bot restart is needed.
-5. From an OS temporary folder, probe with `codex -m gpt-6.1-sol -s read-only -a never exec --skip-git-repo-check "Reply with OK only."`. This availability check does not grant project trust. The Mac app's next connection attaches to the managed daemon (observed 10 seconds after the 2026-09-07 start); its previous `codex app-server proxy` process pointed at the old release and is replaced by the new SSH session.
+5. From an OS temporary folder, probe with `codex -m gpt-6.2-sol -s read-only -a never exec --skip-git-repo-check "Reply with OK only."`. This availability check does not grant project trust. The Mac app's next connection attaches to the managed daemon (observed 10 seconds after the 2026-09-07 start); its previous `codex app-server proxy` process pointed at the old release and is replaced by the new SSH session.
 
 ## The Daemon Lives In Its Own Scope
 

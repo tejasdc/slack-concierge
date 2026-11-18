@@ -24,6 +24,7 @@ import {CLAUDE_ALLOWANCE_HOLD_UNTIL_MS} from './claude-allowance-hold';
 import {CodexAdmissionHolds,codexAdmissionHoldFact,codexHoldKind,expiredCodexRunnerHolds,isSharedRuntimeMaintenance,runtimeMaintenanceDrainOver} from './codex-admission-holds';
 import {sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState} from './codex-runtime-maintenance';
 import {isProcessIdentity} from './runtime-identity';
+import {ASTRA_MODEL_SQL_LIST} from './aliases';
 
 // Only the canonical writer owns schema upgrades. Read executors open a physically read-only
 // connection and must never run migration code during module initialization.
@@ -4291,7 +4292,7 @@ export function reserveCodexUnacknowledgedRecovery(input:{sessionId:number;input
         AND json_extract(accepted.receipt_json,'$.admission.runId')=turn.native_run_id
         AND json_extract(accepted.receipt_json,'$.admission.bindingGeneration')=session.binding_generation
         AND json_extract(accepted.receipt_json,'$.admission.provider')='codex'
-        AND json_extract(accepted.receipt_json,'$.admission.model')='gpt-6-astra'
+        AND json_extract(accepted.receipt_json,'$.admission.model') IN (${ASTRA_MODEL_SQL_LIST})
         AND (json_extract(accepted.receipt_json,'$.admission.reasoningEffort')='xhigh'
           OR json_type(accepted.receipt_json,'$.admission.reasoningEffort') IS NULL
             AND EXISTS (SELECT 1 FROM session_owner_events effort
@@ -4333,7 +4334,7 @@ export function reserveCodexUnacknowledgedRecovery(input:{sessionId:number;input
         AND ((turn.status='parked' AND turn.outbound_text IS NULL) OR turn.status='done')
         AND session.provider_id='codex' AND session.agent_session_uuid=?
         AND session.binding_generation=? AND session.status IN ('idle','error')
-        AND json_extract(session.native_metadata_json,'$.model')='gpt-6-astra'
+        AND json_extract(session.native_metadata_json,'$.model') IN (${ASTRA_MODEL_SQL_LIST})
         AND json_extract(session.native_metadata_json,'$.suspended') IS NOT 1
         AND json_extract(session.native_metadata_json,'$.interactionPolicy') IS NOT 'consultation-only'
         AND NOT EXISTS (SELECT 1 FROM turns active WHERE active.session_id=session.id

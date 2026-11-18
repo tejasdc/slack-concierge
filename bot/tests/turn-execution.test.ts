@@ -496,7 +496,7 @@ describe("executeAgentTurn", () => {
       recordTurnProgressStreamStarted(acquired.id, "progress-1", "activity-before-retry");
     }
     const startedChunks: any[][] = [];
-    const expectedModel = resuming ? undefined : providerId === "codex" ? "gpt-6-astra" : "claude-fable-5";
+    const expectedModel = resuming ? undefined : providerId === "codex" ? "gpt-6.2-astra" : "claude-fable-5";
     const stoppedChunks: any[][] = [];
     const rootSummaries: string[] = [];
     let finalDeliveries = 0;

@@ -173,8 +173,8 @@ async function child(){
   assert.ok(!catalogue.selectors.some((selector:any)=>selector.provider==='chatgpt'),'Lab capability metadata cannot add unsupported choices to project defaults');
  }finally{await gateway.stop(true);await privateOwner.stop(true);}
  const oldLocate=(owner as any).locateProject;(owner as any).locateProject=async()=>({name:'fixture',path:'.',cwd:process.env.CONCIERGE_STATE_DIR!,runner:null});
- const topChoice={key:'astra',label:'Explicit human top model',provider:'codex',model:'gpt-6-astra',reasoningEffort:'medium',project:'fixture'};
- assert.equal((await (owner as any).prepareLabParticipant(topChoice)).metadata.model,'gpt-6-astra');
+ const topChoice={key:'astra',label:'Explicit human top model',provider:'codex',model:'gpt-6.2-astra',reasoningEffort:'medium',project:'fixture'};
+ assert.equal((await (owner as any).prepareLabParticipant(topChoice)).metadata.model,'gpt-6.2-astra');
  await assert.rejects(()=>(owner as any).prepareLabParticipant(topChoice,{inputId:source.id,runId,sessionId:coordinator.id}),/escalation-reason/i);
  (owner as any).locateProject=oldLocate;
  const {parseRouterSessionsArgs}=await import('./router-sessions');

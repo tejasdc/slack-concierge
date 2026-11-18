@@ -38,11 +38,10 @@ const CLAUDE_MODELS = {
   haiku: "claude-haiku-5-5",
 } as const;
 
-// Sol and Terra are on GPT-6.1 (released 2026-10-26; Terra needs Codex CLI 0.159 or
-// newer), which Codex now recommends in place of GPT-6 Sol and GPT-5.6 Terra. Astra and
-// Luna stay on GPT-6. Both 6.1 names are in the model catalogue Codex downloads for
-// Tejas's accounts; a live turn could not be run when they moved here because both
-// accounts' weekly allowance was spent (2026-11-11).
+// Astra and Sol are on GPT-6.2 (released 2026-11-17; live turns on both succeeded on the
+// server's Codex CLI 0.166.0 on 2026-11-18, and the rollouts show the served model was
+// exactly the requested one). Terra is on GPT-6.1 (released 2026-10-26; it needs Codex CLI
+// 0.159 or newer) and Luna stays on GPT-6.
 //
 // The GPT-6 generation first needed Codex CLI 0.156 or newer. On 0.153.4 the server refused
 // every gpt-6-* name except Astra with "not supported when using Codex with a
@@ -53,18 +52,30 @@ const CLAUDE_MODELS = {
 // the CLI version first. It is still the true answer for `gpt-6-terra`, which no
 // version accepts.
 const CODEX_MODELS = {
-  astra: "gpt-6-astra",
-  sol: "gpt-6.1-sol",
+  astra: "gpt-6.2-astra",
+  sol: "gpt-6.2-sol",
   terra: "gpt-6.1-terra",
   luna: "gpt-6-luna",
 } as const;
+
+/** Every Astra id ever bound, newest first. A session bound to a retired one keeps running on it and stays gated. */
+export const ASTRA_MODEL_IDS = [CODEX_MODELS.astra, "gpt-6-astra"] as const;
+/** The one question every Astra gate asks; a new Astra version is one edit to `CODEX_MODELS` and the list above. */
+export function isAstraModel(model: string | null | undefined): boolean {
+  return !!model && (ASTRA_MODEL_IDS as readonly string[]).includes(model);
+}
+/** The same list as a SQL `IN (...)` body; the ids are repository constants, never input. */
+export const ASTRA_MODEL_SQL_LIST = ASTRA_MODEL_IDS.map(id => `'${id}'`).join(",");
+/** Current Astra and Sol ids, for the gate, its fallback and the launchers' refusal text. */
+export const CURRENT_ASTRA_MODEL: string = CODEX_MODELS.astra;
+export const CURRENT_SOL_MODEL: string = CODEX_MODELS.sol;
 
 /** The models a start must justify with an escalation reason unless Tejas chose them. */
 export const TOP_MODEL_CHOICES = [CLAUDE_MODELS.fable, CODEX_MODELS.astra] as const;
 export type TopModelChoice = typeof TOP_MODEL_CHOICES[number];
 /** Exact current models whose explicit human choice exempts an implementation-edit prompt. */
 export const THINKING_MODEL_CHOICES = [CLAUDE_MODELS.opus,CLAUDE_MODELS.opus1m,CLAUDE_MODELS.fable,CODEX_MODELS.sol,CODEX_MODELS.astra,
-  'claude-opus-5','claude-fable-5-1','gpt-6-sol','gpt-5.6-sol'] as const;
+  'claude-opus-5','claude-fable-5-1','gpt-6.1-sol','gpt-6-astra','gpt-6-sol','gpt-5.6-sol'] as const;
 /** Current helper defaults, read here so no launcher names a model of its own. */
 export const DEFAULT_CLAUDE_SUBAGENT_MODEL = CLAUDE_MODELS.sonnet;
 export const SMALLEST_CLAUDE_MODEL = CLAUDE_MODELS.haiku;
@@ -111,10 +122,10 @@ const MODEL_LABELS: Record<SelectableModel, string> = {
   "opus[1m]": "Claude Opus 5.5 1M",
   "claude-sonnet-5-5": "Claude Sonnet 5.5",
   "claude-haiku-5-5": "Claude Haiku 5.5",
-  "gpt-6.1-sol": "GPT-6.1 Sol",
+  "gpt-6.2-sol": "GPT-6.2 Sol",
   "gpt-6-luna": "GPT-6 Luna",
   "gpt-6.1-terra": "GPT-6.1 Terra",
-  "gpt-6-astra": "GPT-6 Astra",
+  "gpt-6.2-astra": "GPT-6.2 Astra",
   "gemini-3.8-flash-high": "Gemini 3.8 Flash (High)",
   "gemini-4-argon-high": "Gemini 4 Argon (High)",
   "gemini-4-argon-medium": "Gemini 4 Argon (Medium)",
@@ -135,6 +146,8 @@ const RETIRED_MODEL_LABELS: Record<string, string> = {
   "claude-sonnet-5": "Claude Sonnet 5",
   "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
   "gpt-6-sol": "GPT-6 Sol",
+  "gpt-6.1-sol": "GPT-6.1 Sol",
+  "gpt-6-astra": "GPT-6 Astra",
   "gpt-5.6-terra": "GPT-5.6 Terra",
 };
 
@@ -364,7 +377,7 @@ const TIER_ALIASES: Record<"claude-code" | "codex", Record<ModelTier, ProviderAl
 export function modelTier(model: string | null | undefined): ModelTier | null {
   const value = (model ?? "").toLowerCase();
   if (!value) return null;
-  const known = ([CLAUDE_MODELS.opus, CLAUDE_MODELS.opus1m, CLAUDE_MODELS.fable, CODEX_MODELS.sol, CODEX_MODELS.astra] as string[]).includes(model!)
+  const known = ([CLAUDE_MODELS.opus, CLAUDE_MODELS.opus1m, CLAUDE_MODELS.fable, CODEX_MODELS.sol] as string[]).includes(model!) || isAstraModel(model)
     ? "top" : ([CLAUDE_MODELS.sonnet, CODEX_MODELS.luna] as string[]).includes(model!) ? "middle"
     : ([CLAUDE_MODELS.haiku, CODEX_MODELS.terra] as string[]).includes(model!) ? "small" : null;
   if (known) return known;

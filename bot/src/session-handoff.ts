@@ -8,7 +8,7 @@ import {db,executionChanged,finishTurn,getSessionById,settleTurnDependencies} fr
 import {createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,sessionInputProvenance,sessionMetadata,stablePayload,updateSessionMetadata} from './session-inputs';
 import {lastLaunchedConversationHome} from './session-runner-home';
 import {safeTurn,type WaitingTurn} from './provider-exhaustion-recovery';
-import {parseProviderSelector,resolveProviderSelector,normalizeReasoningEffort} from './aliases';
+import {isAstraModel,parseProviderSelector,resolveProviderSelector,normalizeReasoningEffort} from './aliases';
 import {escalationReason,topModel} from './model-escalation';
 import {humanChoseTopModel} from './model-escalation-custody';
 import {sessionAddress} from './session-address';
@@ -409,7 +409,7 @@ export async function stageRecoveryHandoff(input:{actorSession:number;inputId:st
   if(!source||source.status==='archived'||supersededBy(source.id)||sessionMetadata(source).suspended)
     throw new Error('The predecessor is unavailable or already excluded.');
   const metadata=sessionMetadata(source);
-  if(source.provider_id!=='codex'||metadata.model!=='gpt-6-astra'||metadata.reasoningEffort!=='medium'
+  if(source.provider_id!=='codex'||!isAstraModel(metadata.model)||metadata.reasoningEffort!=='medium'
     ||!source.agent_session_uuid||!selected||selected.session_id!==source.id||!sourceInput||sourceInput.session_id!==input.actorSession)
     throw new Error('Recovery staging requires the retained Astra Medium Codex binding and exact selected input.');
   if(!input.reason.trim()||!input.actionId)throw new Error('A reason and stable action ID are required.');

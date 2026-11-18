@@ -106,4 +106,21 @@ assert.equal(humanChoseThinkingModel('human','gpt-6-sol'),true);
 text='Use GPT-6.1 Sol.';
 assert.equal(humanChoseThinkingModel('peer','gpt-6.1-sol'),false);
 retained=['gpt-6.1-sol'];assert.equal(humanChoseThinkingModel('peer','gpt-6.1-sol'),true);
+
+// GPT-6.2: bare names and the current ids choose the current model; a version-qualified mention of another version does not.
+const {CURRENT_ASTRA_MODEL,CURRENT_SOL_MODEL}=await import('../src/aliases');
+for(const phrase of ['Use Sol','Have Sol do it','Use GPT-6.2 Sol','Use Sol 6.2',`Use ${CURRENT_SOL_MODEL}`]){
+  text=phrase;assert.equal(humanChoseThinkingModel('human',CURRENT_SOL_MODEL),true,phrase);
+}
+for(const phrase of ['Use GPT-6.1 Sol','Use Sol 6.1','Use gpt-6.1-sol']){
+  text=phrase;assert.equal(humanChoseThinkingModel('human',CURRENT_SOL_MODEL),false,phrase);
+  assert.equal(humanChoseThinkingModel('human','gpt-6.1-sol'),true,phrase);
+}
+for(const phrase of ['Get Astra on this','Use GPT-6.2 Astra','Use Astra 6.2',`Use ${CURRENT_ASTRA_MODEL}`]){
+  text=phrase;assert.equal(humanChoseTopModel('human',CURRENT_ASTRA_MODEL),true,phrase);
+}
+for(const phrase of ['Use GPT-6 Astra','Use gpt-6-astra']){
+  text=phrase;assert.equal(humanChoseTopModel('human',CURRENT_ASTRA_MODEL),false,phrase);
+  assert.equal(humanChoseTopModel('human','gpt-6-astra'),true,phrase);
+}
 console.log('human model, provider and effort choices reject questions and conditions');

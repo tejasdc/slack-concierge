@@ -56,6 +56,9 @@ import { isHisChatGpt,parseProviderSelector,resolveProviderSelector,chatgptProje
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
 import {astraAllowedForTurn} from './astra-turn-gate';
+import {CURRENT_SOL_MODEL,isAstraModel,modelDisplayName} from './aliases';
+
+const SOL_LABEL=modelDisplayName(CURRENT_SOL_MODEL);
 import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptAttachmentCorrectionPending,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,recordChatGptToolRead,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,validateChatGptToolRead,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, endRepeatingScheduleForInput, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
@@ -906,13 +909,13 @@ export class SessionCommunicationCoordinator {
         }
         if(!session)return {known:false};
         const metadata=sessionMetadata(getSessionById(session.id)!);
-        if(input.providerAgentId&&input.model!=='gpt-6-astra')return {known:true,allowed:true};
+        if(input.providerAgentId&&!isAstraModel(input.model))return {known:true,allowed:true};
         if(metadata.model!==input.model)
-            return {known:true,allowed:false,message:'This Codex session is bound to another model. Choose its current model; GPT-6.1 Sol is the ordinary path.'};
+            return {known:true,allowed:false,message:'This Codex session is bound to another model. Choose its current model; '+SOL_LABEL+' is the ordinary path.'};
         const running=db.query(`SELECT id,accepted_input_id,provider_turn_id FROM turns WHERE session_id=?
             AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2`).all(session.id) as {id:number;accepted_input_id:string|null;provider_turn_id:string|null}[];
         if(running.length!==1||!running[0]?.accepted_input_id)
-            return {known:true,allowed:false,message:'Concierge cannot identify this prompt’s accepted turn. Choose GPT-6.1 Sol or retry when its identity is available.'};
+            return {known:true,allowed:false,message:'Concierge cannot identify this prompt’s accepted turn. Choose '+SOL_LABEL+' or retry when its identity is available.'};
         const turn=running[0];
         // The outside CLI's JSON stream does not publish its turn ID. Its prompt hook does,
         // together with the run-scoped owner turn and source run installed by Concierge.
@@ -920,14 +923,14 @@ export class SessionCommunicationCoordinator {
             if(!input.providerTurnId||input.ownerTurnId!==turn.id||input.sourceRunId!==nativeRunId(turn.id)
                 ||input.providerAgentId&&!turn.provider_turn_id
                 ||!input.providerAgentId&&turn.provider_turn_id&&turn.provider_turn_id!==input.providerTurnId)
-                return {known:true,allowed:false,message:'Concierge cannot identify this outside Codex execution. Retry with its run identity; choose GPT-6.1 Sol for an ordinary start.'};
+                return {known:true,allowed:false,message:'Concierge cannot identify this outside Codex execution. Retry with its run identity; choose '+SOL_LABEL+' for an ordinary start.'};
             if(!input.providerAgentId&&!turn.provider_turn_id)db.query('UPDATE turns SET provider_turn_id=? WHERE id=? AND provider_turn_id IS NULL')
                 .run(input.providerTurnId,turn.id);
         }else if(!input.providerAgentId&&input.providerTurnId&&turn.provider_turn_id&&turn.provider_turn_id!==input.providerTurnId)
-            return {known:true,allowed:false,message:'This prompt belongs to another Codex execution. Choose GPT-6.1 Sol or retry with its own turn.'};
-        if(input.model!=='gpt-6-astra')return {known:true,allowed:true};
+            return {known:true,allowed:false,message:'This prompt belongs to another Codex execution. Choose '+SOL_LABEL+' or retry with its own turn.'};
+        if(!isAstraModel(input.model))return {known:true,allowed:true};
         const decision=astraAllowedForTurn({sessionId:session.id,turnId:turn.id,acceptedInputId:turn.accepted_input_id,
-            providerSessionId:input.providerSessionId,providerAgentId:input.providerAgentId});
+            providerSessionId:input.providerSessionId,providerAgentId:input.providerAgentId,model:input.model});
         if(decision.allowed)return {known:true,allowed:true};
         return {known:true,allowed:false,message:decision.message};
     }
@@ -1624,7 +1627,7 @@ export class SessionCommunicationCoordinator {
             ||operation.request_id!==input.request_id||operation.turn_id===null||operation.id===request.target_input_id)
             throw new Error('That open request has no exact service report-back input eligible for Codex recovery.');
         const targetModel=sessionMetadata(session).model;
-        if(targetModel!=='gpt-6-astra'||!humanChoseThinkingModel(operation.id,targetModel))
+        if(!isAstraModel(targetModel)||!humanChoseThinkingModel(operation.id,targetModel))
             throw new Error('This recovery requires the exact retained human Astra choice for this same work; an agent request cannot grant it.');
         const targetReservation=codexUnacknowledgedRecovery(operation.id);
         let result:{status:'requeued'|'already_recovered';runId:string;providerTurnIds:string[]};

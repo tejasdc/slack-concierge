@@ -34,7 +34,7 @@ import {OwnerDrainBeforeProviderAdmissionError,ProviderDispatchError} from './pr
 import {providerRetryDelayMs} from './provider-failures';
 import {chooseClaudeDispatch} from './provider-account-dispatch';
 import {maybeStartStandingRoleFailover} from './standing-role-provider-failover';
-import {CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
+import {isAstraModel,CHATGPT_THINKING_LEVELS,HIS_CHATGPT_PREFIX,PROVIDER_ALIASES, providerDisplayName } from './aliases';
 import {recordRepairNotice} from './repair-notices';
 import {proveCodexInputNeverAcknowledged} from './codex-unacknowledged-proof';
 import {recoverCustodySuccessor,custodySuccessor,custodyPlacement,custodySuccessorSession,protectedCustodyRun} from './codex-custody-successor';
@@ -2197,9 +2197,9 @@ export class SessionExecutionHost {
         ||result?.turnId!==turn.id||result?.runId!==expectedRun||result?.sessionUUID!==session.agent_session_uuid
         ||result?.providerTurnId!==turn.provider_turn_id
         ||(result?.dispatchAttempt!==undefined&&result.dispatchAttempt!==attention?.dispatchAttempt)
-        ||result?.model!=='gpt-6-astra'||result?.text!==''||!Array.isArray(result?.toolsUsed)||result.toolsUsed.length!==0
+        ||!isAstraModel(result?.model)||result?.text!==''||!Array.isArray(result?.toolsUsed)||result.toolsUsed.length!==0
         ||typeof result?.providerTurnId!=='string'||!result.providerTurnId||effort?.effort!=='xhigh'
-        ||sessionMetadata(session).model!=='gpt-6-astra')
+        ||!isAstraModel(sessionMetadata(session).model))
         throw new Error('The retained historical attempt/result does not prove this exact Astra xhigh service input had an empty native result.');
       const envelope=JSON.parse(turn.outbound_text??'null');
       const {inputId:_inputId,sessionId:_sessionId,turnId:_turnId,runId:_runId,dispatchAttempt:_dispatchAttempt,...providerResult}=result;
@@ -2251,7 +2251,7 @@ export class SessionExecutionHost {
     if(current.agent_session_uuid!==session.agent_session_uuid||current.binding_generation!==session.binding_generation
       ||stablePayload(currentRunner)!==stablePayload(runner)
       ||(currentRunner.status==='bound'&&currentRunner.runner!==null&&currentRunner.runner!==codexRelayRunner())
-      ||sessionMetadata(current).model!=='gpt-6-astra'||sessionMetadata(current).suspended||current.status==='archived')
+      ||!isAstraModel(sessionMetadata(current).model)||sessionMetadata(current).suspended||current.status==='archived')
       throw new Error('The Codex conversation binding or send controls changed during exact-history inspection.');
     input.validateSource?.();
     const completeProof={provider:'codex',threadId:session.agent_session_uuid,ownerRunId:turn.native_run_id,

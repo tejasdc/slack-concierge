@@ -4,6 +4,7 @@ import {spawnSync} from 'node:child_process';
 import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
+import {CURRENT_SOL_MODEL} from '../src/aliases';
 import {trustedCodexExecCommand} from '../src/trusted-codex-exec';
 
 const binary=resolve(process.argv[2]??'');
@@ -25,7 +26,7 @@ for(const mode of ['raw','fresh','resume','explicit-untrusted'] as const){
     writeFileSync(join(cwd,'.codex/config.toml'),'concierge_config_marker = [\n');
     if(mode==='explicit-untrusted')writeFileSync(join(home,'config.toml'),
       `[projects.${JSON.stringify(cwd)}]\ntrust_level = "untrusted"\n`);
-    const args=[...(mode==='resume'?['resume']:['-s','workspace-write']),'-m','gpt-6.1-sol',
+    const args=[...(mode==='resume'?['resume']:['-s','workspace-write']),'-m',CURRENT_SOL_MODEL,
       '-c','model_provider="concierge_probe_missing"','--ephemeral',
       ...(mode==='resume'?['00000000-0000-0000-0000-000000000001']:[]),'Reply OK.'];
     const command=mode==='raw'?[binary,'exec',...args]:trustedCodexExecCommand(binary,args);
