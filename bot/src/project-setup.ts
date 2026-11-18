@@ -185,6 +185,7 @@ export class ProjectSetup {
   private readonly canvasBindingChecks=new Map<string,Promise<void>>();
   private readonly canvasBindingQueued=new Map<string,Promise<void>>();
   private readonly canvasBindingAttempted=new Map<string,number>();
+  private readonly canvasMacTransitions=new Map<string,number>();
   private readonly sending=new Set<string>();
   private readonly receiving=new Set<string>();
   constructor(private readonly workspace:string,private readonly self:string,private readonly clients:Map<string,PeerClient>,private readonly owner:()=>SessionOwner,private readonly onRecorded?:()=>void){}
@@ -388,6 +389,7 @@ export class ProjectSetup {
     const check=(async()=>{
       const row=this.canvasRow(board);if(!row)return;
       this.canvasBindingAttempted.set(board,Date.now());
+      const macTransition=this.canvasMacTransitions.get(board)??0;
       const sessionName=row.inside?`${row.project}/${row.inside}`:row.project;
       let server:string|null|undefined;
       try{server=(await this.projectLocation(sessionName)).cwd;}
@@ -399,7 +401,8 @@ export class ProjectSetup {
       if(mac===undefined&&row.mac_checked_at_ms===null)mac=null;
       const now=Date.now();
       if(server!==undefined)db.query('UPDATE canvas_project_ensures SET server_cwd=?,server_checked_at_ms=? WHERE board_id=?').run(server,now,board);
-      if(mac!==undefined)db.query('UPDATE canvas_project_ensures SET mac_path=?,mac_checked_at_ms=? WHERE board_id=?').run(mac,now,board);
+      // A Mac setup result that settled during this check is answered by the check queued after it.
+      if(mac!==undefined&&(this.canvasMacTransitions.get(board)??0)===macTransition)db.query('UPDATE canvas_project_ensures SET mac_path=?,mac_checked_at_ms=? WHERE board_id=?').run(mac,now,board);
       if(server!==row.server_cwd&&server!==undefined||mac!==row.mac_path&&mac!==undefined)
         log('info','canvas_project_binding_changed',{board_id:board,project:row.project,server_ready:server===undefined?null:!!server,mac_ready:mac===undefined?null:!!mac});
     })().catch(error=>log('warn','canvas_project_binding_check_failed',{board_id:board,...errorFields(error)}))
@@ -590,7 +593,8 @@ export class ProjectSetup {
     log('info','project_setup_order_settled',{order_id:row.order_id,peer:row.peer,project:row.project,state:outcome.state,failure_class:outcome.failureClass??null,commit:outcome.commit??null});
     this.attemptReturn(row.order_id);
     // The Mac's setup result is a transition: its boards read "pending" until a fresh check confirms the path.
-    if(row.peer==='mac')for(const {board_id} of db.query('UPDATE canvas_project_ensures SET mac_checked_at_ms=NULL WHERE project=? AND mac_path IS NULL RETURNING board_id').all(row.project) as {board_id:string}[])void this.checkCanvasBinding(board_id);
+    if(row.peer==='mac')for(const {board_id} of db.query('UPDATE canvas_project_ensures SET mac_checked_at_ms=NULL WHERE project=? AND mac_path IS NULL RETURNING board_id').all(row.project) as {board_id:string}[]){
+      this.canvasMacTransitions.set(board_id,(this.canvasMacTransitions.get(board_id)??0)+1);void this.checkCanvasBinding(board_id);}
     if(outcome.state==='refused'||outcome.state==='failed'&&outcome.failureClass==='permanent')this.notice(row,outcome.state,`Project ${row.project} could not be set up on ${machineName(row.peer)}: ${REASONS[outcome.reason??'']??outcome.reason??outcome.state}.`);
     this.onRecorded?.();
   }
