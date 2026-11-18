@@ -19,11 +19,17 @@
  *  4. A process that does not lead its own group is signalled alone. Without this the negative
  *     form would reach the runner's own group — every agent session on the machine.
  *
+ * "Ended" means nothing of the sign-in's group is left, not only the processes read first: on
+ * 2026-11-18 GitHub's runner read the group before the stubborn CLI existed, the CLI survived,
+ * and this fixture waited ten minutes on it inside every release check. The stubborn stand-in now
+ * starts its CLI a moment late so that ordering is the one exercised everywhere, and the fixture
+ * ends everything it started and exits as soon as its checks are done.
+ *
  * The runner's own state folder is replaced with a temporary one before the module loads, so this
  * reads and reconciles no real sign-in journal.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,9 +40,29 @@ const { endLeftoverSignIn } = await import("../src/runner-provider-accounts");
 const { processIdentity, isProcessIdentityAlive } = await import("../src/runtime-identity");
 type Identity = ReturnType<typeof processIdentity>;
 
-const fail = (what: string): never => { console.error(`provider-signin-leftover-fixture: ${what}`); process.exit(1); };
+const fail = (what: string): never => { console.error(`provider-signin-leftover-fixture: ${what}`); return finish(1); };
 const settle = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const spawnedGroups = new Set<number>();
+const spawnedPids = new Set<number>();
+const finish = (code: number): never => {
+  for (const group of spawnedGroups) for (const pid of groupMembers(group)) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+  for (const pid of spawnedPids) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+  process.exit(code);
+};
+/** Live (not zombie) processes in a group, read from /proc. */
+function groupMembers(group: number): number[] {
+  const found: number[] = [];
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+      if (fields[0] !== "Z" && Number(fields[2]) === group) found.push(Number(entry));
+    } catch { /* exited while being read */ }
+  }
+  return found;
+}
 const groupOf = (pid: number): number | null => {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -49,9 +75,12 @@ const groupOf = (pid: number): number | null => {
  * `stubborn` makes the child ignore SIGTERM, the way a provider CLI can.
  */
 function startStandInSignIn(stubborn = false): { pid: number; identity: Identity; childPid: Promise<number> } {
-  const script = stubborn ? "sh -c 'trap \"\" TERM; sleep 600' & echo $!; wait" : "sleep 600 & echo $!; wait";
+  // The stubborn CLI starts after its shell has been reported, so the cleanup's first read of the
+  // group cannot include it; only a later read can.
+  const script = stubborn ? "sh -c 'trap \"\" TERM; sleep 0.3; sleep 600' & echo $!; wait" : "sleep 600 & echo $!; wait";
   const child = spawn(script, { shell: true, detached: true, stdio: ["ignore", "pipe", "ignore"] });
   const pid = child.pid!;
+  spawnedGroups.add(pid);
   const childPid = new Promise<number>((resolve, reject) => {
     let seen = "";
     child.stdout!.on("data", (chunk: Buffer) => {
@@ -77,6 +106,7 @@ function startStandInSignIn(stubborn = false): { pid: number; identity: Identity
   if (!confirmed.includes("has been ended")) fail(`a live leftover should confirm it was ended, got ${JSON.stringify(confirmed)}`);
   if (alive(standIn.pid)) fail("the leftover sign-in shell is still running");
   if (alive(grandchild)) fail("the sign-in command the shell started is still running; ending the shell alone is what leaked for eleven days");
+  if (groupMembers(standIn.pid).length) fail("something of the ended sign-in's group is still running");
 }
 
 // 1b. The shell exits politely; the CLI ignores SIGTERM. Reproduced by review on 2026-11-17.
@@ -92,6 +122,8 @@ function startStandInSignIn(stubborn = false): { pid: number; identity: Identity
     fail(`a SIGTERM-ignoring command should be forced and confirmed ended, got ${JSON.stringify(confirmed)}`);
   if (alive(stubborn)) fail("the SIGTERM-ignoring command is still running while the outcome says it was ended");
   if (alive(standIn.pid)) fail("the shell is still running");
+  const left = groupMembers(standIn.pid);
+  if (left.length) fail(`the sign-in's group still has ${left.length} running process(es) started after it was first read, while the outcome says it was ended`);
 }
 
 // 2. A recorded process that is already gone claims nothing and signals nothing.
@@ -123,8 +155,11 @@ function startStandInSignIn(stubborn = false): { pid: number; identity: Identity
 
 // 4. A process that does not lead its own group is signalled alone, never its group.
 {
-  const follower = spawn("sleep 600", { shell: true, stdio: "ignore" });
+  // Spawned without a shell so the signalled process is the sleeper itself, not a shell whose
+  // child would be orphaned and left running.
+  const follower = spawn("sleep", ["600"], { stdio: "ignore" });
   const pid = follower.pid!;
+  spawnedPids.add(pid);
   await settle(200);
   if (groupOf(pid) === pid) fail("the follower unexpectedly leads its own group; this case would prove nothing");
   endLoginGroup(pid, "SIGKILL");
@@ -134,3 +169,4 @@ function startStandInSignIn(stubborn = false): { pid: number; identity: Identity
 }
 
 console.log("provider-signin-leftover-fixture: a sign-in command and its CLI are ended with their operation, including a CLI that ignores SIGTERM; nothing claims success before it is established; unproven identities are never signalled; a non-leader is signalled alone");
+finish(0);

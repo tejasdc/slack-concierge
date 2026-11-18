@@ -37,16 +37,23 @@ export function loginProcessIdentity(pid: number | undefined): ProcessIdentity |
  * asked for one.
  */
 function leadsOwnGroup(pid: number): boolean {
+  return loginProcessGroup(pid) === pid;
+}
+
+/** The process group a live process is in, or null when it cannot be read. */
+export function loginProcessGroup(pid: number): number | null {
   try {
     if (process.platform === "darwin") {
       const group = spawnSync("/bin/ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" });
-      return group.status === 0 && group.stdout.trim() === String(pid);
+      const value = Number(group.stdout.trim());
+      return group.status === 0 && Number.isInteger(value) && value > 0 ? value : null;
     }
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     // The fields after the parenthesised command name begin at the line's third, so the
     // process group is at index 2.
-    return stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[2] === String(pid);
-  } catch { return false; }
+    const value = Number(stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[2]);
+    return Number.isInteger(value) && value > 0 ? value : null;
+  } catch { return null; }
 }
 
 /**

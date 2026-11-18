@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { readRunnerProviderAccountReadings } from "./runner-provider-account-readings";
-import { ProviderLoginManager, endLoginGroup, endLoginProcess, loginGroupMembers, type AuthLoginStartResult } from "./auth-login";
+import { ProviderLoginManager, endLoginGroup, endLoginProcess, loginGroupMembers, loginProcessGroup, type AuthLoginStartResult } from "./auth-login";
 import { log } from "./log";
 import { codexUpdaterDisabled } from "./codex-updater-settings";
 import { MANAGED_CODEX, controlSocketListeners, holdCodexDaemonAutoStart, startCodexDaemonInOwnScope } from "./codex-daemon-file-limit";
@@ -91,8 +91,28 @@ export function endLeftoverSignIn(row: {id:string;provider:AccountProvider;proce
   log("info", "provider_signin_leftover_ending", { operation_id: row.id, provider: row.provider, members: members.length });
   return {
     detail: "The runner restarted during sign-in, and the sign-in command it left running is being ended. Start a new sign-in operation.",
-    confirmed: confirmLeftoverEnded(row, members),
+    confirmed: confirmLeftoverEnded(row, identity.pid, members),
   };
+}
+
+/**
+ * The recorded members plus anything that joined their group since it was read. A shell can start
+ * its CLI, and a CLI its helpers, after the first read: on 2026-11-18 GitHub's runner read the
+ * group between a shell starting its child shell and that shell starting the command, so the
+ * command was never recorded, ignored SIGTERM, was never forced, and kept the release check
+ * waiting ten minutes while the operation said "ended".
+ *
+ * The group number is re-read only while a recorded member is still alive inside it. A process
+ * group's number cannot be handed to a new group while any member of the old one lives, so at
+ * that moment every process in it is this sign-in's; each found member is then addressed on its
+ * own identity like the recorded ones.
+ */
+function membersStillInGroup(group: number, known: ProcessIdentity[]): ProcessIdentity[] {
+  const groupProven = known.some(member => isProcessIdentityAlive(member) && loginProcessGroup(member.pid) === group);
+  if (!groupProven) return known;
+  const merged = new Map(known.map(member => [`${member.pid}:${member.startTicks}`, member]));
+  for (const member of loginGroupMembers(group)) merged.set(`${member.pid}:${member.startTicks}`, member);
+  return [...merged.values()];
 }
 
 /**
@@ -101,10 +121,20 @@ export function endLeftoverSignIn(row: {id:string;provider:AccountProvider;proce
  * that ignores SIGTERM outlives a shell that does not, so a shell's exit proves nothing, and
  * saying "ended" on that basis is how a wait outlives its operation while looking settled.
  */
-async function confirmLeftoverEnded(row: {id:string;provider:AccountProvider}, members: ProcessIdentity[]): Promise<string> {
+async function confirmLeftoverEnded(row: {id:string;provider:AccountProvider}, group: number, recorded: ProcessIdentity[]): Promise<string> {
   const settle = (ms: number) => new Promise(resolve => setTimeout(resolve, ms).unref());
   await settle(2_000);
-  for (const member of members) if (isProcessIdentityAlive(member)) endLoginProcess(member.pid, "SIGKILL");
+  let members = recorded;
+  // A member forced in one round cannot start anything afterwards, so a few rounds settle it;
+  // each round re-reads the group only on the proof described at membersStillInGroup.
+  for (let round = 0; round < 3; round++) {
+    const current = membersStillInGroup(group, members);
+    const grew = current.length > members.length;
+    members = current;
+    for (const member of members) if (isProcessIdentityAlive(member)) endLoginProcess(member.pid, "SIGKILL");
+    if (round > 0 && !grew) break;
+    await settle(100);
+  }
   await settle(1_000);
   const surviving = members.filter(isProcessIdentityAlive);
   if (!surviving.length) {
