@@ -40,8 +40,7 @@ export async function readHeldMessageSnapshot(resolution:HeldMessageResolution,s
     ||typeof snapshot.failedReadingJson!=='string'||snapshot.failedReadingJson.length>64000
     ||digest(snapshot.failedReadingJson)!==snapshot.failedReadingSha256
     ||!/^[a-f0-9]{64}$/.test(snapshot.contextHash)||!/^[a-f0-9]{64}$/.test(snapshot.envelopeHash)
-    ||snapshot.failedReadingId!==snapshot.contextHash
-    ||digest(JSON.stringify(['send-resolution',snapshot.taskId,snapshot.contextHash]))!==snapshot.id
+    ||digest(JSON.stringify(['send-resolution',snapshot.taskId,snapshot.failedReadingId]))!==snapshot.id
     ||typeof snapshot.reason!=='string'||!snapshot.reason.trim()||snapshot.reason.length>4000
     ||(snapshot.question!==null&&(typeof snapshot.question!=='string'||snapshot.question.length>4000))
     ||(snapshot.supportingQuote!==null&&(typeof snapshot.supportingQuote!=='string'||snapshot.supportingQuote.length>4000))

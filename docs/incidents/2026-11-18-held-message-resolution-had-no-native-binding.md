@@ -67,3 +67,8 @@ separates an actual question, positive product completion, accepted engineering
 request and a durable Inbox report still awaiting engineering ownership. A
 provider ending is not effect evidence. Unproven cooperative completion is
 refused; involuntary endings remain unresolved in the operation receipt.
+
+Before merge, the product's retained route proof exposed that diagnostic reading
+identity and source-context hash differ. Native validation must keep them separate
+and derive the stable resolution ID from the exact diagnostic reading ID. The
+compact manifest links both identities; neither digest is relabeled as the other.

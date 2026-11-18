@@ -135,8 +135,9 @@ The HTTP200 body is:
 
 The product proves these fields from its current retained unsent task and reading,
 including the exact executable envelope and any human Stop/withdrawal/consumed
-or uncertain effect. `failedReadingId === contextHash`, and `id` is lower-case
-SHA-256 of UTF8 `JSON.stringify(["send-resolution",taskId,contextHash])`.
+or uncertain effect. `failedReadingId` identifies the retained diagnostic reading and is distinct from
+the source-context hash. `id` is lower-case SHA-256 of UTF8
+`JSON.stringify(["send-resolution",taskId,failedReadingId])`.
 `contextHash` and `envelopeHash` are separate 64-hex identities. `failedReadingJson`
 is the exact retained compact assessment manifest JSON string (at most 64000
 characters); the native owner verifies its UTF8 SHA-256 against
