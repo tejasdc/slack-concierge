@@ -2409,7 +2409,7 @@ export class SessionCommunicationCoordinator {
             projectLocation=await this.dependencies.owner!.prepareImplementationWorktree(input.project!,actor.inputId!,input.action_id);
             input={...input,project:`${projectLocation.name}/${projectLocation.path}`,
                 text:`Implement the fixed design below in the worktree already selected for this session. Check your changes and reply to the designing session with what changed and what you verified. The designer reviews the result before answering Tejas.\n\n${input.text}`};
-        }else if(input.provider&&input.provider!=='chatgpt'&&input.project&&!projectLocation)
+        }else if(input.peer===undefined&&input.provider&&input.provider!=='chatgpt'&&input.project&&!projectLocation)
             projectLocation=await this.dependencies.owner!.prepareProjectLocation(input.project);
         if(input.saved) {
             if((!input.provider&&!requestedRole)||input.peer||(!requestedRole&&!title)||input.after?.length)

@@ -1,5 +1,12 @@
 # Peer Concierge instances (the Mac)
 
+New peer sessions resolve their project on the destination machine. The sending
+owner forwards the registered project name without checking it against its own
+runner's workspace. Named Inbox threads retain their existing peer return path.
+The origin lookup regression is covered in `bot/scripts/frozen-ask-resume-fixture.ts`;
+live acceptance starts a Mac session in a Mac-only project and checks its final
+answer in the named marked test thread.
+
 A second Concierge runs on Tejas's Mac so work that needs his local checkout, files or
 apps has an owner. Each instance keeps its own ledger, FIFO, request/return obligations
 and recovery; nothing is shared. The design and its rationale are in Thinkering's
