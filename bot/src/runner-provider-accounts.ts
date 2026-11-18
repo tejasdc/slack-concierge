@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { readRunnerProviderAccountReadings } from "./runner-provider-account-readings";
-import { ProviderLoginManager, endLoginGroup, type AuthLoginStartResult } from "./auth-login";
+import { ProviderLoginManager, endLoginGroup, loginGroupMembers, type AuthLoginStartResult } from "./auth-login";
 import { log } from "./log";
 import { codexUpdaterDisabled } from "./codex-updater-settings";
 import { MANAGED_CODEX, controlSocketListeners, holdCodexDaemonAutoStart, startCodexDaemonInOwnScope } from "./codex-daemon-file-limit";
@@ -69,22 +69,50 @@ function writeSignInState(operation: SignInOperation) {
  * whatever now holds it. No proof, no signal — the operation says so instead, and nothing guesses
  * from a command line.
  */
-export function endLeftoverSignIn(row: {id:string;provider:AccountProvider;process?:unknown}): string | null {
+export type LeftoverSignIn = { detail: string; confirmed?: Promise<string> };
+
+export function endLeftoverSignIn(row: {id:string;provider:AccountProvider;process?:unknown}): LeftoverSignIn | null {
   const recorded = row.process as Partial<ProcessIdentity> | undefined;
   const identity: ProcessIdentity | null = typeof recorded?.pid === "number" && typeof recorded.bootId === "string"
     && typeof recorded.startTicks === "string" ? { pid: recorded.pid, bootId: recorded.bootId, startTicks: recorded.startTicks } : null;
   if (!identity) {
     log("warn", "provider_signin_leftover_unidentified", { operation_id: row.id, provider: row.provider });
-    return "The runner restarted during sign-in and this one recorded no process, so whether its sign-in command is still running could not be established. Start a new sign-in operation.";
+    return { detail: "The runner restarted during sign-in and this one recorded no process, so whether its sign-in command is still running could not be established. Start a new sign-in operation." };
   }
   if (!isProcessIdentityAlive(identity)) {
     log("info", "provider_signin_leftover_already_gone", { operation_id: row.id, provider: row.provider });
     return null;
   }
+  // Read the group before signalling anything: once the shell goes, the group number is no
+  // longer provably this sign-in's, and each member recorded here stays addressable on its own.
+  const members = loginGroupMembers(identity.pid);
   endLoginGroup(identity.pid, "SIGTERM");
-  setTimeout(() => { if (isProcessIdentityAlive(identity)) endLoginGroup(identity.pid, "SIGKILL"); }, 2_000).unref();
-  log("warn", "provider_signin_leftover_ended", { operation_id: row.id, provider: row.provider });
-  return "The runner restarted during sign-in, and the sign-in command it left running has been ended. Start a new sign-in operation.";
+  log("info", "provider_signin_leftover_ending", { operation_id: row.id, provider: row.provider, members: members.length });
+  return {
+    detail: "The runner restarted during sign-in, and the sign-in command it left running is being ended. Start a new sign-in operation.",
+    confirmed: confirmLeftoverEnded(row, members),
+  };
+}
+
+/**
+ * Wait out the polite signal, end each member that ignored it by its own identity, and report
+ * only what is then true. The claim is about the provider CLI, not the shell that ran it: a CLI
+ * that ignores SIGTERM outlives a shell that does not, so a shell's exit proves nothing, and
+ * saying "ended" on that basis is how a wait outlives its operation while looking settled.
+ */
+async function confirmLeftoverEnded(row: {id:string;provider:AccountProvider}, members: ProcessIdentity[]): Promise<string> {
+  const settle = (ms: number) => new Promise(resolve => setTimeout(resolve, ms).unref());
+  await settle(2_000);
+  for (const member of members) if (isProcessIdentityAlive(member)) endLoginGroup(member.pid, "SIGKILL");
+  await settle(1_000);
+  const surviving = members.filter(isProcessIdentityAlive);
+  if (!surviving.length) {
+    log("warn", "provider_signin_leftover_ended", { operation_id: row.id, provider: row.provider, members: members.length });
+    return "The runner restarted during sign-in, and the sign-in command it left running has been ended. Start a new sign-in operation.";
+  }
+  log("error", "provider_signin_leftover_survived", { operation_id: row.id, provider: row.provider,
+    members: members.length, surviving: surviving.length });
+  return "The runner restarted during sign-in, and the sign-in command it left running did not stop when it was asked to and then forced; it is still running. Start a new sign-in operation, and have this machine's leftover looked at.";
 }
 
 try {
@@ -94,12 +122,20 @@ try {
       const active = ["starting","awaiting_code","awaiting_approval","completing"].includes(row.status);
       const status: SignInStatus = active ? "interrupted" : row.status;
       // Reconciling before the row is recorded keeps one statement of what happened: the detail
-      // the caller reads is written by whatever actually became of the process.
+      // the caller reads is written by whatever actually became of the process. Ending takes a
+      // few seconds to establish, so the first detail says it is under way and the confirmed
+      // one replaces it; the status is terminal throughout, and only the detail changes.
       const leftover = active ? endLeftoverSignIn(row) : null;
+      if (leftover?.confirmed) void leftover.confirmed.then(detail => {
+        const operation = signinOperations.get(row.id);
+        if (!operation || operation.status !== "interrupted") return;
+        operation.detail = detail;
+        writeSignInState(operation);
+      }).catch(() => { /* the detail stays as the one written below */ });
       if (["interrupted","completed","failed"].includes(status)) signinOperations.set(row.id, {
         id: row.id, provider: row.provider, status, stageHome: "",
         ...(typeof row.account === "string" ? { account: row.account } : {}),
-        ...(active ? { detail: leftover ?? "The runner restarted during sign-in. Start a new sign-in operation." }
+        ...(active ? { detail: leftover?.detail ?? "The runner restarted during sign-in. Start a new sign-in operation." }
           : typeof row.detail === "string" ? { detail: row.detail } : {}),
       });
     }

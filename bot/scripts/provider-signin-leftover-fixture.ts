@@ -1,5 +1,6 @@
 /**
- * A sign-in command must not outlive the operation it belongs to.
+ * A sign-in command must not outlive the operation it belongs to, and nothing may say it was
+ * ended until that is true.
  *
  * The runner unit is `KillMode=process`, so systemd ends only the runner and deliberately leaves
  * the children it means to keep. A sign-in that was waiting when the runner died used to be
@@ -8,7 +9,10 @@
  *
  * What this proves, against real processes on this machine:
  *  1. A recorded sign-in process that is still alive is ended, together with the CLI its shell
- *     started, and the operation says so.
+ *     started, and the operation reports that only once it is established.
+ *  1b. The case a review reproduced on 2026-11-17: the shell exits on the polite signal while the
+ *     CLI ignores it. The shell's exit must not end the claim; the survivor is forced and
+ *     confirmed gone before anything says the command was ended.
  *  2. A recorded process that is already gone is left alone and claims nothing.
  *  3. A recorded process whose identity cannot be proven is never signalled; the operation says
  *     the leftover could not be established.
@@ -40,9 +44,13 @@ const groupOf = (pid: number): number | null => {
   } catch { return null; }
 };
 
-/** A stand-in for a waiting sign-in: a shell holding a long-lived child, in its own group. */
-function startStandInSignIn(): { pid: number; identity: Identity; childPid: Promise<number> } {
-  const child = spawn("sleep 600 & echo $!; wait", { shell: true, detached: true, stdio: ["ignore", "pipe", "ignore"] });
+/**
+ * A stand-in for a waiting sign-in: a shell holding a long-lived child, in its own group.
+ * `stubborn` makes the child ignore SIGTERM, the way a provider CLI can.
+ */
+function startStandInSignIn(stubborn = false): { pid: number; identity: Identity; childPid: Promise<number> } {
+  const script = stubborn ? "sh -c 'trap \"\" TERM; sleep 600' & echo $!; wait" : "sleep 600 & echo $!; wait";
+  const child = spawn(script, { shell: true, detached: true, stdio: ["ignore", "pipe", "ignore"] });
   const pid = child.pid!;
   const childPid = new Promise<number>((resolve, reject) => {
     let seen = "";
@@ -62,28 +70,46 @@ function startStandInSignIn(): { pid: number; identity: Identity; childPid: Prom
   const grandchild = await standIn.childPid;
   if (groupOf(standIn.pid) !== standIn.pid) fail("the stand-in sign-in did not lead its own group");
   if (!alive(grandchild)) fail("the stand-in sign-in did not start its own long-lived child");
-  const detail = endLeftoverSignIn({ id: "signin:fixture-live", provider: "claude-code", process: standIn.identity });
-  if (!detail?.includes("has been ended")) fail(`a live leftover should report that it was ended, got ${JSON.stringify(detail)}`);
-  await settle(700);
+  const outcome = endLeftoverSignIn({ id: "signin:fixture-live", provider: "claude-code", process: standIn.identity });
+  if (!outcome?.confirmed) fail("a live leftover must offer an outcome to confirm");
+  if (outcome.detail.includes("has been ended")) fail("nothing may claim the command was ended before that is established");
+  const confirmed = await outcome.confirmed;
+  if (!confirmed.includes("has been ended")) fail(`a live leftover should confirm it was ended, got ${JSON.stringify(confirmed)}`);
   if (alive(standIn.pid)) fail("the leftover sign-in shell is still running");
   if (alive(grandchild)) fail("the sign-in command the shell started is still running; ending the shell alone is what leaked for eleven days");
+}
+
+// 1b. The shell exits politely; the CLI ignores SIGTERM. Reproduced by review on 2026-11-17.
+{
+  const standIn = startStandInSignIn(true);
+  const stubborn = await standIn.childPid;
+  if (!alive(stubborn)) fail("the stubborn stand-in did not start its child");
+  const outcome = endLeftoverSignIn({ id: "signin:fixture-stubborn", provider: "claude-code", process: standIn.identity });
+  if (!outcome?.confirmed) fail("a live leftover must offer an outcome to confirm");
+  if (!outcome.detail.includes("is being ended")) fail(`the first detail should say ending is under way, got ${JSON.stringify(outcome.detail)}`);
+  const confirmed = await outcome.confirmed;
+  if (!confirmed.includes("has been ended"))
+    fail(`a SIGTERM-ignoring command should be forced and confirmed ended, got ${JSON.stringify(confirmed)}`);
+  if (alive(stubborn)) fail("the SIGTERM-ignoring command is still running while the outcome says it was ended");
+  if (alive(standIn.pid)) fail("the shell is still running");
 }
 
 // 2. A recorded process that is already gone claims nothing and signals nothing.
 {
   const standIn = startStandInSignIn();
-  await standIn.childPid;
+  const grandchild = await standIn.childPid;
   endLoginGroup(standIn.pid, "SIGKILL");
   await settle(500);
   if (alive(standIn.pid)) fail("the stand-in did not exit before the already-gone case");
-  const detail = endLeftoverSignIn({ id: "signin:fixture-gone", provider: "claude-code", process: standIn.identity });
-  if (detail !== null) fail(`a process that is already gone must claim nothing, got ${JSON.stringify(detail)}`);
+  if (alive(grandchild)) try { process.kill(grandchild, "SIGKILL"); } catch { /* already gone */ }
+  const outcome = endLeftoverSignIn({ id: "signin:fixture-gone", provider: "claude-code", process: standIn.identity });
+  if (outcome !== null) fail(`a process that is already gone must claim nothing, got ${JSON.stringify(outcome)}`);
 }
 
 // 3. An identity that cannot be proven is never signalled, and the operation says which case it is.
 {
   for (const recorded of [undefined, { pid: 999_999 }, { pid: process.pid, startTicks: "1" }]) {
-    const detail = endLeftoverSignIn({ id: "signin:fixture-unrecorded", provider: "claude-code", process: recorded });
+    const detail = endLeftoverSignIn({ id: "signin:fixture-unrecorded", provider: "claude-code", process: recorded })?.detail;
     if (!detail?.includes("could not be established"))
       fail(`an incomplete record must say the leftover could not be established, got ${JSON.stringify(detail)}`);
   }
@@ -107,4 +133,4 @@ function startStandInSignIn(): { pid: number; identity: Identity; childPid: Prom
   if (!alive(process.pid)) fail("ending a non-leader reached this fixture's own process group");
 }
 
-console.log("provider-signin-leftover-fixture: a sign-in command and its CLI are ended with their operation; unproven identities are never signalled, and a non-leader is signalled alone");
+console.log("provider-signin-leftover-fixture: a sign-in command and its CLI are ended with their operation, including a CLI that ignores SIGTERM; nothing claims success before it is established; unproven identities are never signalled; a non-leader is signalled alone");
