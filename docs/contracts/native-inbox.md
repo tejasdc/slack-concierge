@@ -556,6 +556,18 @@ Concierge follows the posting session’s open work and the retained chain of wo
 it was delegated, so a return that woke the agent and a worker launched by that
 agent can both use the same thread. `--promise-request` accepts an open Inbox
 request ID or the exact linked dispatch in the posting session’s work chain.
+If a supplied reference is invalid, the refusal names an open Inbox request
+when the owner can verify it belongs to the posting session’s work in that topic.
+Use the exact Inbox message from the bound request or get it from the assigning
+agent. Direct notices use the Inbox-owning host. A worker on a different host can
+ask the assigning agent there to post, or send an answer on its own thread-bound
+peer request.
+
+For a real answer while work continues, use
+`sessions reply <request-id> --partial --answers-question` on the bound request.
+A plain `--partial` records progress without a Conversation post. A new
+progress-only `--partial --notify` is refused before progress is recorded.
+Exact historical replays remain readable. [decision: thread-requests-answer-in-their-thread]
 A post creates no request, closes no worker’s work, and starts no provider turn.
 A retry of an accepted post returns the original receipt even after the request
 closes. `sessions topics obligations` reads all open requests in

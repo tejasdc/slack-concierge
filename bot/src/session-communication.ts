@@ -22,7 +22,7 @@ import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { holdsRequesterPlace } from './requester-place';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, notifyFiledAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
+import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, resolveInboxPostPromise, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, notifyFiledAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
 import type {unfiledReceivedInputs} from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
@@ -61,7 +61,7 @@ import {CURRENT_SOL_MODEL,isAstraModel,modelDisplayName} from './aliases';
 const SOL_LABEL=modelDisplayName(CURRENT_SOL_MODEL);
 import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptAttachmentCorrectionPending,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,recordChatGptToolRead,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,validateChatGptToolRead,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
 import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, endRepeatingScheduleForInput, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
-import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
+import { PROGRESS_NOTIFICATION_REFUSAL, REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, finalClosingLine, leadFirst, NEEDS_YOU_SUMMARY_REQUIRED, questionForTejas, saysSomething } from './answers-to-tejas';
 import { answerNotice, requestLabel, sessionLabel, unresolvedRequestReminder } from './session-notices';
 import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
@@ -585,7 +585,7 @@ export class SessionCommunicationCoordinator {
         this.wake();
         return this.externalGet(input.name,input.request_id);
     }
-    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;reply_body?:string;final:boolean;waiting_on_watch?:string;workDisposition?:WorkDisposition;openChatGptIds?:string[];attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string}) {
+    private externalReply(input:{source:CommunicationSource;action_id:string;request_id:string;text:string;reply_body?:string;final:boolean;waiting_on_watch?:string;workDisposition?:WorkDisposition;openChatGptIds?:string[];attachments?:string[];files?:AttachedFile[];evidence?:unknown[];hand_back?:string},refuseNotifiedPartial:boolean) {
         const request=db.query('SELECT * FROM session_external_requests WHERE request_id=?').get(input.request_id) as any;
         if(!request)return null;
         const priorKey=input.source.input_id?JSON.stringify(['input',input.source.input_id,input.action_id])
@@ -597,6 +597,7 @@ export class SessionCommunicationCoordinator {
                 throw new Error('Idempotency conflict: outside reply changed.');
             return this.externalGet(request.agent_name,request.request_id);
         }
+        if(refuseNotifiedPartial)throw new Error(PROGRESS_NOTIFICATION_REFUSAL);
         const actor=this.actor(input.source);
         if(actor.session!==request.target_session_id)throw new Error('Only the recipient session can reply.');
         if(!getAcceptedSessionInput(request.target_input_id)?.turn_id)throw new Error('This request has not been delivered to the recipient yet.');
@@ -1295,9 +1296,15 @@ export class SessionCommunicationCoordinator {
             const receipt={messageId,thread:input.thread,inputId:rootInputId,...(attachments.length?{attachments}:{})};
             if(saved.duplicate)return {post:receipt,duplicate:true};
             if((promisesAnswer||input.promise_request)&&!topicId)throw new Error('Place this thread in the Inbox before promising an answer. Nothing was posted.');
-            if(topicId&&(promisesAnswer||input.promise_request)
-                &&!hasOpenInboxWorkForSource(topicId,sourceInputId,input.promise_request,actor.session))
-                throw new Error('This post promises an answer without a matching open Inbox request. Route the exact human message as work, or name an open Inbox request or its linked work dispatch with --promise-request. Nothing was posted.');
+            if(topicId&&(promisesAnswer||input.promise_request)){
+                const promise=resolveInboxPostPromise(topicId,sourceInputId,input.promise_request,actor.session);
+                if(!promise.accepted){
+                    const guidance=promise.usableRequestId
+                        ?`Use --promise-request ${promise.usableRequestId} for the open Inbox request linked to your work in this topic.`
+                        :"Route the exact human message as work, or use --promise-request with an open Inbox request or its linked work dispatch.";
+                    throw new Error(`This post promises an answer without a matching open Inbox request. ${guidance} Nothing was posted.`);
+                }
+            }
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
                 payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),postSource:{inputId:sourceInputId,runId:nativeRunId(actor.turn)},...(attachments.length?{attachments}:{})}});
             if(input.notify||router&&!input.keep_working&&!dispatchedFromInput(sourceInputId))notifyAgentPost(session.id,rootInputId,messageId,text,input.notify===true,nativeRunId(actor.turn));
@@ -1373,7 +1380,7 @@ export class SessionCommunicationCoordinator {
             const root=inboxThreadRoot(session.id,input.thread);
             if(!root)throw new Error('That --thread is not a message in this Inbox.');
             const topicId=topicOfRoot(root);
-            if(postPromisesAnswer(input.text)&&(!topicId||!hasOpenInboxWorkForSource(topicId,input.source.input_id)))
+            if(postPromisesAnswer(input.text)&&(!topicId||!resolveInboxPostPromise(topicId,input.source.input_id).accepted))
                 throw new Error('This post promises an answer without a matching open Inbox request. Nothing was posted.');
             const author={...proof.session,id:`${input.sourceOwner}:${proof.session.id.slice('concierge:'.length)}`};
             const saved=retainSessionInput({sessionId:session.id,scope,actionId:input.action_id,kind:'action',origin:'agent',
@@ -3153,6 +3160,7 @@ export class SessionCommunicationCoordinator {
             dropAnswerMark('--answers-question was ignored because the reply has no words. It was recorded as ordinary progress.');
         // Prompt answers are substantive even while work continues; ordinary progress stays quiet.
         // Preserve the finished-and-checked requirement for other explicit reply notifications.
+        const notifiedPartial=!input.final&&input.notify===true;
         if(input.notify&&!((!input.final&&input.answers_question&&input.text.trim())||(input.final&&input.workDisposition==='completed'&&typeof input.checked==='string'&&input.checked.trim()))){
             input={...input,notify:false};
             answerNotice=(answerNotice?answerNotice+' ':'')+'--notify was ignored: only a substantive --partial --answers-question answer or a final completed reply with --checked rings his phone; progress, corrections and failures stay in the thread.';
@@ -3200,12 +3208,13 @@ export class SessionCommunicationCoordinator {
         if(input.final&&['failed','needs_decision'].includes(input.workDisposition??'')&&input.openChatGptIds?.length)
             input={...input,text:`${input.text}\n\nChatGPT answers still owed: ${input.openChatGptIds.join(', ')}. The exact questions remain open for recovery; this report does not close them.`};
         if(outsideRequest)
-            return this.externalReply(input)!;
+            return this.externalReply(input,notifiedPartial)!;
         const attached = !!(input.attachments?.length || files(input.files).length);
         if (this.dependencies.peers && !this.local(input.request_id) && this.dependencies.peers.hasDelivery(input.request_id)) {
             // A retry after the run ended returns the committed reply, as for a local request.
             if (input.source.input_id && db.query('SELECT 1 FROM session_peer_replies WHERE action_key=?').get(JSON.stringify(['input', input.source.input_id, input.action_id])))
                 return this.dependencies.peers.inspectDelivery(input.request_id);
+            if(notifiedPartial&&!input.answers_question)throw new Error(PROGRESS_NOTIFICATION_REFUSAL);
             const actor = this.fenced(this.actor(input.source));
             action(input.action_id);
             message(input.text, attached||!!(input.final&&!input.reply_body?.trim()));
@@ -3275,6 +3284,7 @@ export class SessionCommunicationCoordinator {
                 return noted(this.receipt(this.row(input.request_id)));
             }
         }
+        if(notifiedPartial&&!input.answers_question)throw new Error(PROGRESS_NOTIFICATION_REFUSAL);
         const actor = this.fenced(this.actor(input.source));
         action(input.action_id);
         message(input.text, attached||!!(input.final&&!input.reply_body?.trim()));

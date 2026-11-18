@@ -1520,10 +1520,10 @@ export function openInboxObligations() {
 }
 
 /** A future-answer post relies on existing work in its resolved Inbox topic. */
-export function hasOpenInboxWorkForSource(topicId:string,sourceInputId:string,promiseRequestId?:string,postingSessionId?:number):boolean {
+export function resolveInboxPostPromise(topicId:string,sourceInputId:string,promiseRequestId?:string,postingSessionId?:number):{accepted:boolean;usableRequestId?:string} {
   const open=topicRequests(topicId).filter(request=>request.state==='open');
-  if(promiseRequestId&&open.some(request=>request.requestId===promiseRequestId))return true;
-  if(!open.length)return false;
+  if(promiseRequestId&&open.some(request=>request.requestId===promiseRequestId))return {accepted:true};
+  if(!open.length)return {accepted:false};
 
   // A later turn can start on a provider return while its session still holds thread work.
   // Delegated requests retain their sending input and, when different, the work input that
@@ -1551,17 +1551,20 @@ export function hasOpenInboxWorkForSource(topicId:string,sourceInputId:string,pr
     for(const row of rows)workInputs.add(row.id);
   }
 
-  return open.some(request=>{
-    if(!promiseRequestId&&request.sources.some(source=>source.inputId===sourceInputId||workInputs.has(source.inputId)))return true;
+  const held=open.find(request=>{
+    if(request.sources.some(source=>source.inputId===sourceInputId||workInputs.has(source.inputId)))return true;
     return request.dispatches.some((dispatch:any)=>{
       const id=String(dispatch.requestId??'');
-      if(promiseRequestId)return id===promiseRequestId&&workInputs.has(`request:${id}`);
       if(sourceInputId===`request:${id}`||workInputs.has(`request:${id}`))return true;
       const local=db.query("SELECT source_input_id FROM session_communication_requests WHERE request_id=?").get(id) as {source_input_id:string|null}|null;
       const peer=local?null:db.query("SELECT source_input_id FROM session_peer_requests WHERE request_id=?").get(id) as {source_input_id:string|null}|null;
       return (local?.source_input_id??peer?.source_input_id)===sourceInputId;
     });
   });
+  if(!promiseRequestId)return {accepted:!!held};
+  if(open.some(request=>request.dispatches.some(dispatch=>
+    dispatch.requestId===promiseRequestId&&workInputs.has(`request:${promiseRequestId}`))))return {accepted:true};
+  return {accepted:false,usableRequestId:held?.requestId};
 }
 
 function topicHistory(sessionId:number,topicId:string) {
