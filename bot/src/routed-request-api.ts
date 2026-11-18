@@ -186,7 +186,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'move') return Response.json(await sessions.move(input));
         if (operation === 'repair-home') return Response.json(await sessions.repairHome(input));
         if (operation === 'post') return Response.json(await withLinkCheck(sessions.post(input),input,owner));
-        if (operation === 'outcome') return Response.json(sessions.outcome(await withTodoState(input)));
+        if (operation === 'outcome') {await sessions.prepareHeldResolutionCompletion(input);return Response.json(sessions.outcome(await withTodoState(input)));}
         if (operation === 'answer') return Response.json(sessions.handleChatGptAnswer(input));
         if (operation === 'legacy-link') return Response.json(sessions.classifyLegacyChatGpt(input));
         if (operation === 'chatgpt-recover') return Response.json(await sessions.recoverChatGptNeverSent(input));
@@ -202,6 +202,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
         if (operation === 'reply-notification') return Response.json(sessions.reconcileReplyNotification(input));
         if (operation === 'reply') {
+          await sessions.prepareHeldResolutionCompletion(input);
           const deliver=async(child:any,grouped=false)=>withLinkCheck(await sessions.reply(await withRequirementState(await withTodoState(child),sessions),grouped),child,owner);
           if (input.also !== undefined) {
             // Enrichment is read separately at each child, as it was for separate router calls.

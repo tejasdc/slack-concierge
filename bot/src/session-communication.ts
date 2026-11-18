@@ -1,4 +1,5 @@
-import {HELD_RESOLUTION_SCOPE,heldMessageBinding,heldResolutionIsCurrent} from './held-message-resolution';
+import {readHeldMessageSnapshot} from './held-message-resolution-capability';
+import {HELD_RESOLUTION_SCOPE,heldMessageBinding,heldResolutionIsCurrent,heldResolutionProgress} from './held-message-resolution';
 import {adoptContentSource,assertCommunicationContent,assertInputContent,contentReaderHeaders,outsideContentReader,withContentSource} from './lab-content-disclosure';
 import {pendingJournalProcessing} from "./journal-processing";
 import { readFileSync } from 'node:fs';
@@ -1382,6 +1383,32 @@ export class SessionCommunicationCoordinator {
             return {post:receipt,duplicate:false};
         })();
     }
+    /** One fresh product read can prove a real revision/withdrawal; a completed provider turn cannot. */
+    async prepareHeldResolutionCompletion(input:{source:CommunicationSource;outcome?:string;workDisposition?:string;only_he_can?:string;his_words?:string;why_not_answered?:string}) {
+        const question=input.outcome==='needs_you'||input.workDisposition==='needs_decision'||input.only_he_can!==undefined||input.his_words!==undefined||input.why_not_answered!==undefined;
+        if(!question&&!['done','response'].includes(input.outcome??''))return;
+        const accepted=input.source?.input_id?getAcceptedSessionInput(input.source.input_id):null;
+        const binding=accepted?heldMessageBinding(db,accepted):null;
+        if(!accepted||!binding)return;
+        let actor=this.actor(input.source);
+        if(question&&binding.snapshot.resolutionKind!=='human-choice')
+            throw new Error('FEATURE_RESOLUTION_REPAIR_REQUIRED: system/model/content failures go to repair, not a human question.');
+        const target=(id:number)=>{const session=getSessionById(id);return !!session&&!isWritingSession(session);};
+        const progress=heldResolutionProgress(db,accepted,target);
+        if(!question&&progress&&['question','revision','retired','repair-handoff','repair-report'].includes(progress.state))return;
+        this.fenced(actor);
+        let snapshot;
+        try{snapshot=await readHeldMessageSnapshot(binding.resolution,actor.session,!question);}
+        catch(error){throw new Error(`FEATURE_RESOLUTION_PRODUCT_UNPROVEN: ${error instanceof Error?error.message:'current product evidence unavailable'}`);}
+        actor=this.actor(input.source);
+        this.fenced(actor);
+        if(question)return;
+        if(snapshot.state!=='resolved'||!snapshot.completion)
+            throw new Error('FEATURE_RESOLUTION_UNRESOLVED: product still eligible; keep the local obligation open and perform the exact resolution or report its system fault.');
+        // Store only the verified effect receipt, not a caller's claim or a new send instruction.
+        db.transaction(()=>recordSessionEvent({eventId:`feature-resolution-revision:${accepted.id}`,sessionId:actor.session,inputId:accepted.id,
+            kind:'feature_resolution_revision',payload:snapshot.completion}))();
+    }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
     outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;summary?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;todo?:string;todo_checked?:TodoState|null|'unavailable';decision_id?:string;approval_action?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -1391,6 +1418,11 @@ export class SessionCommunicationCoordinator {
         const heldResolution=heldMessageBinding(db,getAcceptedSessionInput(actor.inputId)!);
         if(input.outcome==='needs_you'&&heldResolution&&heldResolution.snapshot.resolutionKind!=='human-choice')
             throw new Error('FEATURE_RESOLUTION_REPAIR_REQUIRED: system/model/content failures go to the existing repair owner, not a human question.');
+        if(heldResolution&&['done','response'].includes(input.outcome)){
+            const progress=heldResolutionProgress(db,getAcceptedSessionInput(actor.inputId)!,id=>{const target=getSessionById(id);return !!target&&!isWritingSession(target);});
+            if(!progress||!['question','revision','retired','repair-handoff','repair-report'].includes(progress.state))
+                throw new Error('FEATURE_RESOLUTION_UNRESOLVED: no exact question, verified revision or accepted repair ownership is recorded. Keep the local obligation open.');
+        }
         if(!['done','response','needs_you','failed'].includes(input.outcome))throw new Error('Invalid turn outcome.');
         const journalPending=pendingJournalProcessing(actor.inputId,nativeRunId(actor.turn));
         if(journalPending&&input.outcome!=="failed")throw new Error(journalPending);

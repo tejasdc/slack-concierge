@@ -21,8 +21,12 @@ activation.
 
 ## Bound held-message resolution
 
-The trusted **local thnkr.ing service** may supply optional `resolution` on the
-same feature-request route. Generic requests without it remain compatible.
+The trusted **local thnkr.ing service** uses
+`POST /sessions/v1/sessions/:id/feature-requests/held-message` with required
+`resolution`. This typed sibling uses the same bound handler; an old owner returns
+404 without admitting an unbound wake. Consumers never fall back to the generic
+route. Generic feature requests remain compatible; their optional binding uses
+the same validation, but capability preflight is not a rollout safety boundary.
 
 ```json
 {
@@ -42,10 +46,8 @@ same feature-request route. Generic requests without it remain compatible.
 }
 ```
 
-`originalRequestId` names the exact retained task operation. A native accepted
-target input, or a bare communication UUID whose retained request proves its exact
-assigned target, is supported. An outgoing request operation can resolve through
-its own retained request ID. Ambiguous aliases are refused. Direct-human
+`originalRequestId` names the exact retained assigned target input operation. No
+bare UUID, prefix guessing or alternate-operation lookup is used. Direct-human
 operations are explicitly unsupported in this first release; no guessed dispatch
 or thread is created. The owner resolves the exact assigned local request;
 it accepts no caller-selected thread, run or provenance claim. `id` is 1–200
@@ -86,11 +88,13 @@ by this admission contract itself.
 Only a product snapshot classified `human-choice` may declare a human question;
 `repair` and `revise-content` wakes return `FEATURE_RESOLUTION_REPAIR_REQUIRED`
 if they attempt native `needs_you` or a question-bearing reply. Genuine human-only
-questions use normal native `needs_you`, his exact initiating
+questions use normal native `needs_you`, his exact verified human
 words and the remaining gap; the retained binding maps that input to its original
 dispatch and frozen return thread. System/model faults belong to the existing
 software repair owner, never a fabricated human question. Ordinary agent-authored
-`sessions post --thread <retained-root>` remains available. The original request
+`sessions post --thread <retained-root>` remains available. Before a question-bearing outcome or reply, one fresh bounded product read must
+still prove this same eligible assessment, then native custody is rechecked. Stale
+product context cannot post a new human question. The original request
 can close only through its ordinary reply protocol.
 
 Errors: `400 FEATURE_RESOLUTION_INVALID`, `409 FEATURE_RESOLUTION_CONFLICT`,
@@ -122,7 +126,8 @@ The HTTP200 body is:
 
 ```text
 {version:1, id, originalRequestId, callerSession:"concierge:<id>", taskId,
- messageId, sourceInputId, failedReadingId, failedReadingSha256, failedReadingJson,
+ messageId, sourceInputId, failedReadingId, failedReadingSha256,
+ failedReadingFormat:"assessment-manifest-v1", failedReadingJson, quoteSourceInputId,
  contextHash, envelopeHash, resolutionKind:"human-choice"|"revise-content"|"repair",
  reason, question:string|null, supportingQuote:string|null,
  state:"pending"|"admitted", eligible:true, consumed:false}
@@ -133,16 +138,74 @@ including the exact executable envelope and any human Stop/withdrawal/consumed
 or uncertain effect. `failedReadingId === contextHash`, and `id` is lower-case
 SHA-256 of UTF8 `JSON.stringify(["send-resolution",taskId,contextHash])`.
 `contextHash` and `envelopeHash` are separate 64-hex identities. `failedReadingJson`
-is the exact retained diagnostic JSON string (at most 64000 characters), never a
-reconstruction from a summary; the native owner verifies its UTF8 SHA-256 against
-`failedReadingSha256`. All caller resolution identities must exactly match the
-fresh response. `reason` is nonempty, at most4000 characters; nullable question
-and quote are at most4000 each. For `human-choice`, question and quote are nonempty
-and the quote must be an exact substring of the owner's proven original human
-words. Service reason/diagnostic/model output is never treated as his words.
+is the exact retained compact assessment manifest JSON string (at most 64000
+characters); the native owner verifies its UTF8 SHA-256 against
+`failedReadingSha256`. It is not a truncated full reading or a relabeled full-reading
+hash. Its versioned shape is:
+
+```text
+{format:"send-resolution-assessment-v1", reading:{id:failedReadingId,sha256},
+ contextHash,envelopeHash,
+ assessment:{kind:resolutionKind,reason,question,supportingQuote,quoteSourceInputId},
+ receipt:{...retained assessment receipt...}, artifacts:[{id,sha256}]}
+```
+
+`reading.sha256` identifies the full retained reading bytes, separately from the
+manifest hash. Artifact digests pin retained artifact bytes. The product retains
+and proves those full bytes; native admission validates the bounded manifest,
+not every referenced page. All caller identities must exactly match the fresh
+response. `reason` is nonempty, at most4000 characters; nullable question and quote
+are at most4000 each. For `human-choice`, question and quote are nonempty and
+`quoteSourceInputId` names a native-proven human input in the bound conversation;
+the quote must be its exact substring. This may be a later same-task amendment.
+The product proves same-task membership in its verified current context; topic
+proximity alone is not that proof. The original return thread never changes to
+the amendment's position. Service/model words never become his words.
 
 A failed product read cannot silently use the caller payload. Duplicate historical
 readback makes no product call and never starts another turn. This is evidence at
 admission time, not a lock or a send grant across two services: the product's own
 execution/cancellation/consumed-effect guard remains authoritative when an agent
 later acts. No historical accepted/sent task is a live acceptance seed.
+
+### Effect progress and completion
+
+The same `GET /operations/:id` receipt exposes top-level
+`heldMessageResolution:{version:1,state,...}` independently of provider execution:
+
+- `pending` or `unresolved`: no exact effect proof; the product keeps its local
+  resolution obligation. A terminal provider turn alone is never resolution.
+- `question`: `question:{questionId,state,postId,topicId,threadRootInputId}` names
+  the actual normal native question in the frozen original thread. Each resolution
+  has separate question custody even when several share a turn or topic.
+- `repair-handoff`: `handoff:{requestId,targetSessionId,operationId,status,outcome}`
+  names an accepted work request to a non-writing engineering session.
+- `repair-report`: `report:{captureInputId,requestId,topicId,state},resolved:false`
+  means the existing Inbox owns the exact agent issue report; it does **not** mean
+  an engineer has accepted it. Product reconciliation preserves that distinction.
+- `revision` or `retired`: `completion` is positive current product evidence below.
+- `fenced`: native custody no longer permits continuation. No replay follows.
+
+A bound agent cannot declare `done` or `response` without the exact question,
+verified product completion, accepted repair work or durable Inbox repair report.
+Otherwise its command returns `FEATURE_RESOLUTION_UNRESOLVED`. Failure or an
+involuntary provider ending remains visibly unresolved; it never causes another
+semantic reread, automatic resubmission or a new session. The product must not
+mark its pending/admitted obligation resolved from an admission or terminal turn.
+
+For a real applied revision, withdrawal or consumed effect, the **same trusted
+GET** may retain the immutable original evidence and return `state:"resolved"`,
+`eligible:false`, plus:
+
+```text
+completion:{kind:"revision"|"withdrawn"|"consumed",receiptId,messageId,envelopeHash}
+```
+
+`consumed` is true only for kind `consumed`, otherwise false. The product proves
+this exact effect from its own retained records; ordinary source/envelope drift
+is insufficient. Initial admission rejects resolved records. Before accepting
+`done`/`response` without existing native effect proof, the owner makes one bounded
+fresh read, rechecks native custody, and retains the verified completion event.
+An unavailable completion read returns `FEATURE_RESOLUTION_PRODUCT_UNPROVEN`
+through the existing communication command error response (HTTP400); it leaves the
+obligation open. This is not a send operation or permission to replay an effect.

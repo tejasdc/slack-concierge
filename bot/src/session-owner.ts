@@ -1,6 +1,7 @@
+import {isWritingSession} from './session-roles';
 import {readHeldMessageSnapshot} from './held-message-resolution-capability';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
-import {HELD_RESOLUTION_SCOPE,parseHeldMessageResolution,heldMessageBinding,heldResolutionIsCurrent,type HeldMessageBinding} from './held-message-resolution';
+import {HELD_RESOLUTION_SCOPE,parseHeldMessageResolution,heldMessageBinding,heldResolutionIsCurrent,heldResolutionProgress,type HeldMessageBinding} from './held-message-resolution';
 import {withContentReader,trustedContentReader,verifiedContentSource,contentReader,contentReaderHeaders,assertInputContent,inputContentVisible,inputIdContentVisible,assertMessageContent,messageContentVisible,evidenceContentVisible,assertOpaqueSession,opaqueSessionProtected,LabDisclosureError} from './lab-content-disclosure';
 import {comparisonContext} from './lab-invocation-facts';
 import {requirementsFor} from './request-history';
@@ -1598,9 +1599,9 @@ export class SessionOwner {
     assertInputContent(input);
     const cached=this.settledReceipts.get(input.id);
     // Author corrections can arrive after a receipt settles; never cache send authority.
-    if(cached)return {...cached,humanAuthored:humanAuthored(input)};
+    if(cached&&input.scope!==HELD_RESOLUTION_SCOPE)return {...cached,humanAuthored:humanAuthored(input)};
     const built=this.buildReceipt(input);
-    if(receiptSettled(built))this.settledReceipts.set(input.id,built);
+    if(input.scope!==HELD_RESOLUTION_SCOPE&&receiptSettled(built))this.settledReceipts.set(input.id,built);
     return built;
   }
   /**
@@ -1647,7 +1648,7 @@ export class SessionOwner {
     const attachments=receiptAttachmentProjection(db,input.kind,parsed).attachments;
     const retainedError=saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null);
     const steeringError=observed.state==='failed'?observed.turn?.agent_text:observed.state==='uncertain'?{code:statusDetail?.code,message:statusDetail?.message}:null;
-    return {version:1,...(comparison?{comparisonContext:comparison}:{}),operationId:input.id,sessionId:`concierge:${input.session_id}`,humanAuthored:humanAuthored(input),...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
+    return {version:1,...(input.scope===HELD_RESOLUTION_SCOPE?{heldMessageResolution:heldResolutionProgress(db,input,id=>{const target=getSessionById(id);return !!target&&!isWritingSession(target);})}:{}),...(comparison?{comparisonContext:comparison}:{}),operationId:input.id,sessionId:`concierge:${input.session_id}`,humanAuthored:humanAuthored(input),...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
       requestId:input.request_id,runId:input.kind==='stop'?parsed.runId:control?null:observed.turn?nativeRunId(observed.turn.id):null,
       kind:input.kind,origin:input.origin,state:switchState??stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,
@@ -3511,24 +3512,22 @@ export class SessionOwner {
     const prior=getAcceptedSessionInput(input.clientActionId);
     if(prior){
       const binding=heldMessageBinding(db,prior),payload=JSON.parse(prior.payload_json);
-      if(!binding||prior.session_id!==session.id||JSON.stringify(binding.resolution)!==JSON.stringify(resolution)
+      if(!binding||prior.session_id!==session.id||Object.keys(resolution).some(key=>binding.resolution[key as keyof typeof resolution]!==resolution[key as keyof typeof resolution])
         ||payload.feature!==input.feature||payload.serviceText!==input.text)
         throw new SessionOwnerError('This resolution identity already has different retained content.',409,'FEATURE_RESOLUTION_CONFLICT');
       return {operation:this.receipt(prior)};
     }
     const resolveOriginal=()=>{
       const named=getAcceptedSessionInput(resolution.originalRequestId);
-      const rows=db.query(`SELECT request_id,target_session_id,target_input_id,source_session_id,thread_root_input_id,outcome,payload_json
-        FROM session_communication_requests WHERE target_session_id=? AND (target_input_id=? OR request_id=?) LIMIT 2`)
-        .all(session.id,named?.id??resolution.originalRequestId,named?.kind==='request'?named.request_id:resolution.originalRequestId) as any[];
-      const row=rows.length===1?rows[0]:null;
+      const row=named?db.query(`SELECT request_id,target_session_id,target_input_id,source_session_id,thread_root_input_id,outcome,payload_json
+        FROM session_communication_requests WHERE target_session_id=? AND target_input_id=? LIMIT 1`).get(session.id,named.id) as any:null;
       return {request:row,original:row?.target_input_id?getAcceptedSessionInput(row.target_input_id):null,named};
     };
     const preflight=resolveOriginal();
     if(!preflight.request&&preflight.named&&humanAuthored(preflight.named))
       throw new SessionOwnerError('Direct-human task origins have no proven assigned communication thread in this release.',409,'FEATURE_RESOLUTION_DIRECT_HUMAN_UNSUPPORTED');
     if(!preflight.request||!preflight.original)
-      throw new SessionOwnerError('Name the exact original native operation or a communication UUID proven by its retained request.',409,'FEATURE_RESOLUTION_REQUEST_UNPROVEN');
+      throw new SessionOwnerError('Name the exact original accepted target input operation; no prefix or request-ID fallback is inferred.',409,'FEATURE_RESOLUTION_REQUEST_UNPROVEN');
     let snapshot;
     try {snapshot=await readHeldMessageSnapshot(resolution,session.id);} catch(error) {
       throw new SessionOwnerError(error instanceof Error?error.message:String(error),503,'FEATURE_RESOLUTION_PRODUCT_UNPROVEN');
@@ -3561,8 +3560,13 @@ export class SessionOwner {
       ||db.query("SELECT 1 FROM session_handoffs WHERE predecessor_session_id=? AND state IN ('proposed','accepted')").get(session.id)
       ||db.query('SELECT 1 FROM turns WHERE session_id=? AND id>=? AND stop_requested_at IS NOT NULL').get(session.id,original.turn_id))
       throw new SessionOwnerError('The exact original work is stopped, canceled, paused, archived or handed off.',409,'FEATURE_RESOLUTION_FENCED');
-    if(snapshot.resolutionKind==='human-choice'&&!String(this.receipt(humanInput).text??'').includes(snapshot.supportingQuote!))
-      throw new SessionOwnerError('The resolution quote is not in the proven original human words.',409,'FEATURE_RESOLUTION_SOURCE_UNPROVEN');
+    if(snapshot.resolutionKind==='human-choice'){
+      const quoteInput=snapshot.quoteSourceInputId?getAcceptedSessionInput(snapshot.quoteSourceInputId):null;
+      const quoteRoot=quoteInput?inboxThreadRoot(sourceSession.id,quoteInput.id):null;
+      if(!quoteInput||!humanAuthored(quoteInput)||!quoteRoot||topicOfRoot(quoteRoot)!==topicOfRoot(root)
+        ||!String(this.receipt(quoteInput).text??'').includes(snapshot.supportingQuote!))
+        throw new SessionOwnerError('The quote needs its exact verified human source in the bound conversation.',409,'FEATURE_RESOLUTION_SOURCE_UNPROVEN');
+    }
     const binding:HeldMessageBinding={version:1,resolution,originalInputId:original.id,requestId:request.request_id,
       sessionId:session.id,inboxSessionId:sourceSession.id,threadRootInputId:root,sourceInputId:humanInput.id,continuationOnly:true,snapshot};
     const text=`thnkr.ing's ${input.feature} feature sent a held-message resolution. This is service-authored evidence, not new words or send authority from Tejas.
@@ -5336,7 +5340,7 @@ ${input.text}`;
       // another operation on it after its obligations have moved to the successor.
       if(request.method==='POST'&&parts[0]==='sessions'&&parts.length>=3){
         const successor=supersededBy(this.session(parts[1]!).id);
-        const boundDuplicate=parts.length===3&&parts[2]==='feature-requests'&&typeof body?.clientActionId==='string'
+        const boundDuplicate=(parts.length===3||parts.length===4&&parts[3]==='held-message')&&parts[2]==='feature-requests'&&typeof body?.clientActionId==='string'
           &&getAcceptedSessionInput(body.clientActionId)?.scope===HELD_RESOLUTION_SCOPE;
         if(successor&&!boundDuplicate)throw new SessionOwnerError(`This session continues in ${successor}. Send the action to ${supersededAddress(this.session(parts[1]!).id)}.`,409,'SESSION_SUPERSEDED');
       }
@@ -5626,7 +5630,9 @@ ${input.text}`;
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='canvas-observations') result=this.appendCanvasObservation(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='journal'&&parts[1]==='observations'&&parts.length===2) result=this.submitJournalObservation(body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='inputs') result=await this.submit(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='feature-requests') {
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts[2]==='feature-requests'&&(parts.length===3||parts.length===4&&parts[3]==='held-message')) {
+        if(parts.length===4&&body?.resolution?.kind!=='held-message')
+          throw new SessionOwnerError('The typed held-message entrance requires its exact resolution binding.',400,'FEATURE_RESOLUTION_INVALID');
         if(body?.resolution!==undefined&&(request.headers.has('x-concierge-agent-principal')||request.headers.has('x-concierge-verified-peer')))
           throw new SessionOwnerError('Bound resolutions require the trusted local thnkr.ing service entrance.',403,'FEATURE_RESOLUTION_SERVICE_REQUIRED');
         result=await this.submitFeatureRequest(parts[1]!,body);

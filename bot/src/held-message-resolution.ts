@@ -5,9 +5,11 @@ import type {Database} from 'bun:sqlite';
 export type HeldMessageResolution={kind:'held-message';id:string;originalRequestId:string;taskId:string;messageId:string;
   sourceInputId:string;failedReadingId:string;failedReadingSha256:string};
 export const HELD_RESOLUTION_KINDS=['human-choice','revise-content','repair'] as const;
-export const HELD_RESOLUTION_STATES=['pending','admitted'] as const;
-export type HeldMessageSnapshot=Omit<HeldMessageResolution,'kind'>&{version:1;callerSession:string;failedReadingJson:string;contextHash:string;envelopeHash:string;
-  resolutionKind:typeof HELD_RESOLUTION_KINDS[number];reason:string;question:string|null;supportingQuote:string|null;state:typeof HELD_RESOLUTION_STATES[number];eligible:true;consumed:false};
+export const HELD_RESOLUTION_STATES=['pending','admitted','resolved'] as const;
+export const HELD_RESOLUTION_COMPLETIONS=['revision','withdrawn','consumed'] as const;
+export type HeldResolutionCompletion={kind:typeof HELD_RESOLUTION_COMPLETIONS[number];receiptId:string;messageId:string;envelopeHash:string};
+export type HeldMessageSnapshot=Omit<HeldMessageResolution,'kind'>&{version:1;callerSession:string;failedReadingFormat:'assessment-manifest-v1';failedReadingJson:string;contextHash:string;envelopeHash:string;quoteSourceInputId:string|null;
+  resolutionKind:typeof HELD_RESOLUTION_KINDS[number];reason:string;question:string|null;supportingQuote:string|null;state:typeof HELD_RESOLUTION_STATES[number];eligible:boolean;consumed:boolean;completion?:HeldResolutionCompletion};
 export type HeldMessageBinding={version:1;resolution:HeldMessageResolution;originalInputId:string;requestId:string;
   sessionId:number;inboxSessionId:number;threadRootInputId:string;sourceInputId:string;continuationOnly:true;snapshot:HeldMessageSnapshot};
 type Input={id:string;session_id:number;scope:string;origin:string;kind:string;source_input_id:string|null;
@@ -54,4 +56,42 @@ export function heldResolutionCurrentSql(alias:string):string {
 }
 export function heldResolutionIsCurrent(database:Database,input:Input):boolean {
   return !!heldMessageBinding(database,input)&&!!database.query(`SELECT 1 FROM session_inputs resolution_input WHERE resolution_input.id=? AND ${heldResolutionCurrentSql('resolution_input')}`).get(input.id);
+}
+
+
+/** Exact effect evidence on the same operation receipt; execution completion alone is not resolution. */
+export function heldResolutionProgress(database:Database,input:Input,isEngineeringTarget:(id:number)=>boolean) {
+  const binding=heldMessageBinding(database,input);
+  if(!binding)return null;
+  const marker=database.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND input_id=? AND kind='feature_resolution_question'")
+    .get(`feature-resolution-question:${input.id}`,input.id) as {payload_json:string}|null;
+  if(marker){
+    const proof=JSON.parse(marker.payload_json);
+    const question=database.query('SELECT state,owner_json,topic_id FROM inbox_questions WHERE question_id=?').get(proof.questionId) as any;
+    if(question&&JSON.parse(question.owner_json??'{}').heldResolutionInputId===input.id&&question.topic_id===proof.topicId)
+      return {version:1,state:'question',question:{questionId:proof.questionId,state:question.state,postId:proof.postId,topicId:proof.topicId,threadRootInputId:binding.threadRootInputId}};
+  }
+  const revision=database.query("SELECT payload_json FROM session_owner_events WHERE event_id=? AND input_id=? AND kind='feature_resolution_revision'")
+    .get(`feature-resolution-revision:${input.id}`,input.id) as {payload_json:string}|null;
+  if(revision){const completion=JSON.parse(revision.payload_json);return {version:1,state:completion.kind==='revision'?'revision':'retired',completion};}
+  // Writing sessions use the existing issue-report entrance. The report is owned even before an engineer is dispatched.
+  const report=database.query(`SELECT report.id,request.request_id,request.topic_id,request.state FROM session_inputs report
+    JOIN inbox_requests request ON request.request_id='req:agent-report:'||report.id
+    WHERE report.source_input_id=? AND report.origin='agent' AND report.kind='input'
+      AND json_extract(report.payload_json,'$.capture.source.kind')='agent-report' ORDER BY report.rowid LIMIT 1`).get(input.id) as any;
+  const work=database.query(`SELECT request.request_id,request.target_session_id,request.target_input_id,request.status,request.outcome,session.native_metadata_json
+    FROM session_communication_requests request JOIN sessions session ON session.id=request.target_session_id
+    WHERE (request.source_input_id=? OR (? IS NOT NULL AND request.source_input_id=?))
+      AND json_extract(request.payload_json,'$.requestedEffect')='work' AND request.target_input_id IS NOT NULL
+      AND (request.outcome IS NULL OR request.outcome='answered') ORDER BY request.created_at_ms LIMIT 20`)
+    .all(input.id,report?.id??null,report?.id??null) as any[];
+  const handoff=work.find(row=>{const meta=JSON.parse(row.native_metadata_json??'{}');
+    return !meta.inbox&&meta.interactionPolicy!=='consultation-only'&&!!(meta.projectName||meta.cwd)&&isEngineeringTarget(row.target_session_id);});
+  if(handoff)return {version:1,state:'repair-handoff',handoff:{requestId:handoff.request_id,targetSessionId:`concierge:${handoff.target_session_id}`,
+    operationId:handoff.target_input_id,status:handoff.status,outcome:handoff.outcome}};
+  if(report)return {version:1,state:'repair-report',report:{captureInputId:report.id,requestId:report.request_id,topicId:report.topic_id,state:report.state},resolved:false};
+  if(!heldResolutionIsCurrent(database,input))return {version:1,state:'fenced'};
+  const turn=database.query('SELECT turn.status FROM turns turn JOIN session_inputs input ON input.turn_id=turn.id WHERE input.id=?').get(input.id) as {status:string}|null;
+  return {version:1,state:turn&&['done','error','cancelled','interrupted','parked'].includes(turn.status)?'unresolved':'pending',
+    reason:'No original-thread question, verified revision or accepted repair ownership is recorded.'};
 }

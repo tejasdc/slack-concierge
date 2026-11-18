@@ -48,11 +48,22 @@ The foreign-authorship predicate remains unchanged.
 
 ## Caller custody clarification before first release
 
-The product owner confirmed that retained task operations may use a bare native
-communication UUID and that a direct-human operation is also possible. Resolve
-only owner-proven request aliases; refuse the direct-human shape explicitly in
-this release. Historical Rohan examples are already sent and must not be invoked.
-The product owner supplies a trusted, side-effect-free pending-resolution read;
-native admission checks current task/message/source/reading/envelope identity,
-verifies exact diagnostic bytes, then rechecks native custody before its write.
-Repair/model failures cannot become a native human question through this binding.
+The product owner corrected its compressed example: the real retained task names
+an exact request-prefixed accepted target input, while a bare communication UUID
+is a different identity. Resolve only that exact target; refuse direct-human
+origins explicitly in this release. Historical Rohan examples are already sent
+and must not be invoked.
+
+The product owner supplies one trusted, side-effect-free resolution-ID read.
+Native admission checks current task/message/source/reading/envelope identity,
+verifies exact compact assessment bytes and pinned full-reading/artifact digests,
+then rechecks native custody before its write. Full reading custody remains with
+the product. A typed POST sibling avoids old-owner generic admission during a
+version switch. A verified later human amendment may supply the quote without
+changing the original return thread.
+
+Repair/model failures cannot become a human question. Exact native progress
+separates an actual question, positive product completion, accepted engineering
+request and a durable Inbox report still awaiting engineering ownership. A
+provider ending is not effect evidence. Unproven cooperative completion is
+refused; involuntary endings remain unresolved in the operation receipt.
