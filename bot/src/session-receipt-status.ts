@@ -18,6 +18,8 @@ export type StatusContext={
   session:(sessionId:number)=>{status:string;providerId:string;suspended:boolean;outside:boolean};
   otherLiveTurn:(sessionId:number,turnId:number)=>boolean;
   deploymentHold:(providerId:string,inputKind:string)=>boolean;
+  /** The oldest durable Codex admission hold this session's queued turn waits behind. */
+  codexAdmissionHold?:(outside:boolean)=>{kind:string;holder:string;sinceMs:number;clearsAtMs:number|null}|null;
   focusHold:(sessionId:number)=>number|null;
   olderBlockingTurn:(sessionId:number,turnId:number)=>BlockingTurnFact;
   dependencyPending:(turnId:number)=>boolean;
@@ -35,6 +37,12 @@ export function providerTroubleText(status:number|null,offer:OutageFact=null):st
   if(status!==null&&status>=500)return `Claude’s servers are returning errors (${status}; status.claude.com).`;
   if(status===429)return 'Claude is rate-limiting requests right now.';
   return 'Claude’s API call failed.';
+}
+
+/** ChatGPT's own words for why nothing was sent, without its code prefix, or null. */
+function chatGptHoldReason(reason:string):string|null {
+  const match=/\bCHATGPT_[A-Z_]+:\s*(.+)$/s.exec(reason.replace(/^(?:ProviderDispatchError|ChatGptDispatchError|Error):\s*/,''));
+  return match?match[1]!.trim().replace(/\s+/g,' ').slice(0,300):null;
 }
 
 export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTurn|null;steering:StatusSteering|null;state:string},
@@ -115,12 +123,17 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     if(turn.dispatch_hold==='release_pace')return {code:'RETRY_SCHEDULED',message:when
       ?`${product} can take work again. Held work restarts a few sessions at a time so the server is not swamped; ${waitingWork.toLowerCase()} starts at ${when}.`
       :`${product} can take work again, and ${waitingWork.toLowerCase()} is starting now.`,clearsAt:next,automaticRetry:true};
+    if(/\bCHATGPT_PRO_LIMIT_REACHED\b/.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
+      ?`ChatGPT Pro’s usage limit is reached, so nothing was sent. ChatGPT reports it resets at ${when}; ${waitingWork.toLowerCase()} is kept and is sent then by itself.`
+      :`ChatGPT Pro’s usage limit is reached, so nothing was sent. ${waitingWork} is kept and is sent when the limit resets.`,clearsAt:next,automaticRetry:true};
     if(turn.dispatch_hold==='usage'||context.continuationRefusal(turn.id)==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
       ?`No ${product} account available on this machine has room now. The earliest reported reset is ${when}; Concierge will check again then. ${waitingWork} is kept here and will run when an account on this machine is ready.`
       :`No ${product} account available on this machine has room now, and none has reported a reset time. ${waitingWork} is kept here and will run when an account on this machine is ready.`,clearsAt:next,automaticRetry:true};
     const again=when?`at ${when}`:'now';
     if(isModelCapacityRefusal(reason))return {code:'RETRY_SCHEDULED',message:`${product} says its model is at capacity right now. ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
+    const chatGpt=chatGptHoldReason(reason);
     return {code:'RETRY_SCHEDULED',message:status?`${providerTroubleText(status,context.outage(turn.id))} ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`
+      :chatGpt?`ChatGPT did not take it yet: ${chatGpt} ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`
       :`${product} is not answering right now. ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
   }
   if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',message:`This account could not sign in. ${waitingWork} is kept and will start automatically after this machine can use its credentials again.`,clearsAt:null,automaticRetry:true};
@@ -130,6 +143,18 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
   if(focusUntil!==null)return {code:'FOCUS_HOLD',message:'Waiting for your focus session to end',clearsAt:new Date(focusUntil).toISOString(),automaticRetry:true};
   const session=context.session(input.session_id);
   if(context.deploymentHold(session.providerId,input.kind))return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
+  if(session.providerId==='codex'&&session.status!=='archived'&&!session.suspended&&!context.otherLiveTurn(input.session_id,turn.id)){
+    const hold=context.codexAdmissionHold?.(session.outside)??null;
+    if(hold){
+      const why=hold.kind==='runner-rehome'?'Concierge is putting Codex’s background service on the server back under its own management'
+        :hold.kind==='runner-activation'?'Codex on the server is switching accounts'
+        :hold.kind==='runner-runtime-maintenance'?'Codex on the server is being updated'
+        :`Codex admission is held (${hold.holder})`;
+      const until=hold.clearsAtMs!==null?` It starts by itself by ${context.formatTime(hold.clearsAtMs)} at the latest.`:' It starts by itself once that finishes.';
+      return {code:'CODEX_ADMISSION_HELD',message:`${why}, so new Codex work waits for that to finish. ${waitingWork} is kept here.${until}`,
+        clearsAt:hold.clearsAtMs!==null?new Date(hold.clearsAtMs).toISOString():null,automaticRetry:true};
+    }
+  }
   if(session.status==='archived'||session.suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
   const older=context.olderBlockingTurn(input.session_id,turn.id);
   if(older?.status==='parked')return {code:'EARLIER_INPUT_PARKED',message:'An earlier input is parked and must be reconciled before this queued input can run.',clearsAt:null,automaticRetry:false};

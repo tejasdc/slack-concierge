@@ -13,14 +13,14 @@ import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, obs
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, stablePayload, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
-import { heldRequestNotice, inputHold, readInputExecution, resolveSessionAddress, sessionAddress, SessionOwnerError, type SessionOwner } from './session-owner';
+import { heldRequestNotice, inputHold, inputWaitDetail, readInputExecution, resolveSessionAddress, sessionAddress, SessionOwnerError, type SessionOwner } from './session-owner';
 import { retainedInboxCapture, inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
 import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { holdsRequesterPlace } from './requester-place';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
+import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, hasOpenInboxWorkForSource, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, notifyFiledAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
 import type {unfiledReceivedInputs} from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
@@ -43,7 +43,7 @@ import {checkSnooze,continuationText,recordSnooze} from './snooze';
 import {cancelWatch,listWatches,registerWatch} from './watches';
 import {inspectWatchPair,reconcileWatchPair} from './watch-custody';
 import {boardCommand,type BoardActor,type BoardInput} from './commons-board-service';
-import {notifyAgentPost,dispatchedFromInput} from './thread-notifications';
+import {notifyAgentPost,dispatchedFromInput,messageAlreadyNotified} from './thread-notifications';
 import {acceptHandoff,handoffObligations,proposeHandoff,reconcileWithdrawnHandoffQueues,supersededAddress,supersededBy,withdrawHandoff,withdrawnSuccessor} from './session-handoff';
 import {askAsideOnce} from './session-asides';
 import {awaitingOutside} from './storage-observation';
@@ -958,7 +958,6 @@ export class SessionCommunicationCoordinator {
           payload:{kind:'codex-runtime-maintenance',runner,binding},sourceInputId:actor.inputId,sourceRunId});
         if(retained.input.receipt_json){const receipt=JSON.parse(retained.input.receipt_json);if(receipt.phase==='applied')return {...receipt,operationId:binding.operationId,actionInputId:retained.input.id,duplicate:true};}
         const result=await progressRunnerCodexRuntimeMaintenance(runner,binding);
-        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(result),retained.input.id);
         return {...result as Record<string,unknown>,operationId:binding.operationId,actionInputId:retained.input.id};
     }
     private owedRunning(input:{provider:string;provider_session_id:string;run_id?:string}):OwedRunning|null {
@@ -1888,7 +1887,14 @@ export class SessionCommunicationCoordinator {
             ? db.query('SELECT status,provider_sent_at FROM turn_steering_messages WHERE id=?').get(binding.steering_id) as any
             : db.query('SELECT status,provider_sent_at FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?').get(binding.turn_id, binding.message_ts) as any : null;
         const legacyPending = !row.outcome && (!row.source_input_id || !row.target_input_id);
+        // Why it is not running yet and when it goes again, read live: a ChatGPT Pro limit read as
+        // plain "admitted, queued" here while only the owner journal named the reset (2026-11-17).
+        // Only the single-request reads carry it; the Inbox's receipts list stays as cheap as before.
+        const targetInput = withTarget && !row.outcome && row.target_input_id ? getAcceptedSessionInput(row.target_input_id) : null;
+        const hold = targetInput ? inputWaitDetail(targetInput) : null;
+        const standing = withTarget && !row.outcome ? requestStanding(db, row.request_id, this.now()) : null;
         return { request_id: row.request_id, status: legacyPending ? 'uncertain' : row.status,
+            ...(withTarget && !row.outcome ? { hold, standing } : {}),
             ...(legacyPending ? {error:'Legacy delivery requires owner reconciliation; no request or return has been replayed.'} : {}), outcome: row.outcome, source_session_id: `concierge:${row.source_session_id}`,
             target_address:sessionAddress(getSessionById(row.target_session_id)!),
             ...(withTarget ? { target: this.dependencies.owner?.view(getSessionById(row.target_session_id)!) } : {}),
@@ -2812,7 +2818,7 @@ export class SessionCommunicationCoordinator {
         log('info','his_stop_posted_to_thread',{request_id:request.request_id,thread:root});
         return true;
     }
-    private postThreadAnswer(request:RequestRow,event:EventRow,declared:any,thread:{root:string;forwarded:{inboxInputId:string}|null}) {
+    private postThreadAnswer(request:RequestRow,event:EventRow,declared:any,thread:{root:string;forwarded:{inboxInputId:string}|null},reconcileNotification=false) {
         const responder=getSessionById(request.target_session_id);
         const requestPayload=JSON.parse(request.payload_json);
         const forwarded=requestPayload.forwardedReply;
@@ -2829,7 +2835,158 @@ export class SessionCommunicationCoordinator {
             hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
             informational:JSON.parse(request.payload_json).requestedEffect==='informational',
             messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null,
-            alsoMainThread:declared.alsoMainThread===true});
+            alsoMainThread:declared.alsoMainThread===true,reconcileNotification});
+    }
+    /** Resume only the notification already authorized by an exact accepted final, not completion. */
+    reconcileReplyNotification(input:{source:CommunicationSource;action_id:string;request_id:string;event_id:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting replies.');
+        const actor=this.fenced(this.actor(input.source));action(input.action_id);
+        const request=this.row(input.request_id);
+        if(!actor.inputId||request.target_session_id!==actor.session||this.authority(actor).scope!=='work')
+            throw new Error('Notification reconciliation requires the exact recipient session and live work authority.');
+        if(request.outcome!=='answered'||!request.result_json||JSON.parse(request.result_json).event_id!==input.event_id)
+            throw new Error('Notification reconciliation requires this request\'s current accepted completed reply.');
+        const event=db.query(`SELECT * FROM session_communication_events WHERE event_id=? AND request_id=?
+            AND kind='final' AND superseded_by_event_id IS NULL`).get(input.event_id,input.request_id) as EventRow|null;
+        const payload=event?JSON.parse(event.payload_json):null;
+        if(!event||!payload.final||!payload.notify||payload.workDisposition!=='completed'
+            ||payload.responding_session_id!==`concierge:${actor.session}`)
+            throw new Error('Name the exact accepted checked final that already requested this notification.');
+        const source=getAcceptedSessionInput(payload.source?.input_id??''),execution=source?readInputExecution(source):null;
+        const session=getSessionById(actor.session)!;
+        if(!source||source.session_id!==actor.session||(!humanAuthored(source)&&sessionInputProvenance(source)?.effectScope!=='work')
+            ||!execution?.turn||nativeRunId(execution.turn.id)!==payload.source?.run_id
+            ||execution.turn.stop_requested_at||execution.turn.status==='cancelled'||request.outcome==='canceled'
+            ||session.status==='archived'||sessionMetadata(session).suspended)
+            throw new Error('The original reply source is unproven or held by Stop, pause or archive.');
+        const upkeep=db.query(`SELECT json_extract(payload_json,'$.postId') AS postId
+            FROM session_owner_events WHERE event_id=? AND session_id=?`).get(`answer-upkeep:${event.event_id}`,request.source_session_id) as {postId:string}|null;
+        if(!upkeep?.postId||!db.query("SELECT 1 FROM session_owner_events WHERE event_id=? AND session_id=? AND kind='post'").get(upkeep.postId,request.source_session_id))
+            throw new Error('The accepted final has no completed retained answer post to reconcile.');
+        const operation=db.transaction(()=>{
+            const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,
+                kind:'action',origin:'agent',payload:{kind:'reply-notification-reconciliation',responseMode:'context',requestId:request.request_id,
+                    eventId:event.event_id,postId:upkeep.postId,originalSource:payload.source},sourceInputId:actor.inputId!,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id});
+            if(!saved.duplicate)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'accepted'}),saved.input.id);
+            return saved.input;
+        })();
+        // Uses the stored reply and original post identity; caller supplies neither replacement words
+        // nor a disposition. Fresh requirement reads remain mandatory for the still-owed siblings.
+        const thread=this.answerThread(request);
+        if(!thread)throw new Error('The accepted final has no retained Inbox thread.');
+        notifyFiledAgentAnswer({inboxSessionId:request.source_session_id,root:thread.root,postId:upkeep.postId,
+            eventId:event.event_id,requestId:request.request_id,respondingSessionId:payload.responding_session_id,
+            notify:true,answerSource:{inputId:payload.source.input_id,runId:payload.source.run_id},checkedCompletionEventId:event.event_id});
+        const recorded=messageAlreadyNotified(request.source_session_id,upkeep.postId);
+        const receipt={state:recorded?'completed':'accepted',operationId:operation.id,requestId:request.request_id,
+            replyEventId:event.event_id,postId:upkeep.postId,notificationRecorded:recorded};
+        db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(receipt),operation.id);
+        if(!recorded)throw new Error('The accepted answer remains retained; notification policy has not admitted its requested notification.');
+        return receipt;
+    }
+    /** An accepted reply owns its original trusted requirement read for exact retries. */
+    retainedReplyRequirements(input: {source?:CommunicationSource;action_id?:string;request_id?:string}): RequirementState | null | undefined {
+        const source = input.source;
+        if (!source?.input_id || !source.run_id || source.channel_id || source.message_ts || !input.action_id || !input.request_id)
+            return undefined;
+        const accepted = getAcceptedSessionInput(source.input_id);
+        const event = db.query('SELECT * FROM session_communication_events WHERE action_key=?')
+            .get(JSON.stringify(['input',source.input_id,input.action_id])) as EventRow|null;
+        if (!accepted || !event || event.request_id !== input.request_id) return undefined;
+        const payload = JSON.parse(event.payload_json);
+        if (payload.source?.input_id !== source.input_id || payload.source?.run_id !== source.run_id
+            || payload.responding_session_id !== `concierge:${accepted.session_id}` || !Object.hasOwn(payload,'requirementsState'))
+            return undefined;
+        return payload.requirementsState as RequirementState | null;
+    }
+    /** Retain the whole native command before admitting any of its individual replies. */
+    async replyGroup(input: Parameters<SessionCommunicationCoordinator['reply']>[0] & {also: string[]},
+        deliver: (child: Parameters<SessionCommunicationCoordinator['reply']>[0]) => Promise<unknown>) {
+        if (!Array.isArray(input.also) || !input.also.length || !input.final)
+            throw new Error('--also requires a final reply and at least one additional request.');
+        const {also, ...first} = input;
+        const ids = [first.request_id, ...also];
+        if (ids.some(id => typeof id !== 'string' || !id) || new Set(ids).size !== ids.length)
+            throw new Error('Grouped replies require distinct request IDs.');
+        const sourceInput = first.source?.input_id && getAcceptedSessionInput(first.source.input_id);
+        if (!sourceInput || !first.source.run_id || first.source.channel_id || first.source.message_ts)
+            throw new Error('Grouped replies require an exact native source input and run.');
+        action(first.action_id);
+        const group = JSON.stringify([first.source, first.action_id]);
+        const local = ids.map(id => this.local(id));
+        if (local.some(Boolean) && !local.every(Boolean))
+            throw new Error('Grouped replies cannot mix local and remote requests.');
+        // Preserve the existing peer and external behavior; only local native requests have the
+        // owner-side group custody and requester authority available here.
+        if (!local.some(Boolean)) {
+            const answers: unknown[] = [];
+            for (const [index, requestId] of ids.entries())
+                answers.push(await deliver({...first, request_id:requestId, action_id:index===0?first.action_id:`reply_${createHash('sha256').update(first.action_id).update('\0').update(requestId).digest('hex').slice(0,40)}`, answer_group:group}));
+            return answers;
+        }
+        const rows = ids.map(id => this.row(id));
+        if (rows.some(row => row.source_session_id !== rows[0]!.source_session_id
+            || row.target_session_id !== sourceInput.session_id || !row.source_input_id || !row.target_input_id || !this.binding(row)?.turn_id))
+            throw new Error('Grouped replies require the same requester and the exact recipient session for every request.');
+        // Existing legacy children may have been accepted before the command was interrupted.
+        // Do not let a later command silently omit one of those already grouped children.
+        const priorChildren = db.query(`SELECT request_id FROM session_communication_events
+            WHERE request_id IN (SELECT request_id FROM session_communication_requests WHERE target_session_id=?)
+              AND json_extract(payload_json,'$.answerGroup')=? AND superseded_by_event_id IS NULL`)
+            .all(sourceInput.session_id,group) as {request_id:string}[];
+        if (priorChildren.some(child => !ids.includes(child.request_id)))
+            throw new Error('Idempotency conflict: grouped reply omits an accepted child.');
+        const scope = `communication-group:${sourceInput.id}`;
+        const previous = db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,first.action_id) as AcceptedSessionInput|null;
+        if (previous) {
+            const saved = JSON.parse(previous.payload_json);
+            if (previous.session_id !== sourceInput.session_id || previous.source_input_id !== sourceInput.id
+                || previous.source_run_id !== first.source.run_id || previous.request_id !== first.request_id
+                || previous.kind !== 'reply-group' || stablePayload(saved.command) !== stablePayload({...first,also}))
+                throw new Error('Idempotency conflict: grouped reply command or source changed.');
+        } else this.fenced(this.actor(first.source));
+        // Upload first under a group-specific identity; retain both exact carried bytes and the
+        // resolved custody IDs in the immutable command, before any child can be acknowledged.
+        const custody = previous
+            ? [...(first.attachments ?? []), ...(this.retainedFileCustody(sourceInput.id, first.action_id, 'reply-group-file', files(first.files)) ?? (()=>{throw new Error('Idempotency conflict: grouped file custody changed.');})())]
+            : this.retainAttachments(sourceInput.id, first.action_id, 'reply-group-file', first);
+        const operation = db.transaction(() => {
+            const retained=retainSessionInput({sessionId:sourceInput.session_id,scope,actionId:first.action_id,kind:'reply-group',origin:'agent',
+                payload:{responseMode:'context',command:{...first,also},custody},sourceInputId:sourceInput.id,sourceRunId:first.source.run_id,requestId:first.request_id});
+            if (!retained.duplicate) db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?')
+                .run(JSON.stringify({state:'accepted',requestIds:ids,acceptedChildIds:[],failure:null}),retained.input.id);
+            return retained.input;
+        })();
+        const childAction=(index:number,requestId:string)=>index===0?first.action_id:`reply_${createHash('sha256').update(first.action_id).update('\0').update(requestId).digest('hex').slice(0,40)}`;
+        const acceptedChildren=()=>ids.filter((requestId,index)=>{
+            const event=db.query('SELECT request_id,payload_json FROM session_communication_events WHERE action_key=?')
+                .get(JSON.stringify(['input',sourceInput.id,childAction(index,requestId)])) as {request_id:string;payload_json:string}|null;
+            if (!event || event.request_id!==requestId) return false;
+            const payload=JSON.parse(event.payload_json);
+            return payload.answerGroup===group && payload.source?.input_id===sourceInput.id && payload.source?.run_id===first.source.run_id;
+        });
+        const updateReceipt=(state:'accepted'|'completed',failure:{requestId:string;error:string}|null)=>{
+            const current=getAcceptedSessionInput(operation.id);
+            const old=current?.receipt_json?JSON.parse(current.receipt_json):null;
+            // A failed later inspection cannot undo a previously completed group.
+            const completed=old?.state==='completed' || state==='completed';
+            db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:completed?'completed':'accepted',
+                requestIds:ids,acceptedChildIds:acceptedChildren(),failure:completed?null:failure}),operation.id);
+        };
+        updateReceipt('accepted',null);
+        const answers: unknown[] = [];
+        for (const [index, requestId] of ids.entries()) {
+            try {
+                const answer=await deliver({...first,request_id:requestId,action_id:childAction(index,requestId),answer_group:group});
+                answers.push({...answer as object,group_operation_id:operation.id});
+                updateReceipt('accepted',null);
+            } catch (error) {
+                updateReceipt('accepted',{requestId,error:error instanceof Error?error.message:String(error)});
+                throw error;
+            }
+        }
+        updateReceipt('completed',null);
+        return answers;
     }
     reply(input: {
         source: CommunicationSource;
@@ -2871,8 +3028,20 @@ export class SessionCommunicationCoordinator {
         /** What earlier agents did on this problem and how this approach differs; required on the first reply to a request that came with earlier work. */
         before?:string;
         /** The request's requirement records, read from thnkr.ing by the route; never taken from a caller. */
-        requirements_state?:RequirementState;
-    }) {
+        requirements_state?:RequirementState|null;
+    }, grouped = false) {
+        if (!grouped && input.source?.input_id) {
+            const sourceInput = getAcceptedSessionInput(input.source.input_id);
+            if (sourceInput) {
+                const groups = db.query(`SELECT action_id FROM session_inputs
+                    WHERE scope=? AND kind='reply-group' AND (action_id=? OR EXISTS
+                    (SELECT 1 FROM json_each(session_inputs.payload_json,'$.command.also') WHERE value=?))`)
+                    .all(`communication-group:${sourceInput.id}`,input.action_id,input.request_id) as {action_id:string}[];
+                if (groups.some(group => group.action_id === input.action_id ||
+                    `reply_${createHash('sha256').update(group.action_id).update('\0').update(input.request_id).digest('hex').slice(0,40)}` === input.action_id))
+                    throw new Error('Idempotency conflict: retry the complete grouped reply.');
+            }
+        }
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
         if(input.summary!==undefined)input={...input,summary:oneLineSummary(input.summary)};
@@ -3020,6 +3189,9 @@ export class SessionCommunicationCoordinator {
                 const attachments = retained && [...(input.attachments ?? []), ...retained];
                 if (prior.request_id !== input.request_id || payload.text !== input.text || payload.final !== input.final
                     || payload.workDisposition !== input.workDisposition || payload.answersQuestion !== (input.answers_question || undefined)
+                    || payload.replyBody !== input.reply_body || payload.summary !== input.summary
+                    || payload.quiet !== (quiet||undefined) || payload.handBack !== input.hand_back
+                    || payload.before !== input.before
                     || payload.answerGroup !== input.answer_group
                     || payload.waitingOnWatch !== input.waiting_on_watch
                     || payload.notify !== (input.notify||undefined)
@@ -3030,6 +3202,21 @@ export class SessionCommunicationCoordinator {
                     || payload.source?.input_id !== input.source.input_id || payload.source?.run_id !== input.source.run_id
                     || !sourceInput || payload.responding_session_id !== `concierge:${sourceInput.session_id}`)
                     throw new Error('Idempotency conflict: reply action has a different payload or source.');
+                // The accepted reply may have completed its post/reading before its requested
+                // notification failed. An exact retry repairs that retained effect, not the words.
+                if(payload.final&&payload.notify&&payload.workDisposition==='completed'){
+                    const request=this.row(input.request_id);
+                    const upkeep=db.query(`SELECT json_extract(payload_json,'$.postId') AS postId
+                        FROM session_owner_events WHERE event_id=?`).get(`answer-upkeep:${prior.event_id}`) as {postId:string}|null;
+                    if(!messageAlreadyNotified(request.source_session_id,upkeep?.postId??`post:forward:${prior.event_id}`)){
+                        const execution=readInputExecution(sourceInput),session=getSessionById(sourceInput.session_id)!;
+                        if(execution.turn?.stop_requested_at||execution.turn?.status==='cancelled'||request.outcome==='canceled'
+                            ||session.status==='archived'||sessionMetadata(session).suspended
+                            ||supersededAddress(session.id)||withdrawnSuccessor(session.id))
+                            throw new Error('The accepted reply is retained; its missing notification cannot resume after Stop, pause, archive or handoff.');
+                        this.postThreadEvent(request,prior,payload,true);
+                    }
+                }
                 return noted(this.receipt(this.row(input.request_id)));
             }
         }
@@ -3080,6 +3267,7 @@ export class SessionCommunicationCoordinator {
             : [];
         const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
             ...(input.reply_body!==undefined?{replyBody:input.reply_body}:{}),
+            ...(input.final&&Object.hasOwn(input,'requirements_state')?{requirementsState:input.requirements_state}:{}),
             ...(input.before?{before:input.before}:{}),
             ...(input.answer_group?{answerGroup:input.answer_group}:{}),
             ...(input.final&&input.workDisposition?{closingLine:finalClosingLine(input.workDisposition,{checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed})}:{}),
@@ -3706,11 +3894,11 @@ export class SessionCommunicationCoordinator {
         }
         db.query("UPDATE session_communication_events SET status='uncertain',error='Legacy return delivery requires owner reconciliation; no effect has been replayed.' WHERE event_id=? AND status NOT IN ('received','uncertain')").run(event.event_id);
     }
-    private postThreadEvent(request:RequestRow,event:EventRow,declared:any):boolean {
+    private postThreadEvent(request:RequestRow,event:EventRow,declared:any,reconcileNotification=false):boolean {
         if(event.kind==='overdue')return false;
         const thread=this.threadAnswer(request,event,declared);
         const stoppedPost=declared.output?.stoppedBy==='tejas'&&this.postHisStop(request,event,declared);
-        if(thread&&!stoppedPost)this.postThreadAnswer(request,event,declared,thread);
+        if(thread&&!stoppedPost)this.postThreadAnswer(request,event,declared,thread,reconcileNotification);
         return !!thread||!!stoppedPost;
     }
     private explicitAnswerGroup(event:EventRow,requesterSessionId:number):{carriedBy:string|null;joining:EventRow[]} {

@@ -2,6 +2,14 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 export interface ProcessIdentity { pid: number; bootId: string; startTicks: string }
+/** Linux ticks and macOS start timestamps share this wire shape; neither may be absent. */
+export function isProcessIdentity(value:unknown):value is ProcessIdentity {
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
+  const identity=value as Partial<ProcessIdentity>;
+  return typeof identity.pid==='number'&&Number.isSafeInteger(identity.pid)&&identity.pid>0
+    &&typeof identity.bootId==='string'&&identity.bootId.trim().length>0
+    &&typeof identity.startTicks==='string'&&identity.startTicks.trim().length>0;
+}
 /** Capture ingress has one process-identity wire shape for every claiming worker. */
 export function processIdentityPayload(owner:ProcessIdentity){
   return {pid:owner.pid,boot_id:owner.bootId,start_ticks:owner.startTicks};

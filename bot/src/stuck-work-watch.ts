@@ -1,6 +1,6 @@
 import { db } from "./state-database";
 import { log } from "./log";
-import { claimableNotClaimed } from "./state";
+import { claimableNotClaimed, heldNotClaimable } from "./state";
 import { undeliveredReturnRows } from "./session-return-audit";
 import { updateDraining } from "./request-liveness";
 import { noticeTime, publishProviderFreeNotice, SERVICE_NOTICE_SCOPE } from "./provider-free-notice";
@@ -11,7 +11,8 @@ import { fileServiceNotices, settleServiceNotice } from "./session-topics";
  * to find every agent stuck while Concierge itself looks healthy (Tejas, 2026-10-08).
  *
  * Two things should never sit still for ten minutes: a queued turn the queue itself would start
- * right now (its own claim rule, which already lets an update hold work), and a finished answer
+ * right now, or would start but for an admission gate (a Codex admission hold or an update install,
+ * named in the notice: on 2026-11-17 held Codex work waited over an hour unseen), and a finished answer
  * that has not gone back to the session that asked. When either appears, Concierge first wakes its
  * own queues once, because a missed wake is the cheapest cause. If the same work is still waiting
  * five minutes after that, one provider-free Inbox notice says so; it closes itself once nothing is
@@ -23,7 +24,8 @@ const WAITING_AT_LEAST_MS = 10 * 60_000;
 const NOTICE_AFTER_WAKE_MS = 5 * 60_000;
 const NOTICE_PREFIX = "stuck-work:";
 
-type Waiting = { turns: number[]; answers: string[] };
+type Held = { hold: string; reason: string; clearsAtMs: number | null };
+type Waiting = { turns: number[]; answers: string[]; holds: Record<number, Held> };
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let woken: { at: number; turns: Set<number>; answers: Set<string> } | null = null;
@@ -41,8 +43,12 @@ export function startStuckWorkWatch(wake: () => string[], activeSessionIds: () =
 }
 
 function waitingNow(now: number, activeSessionIds: readonly number[]): Waiting {
+  const held = heldNotClaimable(now, activeSessionIds, WAITING_AT_LEAST_MS, 30);
+  const holds: Record<number, Held> = {};
+  for (const row of held) holds[row.turnId] = { hold: row.hold, reason: row.reason, clearsAtMs: row.clearsAtMs };
   return {
-    turns: claimableNotClaimed(now, activeSessionIds, WAITING_AT_LEAST_MS, 30).map(row => row.turnId),
+    turns: [...claimableNotClaimed(now, activeSessionIds, WAITING_AT_LEAST_MS, 30).map(row => row.turnId), ...held.map(row => row.turnId)],
+    holds,
     // The queue rule above already knows what an update holds; answers are not judged while one
     // drains, the same rule the overdue-request check uses.
     answers: updateDraining() ? [] : undeliveredReturnRows(now, 30).map(row => row.event_id),
@@ -59,11 +65,11 @@ function evaluate(now: number, wake: () => string[], activeSessionIds: () => rea
   // Only work that was already waiting when the queues were woken can be reported: anything that
   // started waiting since gets its own wake and its own five minutes first.
   const stillWaiting: Waiting = woken
-    ? { turns: waiting.turns.filter(id => woken!.turns.has(id)), answers: waiting.answers.filter(id => woken!.answers.has(id)) }
-    : { turns: [], answers: [] };
+    ? { turns: waiting.turns.filter(id => woken!.turns.has(id)), answers: waiting.answers.filter(id => woken!.answers.has(id)), holds: waiting.holds }
+    : { turns: [], answers: [], holds: {} };
   if (!stillWaiting.turns.length && !stillWaiting.answers.length) {
     woken = { at: now, turns: new Set(waiting.turns), answers: new Set(waiting.answers) };
-    log("warn", "stuck_work_woken", { turns: waiting.turns, answers: waiting.answers, woken: wake() });
+    log("warn", "stuck_work_woken", { turns: waiting.turns, answers: waiting.answers, holds: waiting.holds, woken: wake() });
     return;
   }
   if (noticeOpen || now - woken!.at < NOTICE_AFTER_WAKE_MS) return;
@@ -78,12 +84,21 @@ function openNotice(now: number, wokenAt: number, waiting: Waiting): void {
     answers ? (answers === 1 ? "an agent is still waiting for an answer that another agent has already finished"
       : `${answers} agents are still waiting for answers that other agents have already finished`) : "",
   ].filter(Boolean).join(", and ");
-  const text = `Work you asked agents for hasn't moved in over ten minutes, as of ${noticeTime(db, now)}: ${parts}.`
+  const reasons = new Map<string, number | null>();
+  for (const id of waiting.turns) {
+    const held = waiting.holds[id];
+    if (held) reasons.set(held.reason, held.clearsAtMs);
+  }
+  const heldCount = waiting.turns.filter(id => waiting.holds[id]).length;
+  const heldText = reasons.size ? ` ${heldCount === 1 ? "One is" : `${heldCount} are`} waiting because `
+    + [...reasons].map(([reason, clears]) => clears && clears > now ? `${reason}, which should end by ${noticeTime(db, clears)}`
+      : clears ? `${reason}, which should already have ended` : reason).join("; and ") + "." : "";
+  const text = `Work you asked agents for hasn't moved in over ten minutes, as of ${noticeTime(db, now)}: ${parts}.${heldText}`
     + " Reply here if you want an agent to investigate.";
-  log("error", "stuck_work", { turns: waiting.turns, answers: waiting.answers });
+  log("error", "stuck_work", { turns: waiting.turns, answers: waiting.answers, holds: waiting.holds });
   try {
     if (publishProviderFreeNotice(db, { key: `${NOTICE_PREFIX}${wokenAt}`, kind: "stuck_work", text,
-      payload: { turnIds: waiting.turns, answerEventIds: waiting.answers } })) fileServiceNotices();
+      payload: { turnIds: waiting.turns, answerEventIds: waiting.answers, holds: waiting.holds } })) fileServiceNotices();
     noticeOpen = true;
   } catch (error) {
     log("error", "stuck_work_notice_failed", { error: String(error) });

@@ -1,0 +1,144 @@
+let runtimeMaintenanceFlight:Promise<RuntimeMaintenanceState>|null=null;
+async function runtimeMaintenanceSnapshot(){
+  const listeners=controlSocketListeners(codexAppServerSocketPath());
+  if(listeners.length>1)throw new Error('The control socket has multiple listeners; no daemon was selected.');
+  if(!listeners.length)return null;
+  const identity=processIdentity(listeners[0]!);
+  const version=await runCommand(`/proc/${identity.pid}/exe`,['--version'],20_000);
+  if(!isProcessIdentityAlive(identity))throw new Error('The exact listener generation changed during inspection.');
+  const image=statSync(`/proc/${identity.pid}/root${LEDGER_IMAGE_PATH}`);
+  return {identity,masked:image.isCharacterDevice()&&image.rdev===0,supported:version.code===0&&version.output.trim()==='codex-cli 0.166.0'};
+}
+async function proveRuntimeMaintenanceReplacement(identity:import('./runtime-identity').ProcessIdentity){
+  const probe=new CodexAppServerClient();try{
+    const models=await probe.request('model/list',{}, {requestTimeoutMs:20_000});
+    if(!Array.isArray(models?.data)||!models.data.length)throw new Error('The replacement provider model API did not answer.');
+    const after=await runtimeMaintenanceSnapshot();if(!after?.masked||!sameRuntime(after.identity,identity))throw new Error('The replacement listener changed during provider proof.');
+  }finally{await probe.close();}
+}
+async function runnerRuntimeMaintenance(params:Record<string,unknown>,botDir?:string):Promise<RuntimeMaintenanceState|RuntimeMaintenanceObservation>{
+  const binding=params.binding as RuntimeMaintenanceBinding;
+  if(!binding||!['operationId','sourceInputId','sourceRunId','actionId'].every(key=>typeof binding[key as keyof RuntimeMaintenanceBinding]==='string'&&binding[key as keyof RuntimeMaintenanceBinding].length>0)
+    ||!/^runtime:[0-9a-f]{40}$/.test(binding.operationId)||! /^[0-9a-f]{40}$/.test(binding.requiredCommit))throw new Error('Exact source-bound runtime maintenance identity is required.');
+  const prior=activationOperations.get(binding.operationId);
+  if(prior&&!prior.runtimeMaintenance)throw new Error('This operation identity already belongs to an account change.');
+  if(prior?.runtimeMaintenance&&!sameRuntimeMaintenanceBinding(prior.runtimeMaintenance.binding,binding))throw new Error('A runtime operation cannot change its source or required release.');
+  // This branch never reserves, persists, signals, starts, or progresses a pending operation.
+  if(params.observeOnly===true||prior?.runtimeMaintenance?.phase==='applied'){
+    const observed=prior?.runtimeMaintenance?.phase==='applied'&&prior.status!=='applied'
+      ?{applied:structuredClone(prior.runtimeMaintenance),verified:false,detail:'The runner terminal journal has not confirmed persistence.'}
+      :await observeAppliedRuntimeMaintenance(prior?.runtimeMaintenance,{snapshot:runtimeMaintenanceSnapshot,prove:proveRuntimeMaintenanceReplacement});
+    if(params.observeOnly===true)return observed;
+    if(!observed.verified)throw new Error(observed.detail);
+    return observed.applied!;
+  }
+  if(runtimeMaintenanceFlight)return runtimeMaintenanceFlight.then(()=>runnerRuntimeMaintenance(params,botDir));
+  if(codexActivationFlight||unmanagedRepair)throw new Error('Another App Server operation is active; no drain was requested.');
+  if(runtimeMaintenanceReserved)throw new Error('A runtime maintenance preflight already owns the App Server reservation.');
+  if([...activationOperations.values()].some(row=>row.runtimeMaintenance&&row.id!==binding.operationId&&row.runtimeMaintenance.phase!=='applied'))
+    throw new Error('Another exact runtime maintenance operation remains unresolved.');
+  if(!botDir||process.platform!=='linux')throw new Error('Runtime maintenance requires the installed Linux runner.');
+  const manifest=readJson(join(botDir,'../..','manifest.json'));
+  const commit=manifest?.control_git_commit;
+  if(typeof commit!=='string'||! /^[0-9a-f]{40}$/.test(commit))throw new Error('The runner has no sealed control source identity.');
+  runtimeMaintenanceReserved=true;
+  try {
+  const ancestry=await runCommand('/usr/bin/git',['-C','/var/lib/slack-concierge-deployment/source','merge-base','--is-ancestor',binding.requiredCommit,commit],20_000);
+  if(ancestry.code!==0)throw new Error('The loaded runner does not contain the required protection source.');
+  const row=prior??{id:binding.operationId,account:'',status:'starting' as const,
+    runtimeMaintenance:{binding,phase:'waiting' as const}};
+  if(!row.runtimeMaintenance)throw new Error('This operation identity already belongs to an account change.');
+  activationOperations.set(row.id,row);holdCodexDaemonAutoStart(true);writeActivationState();
+  runtimeMaintenanceFlight=progressRuntimeMaintenance(row.runtimeMaintenance,{
+    persist:()=>{row.status=row.runtimeMaintenance!.phase==='applied'?'applied':row.runtimeMaintenance!.phase==='uncertain'?'uncertain':'starting';
+      try{writeActivationState();}catch(error){row.status='uncertain';throw error;}},
+    snapshot:runtimeMaintenanceSnapshot,alive:isProcessIdentityAlive,
+    nativeIdle:async()=>{
+      const probe=new CodexAppServerClient();try{
+        let cursor:string|null=null;const seen=new Set<string>();
+        do{const page=await probe.request('thread/loaded/list',{cursor,limit:100});
+          if(!Array.isArray(page?.data))throw new Error('Native loaded-thread activity is unavailable.');
+          for(const threadId of page.data){if(typeof threadId!=='string'||seen.has(threadId))throw new Error('Native loaded-thread activity is malformed.');seen.add(threadId);
+            const read=await probe.request('thread/read',{threadId,includeTurns:false});
+            if(read?.thread?.status?.type!=='idle')return false;}
+          const next=page.nextCursor??null;if(next!==null&&typeof next!=='string'||next!==null&&next===cursor)throw new Error('Native activity cursor is invalid.');cursor=next;
+        }while(cursor);return true;
+      }finally{await probe.close();}
+    },
+    signal:identity=>{if(!isProcessIdentityAlive(identity))throw new Error('The exact drain generation is gone.');process.kill(identity.pid,'SIGHUP');},
+    start:async()=>{if(!codexUpdaterDisabled())throw new Error('Codex automatic updates must remain disabled.');
+      const started=await startCodexDaemonInOwnScope();if(started.code!==0)throw new Error('The masked App Server start did not confirm success.');},
+    prove:proveRuntimeMaintenanceReplacement,
+  }).finally(()=>{runtimeMaintenanceFlight=null;if(!runtimeMaintenancePending())holdCodexDaemonAutoStart(false);});
+  return runtimeMaintenanceFlight;
+  } finally {runtimeMaintenanceReserved=false;}
+}
+
+export async function serveRunnerAccountCall(method: string, params: Record<string, unknown>,context:{activeTurns:number;botDir?:string}={activeTurns:0}): Promise<unknown> {
+  if(method==='accounts.codex.runtimeMaintenance.observe')return runnerRuntimeMaintenance({...params,observeOnly:true},context.botDir);
+  if(method==='accounts.codex.runtimeMaintenance')return runnerRuntimeMaintenance(params,context.botDir);
+  if (method === "accounts.identity") {
+    if(params.provider==='antigravity'){
+      const usage=await readRunnerGoogleUsage();
+      const current=usage.accounts.filter(account=>account.current);
+      return current.length===1?{id:current[0]!.label,label:current[0]!.label}:null;
+    }
+    const key = provider(params.provider);
+    return runnerAccountIdentity(key,typeof params.account==='string'?params.account:undefined);
+  }
+  if (method === "accounts.validate") {
+    const key = provider(params.provider);
+    if (typeof params.account !== "string" || !params.account.trim()) throw new Error("A provider account label is required.");
+    const matches = runnerAccountHomes(key).filter(home => home.account === params.account);
+    return { available: matches.length === 1, resolution: matches.length === 1 ? "unique" : matches.length ? "ambiguous" : "missing" };
+  }
+  if (method === "accounts.transcript") {
+    const key = provider(params.provider);
+    const account = params.account === null ? null : typeof params.account === "string" ? params.account : null;
+    if (params.account !== null && account === null) throw new Error("account must be a provider label or null.");
+    if (typeof params.nativeId !== "string") throw new Error("an exact native session id is required.");
+    if (!/^[A-Za-z0-9-]{8,128}$/.test(params.nativeId)) return { account: null, resolution: "missing" };
+    const homes = runnerAccountHomes(key);
+    const candidates = account === null ? homes : homes.filter(home => home.account === account);
+    if (account !== null && candidates.length !== 1)
+      return { account: null, resolution: candidates.length > 1 ? "ambiguous" : "missing" };
+    const matches = candidates.flatMap(candidate => exactProviderTranscripts(key, candidate.home, params.nativeId as string)
+      .map(transcript => ({ account: candidate.account, transcript: safeRealpath(transcript) })));
+    // A shared Claude projects symlink may expose one physical transcript through several
+    // account homes. It proves the transcript is present once, but not which account should
+    // be bound to a continued session; the owner must validate and choose that identity.
+    if (account !== null) {
+      const physical = new Set(matches.map(match => match.transcript));
+      if (physical.size === 1 && matches.length === 1) return { account: matches[0]!.account, resolution: "unique" };
+      return { account: null, resolution: matches.length ? "ambiguous" : "missing" };
+    }
+    if(key==='codex'&&matches.length===1
+      &&homes.filter(home=>home.account===matches[0]!.account).length===1)
+      return {account:matches[0]!.account,resolution:'unique'};
+    if (key === "claude-code" && matches.length > 0
+      && new Set(matches.map(match => match.transcript)).size === 1)
+      return { account: null, resolution: "shared" };
+    return { account: null, resolution: matches.length ? "ambiguous" : "missing" };
+  }
+  if (method === "accounts.readings") return runnerAccountReadings();
+  if (method === "accounts.google.readings") return readRunnerGoogleUsage();
+  if (method === "accounts.signin.start") return startSignIn(params);
+  if (method === "accounts.signin.complete") return completeSignIn(params);
+  if (method === "accounts.signin.status") {
+    const id = params.operationId;
+    if (typeof id !== "string") throw new Error("A sign-in operation id is required.");
+    return publicSignIn(signinOperations.get(id));
+  }
+  if (method === "accounts.codex.activate") return activateCodex(params);
+  if (method === "accounts.codex.repairUnmanaged") return runnerSocketRepair(context.activeTurns);
+  if (method === "accounts.codex.resetCredit") {
+    const account = params.account, operationId = params.operationId;
+    if (typeof account !== "string" || !account.trim() || typeof operationId !== "string"
+      || !/^[A-Za-z0-9._:-]{8,160}$/.test(operationId))
+      throw new Error("A Codex account label and stable reset operation id are required.");
+    if (runnerAccountHomes("codex").filter(home => home.account === account).length !== 1)
+      throw new Error("The requested Codex account is not uniquely available on this runner.");
+    return useCodexResetCredit(account, operationId);
+  }
+  throw new Error(`this runner does not answer ${method}`);
+}

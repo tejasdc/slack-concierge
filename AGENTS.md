@@ -196,7 +196,7 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 | Exact thnkr.ing Mac web-app inspection, native AX update recovery, human authorization and direct Codex update proof | [Mac agent awareness](docs/architecture/MAC-AGENT-AWARENESS.md), [peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Isolated headless Mac browser fallback and thnkr.ing's source-bound read ticket | [Peer instances](docs/runbooks/PEER-INSTANCES.md) |
 | Shared Codex App Server lifecycle, post-turn process audit and session observation | [Execution host](docs/architecture/EXECUTION-HOST.md), [Codex App Server](docs/runbooks/CODEX-APP-SERVER.md), [external Codex turns](docs/architecture/SESSION-OWNER.md#externally-submitted-codex-turns) |
-| Independent outside queue admission during source-bound shared-runtime maintenance, including durable hold restore | [Runtime maintenance](docs/runbooks/CODEX-APP-SERVER.md#source-bound-runtime-maintenance) |
+| Source-bound runtime maintenance: outside queue admission, durable hold restore and monotonic terminal receipt reconciliation | [Runtime maintenance](docs/runbooks/CODEX-APP-SERVER.md#source-bound-runtime-maintenance) |
 | Codex CLI project trust, 0.166/0.169 compatibility, and isolated launch exemptions | [Command-line project trust](docs/runbooks/CODEX-APP-SERVER.md#project-trust-for-command-line-work) |
 | Owner on its own app server, agents' network entrance and tokens, runner lease protocol | [Runners](docs/architecture/RUNNERS.md), [execution host](docs/architecture/EXECUTION-HOST.md) |
 | Runner reads of report source chains and bounded report windows | [Runners](docs/architecture/RUNNERS.md) |

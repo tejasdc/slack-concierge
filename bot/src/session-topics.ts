@@ -3253,12 +3253,19 @@ export function wakeDeferredQuestions(now=Date.now(),admit?:(input:{sessionId:nu
  * explicit human notification arm or honors its own explicit notification. Server and Mac agents both arrive here
  * [decision: mac-sessions-have-parity] [decision: thread-replies-go-to-the-working-agent].
  */
-export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean;summary?:string|null;todoId?:string|null}):string|null {
+export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnswer>[0]&{respondingTitle?:string|null;informational?:boolean;notify?:boolean;summary?:string|null;todoId?:string|null;reconcileNotification?:boolean}):string|null {
   if(!answer.final&&!answer.stalled&&!answer.answersQuestion&&!answer.notify)return null;
   const upkeepEventId=`answer-upkeep:${answer.eventId}`;
   if(answer.final){
     const completed=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(upkeepEventId) as {payload_json:string}|null;
-    if(completed)return JSON.parse(completed.payload_json).postId as string;
+    if(completed){
+      const postId=JSON.parse(completed.payload_json).postId as string;
+      // Only an exact accepted-command retry requests this reconciliation. Ordinary upkeep
+      // must not turn an old reading into a new notification during installation.
+      if(answer.reconcileNotification&&answer.notify&&answer.workDisposition==='completed')
+        notifyFiledAgentAnswer({...answer,postId});
+      return postId;
+    }
   }
   answer={...answer,root:inboxRequestRoot(db,answer.requestId,answer.root)??answer.root};
   const post=postForwardedThreadAnswer(answer);
@@ -3282,7 +3289,7 @@ export function postAgentAnswer(answer:Parameters<typeof postForwardedThreadAnsw
   try {
     fileAgentAnswer({inboxSessionId:answer.inboxSessionId,root:answer.root,postId:post,eventId:answer.eventId,dispatchRequestId:answer.requestId,
       respondingSessionId:answer.respondingSessionId,respondingTitle:answer.respondingTitle??null,disposition,text:filedText,summary:answer.summary??null,quiet,notify:answer.notify,
-      askedInRun:answer.answerSource?.runId??null,todoId:answer.todoId??null});
+      askedInRun:answer.answerSource?.runId??null,answerSource:answer.answerSource,todoId:answer.todoId??null});
   } catch(error) {
     // The event remains pending so the same post identity can finish filing on retry.
     log('error','inbox_answer_filing_failed',{request_id:answer.requestId,thread:answer.root,post,message:error instanceof Error?error.message:String(error)});
@@ -3590,7 +3597,46 @@ export function retireTimedRequestPosts(range?:{afterSequence:number;throughSequ
 }
 
 const headline=(value:string)=>answerLine(value);
-function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;summary?:string|null;quiet?:string|null;notify?:boolean;askedInRun?:string|null;todoId?:string|null}) {
+/** A shared answer has one post root; each covered request still has its own closure root. */
+export function notifyFiledAgentAnswer(answer:{checkedCompletionEventId?:string;inboxSessionId:number;root:string;postId:string;eventId:string;requestId?:string;dispatchRequestId?:string;respondingSessionId:string;notify?:boolean;askedInRun?:string|null;answerSource?:{inputId:string;runId:string}|null}) {
+  const row=db.query(`SELECT coalesce(json_extract(payload_json,'$.threadRoot'),input_id) AS root,payload_json
+    FROM session_owner_events WHERE event_id=? AND session_id=? AND kind='post'`)
+    .get(answer.postId,answer.inboxSessionId) as {root:string|null;payload_json:string}|null;
+  const payload=row?JSON.parse(row.payload_json):null;
+  if(!row?.root||payload.postedBy==='service'||payload.postedBySession!==answer.respondingSessionId)
+    throw new Error('Requested answer notification has no exact retained agent post.');
+  if(row.root!==answer.root){
+    // Topic proximity alone is not custody. The forwarding transaction must have attached
+    // this exact reply's closure to the shared post before it can use the post's address.
+    const closure=db.query(`SELECT 1 FROM session_owner_events WHERE event_id=? AND session_id=?
+      AND kind='answer_closure' AND json_extract(payload_json,'$.postId')=?
+      AND json_extract(payload_json,'$.requestId')=?`)
+      .get(`post:closure:${answer.eventId}`,answer.inboxSessionId,answer.postId,answer.requestId??answer.dispatchRequestId);
+    const current=topicOfRoot(answer.root);
+    if(!closure||!current||topicOfRoot(row.root)!==current)
+      throw new Error('Requested answer notification is not bound to this retained thread answer.');
+  }
+  const source=answer.answerSource;
+  let retainedSource=payload.answerSource;
+  // Older linked copies retain the original post ID, rather than repeating its source fields.
+  // Follow only the exact mirror identity produced by mirrorLinkedAnswer; no prose comparison.
+  if(source&&!retainedSource&&typeof payload.answerGroup==='string'){
+    const original=db.query(`SELECT event_id,payload_json FROM session_owner_events
+      WHERE event_id=? AND session_id=? AND kind='post'`).get(payload.answerGroup,answer.inboxSessionId) as {event_id:string;payload_json:string}|null;
+    const originalPayload=original?JSON.parse(original.payload_json):null;
+    if(original?.event_id.startsWith('post:forward:')
+      &&answer.postId===`post:forward:shared:${original.event_id.slice('post:forward:'.length)}:${topicOfRoot(row.root)}`
+      &&originalPayload.postedBySession===answer.respondingSessionId)
+      retainedSource=originalPayload.answerSource;
+  }
+  if(source&&(retainedSource?.inputId!==source.inputId||retainedSource?.runId!==source.runId))
+    throw new Error('Requested answer notification has different retained source custody.');
+  const text=String(payload.text??'');
+  notifyAgentPost(answer.inboxSessionId,row.root,answer.postId,text,answer.notify===true,
+    answer.askedInRun??source?.runId??null,answer.checkedCompletionEventId);
+}
+
+function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string;eventId:string;dispatchRequestId:string;respondingSessionId:string;respondingTitle:string|null;disposition:string|null;text:string;summary?:string|null;quiet?:string|null;notify?:boolean;askedInRun?:string|null;answerSource?:{inputId:string;runId:string}|null;todoId?:string|null}) {
   const session=getSessionById(answer.inboxSessionId);
   if(!session||!sessionMetadata(session).inbox)return;
   refreshRootMemo();
@@ -3630,7 +3676,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
     const open=topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state));
     // One answer posted once is filed once, however many requests it closed.
     if(!decision&&open.some(question=>question.kind==='reading'&&Array.isArray(question.brief?.reads)&&question.brief.reads.includes(answer.postId))){
-      if(answer.text.trim()&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,answer.text,answer.notify===true,answer.askedInRun??null);
+      if(answer.text.trim()&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyFiledAgentAnswer(answer);
       return;
     }
     // What he reads first, on his Lock Screen and in Needs you, is the agent's own one-line summary:
@@ -3646,7 +3692,7 @@ function fileAgentAnswer(answer:{inboxSessionId:number;root:string;postId:string
         why:{text:'',sources:[answer.postId]},known:'',choices:[],uncertain:[],answerable:'',reads:[answer.postId]};
     if(decision&&open.some(question=>decisionKey(question.brief?.decision??'')===decisionKey(brief.decision)
       ||sameAsk(question,answer.respondingSessionId,answer.askedInRun??null))){
-      if(words&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyAgentPost(session.id,answer.root,answer.postId,words,answer.notify===true,answer.askedInRun??null);
+      if(words&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyFiledAgentAnswer(answer);
       return;
     }
     const rang=threadRangThisRun(session.id,answer.root,answer.askedInRun);

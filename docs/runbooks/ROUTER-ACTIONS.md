@@ -390,6 +390,9 @@ the asking agent must receive the exact answer and record how it handled it
 before its task can finish. The owner refuses a threaded ChatGPT ask without
 that return.
 `sessions get` still exposes every retained reply, outcome and attachment.
+For an open request it also shows why the work is not running yet and when it goes again
+(`hold`: code, plain message, `clearsAt`) and the thread's `standing` line, so a requester
+never needs the owner journal to learn that, for example, ChatGPT Pro's limit resets at 1:01 AM.
 
 ## Report evidence reads
 

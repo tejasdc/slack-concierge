@@ -95,9 +95,11 @@ async function withTodoState(input:any):Promise<any>{
 async function withRequirementState(input:any,sessions:SessionCommunicationCoordinator):Promise<any>{
   const {requirements_state:_ignored,...rest}=input??{};
   if(!rest.final||rest.workDisposition!=='completed'||typeof rest.request_id!=='string')return rest;
+  const retained=sessions.retainedReplyRequirements(rest);
+  if(retained!==undefined)return {...rest,requirements_state:retained};
   const refs=sessions.requirementRefs(rest.request_id);
   const state=refs?await readRequirementState(refs.ids,refs.topic):null;
-  return state?{...rest,requirements_state:state}:rest;
+  return {...rest,requirements_state:state};
 }
 
 export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
@@ -198,7 +200,16 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         }
         if (operation === 'context') return Response.json(await sessions.context(input));
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
-        if (operation === 'reply') return Response.json(await withLinkCheck(await sessions.reply(await withRequirementState(await withTodoState(input),sessions)),input,owner));
+        if (operation === 'reply-notification') return Response.json(sessions.reconcileReplyNotification(input));
+        if (operation === 'reply') {
+          const deliver=async(child:any,grouped=false)=>withLinkCheck(await sessions.reply(await withRequirementState(await withTodoState(child),sessions),grouped),child,owner);
+          if (input.also !== undefined) {
+            // Enrichment is read separately at each child, as it was for separate router calls.
+            const {requirements_state:_requirements,todo_checked:_todo,...command}=input;
+            return Response.json(await sessions.replyGroup(command,child=>deliver(child,true)));
+          }
+          return Response.json(await deliver(input));
+        }
         if (operation === 'request-requirements') return Response.json(await sessions.redeclareRequirements(input));
         if (operation === 'requirements') {
           try{const answer=await runRequirementCommand(input,owner);return Response.json(answer.body,{status:answer.status||502});}

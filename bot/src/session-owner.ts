@@ -78,6 +78,7 @@ import {acceptedInputAuthor,authorSession,sessionAuthor,withCurrentAuthors} from
 import {routedMaterialSource} from './session-routed-material';
 import {commitSessionIdentity,localSessionNumber} from './peer-identity';
 import {humanAuthored,sessionInputProvenance} from './session-inputs';
+import {codexAdmissionHoldFact} from './codex-admission-holds';
 import {withdrawChatGptTasksForStoppedTurnByTejas} from './chatgpt-obligations';
 import {noticeTime} from './provider-free-notice';
 import {movedToCodex} from './provider-exhaustion-recovery';
@@ -212,6 +213,7 @@ const ownerStatusContext={
     const survivable=survivableRunKinds();
     return !(inputKind!=='fork'&&survivable.providers.includes(providerId));
   },
+  codexAdmissionHold:(outside:boolean)=>codexAdmissionHoldFact(db,outside),
   focusHold:(sessionId:number)=>{
     const state=focusHoldState();
     if(!state.held)return null;
@@ -241,6 +243,17 @@ export function inputHold(input:AcceptedSessionInput):InputStatusDetail|null {
   const detail=inputStatusDetail(input,observed,input.receipt_json?JSON.parse(input.receipt_json):{});
   if(!detail)return null;
   return ['PROVIDER_AUTH_HELD','PROVIDER_USAGE_HELD'].includes(detail.code)||!detail.automaticRetry?detail:null;
+}
+
+/**
+ * Why an open request's accepted input is not running yet, whatever the reason, for the
+ * request's own status (`sessions get`). `inputHold` above is the narrower set worth an
+ * immediate notice; a requester reading the status is owed every known reason and its time.
+ */
+export function inputWaitDetail(input:AcceptedSessionInput):InputStatusDetail|null {
+  const observed=readInputExecution(input);
+  if(!['queued','waiting','running'].includes(observed.state))return null;
+  return inputStatusDetail(input,observed,input.receipt_json?JSON.parse(input.receipt_json):{});
 }
 
 /** The words a sender reads about a hold, the same from a local or a peer recipient. */

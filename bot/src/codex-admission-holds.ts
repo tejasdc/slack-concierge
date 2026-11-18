@@ -11,10 +11,11 @@ export class CodexAdmissionHolds {
     return this.holders.delete(holder);
   }
   get isHeld():boolean{return this.holders.size>0;}
+  get names():string[]{return [...this.holders.keys()];}
   get isOutsideHeld():boolean{return [...this.holders.values()].some(sharedRuntimeOnly=>!sharedRuntimeOnly);}
 }
 
-function isSharedRuntimeMaintenance(holder:string,recovery:unknown):boolean{
+export function isSharedRuntimeMaintenance(holder:string,recovery:unknown):boolean{
   if(!recovery||typeof recovery!=='object')return false;
   const value=recovery as Record<string,unknown>;
   return value.kind==='runner-runtime-maintenance'
@@ -22,4 +23,48 @@ function isSharedRuntimeMaintenance(holder:string,recovery:unknown):boolean{
     && typeof value.operationId==='string'&&/^runtime:[a-f0-9]{40}$/.test(value.operationId)
     && typeof value.requiredCommit==='string'&&/^[a-f0-9]{40}$/.test(value.requiredCommit)
     && holder===`codex:runner-runtime-maintenance:${value.runner}:${value.operationId}`;
+}
+
+/**
+ * Runner re-home and account-switch holds guard one bounded runner call (220 s and 130 s). Once
+ * this much time has passed since the hold was taken, the call it guarded has ended on the runner
+ * whatever its lost answer said, so the hold is released instead of waiting on running work. On
+ * 2026-11-17 an unbounded re-home hold queued every new server Codex turn for over an hour.
+ */
+export const CODEX_RUNNER_HOLD_BOUND_MS=5*60_000;
+const BOUNDED_KINDS=new Set(['runner-rehome','runner-activation']);
+type HoldRow={holder:string;recovery_json:string;created_at_ms:number};
+type Source={query:(sql:string)=>{all:(...args:any[])=>unknown[]}};
+function holdKind(row:HoldRow):string|null{
+  try{const value=JSON.parse(row.recovery_json);return value&&typeof value.kind==='string'?value.kind:null;}catch{return null;}
+}
+/** Durable holds whose bounded runner call has certainly ended. */
+export function expiredCodexRunnerHolds(source:Source,nowMs:number):Array<{holder:string;kind:string;ageMs:number}>{
+  return (source.query('SELECT holder,recovery_json,created_at_ms FROM codex_admission_holds').all() as HoldRow[])
+    .flatMap(row=>{const kind=holdKind(row);
+      return kind&&BOUNDED_KINDS.has(kind)&&nowMs-row.created_at_ms>=CODEX_RUNNER_HOLD_BOUND_MS?[{holder:row.holder,kind,ageMs:nowMs-row.created_at_ms}]:[];});
+}
+/**
+ * Shared-runtime maintenance drains Codex admission for at most this long while running work
+ * finishes. After it, admission reopens and the maintenance holds new work only around its own swap
+ * at an idle moment, as the re-home does; its durable row stays as the operation's retained intent.
+ */
+export const RUNTIME_MAINTENANCE_DRAIN_BOUND_MS=CODEX_RUNNER_HOLD_BOUND_MS;
+export function runtimeMaintenanceDrainOver(kind:string|null,createdAtMs:number,nowMs:number):boolean{
+  return kind==='runner-runtime-maintenance'&&nowMs-createdAtMs>=RUNTIME_MAINTENANCE_DRAIN_BOUND_MS;
+}
+export function codexHoldKind(recoveryJson:string):string|null{return holdKind({holder:'',recovery_json:recoveryJson,created_at_ms:0});}
+export type CodexAdmissionHoldFact={kind:string;holder:string;sinceMs:number;clearsAtMs:number|null};
+/**
+ * Why a queued Codex turn is not admitted, from the durable holds both the owner and the read-only
+ * presentation worker can see. An independent outside run passes a shared-runtime maintenance hold.
+ */
+export function codexAdmissionHoldFact(source:Source,outside:boolean,nowMs=Date.now()):CodexAdmissionHoldFact|null{
+  const rows=(source.query('SELECT holder,recovery_json,created_at_ms FROM codex_admission_holds ORDER BY created_at_ms').all() as HoldRow[])
+    .filter(row=>{let recovery:unknown;try{recovery=JSON.parse(row.recovery_json);}catch{}
+      return !(isSharedRuntimeMaintenance(row.holder,recovery)&&runtimeMaintenanceDrainOver(holdKind(row),row.created_at_ms,nowMs));})
+    .filter(row=>{if(!outside)return true;let recovery:unknown;try{recovery=JSON.parse(row.recovery_json);}catch{}return !isSharedRuntimeMaintenance(row.holder,recovery);});
+  const row=rows[0];if(!row)return null;
+  const kind=holdKind(row)??'unknown';
+  return {kind,holder:row.holder,sinceMs:row.created_at_ms,clearsAtMs:BOUNDED_KINDS.has(kind)||kind==='runner-runtime-maintenance'?row.created_at_ms+CODEX_RUNNER_HOLD_BOUND_MS:null};
 }

@@ -564,16 +564,21 @@ export function postForwardedThreadAnswer(answer:{inboxSessionId:number;eventId:
     } else if(answer.final&&!answer.stalled&&answer.answerGroup&&(text||answer.attachments.length)) {
       const topic=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(answer.root) as {topic_id:string}|null;
       const grouped=db.query(`SELECT post.event_id FROM session_owner_events post
-        LEFT JOIN inbox_topic_roots roots ON roots.root_input_id=post.input_id
-        WHERE post.session_id=? AND post.kind='post' AND ((? IS NOT NULL AND roots.topic_id=?) OR post.input_id=?)
+        LEFT JOIN inbox_topic_roots roots ON roots.root_input_id=coalesce(json_extract(post.payload_json,'$.threadRoot'),post.input_id)
+        LEFT JOIN session_owner_events original ON original.event_id=json_extract(post.payload_json,'$.answerGroup')
+          AND original.session_id=post.session_id AND original.kind='post'
+        WHERE post.session_id=? AND post.kind='post' AND ((? IS NOT NULL AND roots.topic_id=?) OR coalesce(json_extract(post.payload_json,'$.threadRoot'),post.input_id)=?)
           AND NOT EXISTS (SELECT 1 FROM session_owner_events collapsed WHERE ${activePostCollapseSql('collapsed','post.event_id')})
           AND json_extract(post.payload_json,'$.replyKind')='final'
           AND json_extract(post.payload_json,'$.postedBySession')=?
           AND coalesce(json_extract(post.payload_json,'$.messageThreadRootId'),'')=?
-          AND json_extract(post.payload_json,'$.answerGroup')=?
+          AND (json_extract(post.payload_json,'$.answerGroup')=?
+            OR (json_extract(original.payload_json,'$.answerGroup')=?
+              AND json_extract(original.payload_json,'$.postedBySession')=?
+              AND post.event_id='post:forward:shared:' || substr(original.event_id,length('post:forward:')+1) || ':' || roots.topic_id))
         ORDER BY post.sequence LIMIT 1`)
         .get(answer.inboxSessionId,topic?.topic_id??null,topic?.topic_id??null,answer.root,answer.respondingSessionId,
-          answer.messageThreadRootId??'',answer.answerGroup) as {event_id:string}|null;
+          answer.messageThreadRootId??'',answer.answerGroup,answer.answerGroup,answer.respondingSessionId) as {event_id:string}|null;
       if(grouped)carriedBy=grouped.event_id;
       else if(text||answer.attachments.length){
         recordSessionEvent({eventId:postId,sessionId:answer.inboxSessionId,inputId:answer.root,kind:'post',
