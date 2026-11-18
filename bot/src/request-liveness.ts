@@ -93,7 +93,26 @@ export function waitingOnDependency(sessionId: number, requestId: string, sinceM
         || waitingOnLiveRequest(sessionId, sinceMs, untakenAnswers)
         // Any live watch of the session wakes it when it fires, fails or expires, named by this request's partial or not: many agents
         // wait on a watch without saying so. A watch with a gap in its coverage or a past deadline wakes nothing.
-        || !!db.query("SELECT 1 FROM watches WHERE session_id=? AND state IN ('accepted','observing') AND deadline_ms>? AND gaps_json IN ('[]','') LIMIT 1").get(sessionId, Date.now());
+        || liveWatchWillWake(sessionId);
+}
+
+/** A live watch of the session: it wakes it when it fires, fails or expires. One with a gap in its coverage or a past deadline wakes nothing. */
+export function liveWatchWillWake(sessionId: number): boolean {
+    return !!db.query("SELECT 1 FROM watches WHERE session_id=? AND state IN ('accepted','observing') AND deadline_ms>? AND gaps_json IN ('[]','') LIMIT 1").get(sessionId, Date.now());
+}
+
+/**
+ * Whether anything already in the system will wake this session, whichever request it is working
+ * on: another running or queued turn (a scheduled or snoozed continuation is a queued turn), a
+ * request it sent that returns to it, or a live watch. `ignoringTurnId` is the run asking, which
+ * is running only because it is asking. Keep-working mode (keep-working.ts) is held to exactly
+ * this rule, the same one workers are held to above.
+ */
+export function sessionWillWake(sessionId: number, ignoringTurnId = 0): boolean {
+    return !!db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('queued','running','delivering') AND id<>? LIMIT 1").get(sessionId, ignoringTurnId)
+        || waitingOnLiveRequest(sessionId)
+        || liveWatchWillWake(sessionId)
+        || !!db.query("SELECT 1 FROM watches WHERE session_id=? AND delivery_state='pending' LIMIT 1").get(sessionId);
 }
 
 /** Whether something already in the system will wake this worker again. */

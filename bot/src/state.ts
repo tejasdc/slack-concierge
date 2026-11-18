@@ -1,4 +1,5 @@
 import {HELD_RESOLUTION_SCOPE,heldResolutionCurrentSql} from './held-message-resolution';
+import { ensureKeepWorkingTable } from "./keep-working";
 import {renumberWaitingStarts,START_ORDER_SQL,decideStart,deferStart,ensureStartPaceTables,recordStart,slotWaitingStarts,startIsExempt,startPaceConfig,type StartPaceConfig} from './start-pace';
 import { initializeSessionOwnerSchema } from "./session-schema";
 import {threadOnlyReturnInputSql} from './inbox-request-root';
@@ -1049,6 +1050,7 @@ if (codexRemoteTurnsNeedAuthorizationBackfill) {
 db.exec("CREATE INDEX IF NOT EXISTS sessions_provider_uuid_status_idx ON sessions(provider_id, agent_session_uuid, status)");
 // Personal message marks belong to the common session owner. The exact provider
 // message ID stays part of every key; browser storage is never the authority.
+ensureKeepWorkingTable(db);
 db.exec(`CREATE TABLE IF NOT EXISTS session_message_reactions (
   session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   message_id TEXT NOT NULL,

@@ -11,10 +11,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
 import {reconcileAskedAnswerClocks} from './asked-answer';
 import {implementationEditDecision,recordImplementationEditReason} from './implementation-edit-gate';
-import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, settleTurnDependencies, SETTLED_EXECUTION_SQL, codexUnacknowledgedRecovery, type SessionRow } from './state';
+import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, observeTurnFacts, settleTurnDependencies, SETTLED_EXECUTION_SQL, codexUnacknowledgedRecovery, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, stablePayload, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import { acceptedInputForTurn, awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, stablePayload, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
 import { heldRequestNotice, inputHold, inputWaitDetail, readInputExecution, resolveSessionAddress, sessionAddress, SessionOwnerError, type SessionOwner } from './session-owner';
 import { retainedInboxCapture, inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -60,7 +60,8 @@ import {CURRENT_SOL_MODEL,isAstraModel,modelDisplayName} from './aliases';
 
 const SOL_LABEL=modelDisplayName(CURRENT_SOL_MODEL);
 import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindDirectChatGptTaskSource,chatGptAnswerCommand,chatGptAttachmentCorrectionPending,chatGptObligationForAttempt,classifyLegacyChatGptAsk,holdUnmessageableChatGptAsker,migrateOpenLegacyChatGptAsks,openChatGptObligations,recordChatGptAttemptResult,recordChatGptOriginalRequeued,recordChatGptReturnReceipt,recordChatGptToolRead,reconcileCanceledChatGptObligations,reconcileHandoffChatGptObligations,requireChatGptTaskDisposition,requireChatGptTaskResolved,resolveChatGptAnswer,resolveChatGptTask,resumeMessageableChatGptAsker,validateChatGptToolRead,withdrawCanceledChatGptAttempt,type ChatGptObligationRow} from './chatgpt-obligations';
-import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, endRepeatingScheduleForInput, waitingOnLiveRequest, waitingOnDependency, type OwedRequest } from './request-liveness';
+import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_MS, REMINDERS_SINCE_MS, STILL_WAITING_AFTER_MS, STILL_WAITING_MINUTES, updateDraining, replyCommand, reportBackNotice, strandedStep, stalledNotice, tellWorkerCanceled, cancelQueuedWithdrawnRequest, endRepeatingScheduleForInput, waitingOnLiveRequest, waitingOnDependency, sessionWillWake, type OwedRequest } from './request-liveness';
+import { KEEP_WORKING_STUCK_REASON, KEEP_WORKING_WAKE_PREFIX, OWNER_ACTOR, keepWorkingState, recordKeepWorking, stopReminderText, wakeText } from './keep-working';
 import { PROGRESS_NOTIFICATION_REFUSAL, REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, finalClosingLine, leadFirst, NEEDS_YOU_SUMMARY_REQUIRED, questionForTejas, saysSomething } from './answers-to-tejas';
 import { answerNotice, requestLabel, sessionLabel, unresolvedRequestReminder } from './session-notices';
@@ -245,6 +246,7 @@ export class SessionCommunicationCoordinator {
     private stopped = true;
     private disarm: (() => void) | null = null;
     private detach: (() => void) | null = null;
+    private detachTurnFacts: (() => void) | null = null;
     private readonly healthyRechecks = new Map<string, { storedDue: number; nextCheck: number }>();
     /** When the quiet clock next looks at a request; a restart simply looks at every open thread request again. */
     private readonly quietChecks = new Map<string, number>();
@@ -1016,7 +1018,59 @@ export class SessionCommunicationCoordinator {
         }
         const failed=db.query("SELECT 1 FROM session_inputs WHERE source_input_id=? AND source_run_id=? AND json_extract(payload_json,'$.kind')='turn-outcome' AND json_extract(payload_json,'$.outcome')='failed' AND receipt_json IS NOT NULL LIMIT 1").get(running.accepted_input_id,runId);
         const journalProcessing=failed?null:pendingJournalProcessing(running.accepted_input_id,runId);
-        return {owed,unfiled,waiting:false,source,journalProcessing};
+        return {owed,unfiled,waiting:false,source,journalProcessing,keepWorking:this.keepWorkingReminder(running)};
+    }
+    /** The calling run's keep-working reminder: set only when the mode is on and nothing but this run is holding the session awake. */
+    private keepWorkingReminder(running:OwedRunning):{reason:string}|null {
+        const state=keepWorkingState(db,running.session_id).on;
+        if(!state||sessionWillWake(running.session_id,running.turn_id))return null;
+        return {reason:state.reason};
+    }
+    /**
+     * `sessions keep-working on|off` (docs/plans/2026-11-18-keep-working-mode.md). Acts on the calling
+     * session, or on another session the caller names (agents are never handcuffed).
+     */
+    keepWorking(input:{source:CommunicationSource;action_id:string;state:'on'|'off';reason:string;address?:string}) {
+        const actor=this.actor(input.source);
+        action(input.action_id);
+        if(input.state!=='on'&&input.state!=='off')throw new Error('Keep-working takes on or off.');
+        const target=input.address?resolveSessionAddress(input.address):getSessionById(actor.session);
+        if(!target)throw new Error('Unknown session.');
+        const result=recordKeepWorking(db,{sessionId:target.id,actionId:input.action_id,state:input.state,reason:String(input.reason??''),
+            actor:`agent:concierge:${actor.session}`,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),nowMs:this.now()});
+        this.wake();
+        return {status:input.state==='on'?'keeping-working':'resting',session:`concierge:${target.id}`,...result,
+            message:input.state==='on'
+                ?'Keep-working is on. Concierge holds this session at Stop and wakes it once when it ends a turn with nothing in flight; turn it off with a reason when the queue is empty or waits on Tejas.'
+                :'Keep-working is off.'};
+    }
+    /**
+     * A turn of a keep-working session ended (done or failed, never a human Stop) with nothing left to
+     * wake the session: queue one service continuation, the way self-snooze queues its own. If the
+     * turn that ended was itself such a wake and still left nothing, the queue is blocked: turn the
+     * mode off instead of waking again, so a stuck agent costs one extra turn.
+     */
+    private keepWorkingBackstop(turnId:number) {
+        const turn=db.query('SELECT id,session_id,status,stop_requested_at FROM turns WHERE id=?').get(turnId) as {id:number;session_id:number;status:string;stop_requested_at:string|null}|null;
+        if(!turn||!['done','error'].includes(turn.status)||turn.stop_requested_at)return;
+        const state=keepWorkingState(db,turn.session_id).on;
+        if(!state)return;
+        const session=getSessionById(turn.session_id),owner=this.dependencies.owner;
+        if(!session||!owner||!owner.canSend(session)||sessionWillWake(turn.session_id,turnId))return;
+        const ended=acceptedInputForTurn(turnId);
+        const runId=nativeRunId(turnId);
+        if(ended?.id.startsWith(KEEP_WORKING_WAKE_PREFIX)){
+            recordKeepWorking(db,{sessionId:turn.session_id,actionId:`keep-working-stuck:${turnId}`,state:'off',reason:KEEP_WORKING_STUCK_REASON,actor:OWNER_ACTOR,
+                sourceInputId:ended.id,sourceRunId:runId,nowMs:this.now()});
+            log('warn','keep_working_stuck',{session_id:`concierge:${turn.session_id}`,turn_id:turnId});
+            return;
+        }
+        const inputId=`${KEEP_WORKING_WAKE_PREFIX}${turn.session_id}:${turnId}`;
+        const retained=retainSessionInput({id:inputId,sessionId:turn.session_id,scope:`keep-working:${turn.session_id}`,actionId:inputId,kind:'input',origin:'service',
+            payload:{text:wakeText(state.reason)},...(ended?{sourceInputId:ended.id,sourceRunId:runId}:{})});
+        if(retained.input.turn_id)return;
+        owner.dispatch(retained.input);
+        log('info','keep_working_wake',{session_id:`concierge:${turn.session_id}`,turn_id:turnId});
     }
     /** Resolve the live run on the owner, move only the readonly Inbox projection to a read executor,
      * then revalidate that exact run before evaluating obligations or recording offer/reminder effects. */
@@ -4521,11 +4575,13 @@ export class SessionCommunicationCoordinator {
         this.stopped = false; this.startupReconciled = false;
         this.dependencies.owner.labConversations.start();
         this.detach = observeExecutionChanges(() => this.wake());
+        // After the ending turn's transaction commits, so the wake sees the settled turn.
+        this.detachTurnFacts = observeTurnFacts((turnId, kind) => { if (kind === 'terminal') queueMicrotask(() => { try { this.keepWorkingBackstop(turnId); } catch (error) { log('warn', 'keep_working_backstop_failed', { turn_id: turnId, error: error instanceof Error ? error.message : String(error) }); } }); });
         this.wake();
     }
     async idle() { do {
         await this.reconciliation;
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.reconciliation || this.reconciliationDirty); }
-    async stop() { this.stopped = true; this.dependencies.owner.labConversations.stop(); this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.quietChecks.clear(); this.quietWakeTimes = null; this.nextRequestInspectionAt = 0; }
+    async stop() { this.stopped = true; this.dependencies.owner.labConversations.stop(); this.reconciliationDirty = false; this.detach?.(); this.detach = null; this.detachTurnFacts?.(); this.detachTurnFacts = null; this.disarm?.(); this.disarm = null; const peerStop=this.dependencies.peers?.stop(); await this.reconciliation; await Promise.allSettled([...this.tasks.values()]); await peerStop; this.healthyRechecks.clear(); this.quietChecks.clear(); this.quietWakeTimes = null; this.nextRequestInspectionAt = 0; }
 }

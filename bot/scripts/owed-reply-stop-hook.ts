@@ -28,6 +28,7 @@ import { spawnSync } from 'node:child_process';
 import { requestApiResponse } from './router-request-client';
 import { hisLocalTimeOfLedgerUtc } from "../src/agent-local-time";
 import { RETRY_POLICIES } from '../src/retry-policies';
+import { stopReminderText } from '../src/keep-working';
 
 const provider = process.argv[2];
 let hook: any = {};
@@ -113,7 +114,9 @@ try {
   const reports=pending.filter(input=>!!input.request_id);
   const source: { input_id: string; run_id: string } | null = response.ok ? response.result?.source ?? null : null;
   const journalProcessing:string|null=response.ok?response.result?.journalProcessing??null:null;
-  if ((owed.length || pending.length || journalProcessing) && source) {
+  // Held at Stop like an owed reply: once, and never while background work is in flight.
+  const keepWorking:{reason:string}|null=response.ok&&!hook.stop_hook_active&&!background?response.result?.keepWorking??null:null;
+  if ((owed.length || pending.length || journalProcessing || keepWorking) && source) {
     const tool = join(homedir(), '.local', 'bin', 'router-actions.sh');
     const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
     const identity = `--source-input ${quote(source.input_id)} --source-run ${quote(source.run_id)}`;
@@ -137,6 +140,7 @@ try {
         ...routing,
       ] : []),
       ...(journalProcessing ? [journalProcessing] : []),
+      ...(keepWorking ? [stopReminderText(keepWorking.reason, `${tool} sessions keep-working off ${identity} --action-id ${quote(`keep-working-off-${source.run_id.slice(0, 8)}`)}`)] : []),
       ...(owed.length ? [
       `You are ending your turn while you still owe a final reply to ${owed.length === 1 ? 'this request' : 'these requests'}. Your turn's text is never read as a reply. Send it now:`,
       ...lines,
