@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { readRunnerProviderAccountReadings } from "./runner-provider-account-readings";
-import { ProviderLoginManager, endLoginGroup, loginGroupMembers, type AuthLoginStartResult } from "./auth-login";
+import { ProviderLoginManager, endLoginGroup, endLoginProcess, loginGroupMembers, type AuthLoginStartResult } from "./auth-login";
 import { log } from "./log";
 import { codexUpdaterDisabled } from "./codex-updater-settings";
 import { MANAGED_CODEX, controlSocketListeners, holdCodexDaemonAutoStart, startCodexDaemonInOwnScope } from "./codex-daemon-file-limit";
@@ -103,7 +103,7 @@ export function endLeftoverSignIn(row: {id:string;provider:AccountProvider;proce
 async function confirmLeftoverEnded(row: {id:string;provider:AccountProvider}, members: ProcessIdentity[]): Promise<string> {
   const settle = (ms: number) => new Promise(resolve => setTimeout(resolve, ms).unref());
   await settle(2_000);
-  for (const member of members) if (isProcessIdentityAlive(member)) endLoginGroup(member.pid, "SIGKILL");
+  for (const member of members) if (isProcessIdentityAlive(member)) endLoginProcess(member.pid, "SIGKILL");
   await settle(1_000);
   const surviving = members.filter(isProcessIdentityAlive);
   if (!surviving.length) {

@@ -101,6 +101,18 @@ export function endLoginGroup(pid: number | undefined, signal: "SIGTERM" | "SIGK
       if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return;
     }
   }
+  endLoginProcess(pid, signal);
+}
+
+/**
+ * End exactly one process of a sign-in, named by an identity already proven.
+ *
+ * Escalation uses this rather than the group, so the reach of the second signal is one process
+ * and needs no argument about who shares a group by then: a member can gain group followers
+ * after it was recorded, and its own identity is the only thing we proved.
+ */
+export function endLoginProcess(pid: number | undefined, signal: "SIGTERM" | "SIGKILL"): void {
+  if (typeof pid !== "number" || pid <= 1) return;
   try { process.kill(pid, signal); } catch { /* already gone */ }
 }
 
@@ -437,7 +449,7 @@ export class ProviderLoginManager {
       ? [...new Map([...login.members, ...loginGroupMembers(login.process.pid)].map(member => [member.pid, member])).values()]
       : login.members;
     if (shellRunning) endLoginGroup(login.process.pid, "SIGTERM");
-    else for (const member of members) if (isProcessIdentityAlive(member)) endLoginGroup(member.pid, "SIGTERM");
+    else for (const member of members) if (isProcessIdentityAlive(member)) endLoginProcess(member.pid, "SIGTERM");
     const graceMs = this.options.shutdownGraceMs ?? 2_000;
     await Promise.race([
       // Both the shell and every recorded member must be gone, so a shell that exits first
@@ -445,8 +457,8 @@ export class ProviderLoginManager {
       login.exited.then(async () => { while (members.some(isProcessIdentityAlive)) await new Promise(resolve => setTimeout(resolve, 100).unref()); }),
       new Promise<void>((resolve) => setTimeout(resolve, graceMs).unref()),
     ]);
-    for (const member of members) if (isProcessIdentityAlive(member)) endLoginGroup(member.pid, "SIGKILL");
-    if (login.process.exitCode === null && login.process.signalCode === null) endLoginGroup(login.process.pid, "SIGKILL");
+    for (const member of members) if (isProcessIdentityAlive(member)) endLoginProcess(member.pid, "SIGKILL");
+    if (login.process.exitCode === null && login.process.signalCode === null) endLoginProcess(login.process.pid, "SIGKILL");
     await new Promise(resolve => setTimeout(resolve, 200).unref());
     const surviving = members.filter(isProcessIdentityAlive);
     if (surviving.length) log("error", "provider_signin_teardown_survived", { surviving: surviving.length, members: members.length });

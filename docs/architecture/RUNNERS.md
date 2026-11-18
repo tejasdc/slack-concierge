@@ -522,11 +522,14 @@ process:
 - **Identity not provable:** nothing is signalled, and the detail says the leftover could not be
   established. A reused process id would otherwise name a stranger.
 
-The group is what gets signalled because a shell runs the provider CLI, and the group form is
-used only on proof that the process leads its own group — the runner's children otherwise share
-the runner's group, which is every agent session on the machine. After the leader exits the group
-number is no longer provably this sign-in's, so escalation addresses the members recorded earlier
-and never the group again. The live-runner teardown follows the same rule.
+The **first** signal goes to the group, because a shell runs the provider CLI, and the group form
+is used only on proof that the process leads its own group — the runner's children otherwise
+share the runner's group, which is every agent session on the machine. **Every escalation after
+it addresses exactly one process**, each recorded member on its own proven identity, through a
+separate single-process call rather than the group one. Two reasons: after the leader exits the
+group number is no longer provably this sign-in's, and a member can gain group followers after it
+was recorded, so its own identity is the only thing that stays proven. The live-runner teardown
+follows the same rule.
 
 This cannot be left to the unit's cgroup: `remote-box-concierge-runner.service` is
 `KillMode=process` so release restarts keep the long-lived children it means to own, and on
