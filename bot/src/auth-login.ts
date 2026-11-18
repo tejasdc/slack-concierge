@@ -1,5 +1,7 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readFileSync, readdirSync } from "node:fs";
 import { log } from "./log";
+import { processIdentity, isProcessIdentityAlive, type ProcessIdentity } from "./runtime-identity";
 
 // Interactive provider logins on this headless host print an authorization URL
 // and then wait on stdin for the code the provider shows after approval. The
@@ -17,6 +19,102 @@ export type AuthLoginFailure =
   | "no_url_before_timeout"   // the CLI ran but never printed a link we could read
   | "cli_exited"              // the CLI gave up or refused before presenting anything
   | "superseded";             // another sign-in for the same provider replaced this one
+
+/**
+ * Which process a sign-in is, recorded so a later run of this program can recognise it. Process
+ * identity is `runtime-identity`'s: a process id alone names whatever now holds it, so proof is
+ * the id together with the machine's boot and the process's own start time.
+ */
+export function loginProcessIdentity(pid: number | undefined): ProcessIdentity | null {
+  if (typeof pid !== "number" || pid <= 1) return null;
+  try { return processIdentity(pid); } catch { return null; }
+}
+
+/**
+ * Whether this process leads its own group. Signalling a group reaches everything in it, and for
+ * a child that never became a leader that is the runner's own group — every agent session on the
+ * machine. So the group form is used only on this proof, never on the assumption that the spawn
+ * asked for one.
+ */
+function leadsOwnGroup(pid: number): boolean {
+  try {
+    if (process.platform === "darwin") {
+      const group = spawnSync("/bin/ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" });
+      return group.status === 0 && group.stdout.trim() === String(pid);
+    }
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // The fields after the parenthesised command name begin at the line's third, so the
+    // process group is at index 2.
+    return stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[2] === String(pid);
+  } catch { return false; }
+}
+
+/**
+ * Everything in this sign-in's process group, each by its own identity, read while the leader is
+ * still alive and therefore while the group is provably the sign-in's.
+ *
+ * This is what makes the second signal safe. A shell that exits on the first one takes the group
+ * with it, so after that moment the group number may belong to something else entirely and the
+ * negative form can no longer be used; a member recorded here is still addressable on its own
+ * proof. It is also what makes "ended" checkable: the CLI, not the shell, is the thing being
+ * owned, and on 2026-11-17 a review reproduced this cleanup reporting success while a CLI that
+ * ignores SIGTERM was still running.
+ */
+export function loginGroupMembers(leaderPid: number): ProcessIdentity[] {
+  const pids = new Set<number>([leaderPid]);
+  try {
+    if (process.platform === "darwin") {
+      const listed = spawnSync("/bin/ps", ["-o", "pid=", "-g", String(leaderPid)], { encoding: "utf8" });
+      if (listed.status === 0) for (const line of listed.stdout.trim().split("\n")) {
+        const pid = Number(line.trim());
+        if (Number.isInteger(pid) && pid > 1) pids.add(pid);
+      }
+    } else {
+      for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        const pid = Number(entry);
+        try {
+          const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+          if (stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/)[2] === String(leaderPid)) pids.add(pid);
+        } catch { /* exited while being read */ }
+      }
+    }
+  } catch { /* the leader alone is still a usable answer */ }
+  const members: ProcessIdentity[] = [];
+  for (const pid of pids) {
+    const identity = loginProcessIdentity(pid);
+    if (identity) members.push(identity);
+  }
+  return members;
+}
+
+/**
+ * End a sign-in's whole process group, because a shell runs the provider CLI and ending the
+ * shell alone leaves the CLI holding the sign-in. A negative id addresses the group; the plain
+ * id is the fallback for a process that never became a group leader.
+ */
+export function endLoginGroup(pid: number | undefined, signal: "SIGTERM" | "SIGKILL"): void {
+  if (typeof pid !== "number" || pid <= 1) return;
+  if (leadsOwnGroup(pid)) {
+    try { process.kill(-pid, signal); return; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return;
+    }
+  }
+  endLoginProcess(pid, signal);
+}
+
+/**
+ * End exactly one process of a sign-in, named by an identity already proven.
+ *
+ * Escalation uses this rather than the group, so the reach of the second signal is one process
+ * and needs no argument about who shares a group by then: a member can gain group followers
+ * after it was recorded, and its own identity is the only thing we proved.
+ */
+export function endLoginProcess(pid: number | undefined, signal: "SIGTERM" | "SIGKILL"): void {
+  if (typeof pid !== "number" || pid <= 1) return;
+  try { process.kill(pid, signal); } catch { /* already gone */ }
+}
 
 export type AuthLoginStartResult =
   | { status: "awaiting_code"; url: string }
@@ -49,6 +147,13 @@ interface PendingLogin {
   expiry: ReturnType<typeof setTimeout> | null;
   /** The sign-in page this login is waiting on, so a page that reloads, or lost its answer, can offer it again. */
   url: string | null;
+  /**
+   * The provider CLI and anything else in this login's group, each by its own identity, taken
+   * while the shell was alive. Teardown needs them: the shell can exit on the polite signal
+   * while the CLI it started ignores it, and after the shell goes the group number is no longer
+   * provably this login's.
+   */
+  members: ProcessIdentity[];
 }
 
 function stripTerminalEscapes(text: string): string {
@@ -124,6 +229,12 @@ export class ProviderLoginManager {
      * null when the sign-in is over, however it ended.
      */
     onPendingChanged?: (provider: string, expiresAtMs: number | null) => void;
+    /**
+     * Which process the sign-in became, the moment it exists. A caller that records this durably
+     * can end a sign-in a dead run of this program left behind. It fires before the wait for the
+     * provider's link, because that wait is where a runner restart is most likely to catch one.
+     */
+    onProcessStarted?: (provider: string, identity: ProcessIdentity) => void;
   } = {}) {}
 
   /** One place that owns "is a sign-in waiting", so nothing can drop it silently. */
@@ -142,6 +253,14 @@ export class ProviderLoginManager {
     return login?.state === "awaiting_code" ? login.url : null;
   }
 
+  /**
+   * Which process this provider's waiting sign-in is, for a caller that records it durably so a
+   * later run of this program can recognise and end a sign-in this one left behind.
+   */
+  pendingLoginProcess(provider: string): ProcessIdentity | null {
+    return loginProcessIdentity(this.pending.get(provider)?.process.pid);
+  }
+
   async start(provider: string, command: string, cwd: string, flow: AuthLoginFlow = "paste-code",
     env: Record<string, string> = {}): Promise<AuthLoginStartResult> {
     // Reserve the provider slot before any await so a second concurrent start
@@ -155,6 +274,12 @@ export class ProviderLoginManager {
       // account already there survives.
       env: { ...process.env, ...env },
       stdio: ["pipe", "pipe", "pipe"],
+      // A shell runs the provider CLI, so the process we hold is not the one doing the
+      // sign-in. Its own process group makes the pair one thing to end: signalling the
+      // shell alone left `claude auth login` running for eleven days across many runner
+      // restarts (2026-11-06 to 11-17), because the runner unit is KillMode=process and
+      // its cgroup deliberately does not reap children it means to keep.
+      detached: true,
     }) as ChildProcessWithoutNullStreams;
     const login: PendingLogin = {
       process: child,
@@ -162,12 +287,18 @@ export class ProviderLoginManager {
       state: "starting",
       expiry: null,
       url: null,
+      members: [],
       exited: new Promise((resolve) => {
         child.on("error", () => resolve(null));
         child.on("close", (code) => resolve(code));
       }),
     };
     this.pending.set(provider, login);
+    const identity = loginProcessIdentity(child.pid);
+    if (identity) {
+      try { this.options.onProcessStarted?.(provider, identity); }
+      catch (error) { log("warn", "provider_signin_process_record_failed", { provider, error_name: (error as Error)?.name ?? "Error" }); }
+    } else log("warn", "provider_signin_process_unidentified", { provider });
     const collect = (chunk: Buffer) => {
       login.output += chunk.toString();
     };
@@ -211,6 +342,10 @@ export class ProviderLoginManager {
     }
     login.state = flow === "device" ? "awaiting_approval" : "awaiting_code";
     login.url = url;
+    // The CLI has printed its link, so it exists and the shell still leads the group: the one
+    // moment where everything this login is can be recorded by its own identity, which teardown
+    // needs after the shell has gone.
+    login.members = loginGroupMembers(login.process.pid!);
     const ttlMs = this.options.pendingTtlMs ?? 10 * 60_000;
     login.expiry = setTimeout(() => { void this.abandon(provider); }, ttlMs);
     // Announced before the result is returned, so the sign-in is already holding updates
@@ -301,15 +436,32 @@ export class ProviderLoginManager {
     await this.killChild(login);
   }
 
+  /**
+   * End the whole login, then say so only once it is true. The shell's exit is not the answer:
+   * the provider CLI it started can ignore the polite signal and outlive it, and a review
+   * reproduced exactly that on 2026-11-17 while this reported success. So each member recorded
+   * while the shell was alive is forced on its own identity, and a survivor is logged rather
+   * than passed over.
+   */
   private async killChild(login: PendingLogin): Promise<void> {
-    if (login.process.exitCode !== null || login.process.signalCode !== null) return;
-    login.process.kill("SIGTERM");
+    const shellRunning = login.process.exitCode === null && login.process.signalCode === null;
+    const members = shellRunning && login.process.pid
+      ? [...new Map([...login.members, ...loginGroupMembers(login.process.pid)].map(member => [member.pid, member])).values()]
+      : login.members;
+    if (shellRunning) endLoginGroup(login.process.pid, "SIGTERM");
+    else for (const member of members) if (isProcessIdentityAlive(member)) endLoginProcess(member.pid, "SIGTERM");
     const graceMs = this.options.shutdownGraceMs ?? 2_000;
-    const settled = await Promise.race([
-      login.exited.then(() => true),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), graceMs)),
+    await Promise.race([
+      // Both the shell and every recorded member must be gone, so a shell that exits first
+      // cannot end the wait on the CLI's behalf.
+      login.exited.then(async () => { while (members.some(isProcessIdentityAlive)) await new Promise(resolve => setTimeout(resolve, 100).unref()); }),
+      new Promise<void>((resolve) => setTimeout(resolve, graceMs).unref()),
     ]);
-    if (!settled) login.process.kill("SIGKILL");
+    for (const member of members) if (isProcessIdentityAlive(member)) endLoginProcess(member.pid, "SIGKILL");
+    if (login.process.exitCode === null && login.process.signalCode === null) endLoginProcess(login.process.pid, "SIGKILL");
+    await new Promise(resolve => setTimeout(resolve, 200).unref());
+    const surviving = members.filter(isProcessIdentityAlive);
+    if (surviving.length) log("error", "provider_signin_teardown_survived", { surviving: surviving.length, members: members.length });
   }
 
   async stop(): Promise<void> {

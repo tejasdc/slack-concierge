@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { readRunnerProviderAccountReadings } from "./runner-provider-account-readings";
-import { ProviderLoginManager, type AuthLoginStartResult } from "./auth-login";
+import { ProviderLoginManager, endLoginGroup, endLoginProcess, loginGroupMembers, type AuthLoginStartResult } from "./auth-login";
+import { log } from "./log";
 import { codexUpdaterDisabled } from "./codex-updater-settings";
 import { MANAGED_CODEX, controlSocketListeners, holdCodexDaemonAutoStart, startCodexDaemonInOwnScope } from "./codex-daemon-file-limit";
 import { CodexAppServerClient, codexAppServerSocketPath } from "./codex-app-server-client";
@@ -14,13 +15,15 @@ import { readRunnerGoogleUsage } from "./runner-google-usage";
 import {createConnection} from 'node:net';
 import { CLAUDE_SCRATCH, isClaudePerLogin } from './claude-home-entries';
 import {observeAppliedRuntimeMaintenance,progressRuntimeMaintenance,sameRuntime,sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState,type RuntimeMaintenanceObservation} from './codex-runtime-maintenance';
-import {isProcessIdentityAlive,processIdentity} from './runtime-identity';
+import {isProcessIdentityAlive,processIdentity,type ProcessIdentity} from './runtime-identity';
 import {LEDGER_IMAGE_PATH} from './agent-ledger-image-boundary';
 
 type AccountProvider = "codex" | "claude-code";
 const providers = new Set<AccountProvider>(["codex", "claude-code"]);
 type SignInStatus = "starting" | "awaiting_code" | "awaiting_approval" | "completing" | "completed" | "failed" | "interrupted";
-type SignInOperation = { id: string; provider: AccountProvider; status: SignInStatus; stageHome: string; url?: string; userCode?: string|null; account?: string; detail?: string };
+type SignInOperation = { id: string; provider: AccountProvider; status: SignInStatus; stageHome: string; url?: string; userCode?: string|null; account?: string; detail?: string;
+  /** The process running this sign-in, while it is running, so a later runner can end what this one leaves behind. */
+  process?: ProcessIdentity };
 const signinJournal = join(process.env.CONCIERGE_RUNNER_STATE?.trim() || join(homedir(), ".local", "state", "concierge-runner"), "provider-signin-state.json");
 const activationJournal = join(process.env.CONCIERGE_RUNNER_STATE?.trim() || join(homedir(), ".local", "state", "concierge-runner"), "codex-activation-state.json");
 const signinOperations = new Map<string, SignInOperation>();
@@ -47,21 +50,93 @@ function processHasRunnerState(pid:number):boolean|null {
 }
 
 function writeSignInState(operation: SignInOperation) {
-  const rows = [...signinOperations.values()].map(({id,provider,status,account,detail}) => ({id,provider,status,account,detail,updatedAt:Date.now()}));
+  const rows = [...signinOperations.values()].map(({id,provider,status,account,detail,process:child}) => ({id,provider,status,account,detail,
+    ...(child&&["starting","awaiting_code","awaiting_approval","completing"].includes(status)?{process:child}:{}),
+    updatedAt:Date.now()}));
   mkdirSync(join(signinJournal, ".."), { recursive: true, mode: 0o700 });
   writeFileSync(`${signinJournal}.tmp`, JSON.stringify(rows), { mode: 0o600 });
   renameSync(`${signinJournal}.tmp`, signinJournal);
 }
+
+/**
+ * End a sign-in process this runner left behind, named by the exact process the journal recorded.
+ * A sign-in that was waiting when the runner died keeps running: the runner unit is
+ * `KillMode=process`, so systemd ends only the runner itself and deliberately leaves the children
+ * it means to keep (its Codex App Server among them). Marking the operation interrupted said the
+ * wait was over while the provider CLI was still holding it — on 2026-11-06 one `claude auth login`
+ * ran for eleven days and many restarts before an unrelated inventory noticed it.
+ *
+ * The recorded start time is what makes this safe: without it a reused process id would name
+ * whatever now holds it. No proof, no signal — the operation says so instead, and nothing guesses
+ * from a command line.
+ */
+export type LeftoverSignIn = { detail: string; confirmed?: Promise<string> };
+
+export function endLeftoverSignIn(row: {id:string;provider:AccountProvider;process?:unknown}): LeftoverSignIn | null {
+  const recorded = row.process as Partial<ProcessIdentity> | undefined;
+  const identity: ProcessIdentity | null = typeof recorded?.pid === "number" && typeof recorded.bootId === "string"
+    && typeof recorded.startTicks === "string" ? { pid: recorded.pid, bootId: recorded.bootId, startTicks: recorded.startTicks } : null;
+  if (!identity) {
+    log("warn", "provider_signin_leftover_unidentified", { operation_id: row.id, provider: row.provider });
+    return { detail: "The runner restarted during sign-in and this one recorded no process, so whether its sign-in command is still running could not be established. Start a new sign-in operation." };
+  }
+  if (!isProcessIdentityAlive(identity)) {
+    log("info", "provider_signin_leftover_already_gone", { operation_id: row.id, provider: row.provider });
+    return null;
+  }
+  // Read the group before signalling anything: once the shell goes, the group number is no
+  // longer provably this sign-in's, and each member recorded here stays addressable on its own.
+  const members = loginGroupMembers(identity.pid);
+  endLoginGroup(identity.pid, "SIGTERM");
+  log("info", "provider_signin_leftover_ending", { operation_id: row.id, provider: row.provider, members: members.length });
+  return {
+    detail: "The runner restarted during sign-in, and the sign-in command it left running is being ended. Start a new sign-in operation.",
+    confirmed: confirmLeftoverEnded(row, members),
+  };
+}
+
+/**
+ * Wait out the polite signal, end each member that ignored it by its own identity, and report
+ * only what is then true. The claim is about the provider CLI, not the shell that ran it: a CLI
+ * that ignores SIGTERM outlives a shell that does not, so a shell's exit proves nothing, and
+ * saying "ended" on that basis is how a wait outlives its operation while looking settled.
+ */
+async function confirmLeftoverEnded(row: {id:string;provider:AccountProvider}, members: ProcessIdentity[]): Promise<string> {
+  const settle = (ms: number) => new Promise(resolve => setTimeout(resolve, ms).unref());
+  await settle(2_000);
+  for (const member of members) if (isProcessIdentityAlive(member)) endLoginProcess(member.pid, "SIGKILL");
+  await settle(1_000);
+  const surviving = members.filter(isProcessIdentityAlive);
+  if (!surviving.length) {
+    log("warn", "provider_signin_leftover_ended", { operation_id: row.id, provider: row.provider, members: members.length });
+    return "The runner restarted during sign-in, and the sign-in command it left running has been ended. Start a new sign-in operation.";
+  }
+  log("error", "provider_signin_leftover_survived", { operation_id: row.id, provider: row.provider,
+    members: members.length, surviving: surviving.length });
+  return "The runner restarted during sign-in, and the sign-in command it left running did not stop when it was asked to and then forced; it is still running. Start a new sign-in operation, and have this machine's leftover looked at.";
+}
+
 try {
   const prior = JSON.parse(readFileSync(signinJournal, "utf8"));
   if (Array.isArray(prior)) for (const row of prior) {
     if (row && typeof row.id === "string" && providers.has(row.provider) && typeof row.status === "string") {
       const active = ["starting","awaiting_code","awaiting_approval","completing"].includes(row.status);
       const status: SignInStatus = active ? "interrupted" : row.status;
+      // Reconciling before the row is recorded keeps one statement of what happened: the detail
+      // the caller reads is written by whatever actually became of the process. Ending takes a
+      // few seconds to establish, so the first detail says it is under way and the confirmed
+      // one replaces it; the status is terminal throughout, and only the detail changes.
+      const leftover = active ? endLeftoverSignIn(row) : null;
+      if (leftover?.confirmed) void leftover.confirmed.then(detail => {
+        const operation = signinOperations.get(row.id);
+        if (!operation || operation.status !== "interrupted") return;
+        operation.detail = detail;
+        writeSignInState(operation);
+      }).catch(() => { /* the detail stays as the one written below */ });
       if (["interrupted","completed","failed"].includes(status)) signinOperations.set(row.id, {
         id: row.id, provider: row.provider, status, stageHome: "",
         ...(typeof row.account === "string" ? { account: row.account } : {}),
-        ...(active ? { detail: "The runner restarted during sign-in. Start a new sign-in operation." }
+        ...(active ? { detail: leftover?.detail ?? "The runner restarted during sign-in. Start a new sign-in operation." }
           : typeof row.detail === "string" ? { detail: row.detail } : {}),
       });
     }
@@ -96,6 +171,15 @@ const signinManager = new ProviderLoginManager({
     const id = pendingSignins.get(provider as AccountProvider);
     const operation = id ? signinOperations.get(id) : null;
     if (operation) void settleSignIn(operation);
+  },
+  // Written down the moment the sign-in command exists, so a runner that dies mid-sign-in leaves
+  // its successor something exact to recognise and end rather than a process nobody owns.
+  onProcessStarted: (provider, identity) => {
+    const id = pendingSignins.get(provider as AccountProvider);
+    const operation = id ? signinOperations.get(id) : null;
+    if (!operation) return;
+    operation.process = identity;
+    writeSignInState(operation);
   },
 });
 
