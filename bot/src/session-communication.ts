@@ -1,3 +1,5 @@
+import {readHeldMessageSnapshot} from './held-message-resolution-capability';
+import {HELD_RESOLUTION_SCOPE,heldMessageBinding,heldResolutionIsCurrent,heldResolutionProgress} from './held-message-resolution';
 import {adoptContentSource,assertCommunicationContent,assertInputContent,contentReaderHeaders,outsideContentReader,withContentSource} from './lab-content-disclosure';
 import {pendingJournalProcessing} from "./journal-processing";
 import { readFileSync } from 'node:fs';
@@ -266,6 +268,13 @@ export class SessionCommunicationCoordinator {
             UNION ALL SELECT 1 FROM session_peer_deliveries
             WHERE target_input_id=? AND target_session_id=? AND closed_at_ms IS NULL AND requested_effect='work' LIMIT 1`)
             .get(input.id,actor.session,input.id,actor.session);
+        const resolutionInput=getAcceptedSessionInput(actor.inputId)!;
+        const resolution=heldMessageBinding(db,resolutionInput);
+        if(resolution){
+            const original=getAcceptedSessionInput(resolution.originalInputId);
+            return heldResolutionIsCurrent(db,resolutionInput)&&original&&openWorkInput(original)&&scope(original)==='work'
+                ?{actor,scope:'work',authorityInputId:original.id}:{actor,scope:'informational'};
+        }
         const holder = (db.query("SELECT * FROM session_inputs WHERE turn_id=? AND session_id=? AND origin IN ('human','agent') ORDER BY rowid").all(actor.turn, actor.session) as AcceptedSessionInput[])
             .find(input => input.id !== actor.inputId && scope(input) === 'work' && (humanAuthored(input)||openWorkInput(input)));
         if (holder) return {actor, scope:'work', authorityInputId:holder.id};
@@ -306,6 +315,8 @@ export class SessionCommunicationCoordinator {
      * every owner write from it is refused with the successor's address (provider-change handoff).
      */
     private fenced(actor: Actor): Actor {
+        const input=actor.inputId?getAcceptedSessionInput(actor.inputId):null;
+        if(input?.scope===HELD_RESOLUTION_SCOPE&&!heldResolutionIsCurrent(db,input))throw new Error('FEATURE_RESOLUTION_FENCED: the original resolution binding is no longer current.');
         const next = supersededAddress(actor.session);
         if (next) throw new Error(`This session's work was handed off; its obligations and authority moved to ${next}. Reads and your closing sessions outcome still work.`);
         if (withdrawnSuccessor(actor.session)) throw new Error('This session was proposed as a successor and the handoff was withdrawn; it holds no obligations.');
@@ -1372,11 +1383,46 @@ export class SessionCommunicationCoordinator {
             return {post:receipt,duplicate:false};
         })();
     }
+    /** One fresh product read can prove a real revision/withdrawal; a completed provider turn cannot. */
+    async prepareHeldResolutionCompletion(input:{source:CommunicationSource;outcome?:string;workDisposition?:string;only_he_can?:string;his_words?:string;why_not_answered?:string}) {
+        const question=input.outcome==='needs_you'||input.workDisposition==='needs_decision'||input.only_he_can!==undefined||input.his_words!==undefined||input.why_not_answered!==undefined;
+        if(!question&&!['done','response'].includes(input.outcome??''))return;
+        const accepted=input.source?.input_id?getAcceptedSessionInput(input.source.input_id):null;
+        const binding=accepted?heldMessageBinding(db,accepted):null;
+        if(!accepted||!binding)return;
+        let actor=this.actor(input.source);
+        if(question&&binding.snapshot.resolutionKind!=='human-choice')
+            throw new Error('FEATURE_RESOLUTION_REPAIR_REQUIRED: system/model/content failures go to repair, not a human question.');
+        const target=(id:number)=>{const session=getSessionById(id);return !!session&&!isWritingSession(session);};
+        const progress=heldResolutionProgress(db,accepted,target);
+        if(!question&&progress&&['question','revision','retired','repair-handoff','repair-report'].includes(progress.state))return;
+        this.fenced(actor);
+        let snapshot;
+        try{snapshot=await readHeldMessageSnapshot(binding.resolution,actor.session,!question);}
+        catch(error){throw new Error(`FEATURE_RESOLUTION_PRODUCT_UNPROVEN: ${error instanceof Error?error.message:'current product evidence unavailable'}`);}
+        actor=this.actor(input.source);
+        this.fenced(actor);
+        if(question)return;
+        if(snapshot.state!=='resolved'||!snapshot.completion)
+            throw new Error('FEATURE_RESOLUTION_UNRESOLVED: product still eligible; keep the local obligation open and perform the exact resolution or report its system fault.');
+        // Store only the verified effect receipt, not a caller's claim or a new send instruction.
+        db.transaction(()=>recordSessionEvent({eventId:`feature-resolution-revision:${accepted.id}`,sessionId:actor.session,inputId:accepted.id,
+            kind:'feature_resolution_revision',payload:snapshot.completion}))();
+    }
     /** A live session declares its turn's outcome as a retained, retry-safe action. */
     outcome(input:{source:CommunicationSource;action_id:string;outcome:DeclaredTurnOutcome;text?:string;quiet_because?:string;summary?:string;his_words?:string;why_not_answered?:string;only_he_can?:string;todo?:string;todo_checked?:TodoState|null|'unavailable';decision_id?:string;approval_action?:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         if(!actor.inputId)throw new Error('Outcome requires an exact native source input and run.');
+        if(input.outcome==='needs_you'||input.outcome==='response')this.fenced(actor);
+        const heldResolution=heldMessageBinding(db,getAcceptedSessionInput(actor.inputId)!);
+        if(input.outcome==='needs_you'&&heldResolution&&heldResolution.snapshot.resolutionKind!=='human-choice')
+            throw new Error('FEATURE_RESOLUTION_REPAIR_REQUIRED: system/model/content failures go to the existing repair owner, not a human question.');
+        if(heldResolution&&['done','response'].includes(input.outcome)){
+            const progress=heldResolutionProgress(db,getAcceptedSessionInput(actor.inputId)!,id=>{const target=getSessionById(id);return !!target&&!isWritingSession(target);});
+            if(!progress||!['question','revision','retired','repair-handoff','repair-report'].includes(progress.state))
+                throw new Error('FEATURE_RESOLUTION_UNRESOLVED: no exact question, verified revision or accepted repair ownership is recorded. Keep the local obligation open.');
+        }
         if(!['done','response','needs_you','failed'].includes(input.outcome))throw new Error('Invalid turn outcome.');
         const journalPending=pendingJournalProcessing(actor.inputId,nativeRunId(actor.turn));
         if(journalPending&&input.outcome!=="failed")throw new Error(journalPending);
@@ -1439,10 +1485,12 @@ export class SessionCommunicationCoordinator {
             // A worker on an Inbox thread waiting on him reaches him through that thread; its own
             // needs_you is left to the Inbox by thnkr.ing, which would otherwise never hear of it.
             if(input.outcome==='needs_you'&&!sessionMetadata(getSessionById(actor.session)!).inbox){
-                const need={respondingSessionId:actor.session,turnInputId:actor.inputId!,runId:nativeRunId(actor.turn),eventId:saved.input.id,text:leadFirst(lead,stated),todoId};
+                const boundResolution=heldMessageBinding(db,getAcceptedSessionInput(actor.inputId!)!);
+                const need={respondingSessionId:actor.session,turnInputId:actor.inputId!,runId:nativeRunId(actor.turn),eventId:saved.input.id,text:boundResolution?content:leadFirst(lead,stated),todoId};
                 let filed:string|null=null;
                 try{filed=db.transaction(()=>fileWorkerNeedInThread(need))();}
-                catch(error){log('error','worker_need_thread_filing_failed',{session:actor.session,input:saved.input.id,message:error instanceof Error?error.message:String(error)});}
+                catch(error){if(boundResolution)throw error;log('error','worker_need_thread_filing_failed',{session:actor.session,input:saved.input.id,message:error instanceof Error?error.message:String(error)});}
+                if(!filed&&boundResolution)throw new Error('FEATURE_RESOLUTION_THREAD_UNAVAILABLE: the bound question was not filed in its original thread.');
                 if(!filed)fileWorkerNeedWithoutThread(need);
                 this.dependencies.peers?.recordTurnNeed(this.peerActor(actor),`turn_outcome:action:${saved.input.id}`,leadFirst(lead,stated));
             }
@@ -3050,6 +3098,10 @@ export class SessionCommunicationCoordinator {
         // they leave it open; completed work carries what was checked live. Folded into the words
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
         const asksHim=input.his_words!==undefined||input.why_not_answered!==undefined||input.only_he_can!==undefined||input.todo!==undefined||input.decision_id!==undefined||input.approval_action!==undefined;
+        const resolutionInput=input.source?.input_id?getAcceptedSessionInput(input.source.input_id):null;
+        const heldResolution=resolutionInput?heldMessageBinding(db,resolutionInput):null;
+        if((input.workDisposition==='needs_decision'||asksHim)&&heldResolution&&heldResolution.snapshot.resolutionKind!=='human-choice')
+            throw new Error('FEATURE_RESOLUTION_REPAIR_REQUIRED: this retained resolution belongs to repair.');
         // "Could not finish" that names what only he can do is waiting on him, not finished: it is
         // recorded as the question it is, so it reaches his device. A failed reply files only a quiet
         // reading item, and that is how the Uber Eats agent's photo request reached nobody (2026-11-02).
