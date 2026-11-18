@@ -10,7 +10,7 @@ import {sessionProject} from './session-projects';
 import {parseProviderSelector,resolveProviderSelector,chatgptProjectThinking,CHATGPT_THINKING_LEVELS,THINKING_MODEL_CHOICES} from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {AWAITING_INSPECTION,PROMPT_ANSWER_REMINDER_MS,PROMPT_ANSWER_OVERDUE_MS,REMINDERS_SINCE_MS,STILL_WAITING_AFTER_MS,STILL_WAITING_MINUTES,updateDraining,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,cancelQueuedWithdrawnRequest,waitingOnDependency,type OwedRequest} from './request-liveness';
-import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
+import {PROGRESS_NOTIFICATION_REFUSAL,REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {awaitingOutside} from './storage-observation';
 import {db,getSessionById,SETTLED_EXECUTION_SQL,SETTLED_TURN_STATUSES} from './state';
@@ -1213,6 +1213,7 @@ export class SessionPeers {
     if(!peerReplyDispositionAllowed(input.kind,disposition,requestedEffect))throw new SessionOwnerError('A work disposition requires a final reply to a work request.');
     const result=db.transaction(():{recorded:'recorded'|'duplicate'|'refused';reason?:string}=>{
       if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(input.eventId))return {recorded:'duplicate'};
+      if(input.notify&&!final&&!input.answersQuestion)throw new SessionOwnerError(PROGRESS_NOTIFICATION_REFUSAL);
       // The owner's own inference from a finished turn is not the recipient's word: a recipient
       // still working past it can answer, and that answer returns to the requester.
       const current=this.currentFinal(requestId);
@@ -2311,6 +2312,7 @@ export class SessionPeers {
       ...(input.quiet&&input.workDisposition==='completed'?{quiet:input.quiet}:{})};
     const prior=db.query('SELECT * FROM session_peer_replies WHERE action_key=?').get(key) as ReplyRow|null;
     if(prior){if(prior.request_id!==row.request_id||prior.payload_json!==JSON.stringify(payload))throw new Error('Idempotency conflict: reply action has a different payload.');return this.deliveryReceipt(row);}
+    if(input.notify&&!input.final&&!input.answersQuestion)throw new Error(PROGRESS_NOTIFICATION_REFUSAL);
     db.transaction(()=>{
       if(input.final)requireChatGptTaskDisposition({kind:'peer_delivery',id:`${row.peer}:${row.request_id}`},input.workDisposition,input.openChatGptIds??[]);
       if(input.final&&db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(row.request_id))throw new Error('This request already has a final reply awaiting the peer’s confirmation.');

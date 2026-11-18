@@ -48,7 +48,16 @@ try{
  communication.post({source:router.source,action_id:'acknowledgement',thread:root,text:'I have sent this to the working agent.'});
  assert.equal(rings().length,0,'Router acknowledgement leaves pending dispatched result quiet');
  assert.equal(hasPendingThreadNotification(inboxId,root),true);
- communication.reply({source:worker.source,action_id:'progress',request_id:request.request_id,text:'Still investigating.',final:false,notify:true});await communication.idle();
+ const progress={source:worker.source,action_id:"progress",request_id:request.request_id,text:"Still investigating.",final:false};
+ const progressCount=()=>db.query("SELECT count(*) AS count FROM session_communication_events WHERE request_id=? AND kind='progress'").get(request.request_id).count;
+ const beforeProgress=progressCount();
+ assert.throws(()=>communication.reply({...progress,notify:true}),/Progress-only --partial --notify was refused/);
+ assert.equal(progressCount(),beforeProgress,"Refusal leaves no progress event");
+ communication.reply(progress);
+ // Older releases normalized the notified partial to this same quiet event before retaining it.
+ communication.reply({...progress,notify:true});await communication.idle();
+ assert.equal(progressCount(),beforeProgress+1,"An exact historical replay creates no second event");
+ assert.throws(()=>communication.reply({...progress,notify:true,text:"Changed words."}),/Idempotency conflict/);
  assert.equal(rings().length,0);assert.equal(hasPendingThreadNotification(inboxId,root),true);
  communication.reply({source:worker.source,action_id:'answer',request_id:request.request_id,text:'The answer stopped during handoff; the repair continues.',final:false,answers_question:true});await communication.idle();
  assert.equal(rings().length,1,'Prompt answer rings by default');assert.equal(rings()[0].question,'The answer stopped during handoff; the repair continues.');
@@ -94,12 +103,19 @@ try{
  const notice={thread:noticeRoot,topic:noticeTopic,text:"Please check the test now. I will reply here.",keep_working:true,notify:true};
  const parentPost=communication.post({...notice,source:parentRun.source,action_id:"parent-notice",promise_request:parent.request_id});
  assert.equal(parentPost.duplicate,false,"An exact linked dispatch ID is a valid promise reference");
+ let usableRequest="";
+ assert.throws(()=>communication.post({...notice,source:childRun.source,action_id:"child-notice",promise_request:"invalid-reference"}),error=>{
+   usableRequest=String(error).match(/Use --promise-request (req:\S+)/)?.[1]??"";
+   return !!usableRequest;
+ });
+ const explicitChild=communication.post({...notice,source:childRun.source,action_id:"explicit-child-notice",promise_request:usableRequest,notify:false});
+ assert.equal(explicitChild.duplicate,false,"The suggested Inbox request is accepted from the delegated worker");
  const childPost=communication.post({...notice,source:childRun.source,action_id:"child-notice"});
  assert.equal(childPost.duplicate,false,"A worker can post through its parent’s linked work");
  assert.equal(communication.post({...notice,source:childRun.source,action_id:"child-notice"}).duplicate,true);
  const directRings=rings().slice(4);
  assert.deepEqual(directRings.map(ring=>ring.postId),[parentPost.post.messageId,childPost.post.messageId]);
- assert.throws(()=>communication.post({...notice,source:worker.source,action_id:"foreign-promise",promise_request:parent.request_id}),/without a matching open Inbox request/);
+ assert.throws(()=>communication.post({...notice,source:worker.source,action_id:"foreign-promise",promise_request:parent.request_id}),error=>/without a matching open Inbox request/.test(String(error))&&!String(error).includes(usableRequest));
  assert.equal(communication.inspect(parent.request_id).outcome,null);
  assert.equal(communication.inspect(child.request_id).outcome,null);
  assert.deepEqual(errors,[]);console.log(JSON.stringify({fixture:'inbox-requested-notification',explicitHumanRequest:true,progressQuiet:true,promptAnswer:true,explicitPartial:true,bodylessFinal:true,quietConsumes:true}));
