@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {mock} from 'bun:test';
 import {createHash} from 'node:crypto';
 
 const root=mkdtempSync(join(tmpdir(),'concierge-runtime-proof-'));
+const nodeExecutable=process.env.CONCIERGE_NODE_BIN?.trim()||Bun.which('node');
+assert(nodeExecutable,'The runtime proof fixture requires Node through CONCIERGE_NODE_BIN or PATH.');
+process.env.CONCIERGE_NODE_BIN=nodeExecutable;
+console.log(JSON.stringify({fixture:'runtime-terminal-proof-node',nodeExecutable,staticNodePathExists:existsSync('/usr/bin/node'),bun:Bun.version}));
 const daemon=await import('../src/codex-daemon-file-limit');
 let tune=0,move=0,start=0;
 mock.module('../src/codex-daemon-file-limit',()=>({...daemon,
@@ -17,13 +21,13 @@ const effects=()=>[tune,move,start];
 const missing=join(root,'absent.sock'),bridge=join(root,'disconnect.mjs');
 writeFileSync(bridge,"process.stdout.write(JSON.stringify({type:'disconnect',error:'connect ENOENT /fixture-absent'})+'\\n');setInterval(()=>{},1000);");
 class PrivateProofClient extends CodexAppServerClient{
-  constructor(_socket?:string,_node?:string,options:any={}){super(missing,'/usr/bin/node',{...options,bridgePath:bridge,shutdownGraceMs:25});}
+  constructor(_socket?:string,_node?:string,options:any={}){super(missing,nodeExecutable,{...options,bridgePath:bridge,shutdownGraceMs:25});}
 }
 let server:ReturnType<typeof Bun.serve>|undefined;
 try{
   // Positive control: the unmodified ordinary client keeps its lifecycle recovery behavior.
   const ordinary=new PrivateProofClient();
-  await assert.rejects(ordinary.request('model/list',{}, {requestTimeoutMs:1000}),/ENOENT/);await ordinary.close();
+  await assert.rejects(ordinary.request('model/list',{}, {requestTimeoutMs:1000}),{message:'connect ENOENT /fixture-absent'});await ordinary.close();
   assert.deepEqual(effects(),[1,1,1]);console.log('PASS actual ordinary direct client retains tune/move/start recovery control');
   tune=move=start=0;
   // Execute the complete shipping runner proof function with the actual client and a private
@@ -34,7 +38,7 @@ try{
   const body=new Bun.Transpiler({loader:'ts'}).transformSync(source.slice(begin,end));
   const prove=new Function('CodexAppServerClient','runtimeMaintenanceSnapshot','sameRuntime',body+'\nreturn proveRuntimeMaintenanceReplacement;')
     (PrivateProofClient,async()=>null,sameRuntime);
-  await assert.rejects(prove({pid:42,bootId:'fixture',startTicks:'1'}),/ENOENT/);
+  await assert.rejects(prove({pid:42,bootId:'fixture',startTicks:'1'}),{message:'connect ENOENT /fixture-absent'});
   assert.deepEqual(effects(),[0,0,0],'runner terminal proof cannot tune/move/start on listener loss');
   console.log('PASS actual runner proof + actual client: disappearing listener causes zero daemon effects');
 
