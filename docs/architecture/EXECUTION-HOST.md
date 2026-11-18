@@ -519,6 +519,15 @@ checks. The owner and backup processes retain their original namespace. API sock
 network entrances are unchanged. This targeted image boundary does not claim to contain
 root agents against every privileged host escape.
 
+The private code launcher can encounter the loop mount while its backing image already carries
+that exact inaccessible 0:0 mask. Discovery accepts either the original regular backing file or
+the existing mask, and retains its path in the hide set; it still masks every discovered store
+directory. Other nonfiles remain refused. This does not broaden the separate inherited-null
+compatibility path used by the preceding sealed release builder. The scratch regression is
+`bot/scripts/private-wrapper-image-mask-fixture.ts`; its `--source-guard` mode requires no live
+ledger, loop device or mount privileges. Full runtime mode checks actual inherited masks and
+the bundled private launcher against owned scratch stores.
+
 `bun run bot/scripts/agent-ledger-image-fixture.ts` from the repository root exercises an owned
 scratch image only: successful caller open without reading bytes, denied child open after a
 failed unmount, API socket access, nested mount-capable checks, detached daemon survival after
