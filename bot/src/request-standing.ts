@@ -1,4 +1,5 @@
 import type {Database} from 'bun:sqlite';
+import {CodexAdmissionHolds} from './codex-admission-holds';
 import {holdIsStartPace} from './start-pace';
 import {snoozeReason} from './snooze';
 import {workingThrough,type CurrentWorker} from './topic-current-workers';
@@ -69,6 +70,17 @@ function heldWords(turn:{dispatch_hold:string|null;dispatch_failure_class:string
  return null;
 }
 
+/** A Codex-wide admission hold retained in the ledger (account switch, update or repair) holding this session's next turn. */
+function codexAdmissionWords(source:Database,sessionId:number):{words:string;untilMs:number|null}|null{
+ const session=source.query('SELECT provider_id,native_metadata_json FROM sessions WHERE id=?').get(sessionId) as {provider_id:string;native_metadata_json:string}|null;
+ if(session?.provider_id!=='codex')return null;
+ const holds=new CodexAdmissionHolds();
+ for(const row of source.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[])holds.set(row.holder,true,parse(row.recovery_json));
+ const reason=holds.reasonFor(!!parse(session.native_metadata_json)?.outside);
+ return reason?{words:reason==='account-switch'?'Waiting for Codex to finish switching accounts':reason==='codex-update'?'Waiting for Codex to finish updating'
+  :'Waiting for Codex to take new work again',untilMs:null}:null;
+}
+
 function stalledReason(source:Database,requestId:string):string|null{
  const event=source.query("SELECT payload_json FROM session_communication_events WHERE request_id=? AND kind='overdue' AND json_extract(payload_json,'$.stalled')=1 ORDER BY rowid DESC LIMIT 1").get(requestId) as {payload_json:string}|null;
  const reason=parse(event?.payload_json)?.reason;
@@ -119,7 +131,7 @@ export function requestStanding(source:Database,requestId:string,nowMs:number):R
   const running=!!source.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering')").get(local.target_session_id);
   if(!running){
    const queued=source.query("SELECT dispatch_hold,dispatch_failure_class,dispatch_next_attempt_ms,saved_kind,saved_fire_at_ms FROM turns WHERE session_id=? AND status='queued' ORDER BY id LIMIT 1").get(local.target_session_id) as any;
-   const held=queued?heldWords(queued):null;
+   const held=queued?heldWords(queued)??codexAdmissionWords(source,local.target_session_id):null;
    if(held)return {...base,state:'held',text:held.words,until:held.untilMs!==null&&held.untilMs>nowMs?iso(held.untilMs):null};
   }
   const chain=workingThrough(source,local.target_session_id);

@@ -12,6 +12,20 @@ export class CodexAdmissionHolds {
   }
   get isHeld():boolean{return this.holders.size>0;}
   get isOutsideHeld():boolean{return [...this.holders.values()].some(sharedRuntimeOnly=>!sharedRuntimeOnly);}
+  /** Why new Codex work is held for a session, in the words a requester reads; null when it is not. */
+  reasonFor(outside:boolean):CodexAdmissionHoldReason|null{
+    for(const [holder,sharedRuntimeOnly] of this.holders)if(!(outside&&sharedRuntimeOnly))return codexAdmissionHoldReason(holder);
+    return null;
+  }
+}
+
+export type CodexAdmissionHoldReason='account-switch'|'codex-update'|'app-server-repair'|'other';
+/** The holder identity names its kind (`runner-provider-account-owner.ts`, `provider-activation.ts`). */
+export function codexAdmissionHoldReason(holder:string):CodexAdmissionHoldReason{
+  if(/^codex:(?:runner-activation:|local-account-activation$)/.test(holder))return 'account-switch';
+  if(holder.startsWith('codex:runner-runtime-maintenance:'))return 'codex-update';
+  if(/^codex:(?:runner-rehome:|local-rehome$)/.test(holder))return 'app-server-repair';
+  return 'other';
 }
 
 function isSharedRuntimeMaintenance(holder:string,recovery:unknown):boolean{

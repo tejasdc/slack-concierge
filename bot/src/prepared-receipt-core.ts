@@ -1,5 +1,6 @@
 import type {Database} from 'bun:sqlite';
 import {inputExecutionFacts,receiptOperationState,type ReceiptTurnFacts,type ReceiptSteeringFacts} from './session-receipt-state';
+import {CodexAdmissionHolds} from './codex-admission-holds';
 import {receiptStatusFromFacts,type StatusContext,type InputStatusDetail} from './session-receipt-status';
 import {survivableRunKinds} from './execution-survival';
 import {modelDisplayName} from './aliases';
@@ -174,6 +175,14 @@ export function readCompactReceipt(source:Database,inputId:string):PreparedRecei
       if(!source.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return false;
       const survivable=survivableRunKinds(source);
       return !(inputKind!=='fork'&&survivable.providers.includes(providerId));
+    },
+    // Only holds with retained recovery are in the ledger; the live owner also sees in-memory ones.
+    admissionHold:(providerId,outside)=>{
+      if(providerId!=='codex')return null;
+      const rows=source.query('SELECT holder,recovery_json FROM codex_admission_holds').all() as {holder:string;recovery_json:string}[];
+      const holds=new CodexAdmissionHolds();
+      for(const row of rows)holds.set(row.holder,true,json(row.recovery_json));
+      return holds.reasonFor(outside);
     },
     focusHold:(sessionId)=>{
       const row=source.query(`SELECT hold.until_ms FROM focus_hold hold JOIN sessions session ON session.id=?

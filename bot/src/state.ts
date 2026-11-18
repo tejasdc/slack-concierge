@@ -5829,6 +5829,8 @@ for(const row of db.query('SELECT holder,recovery_json FROM codex_admission_hold
 }
 export type CodexAdmissionRecovery={kind:'runner-activation';runner:string;account:string;operationId:string}|{kind:'runner-rehome';runner:string}
   |{kind:'runner-runtime-maintenance';runner:string;operationId:string;sourceInputId:string;sourceRunId:string;actionId:string;requiredCommit:string};
+/** Why new work for a Codex session waits on a Codex-wide admission hold, or null. */
+export function codexAdmissionHoldFor(outside:boolean){return codexAdmissionHolders.reasonFor(outside);}
 export function holdCodexAdmission(holder:string,held:boolean,recovery?:CodexAdmissionRecovery){
   if(held&&recovery){
     db.query('INSERT INTO codex_admission_holds(holder,recovery_json,created_at_ms) VALUES(?,?,?) ON CONFLICT(holder) DO UPDATE SET recovery_json=excluded.recovery_json')
