@@ -84,6 +84,22 @@ try{
   await refused(()=>ask(run2.source,'folder-c','Packet C',{input_id:run1.source.input_id} as any),/resume-source/,'a half pair is refused');
   assert.equal(count(),2);
 
+  // A project registered only on a peer must reach that peer before any origin lookup.
+  const prepareLocal=owner.prepareProjectLocation.bind(owner);
+  let localLookups=0,peerPayload:any;
+  owner.prepareProjectLocation=async()=>{localLookups++;throw new Error('origin runner has no Mac-only project');};
+  (communication as any).dependencies.peers={stop:async()=>{},ask:async(_actor:any,payload:any)=>{peerPayload=payload;return {request_id:'peer-mac-project'};},splitAddress:()=>null};
+  const peerResult=await communication.ask({source:run2.source,action_id:'mac-only-project',peer:'mac',provider:'cx-luna',project:'mac-only-project',
+    title:'Mac folder check',text:'Report working directory',summary:'Check Mac folder',requestedEffect:'work',machine_need:'mac-file:check registered Mac directory'}) as any;
+  assert.equal(peerResult.request_id,'peer-mac-project');
+  assert.equal(localLookups,0,'peer projects are not resolved on the origin runner');
+  assert.equal(peerPayload.project,'mac-only-project');assert.equal(peerPayload.peer,'mac');
+  await refused(()=>communication.ask({source:run2.source,action_id:'local-project-control',provider:'codex',project:'lab-folder',
+    title:'Local control',text:'Check folder',summary:'Local check',requestedEffect:'work'}),/origin runner has no Mac-only project/,'local projects still require local resolution');
+  assert.equal(localLookups,1);
+  owner.prepareProjectLocation=prepareLocal;
+  (communication as any).dependencies.peers=undefined;
+
   // A frozen ask that creates a new session is resumed through the same path.
   const created=await communication.ask({source:run2.source,action_id:'folder-new',provider:'codex',project:'lab-folder',title:'Folder worker two',
     text:'Packet N',summary:'Review one folder',requestedEffect:'work',resume_source:run1.source}) as {request_id:string};
