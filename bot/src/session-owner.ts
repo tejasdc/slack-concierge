@@ -1,4 +1,5 @@
 import {isWritingSession} from './session-roles';
+import {keepWorkingView} from './keep-working';
 import {readHeldMessageSnapshot} from './held-message-resolution-capability';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import {HELD_RESOLUTION_SCOPE,parseHeldMessageResolution,heldMessageBinding,heldResolutionIsCurrent,heldResolutionProgress,type HeldMessageBinding} from './held-message-resolution';
@@ -1529,6 +1530,7 @@ export class SessionOwner {
       needsAttention:meta.inbox?preparedAttention!.needsAttention??true:needsAttention(meta),turnOutcome:meta.turnOutcome??null,
       withdrawnNeeds:meta.withdrawnNeeds??[],unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
       heldRequests:heldRequests(db,session.id),
+      ...keepWorkingView(db,session.id),
       // The agent-facing signal. capabilities.send stays "he can send here": thnkr.ing's composer goes read-only on false.
       messageableForAgents:!inputRefused&&home.known,
       inputRefused:inputRefused?{since:inputRefused.since,count:inputRefused.count,lastTurnId:inputRefused.lastTurnId,reason:inputRefused.reason}:null,

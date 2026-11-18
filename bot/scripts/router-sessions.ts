@@ -80,6 +80,7 @@ router-actions.sh sessions mutation-admission --source-input <input-id> --source
 router-actions.sh sessions agent-test-scope concierge:<id> --create-input request:<uuid> --source-input <input-id> --source-run <run-id>
 Returns the current actor plus handoff-fence decision and attributed identity only. Check immediately before a mutation; this is not a reusable grant. Ordinary obligations reads remain unchanged.
 Provider changes use handoff between sessions on the same machine. Choose a coding provider alias: ChatGPT cannot acknowledge a handoff. The successor reads the predecessor's context and acknowledges the exact inventory digest before the owner moves obligations. A proposed handoff can be withdrawn while the predecessor keeps working. cancel --reason provider-change is refused with the handoff command.
+router-actions.sh sessions keep-working on|off [<session-address>] --reason "<what queue and why | why it may now rest>" <source-flags> --action-id A
 router-actions.sh sessions snooze --until <ISO time, at most 6 hours ahead> --reason "<why this can wait>" <source-flags> --action-id A
 router-actions.sh sessions saved list <source-flags> [--cursor <nextCursor>]
 router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
@@ -222,6 +223,7 @@ export type SessionCommunicationRequest =
   | { operation: "mutation-admission"; body: { source: Source } }
   | { operation: "agent-test-scope"; body: { source: Source; address: string; create_input_id: string } }
   | { operation: "watch"; body: { source: Source; verb: 'file'|'command'|'list'|'cancel'|'inspect-pair'|'reconcile-pair'; action_id?: string; until?: string; renew?: boolean; requiredCommit?: string; path?: string; argv?: string[]; cwd?: string; watch_id?: string; runner?: string; old_watch_id?:string; new_watch_id?:string; inspection?:string } }
+  | { operation: "keep-working"; body: { source: Source; action_id: string; state: 'on'|'off'; reason: string; address?: string } }
   | { operation: "snooze"; body: { source: Source; action_id: string; until_ms: number; reason: string } }
   | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'|'daily'; turn_id?:number; action_id?:string;cursor?:string;time?:string;timeZone?:string } }
   | { operation: "pause"; body: { source: Source; verb:'status'|'all'|'resume'; action_id?:string; session_ids?:string[] } }
@@ -673,6 +675,21 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       return {operation:'handoff',body:{source,verb,handoff_id:identity!,digest,action_id:actionId}};
     }
     return {operation:'handoff',body:{source,verb,handoff_id:identity!,action_id:actionId}};
+  }
+  if(first==='keep-working') {
+    // sessions keep-working on|off [<session address>] --reason "<why>" <source-flags> --action-id A
+    const state=args.shift();
+    if(state!=='on'&&state!=='off')invalid('keep-working takes on or off.');
+    const address=args[0]?.startsWith('session:')?args.shift():undefined;
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!,value=args.shift();
+      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id','--reason'].includes(flag)||!value?.trim()||flags.has(flag))invalid('Invalid keep-working option.');
+      flags.set(flag,value);
+    }
+    const actionId=flags.get('--action-id'),reason=flags.get('--reason');
+    if(!actionId)invalid('keep-working needs --action-id.');
+    if(!reason)invalid('keep-working needs --reason.');
+    return {operation:'keep-working',body:{source:sourceFrom(flags),action_id:actionId!,state:state as 'on'|'off',reason:reason!,...(address?{address}:{})}};
   }
   if(first==='snooze') {
     // sessions snooze --until <ISO time> --reason "<why it can wait>" <source-flags> --action-id A

@@ -725,6 +725,20 @@ The owner clamps a read or dismiss generation to the session's own attention cou
   carry their source run through the same posting rule. The November 4 duplicate posts in the
   think-aloud thread are retired by append-only collapse events; raw replies remain evidence.
 
+- **A keep-working session always has a wake condition.** `sessions keep-working on|off` records
+  an append-only on/off history per session (`session_keep_working_events`; the session view shows
+  `keepWorking` and, after the owner turned it off, `keepWorkingLastOff`). The mode is held to
+  `sessionWillWake` in `request-liveness.ts`, the session-level form of the worker rule: another
+  running or queued turn (scheduled and snoozed continuations are queued turns), a sent request
+  that returns to the session, or a live watch. At Stop the owed-reply hook is told by
+  `/session-communication/owed` when none exists and blocks once with the exact off command. When
+  a turn ends done or failed (never after a human Stop, and not while the session is paused or
+  archived) with none, the owner queues one service continuation (`keep-working-wake:`); if that
+  wake turn also ends with none, the owner turns the mode off with the reason "Woke once with
+  nothing dispatched; the queue looks blocked". The backlog stays in the orchestrator's project file; Concierge
+  stores only the mode. Plan: [keep-working mode](../plans/2026-11-18-keep-working-mode.md). The
+  wake runs on the owner that runs the turn, so a Mac session is woken by the Mac's own owner.
+
 - **A release wait has a wake condition.** The agent registers a renewing file watch on the
   product's current-release link, then names its watch ID with `sessions reply --partial
   --waiting-on-watch`. The reply command checks that the watch belongs to that agent and is
