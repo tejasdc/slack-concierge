@@ -4,7 +4,7 @@ import { existsSync, statSync } from 'node:fs';
 export const LEDGER_IMAGE_PATH = '/var/lib/concierge-ledger.img';
 const INACCESSIBLE_DEVICE = '/run/systemd/inaccessible/chr';
 
-function inaccessibleDevice(path: string): boolean {
+export function inaccessibleDevice(path: string): boolean {
   try { const stat = statSync(path); return stat.isCharacterDevice() && stat.rdev === 0; }
   catch { return false; }
 }
