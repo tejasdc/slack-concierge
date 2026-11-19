@@ -6,7 +6,7 @@ import { claudeUsageAllowanceModel } from "./aliases";
 import { accountScope, currentAccount, codexAccountIdForLabel } from "./provider-accounts";
 import { usageCacheTable } from "./provider-usage-tables";
 import { accountUsageTable } from "./provider-usage-tables";
-import { accountReadingFresh } from "./account-allowance-observation";
+import { accountReadingFresh, includedAllowanceWindows } from "./account-allowance-observation";
 import type { ProviderUsage } from "./provider-account-usage";
 import { providerRunnerTarget } from "./provider-runner-target";
 import { recordSessionEvent } from "./session-inputs";
@@ -34,18 +34,14 @@ function claudeRefusalAttributedToAnotherAccount(accountLabel: string | null, mo
   if (runner && usage.sourceRunner !== runner) return null;
   const account = usage.accounts.find(candidate => candidate.label.toLowerCase() === accountLabel.toLowerCase());
   if (!account || !accountReadingFresh('claude-code', usage, account, Date.now(), undefined, model)) return null;
-  const windowName = /fable/i.test(model) ? 'Weekly · Fable only' : 'Weekly';
-  const weeklyReset = (candidate: typeof account) => {
-    const at = Date.parse(candidate.windows.find(window => window.name === windowName)?.resetsAt ?? '');
-    return Number.isFinite(at) ? at : null;
-  };
-  const ownReset = weeklyReset(account);
-  if (ownReset === null || Math.abs(ownReset - resetAt) <= CLAUDE_RESET_MATCH_MS) return null;
+  const applicableResets = (candidate: typeof account) => includedAllowanceWindows('claude-code', candidate, model)
+    .map(window => Date.parse(window.resetsAt ?? '')).filter(at => Number.isFinite(at));
+  const ownResets = applicableResets(account);
+  if (!ownResets.length || ownResets.some(at => Math.abs(at - resetAt) <= CLAUDE_RESET_MATCH_MS)) return null;
   return usage.accounts.find(candidate => {
     if (candidate.label === account.label
       || !accountReadingFresh('claude-code', usage, candidate, Date.now(), undefined, model)) return false;
-    const otherReset = weeklyReset(candidate);
-    return otherReset !== null && Math.abs(otherReset - resetAt) <= CLAUDE_RESET_MATCH_MS;
+    return applicableResets(candidate).some(at => Math.abs(at - resetAt) <= CLAUDE_RESET_MATCH_MS);
   })?.label ?? null;
 }
 
