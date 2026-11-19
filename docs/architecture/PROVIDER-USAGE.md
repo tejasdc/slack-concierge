@@ -134,8 +134,10 @@ Opening Accounts and ordinary background usage readings do not override a Claude
 Codex reset-credit use on the account running agents also clears its old refusal and wakes held
 work as part of that action.
 
-A Claude weekly refusal cannot become an account-wide cached limit when its reset matches a
-different freshly read account's weekly reset and differs from the selected account's own reset.
+A Claude refusal cannot become an account-wide cached limit when its reset matches a
+different freshly read account's applicable allowance window and differs from every
+applicable window on the selected account. The refusal event carries a reset but does
+not identify whether its cause is the five-hour or weekly window, so both must be checked.
 The same rule excludes older conflicting cache entries from dispatch and from the blocking
 status read. On each fresh account reading, Concierge retires conflicting entries with a
 newer ordering marker. This keeps an old entry from blocking work when that reading later
