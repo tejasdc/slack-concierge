@@ -1684,7 +1684,9 @@ function humanInboxMembers(roots:string[],sourceId:string,directSessionId:number
     candidates AS (
       SELECT id FROM roots UNION SELECT ?
       UNION SELECT id FROM session_inputs WHERE session_id=? AND origin='human'
-      UNION SELECT input_id FROM session_owner_events
+      -- Keep placement discovery on the small partial index. SQLite can otherwise
+      -- scan every event in input order to feed the UNION.
+      UNION SELECT input_id FROM session_owner_events INDEXED BY session_owner_events_thread_link
         WHERE kind='thread_link' AND json_extract(payload_json,'$.root') IN (SELECT id FROM roots)
       UNION SELECT id FROM session_inputs
         WHERE EXISTS (SELECT 1 FROM roots)
