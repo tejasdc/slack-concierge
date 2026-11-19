@@ -137,7 +137,7 @@ import {currentAccount,localDefaultClaudeAccount,localClaudeAccountHome} from '.
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {PeerAccountAnswers} from './peer-account-answers';
 import {maybeStartStandingRoleFailover} from './standing-role-provider-failover';
-import {ownerPositionGate,withOwnerPosition,OWNER_POSITION_APPLIED_HEADER} from './owner-position';
+import {ownerPositionGate,withHeader,withOwnerPosition,OWNER_POSITION_APPLIED_HEADER} from './owner-position';
 import type {presentationContractFor} from './presentation-reader-contracts';
 import {certainReason,ProposalError,proposalReceipt,proposalRow,proposalStats,recordProposal,reporterIdentity,settleProposals,validCertain} from './agent-proposals';
 
@@ -5286,8 +5286,7 @@ ${input.text}`;
     const gate=ownerPositionGate(db,url,contract?.name??null);
     if(gate&&'response' in gate)return gate.response;
     const response=await withContentReader(request,()=>contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request));
-    if(response&&gate?.appliedHeader)response.headers.set(OWNER_POSITION_APPLIED_HEADER,gate.appliedHeader);
-    return response;
+    return response&&gate?.appliedHeader?withHeader(response,OWNER_POSITION_APPLIED_HEADER,gate.appliedHeader):response;
   }
   private async handleRequest(request:Request):Promise<Response|null> {
     const url=new URL(request.url);

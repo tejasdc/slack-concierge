@@ -41,14 +41,15 @@ const PROJECTION_OF:Partial<Record<PresentationReaderName,{projection:string;met
 };
 export const positionedReaders=()=>Object.keys(PROJECTION_OF) as PresentationReaderName[];
 
-let ledger:string|null=null;
+const ledgers=new WeakMap<Database,string>();
 function ledgerId(db:Database):string|null {
- if(ledger)return ledger;
+ const known=ledgers.get(db);
+ if(known)return known;
  try {
   const row=db.query('SELECT ledger_id FROM presentation_change_ledger WHERE singleton=1').get() as {ledger_id:string}|null;
-  ledger=row?.ledger_id??null;
+  if(row)ledgers.set(db,row.ledger_id);
+  return row?.ledger_id??null;
  } catch { return null; }
- return ledger;
 }
 const format=(id:string,sequence:number)=>`v1.${id}.${sequence}`;
 export function parseOwnerPosition(value:string):{ledger:string;sequence:number}|null {
@@ -65,10 +66,12 @@ export function currentOwnerPosition(db:Database):string|null {
 /** Adds the write position to a response. Responses built by `fetch` have immutable headers. */
 export function withOwnerPosition(response:Response,db:Database):Response {
  const position=currentOwnerPosition(db);
- if(!position)return response;
- try { response.headers.set(OWNER_POSITION_HEADER,position); return response; }
+ return position?withHeader(response,OWNER_POSITION_HEADER,position):response;
+}
+export function withHeader(response:Response,name:string,value:string):Response {
+ try { response.headers.set(name,value); return response; }
  catch {
-  const headers=new Headers(response.headers);headers.set(OWNER_POSITION_HEADER,position);
+  const headers=new Headers(response.headers);headers.set(name,value);
   return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
  }
 }

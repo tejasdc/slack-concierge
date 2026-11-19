@@ -237,8 +237,9 @@ A prepared session-card (`sessions/window`, `sessions/changes`), receipt (`recei
 checkpoint covers the position, the ordinary body is returned with
 `x-concierge-owner-position-applied`. When it does not, the answer is HTTP 200
 `{notReady:{code:"OWNER_POSITION_PENDING",projection:"session-cards"|"receipts"|"topics",requiredPosition,appliedPosition,retryAfterMs:500}}`
-with no rows: the caller keeps its own display and reads again. An unprepared projection answers
-through its reader's existing `presentation_indexing` coverage. A malformed value is 400
+with no rows: the caller keeps its own display and reads again. An unprepared or rebuilding projection answers
+through its reader's existing `presentation_indexing` or reset coverage without the applied header;
+a caller treats a missing applied header as unconfirmed, never as covered. A malformed value is 400
 `OWNER_POSITION_INVALID`; any other read is 400 `OWNER_POSITION_UNSUPPORTED`; a position from
 another ledger, or beyond this ledger's committed head, is 409 `OWNER_POSITION_FOREIGN` and should be
 dropped. Positions are per owner: a write forwarded to a peer is reflected in this owner's cards
