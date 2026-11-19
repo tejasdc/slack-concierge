@@ -130,7 +130,7 @@ Claude account whose usage bar still reads 100%, only the exact released turns c
 admission proof into account selection. Their first dispatch uses that same proved account;
 the proof is consumed then and
 disappears on a service restart; an unrelated turn still follows the ordinary reading.
-Opening Accounts and the ordinary background usage readings never spend model tokens or override a refusal. A successful
+Opening Accounts and ordinary background usage readings do not override a Claude refusal. When a newer local reading disagrees with the refusal's reset for a held model, the owner makes one small, tool-free model check through that machine's runner for the selected account and exact allowance scope. Only its completed provider answer clears the older refusal for that account and model and wakes the original queued turns; a failed or unidentified check leaves them held. The check runs once per refusal revision and observed allowance window, so unchanged readings do not cause repeated model spend; a new reset epoch can be checked again. The explicit Refresh check uses the same provider proof on a runner; the old runner path used only the usage bars and could release a turn into the unchanged cache, where it was immediately held again. A successful
 Codex reset-credit use on the account running agents also clears its old refusal and wakes held
 work as part of that action. The operator shell remains available for recovery even when the
 app cannot open. From the Concierge repository, with
