@@ -1276,6 +1276,56 @@ were never counted or removed, and seven from 2026-10-10 took the root disk unde
 floor on 2026-10-12. Hand-made backups have other names and are never touched; insufficient
 space refuses the new backup instead of deleting the last recovery evidence.
 
+### Compressed pre-update copy
+
+What the copy is for: the schema step commits its additive changes in one transaction, so a
+crash cannot leave a half-migrated ledger; the copy is for a migration that commits and turns
+out wrong, and is the ledger exactly as it stood just before the schema step. Nothing restores
+it automatically. Since 2026-11-18 an update's copy is compressed
+(`state.pre-deployment-repair.<ms>.db.zst`). A full-size copy needed the whole ledger plus a
+10 GiB margin on the shared root disk; at 17.7 GB that no longer fit after four refusals on
+2026-11-16, and the requirement grew one-for-one with the ledger. Compressing a full-size
+copy afterwards would still need the full size first, so the copy is the stopped ledger's own
+bytes streamed through `zstd -3` with no uncompressed file:
+
+1. While Concierge serves, when the release changes the schema, `--backup-if-needed` runs the
+   whole-ledger integrity and foreign-key check on the ledger itself (read-only), makes room
+   (below), records that check beside the planned name (`<copy>.ledger-check.json`, bound to
+   the ledger file's device and inode) and prints `copy_planned` with that path. A failed check
+   or too little room fails the update before Concierge stops.
+2. With Concierge stopped, `--schema-only --backup-path <that path>` checkpoints the log into
+   the main file (`wal_checkpoint(TRUNCATE)`), holds the writer reservation, and streams the file
+   through zstd in 8 MiB pieces, recording the SHA-256 of the ledger bytes. Output is flushed to
+   disk every 32 MiB and the copy stops, removing its partial output, if free space would fall
+   below the 10 GiB margin. It is published as before (read-only, renamed, directory synced)
+   with a verification record that also carries `format: zstd`, `sourceBytes`, `sha256` and when
+   the ledger was checked. If no serving-time check exists (the change appeared only after the
+   stop, or the combined manual command) the check runs in the stopped window instead. Then the
+   schema step proceeds unchanged. The stopped window grows by the stream time, roughly ledger
+   size over compression throughput; the update's journal records it as the
+   `compressed_copy` phase.
+
+Room: the copy plus the 10 GiB margin, where the copy is estimated at the ledger size times the
+newest compressed copy's recorded ratio (one half before the first one; transcript-like text
+compressed 3.2x to 4.8x here, so half is pessimistic, and the whole size would keep the refusal
+this replaced). The estimate decides whether older copies the retention would drop are removed
+first and whether the update starts; the margin check during the stream is the guarantee.
+Those older copies are removed in the serving phase, so if the stopped phase then fails no
+verified copy remains; the ledger itself is untouched in that case, and the removed copy only
+rolled back the previous release, which this update replaces. A failed write or a full disk
+stops zstd and the update; it never waits with the writer reservation held. `--backup-only`
+(control recovery and older controllers) still writes the plain `VACUUM INTO` copy below.
+Retention, retirement and the 12 GiB cap count both kinds; a ledger check whose copy was never
+written, and staging left by a publisher killed mid-copy, go once a newer verified copy exists.
+The compressed file is not read back before it is certified: its writes are checked as they
+happen, and a restore proves its SHA-256.
+
+Restore: with Concierge stopped, `bun run bot/scripts/migrate-deployment-repair.ts
+--restore-copy <copy>.db.zst --restore-to <new file>` decompresses to a new file only, proves
+its SHA-256 and size match the record, re-runs the integrity and foreign-key checks, and then
+the operator swaps that file in for `state.db` as with a plain copy. `zstd -d <copy> -o <file>`
+gives the same bytes without the proof.
+
 After an update is promoted healthy, the promoted release's `migrate-deployment-repair.js
 --retire-captured` retires local copies whose purpose has ended (2026-11-04: a 7.5 GB
 pre-repair copy and the 2.4 GB damaged ledger from the 2026-10-10 incident held the root
