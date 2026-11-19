@@ -2411,7 +2411,7 @@ export class SessionCommunicationCoordinator {
             const sourceSession=getSessionById(actor.session)!;
             if(sender.scope!=='work'||!actor.inputId||!input.project||!input.title||!input.summary||!input.text.trim()
                 ||input.peer||input.address||input.role||input.saved||input.outside||input.onRunner||input.thread||input.routeMessageId
-                ||input.after?.length||input.pace?.length||input.consult||input.escalationReason)
+                ||input.consult||input.escalationReason)
                 throw new Error('Implementation handoff needs a fixed task, local project and live work authority.');
             if(sourceSession.provider_id!=='claude-code'&&sourceSession.provider_id!=='codex')
                 throw new Error('Implementation handoff starts from a Claude or Codex design session.');
