@@ -1296,11 +1296,14 @@ Send information a recipient must act on as an `ask` and accept that it owes a
 reply, and do not open one purely to inform.
 
 Several asks to one busy session usually land in one turn: the first opens it and
-the rest steer in. Reply to each of them, and when one answer covers several, say
-so in a single final reply — the owner settles the others from it rather than
-recording finished work as unanswered. Every request header's own source pair works,
-including one the provider never formally acknowledged, and a run that follows an
-interruption can still answer requests delivered to the earlier run.
+the rest steer in. Reply to each of them. When one answer covers several, name
+each additional request with `--also` on the final reply. A later live turn can
+answer a request that the session still owes. Pass the earlier request ID and
+omit the source flags in a Concierge-launched shell to use its admitted pair.
+If that pair is unavailable or expired, use the current message header's pair.
+For an exact retry across turns, keep the original reply's source pair and
+action ID. A steering input cited by its own live run can serve as the source
+even if the provider never formally acknowledged it.
 
 That obligation has a cost beyond the recipient. A reply and an overdue
 inspection each return to the sender and start a turn there, so two agents
