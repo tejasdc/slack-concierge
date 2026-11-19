@@ -21,13 +21,13 @@ recovery. If it had yet to be delivered, settlement suppressed it.
 
 ## Fix
 
-Upkeep excludes the recovery suffix from the active alarm scan. Existing
-recovery records remain in the ledger.
+Upkeep excludes the recovery suffix from the active alarm scan. Delivery skips
+existing duplicate recoveries while preserving their records in the ledger.
 
 ## Acceptance scenario
 
 - **Seed:** an overdue Inbox capture and mark its repair alert delivered.
 - **Action:** file the capture, deliver its recovery, and run upkeep again.
-- **Expected:** the recovery is available once, and further passes create no
-  recovery even with a delivered duplicate from an older release present.
+- **Expected:** the first recovery is available once. An old duplicate awaiting
+  delivery is skipped, and an old delivered duplicate generates no further notices.
 - **Replayable offline:** yes, through the Inbox filing fixture.

@@ -1139,8 +1139,9 @@ reuses the existing upkeep cadence and adds no timer, agent schedule or notifica
 A capture still unfiled at 30 minutes while the router is not running a turn also records a
 `stuck_work` repair notice (`inbox-unfiled:<root>`) for the repair agent, since the router is
 then evidently unable to file; filing it resolves the notice. If the alarm reached the repair
-agent, it receives one terminal recovery notice. Upkeep excludes recovery notices from
-its scan for active filing alarms, including duplicates retained by older releases. The existing wake log records
+agent, it receives one terminal recovery notice. Upkeep excludes recoveries from
+its scan for active filing alarms. Delivery skips duplicate recoveries retained by
+older releases. The existing wake log records
 the milestone, running state and count; a retained inspection input proves admission, not
 that the router has processed it. See the
 [repeated waiting failure](../incidents/2026-11-15-filed-inputs-still-waiting-in-inbox.md).

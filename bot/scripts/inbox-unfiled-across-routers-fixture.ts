@@ -89,11 +89,12 @@ try {
   db.query("INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)").run('capture:arrived-during-work','topic:filed');
   assert.deepEqual(topics.wakeRouterForUnfiled(successor,admit,at+63*60_000),{woken:false,alarmed:0});
   assert.equal((db.query("SELECT resolved_at_ms FROM repair_notices WHERE key='inbox-unfiled:capture:arrived-during-work'").get() as {resolved_at_ms:number|null}).resolved_at_ms!==null,true);
-  assert.deepEqual(repairNotices.pendingRepairNotices(db).map(notice=>notice.key),[recoveryKey]);
-  repairNotices.markRepairNoticesDelivered(db,[recoveryKey],'fixture:repair-recovery');
-  // A recovery previously created by the loop must also be terminal.
+  // An old duplicate awaiting delivery must be skipped even before the next upkeep pass.
   const legacyRecoveryKey = recoveryKey + ':filed';
   repairNotices.recordRepairNotice(db,{key:legacyRecoveryKey,kind:'stuck_work',text:'Legacy duplicate recovery'});
+  assert.deepEqual(repairNotices.pendingRepairNotices(db).map(notice=>notice.key),[recoveryKey]);
+  repairNotices.markRepairNoticesDelivered(db,[recoveryKey],'fixture:repair-recovery');
+  // A duplicate previously delivered by the old release must also be terminal.
   repairNotices.markRepairNoticesDelivered(db,[legacyRecoveryKey],'fixture:legacy-recovery');
   for (const minute of [64,65]) {
     assert.deepEqual(topics.wakeRouterForUnfiled(successor,admit,at+minute*60_000),{woken:false,alarmed:0});
