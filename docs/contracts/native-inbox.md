@@ -797,7 +797,11 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   aside until a time), no work for its roots is running and it is neither set aside nor pinned
   (a pinned thread closes only by his own Close; he pins it to keep it in front of him). It is decided
   only at such an ending, never by a pass over quiet threads, so a thread reopened by hand stays
-  open until something in it ends again.
+  open until something in it ends again. His reading never closes a thread: within twelve hours
+  of his last read in it (a reading item he read, or an item his app reported shown) an ending
+  is held, and the thread-upkeep pass carries out that held ending once the twelve hours pass.
+  The hold is kept in memory, so after a restart such a thread stays open until something ends
+  again (2026-11-19, a thread closed in the second he opened it).
 - A closed thread reopens when he writes in it (`topic-reopen:his:<input>`), when new work is
   placed there (`place`, `request add`, `request link`, `request reopen`), bringing back the
   questions its closure ended, or when anything new waits on him there, such as an answer filed
