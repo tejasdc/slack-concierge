@@ -571,6 +571,13 @@ export async function runClaudeCodeTurn(input: {
   // model's refusal may name none (Haiku's did not on 2026-11-02), and that must not erase the
   // account's known reset: without it the refusal could neither wait nor move, and was final.
   let accountUsageResetAt: number | null = null;
+  // F4 (2026-11-19): track whether Anthropic's structured `rate_limit_event` landed in this
+  // turn's stream as `allowed` or `rejected`. The CLI can emit a `<synthetic>` "You've hit your
+  // weekly limit · resets Nov 22" assistant message alongside a structured event that says the
+  // call is `allowed`. The terminal decision below must trust the structured event and treat
+  // the synthetic text only as a hint when no structured event arrived at all.
+  let sawStructuredAllowed = false;
+  let sawStructuredRejected = false;
   // The host journal keeps the original stream. Only malformed/unstructured output needs a
   // diagnostic tail here; a valid stream is reduced as each event arrives.
   let unstructuredOutput = "";
@@ -941,8 +948,15 @@ export async function runClaudeCodeTurn(input: {
   };
   const startUsageFallback = () => {
     const parsed = output.read(unstructuredOutput);
+    // F4 (2026-11-19): synthetic text alone does not justify a fallback when the structured
+    // rate_limit_event explicitly said this attempt was `allowed`. A fallback would both
+    // cache a false refusal and spend a different model's allowance on a problem that does
+    // not exist. Still fall back on a true structured rejection (`usageRejected`) or when
+    // the synthetic matched AND no structured verdict arrived at all.
+    const syntheticExhausted = isClaudeUsageExhaustion(parsed.text);
+    const shouldFallback = usageRejected || (!sawStructuredAllowed && syntheticExhausted);
     if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError
-        || (!usageRejected && !isClaudeUsageExhaustion(parsed.text))) return false;
+        || !shouldFallback) return false;
     if (currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, usageResetAt);
     const model = input.usageProbe ? undefined : selectAvailableModel(fallbackModels);
     if (!model) return false;
@@ -1069,6 +1083,10 @@ export async function runClaudeCodeTurn(input: {
       usageRejected = false;
       usageResetAt = null;
       accountUsageResetAt = null;
+      // F4: a new accepted input is a new attempt; a prior turn's structured verdict does
+      // not describe the new one.
+      sawStructuredAllowed = false;
+      sawStructuredRejected = false;
     }
     input.onProgress?.({ type: "steering", clientMessageId: followUp.clientMessageId });
     settleAcknowledgement(followUp);
@@ -1144,7 +1162,14 @@ export async function runClaudeCodeTurn(input: {
       fallbackModels = claudeUsageFallbackModels(selectedModel ?? preferredModel);
     }
     if (event.type === "rate_limit_event") {
-      usageRejected = event.rate_limit_info?.status === "rejected";
+      const status = event.rate_limit_info?.status;
+      usageRejected = status === "rejected";
+      // Latch which structured verdicts we have seen for the terminal decision. "allowed"
+      // and "rejected" are both decisive; any other status is informational and latches
+      // nothing. The latch persists across fallback model switches because the final
+      // decision looks at the whole turn, not the last event.
+      if (status === "allowed") sawStructuredAllowed = true;
+      if (status === "rejected") sawStructuredRejected = true;
       usageResetAt = usageRejected ? resetEpochMilliseconds(event.rate_limit_info?.resetsAt) : null;
       if (usageResetAt !== null) accountUsageResetAt = usageResetAt;
     }
@@ -1192,12 +1217,18 @@ export async function runClaudeCodeTurn(input: {
           providerProducedResult = false;
           usageRejected = false;
           usageResetAt = null;
+          // F4: the prior model's rate_limit verdict does not describe the fallback model.
+          sawStructuredAllowed = false;
+          sawStructuredRejected = false;
           owedFallbackReplay = [USAGE_FALLBACK_CONTINUATION, ...acceptedUserInputs].join("\n\n");
         } else if (!inputClosed && writeInput && !cancellationReason) {
           currentUsageAttempt = nextAttempt;
           providerProducedResult = false;
           usageRejected = false;
           usageResetAt = null;
+          // F4: fallback to a new model; prior structured verdicts belong to the old model.
+          sawStructuredAllowed = false;
+          sawStructuredRejected = false;
           pendingFallbackReplay = [USAGE_FALLBACK_CONTINUATION, ...acceptedUserInputs].join("\n\n");
           ownerSubmittedTexts.add(pendingFallbackReplay);
           void writeInput(`${claudeCodeUserMessage(pendingFallbackReplay)}\n`, { kind: "fallback-replay" }).catch(failModelSwitch);
@@ -1250,6 +1281,10 @@ export async function runClaudeCodeTurn(input: {
         usageRejected = false;
         usageResetAt = null;
         accountUsageResetAt = null;
+        // F4: the ignored result belongs to a prior attempt; its verdict does not describe
+        // this run's work.
+        sawStructuredAllowed = false;
+        sawStructuredRejected = false;
         log("info", "claude_code_unowned_result_ignored", {
           session_uuid: typeof event.session_id === "string" ? event.session_id : input.sessionUUID,
           phase: "initial_input_acknowledgement", is_error: event.is_error === true,
@@ -1546,7 +1581,20 @@ export async function runClaudeCodeTurn(input: {
   });
 
   if (parsed.isError) {
-    const usageExhausted = usageRejected || isClaudeUsageExhaustion(parsed.text);
+    // F4 (2026-11-19): a structured `rate_limit_event { status: "allowed" }` wins over a
+    // synthetic "You've hit your weekly limit" assistant message. The 11:07 bot turn against
+    // hey@tejas.nyc received both and the synthetic alone poisoned the cache with a phantom
+    // Nov 22 reset. A true structured rejection still caches; synthetic alone caches only
+    // when no structured verdict arrived at all. The warn log records every conflict so we
+    // can quantify how often the CLI emits both.
+    const syntheticExhausted = isClaudeUsageExhaustion(parsed.text);
+    if (sawStructuredAllowed && syntheticExhausted) {
+      log("warn", "claude_synthetic_overridden_by_structured_event", {
+        preferred_model: preferredModel, session_uuid: parsed.sessionUUID,
+        synthetic_message_excerpt: parsed.text.slice(0, 400),
+      });
+    }
+    const usageExhausted = sawStructuredRejected || (!sawStructuredAllowed && (usageRejected || syntheticExhausted));
     if (usageExhausted && currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, usageResetAt);
     // A usage rejection with a reported reset is a wait, not a death: Claude refused the
     // request outright, so the input can keep its place and be tried again then. Without a

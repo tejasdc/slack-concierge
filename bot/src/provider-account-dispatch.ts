@@ -181,7 +181,10 @@ function isLink(path:string):boolean {try {return lstatSync(path).isSymbolicLink
 
 /** Homes with credentials that this owner can use without switching a live login. */
 function accountUsedPercent(provider:AccountIdentityProvider,account:AccountUsage,model?:string|null):number|null {
-  if(provider==='claude-code'&&claudeAccountCachedReset(account.label,model))return 100;
+  // Model known → block only on the exact model's cache. Model unknown → block only when
+  // every Claude allowance model is refused. An Opus-only cache (2026-11-19) must not
+  // make an unspecified-model ranking show 100%.
+  if(provider==='claude-code'&&claudeAccountCachedReset(account.label,model,model?'model-specific':'any-work'))return 100;
   const windows=includedAllowanceWindows(provider,account,model);
   return windows.length?Math.max(...windows.map(window=>window.usedPercent)):null;
 }
@@ -317,6 +320,11 @@ const noOwnClaudeLogin=()=>new ProviderDispatchError({failureClass:'parked_acces
   message:'Not logged in: no Claude account on this machine has a working sign-in of its own. Sign in to one in Accounts.'});
 
 export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,turnId?:number,model?:string|null,warmCacheAccount?:string|null,runnerTarget:string|null|undefined=undefined):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
+  // Model known → cache gate checks only that model's scope. Model unknown → cache gate
+  // blocks only when every Claude allowance model (fable/opus/sonnet/haiku) is cached-refused.
+  // 2026-11-19: an Opus-only refusal on hey@tejas.nyc blocked the model-agnostic dispatch for
+  // every waiting Claude turn while Sonnet and Haiku had no refusal of their own.
+  const cacheGate=(label:string):number|null=>claudeAccountCachedReset(label,model,model?'model-specific':'any-work');
   const proof=turnId===undefined?null:provenWaitingTurns.get(turnId)??null;
   if(turnId!==undefined)provenWaitingTurns.delete(turnId);
   const usage=providerAccountUsage('claude-code');
@@ -331,9 +339,9 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   // account just signed in through Accounts) nothing can be compared, so the work runs where he chose.
   if(ownHomes&&(!usage||(selected&&!usage.accounts.some(account=>account.label===selected)))){
     const home=selected?launchableClaudeHome(selected,selected,true,undefined,runnerTarget):null;
-    if(home&&!claudeAccountCachedReset(selected!,model))return {account:selected!,home,because:'stayed-on-its-account',expected:selected,selectionRevision:selection?.revision??0};
+    if(home&&!cacheGate(selected!))return {account:selected!,home,because:'stayed-on-its-account',expected:selected,selectionRevision:selection?.revision??0};
     if(!usage){
-      const refusedUntil=selected?claudeAccountCachedReset(selected,model):null;
+      const refusedUntil=selected?cacheGate(selected):null;
       if(home&&refusedUntil)throw new ProviderDispatchError({message:'This Claude account has a recorded model refusal.',
         failureClass:'parked_terminal',terminalConfirmed:true,clearsAtMs:refusedUntil});
       throw noOwnClaudeLogin();
@@ -373,10 +381,10 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   // Where he would expect this turn to run, which is the one thing a notice is measured against.
   const expected=selectedAccount??prefer??usual;
   const proved=provenAccount?rooms.find(room=>room.account===provenAccount&&(room.home||room.isDefault)
-    &&!claudeAccountCachedReset(room.account,model)):null;
+    &&!cacheGate(room.account)):null;
   if(proved)return {account:proved.account,home:proved.home,because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision:selection?.revision??0};
   const lastGoodRoom=(room:typeof rooms[number]):number|null=>{
-    if(!(room.home||room.isDefault)||claudeAccountCachedReset(room.account,model))return null;
+    if(!(room.home||room.isDefault)||cacheGate(room.account))return null;
     if(room.tightestUsedPercent!==null)return !room.problem&&room.tightestUsedPercent<100?room.tightestUsedPercent:null;
     const reading=usage.accounts.find(account=>account.label===room.account);
     const used=reading&&!reading.problem&&!reading.signedOut?accountUsedPercent('claude-code',reading,model):null;
@@ -390,7 +398,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     return room.account===selected&&room.home
       &&(room.problem||room.tightestUsedPercent===null)
       &&(!reading||!hasActiveFullAllowanceWindow('claude-code',reading,model))
-      &&!claudeAccountCachedReset(room.account,model);
+      &&!cacheGate(room.account);
   }):null;
   if(selectedAttempt&&(!warmRoom||!!selectedAccount))return {account:selectedAttempt.account,home:selectedAttempt.home,
     because:'stayed-on-its-account',expected,selectionRevision:selection?.revision??0};
@@ -429,7 +437,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     // let Claude decide whether it can run instead of parking work on missing evidence.
     const unreadable=rooms.filter(room=>{
       if(!(room.home||room.isDefault)||room.tightestUsedPercent!==null
-        ||claudeAccountCachedReset(room.account,model))return false;
+        ||cacheGate(room.account))return false;
       const reading=usage.accounts.find(account=>account.label===room.account);
       // A six-minute-old reading is not fresh room, but a full window whose reset is
       // still in the future remains evidence that this account cannot run yet.

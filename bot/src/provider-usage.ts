@@ -2,7 +2,7 @@ import { db, paceReleasedWork, RELEASE_PACE_HOLD, releaseScheduledProviderRetrie
 import {createHash} from 'node:crypto';
 import { log } from "./log";
 import { ProviderDispatchError } from "./provider-failures";
-import { claudeUsageAllowanceModel } from "./aliases";
+import { CLAUDE_USAGE_FALLBACK_CHAIN, claudeUsageAllowanceModel } from "./aliases";
 import { accountScope, currentAccount, codexAccountIdForLabel } from "./provider-accounts";
 import { usageCacheTable } from "./provider-usage-tables";
 import { recordSessionEvent } from "./session-inputs";
@@ -68,15 +68,53 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
   return limit?.resetAt != null && limit.resetAt > Date.now() ? limit : null;
 }
 
-/** A refusal from this account's attempted Claude model survives a process restart. */
-export function claudeAccountCachedReset(account:string,model?:string|null):number|null {
-  const prefix=`${createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,24)}:`;
-  const state=read('claude-code');
-  const exact=model?`${prefix}${claudeUsageAllowanceModel(model.trim())}`:null;
-  const resets=Object.entries(state.limits).filter(([scope,limit])=>(exact?scope===exact:scope.startsWith(prefix))
-    &&limit.resetAt!==null&&limit.resetAt>Date.now())
-    .map(([,limit])=>limit.resetAt!);
-  return resets.length?Math.max(...resets):null;
+/**
+ * A refusal from this account's attempted Claude model survives a process restart.
+ *
+ * Two kinds of question land here:
+ *   - **Model-specific** (the default): "is this exact model cached-refused for this account?"
+ *     The caller supplies the model and gets back that one scope's reset, or null. A missing
+ *     model throws: a model-agnostic question is a different one and must say so out loud.
+ *   - **Any-work** (`semantics: 'any-work'`): "does this account have at least one Claude
+ *     allowance model that can run right now?" A single spent model (Opus) must not block
+ *     a healthy one (Sonnet). The function returns the max cached reset only when **every**
+ *     Claude allowance model (the `CLAUDE_USAGE_FALLBACK_CHAIN`: fable, opus, sonnet, haiku)
+ *     has a future-reset entry; otherwise null, because the account can still take work on
+ *     whichever model is not cached-refused.
+ *
+ * On 2026-11-19 the undiscriminated form of this function returned the Opus-only Nov 22
+ * reset for `hey@tejas.nyc` and poisoned every model-agnostic release check — Sonnet and
+ * Haiku work was held for a reset that did not apply to them. The `semantics` argument is
+ * the fix: callers declare which question they are asking, and the model-agnostic case
+ * walks the model universe instead of returning the first refusal it finds.
+ */
+export function claudeAccountCachedReset(
+  account: string,
+  model?: string | null,
+  semantics: "model-specific" | "any-work" = "model-specific",
+): number | null {
+  if (!model && semantics === "model-specific")
+    throw new Error("claudeAccountCachedReset requires a model when semantics is 'model-specific'.");
+  const prefix = `${createHash("sha256").update(account.toLowerCase()).digest("hex").slice(0, 24)}:`;
+  const state = read("claude-code");
+  const now = Date.now();
+  if (model) {
+    const exact = `${prefix}${claudeUsageAllowanceModel(model.trim())}`;
+    const limit = state.limits[exact];
+    return limit?.resetAt != null && limit.resetAt > now ? limit.resetAt : null;
+  }
+  // Any-work: the account is not "spent" unless every known Claude allowance model is
+  // currently cached-refused with a future reset. Opus-1M collapses onto Opus via
+  // claudeUsageAllowanceModel, so the four scope keys walked here are fable, opus,
+  // sonnet, haiku — the full CLAUDE_USAGE_FALLBACK_CHAIN after canonicalization.
+  const resets: number[] = [];
+  for (const candidate of CLAUDE_USAGE_FALLBACK_CHAIN) {
+    const scope = `${prefix}${claudeUsageAllowanceModel(candidate)}`;
+    const limit = state.limits[scope];
+    if (!limit || limit.resetAt === null || limit.resetAt <= now) return null;
+    resets.push(limit.resetAt);
+  }
+  return resets.length ? Math.max(...resets) : null;
 }
 
 export function usageLimitMessage(attempt: UsageAttempt, limit: UsageLimit): string {
@@ -196,6 +234,111 @@ export function retireCodexRefusalSupersededByReading(label: string,
   log("info", "codex_refusal_superseded_by_reading", { cleared, refused_until: new Date(limit.resetAt).toISOString(),
     refused_observed_at: new Date(limit.observedAt).toISOString(), read_at: new Date(readAtMs).toISOString() });
   return cleared;
+}
+
+/**
+ * Clear a cached Claude refusal when a fresh reading contradicts it. Mirrors the Codex rule
+ * above, scoped to one model: the cache key carries model identity (fable, opus, sonnet,
+ * haiku), so the retirement check must too — a Weekly window at 39% is not evidence Opus's
+ * refusal retired if the Opus window is what was refused.
+ *
+ * Retires the model-specific cache entry only when all three hold:
+ *   - the reading is newer than the cached refusal (`readAtMs > limit.observedAt`);
+ *   - every included allowance window shows `usedPercent < 100` with a parseable reset;
+ *   - no included window's `resetsAt` is within 60 seconds of the cached `resetAt` (an
+ *     exact match would mean the same bucket is still being reported, just at a lower
+ *     fill — not that the refusal retired).
+ *
+ * On 2026-11-19 a phantom Nov-22 Opus cache for `hey@tejas.nyc` persisted while fresh
+ * readings showed every Weekly window at 39% with reset Nov 19 20:00 — the dates
+ * disagreed, which is exactly the "the window that refused has been replaced" signal
+ * Codex has been honoring since 2026-11-06. Without this Claude equivalent the user saw
+ * "room remains" beside "no account has room" for hours.
+ */
+export function retireClaudeRefusalSupersededByReading(
+  label: string,
+  windows: ReadonlyArray<{ usedPercent: number; resetsAt: string | null }>,
+  model: string,
+  readAtMs: number,
+): boolean {
+  if (!model?.trim()) return false;
+  const attempt = usageAttempt("claude-code", model, label);
+  const limit = cachedUsageLimit(attempt);
+  if (!limit || limit.resetAt === null || limit.observedAt >= readAtMs) return false;
+  if (!windows.length || !windows.every(window => window.usedPercent < 100 && window.resetsAt)) return false;
+  if (windows.some(window => Math.abs(Date.parse(window.resetsAt!) - limit.resetAt!) < 60_000)) return false;
+  const cleared = db.transaction(() => {
+    const state = read("claude-code");
+    if ((state.limits[attempt.scope]?.observedAt ?? -1) >= readAtMs) return false;
+    delete state.limits[attempt.scope];
+    state.revision++;
+    write("claude-code", state);
+    return true;
+  }).immediate();
+  log("info", "claude_refusal_superseded_by_reading", {
+    cleared, model: claudeUsageAllowanceModel(model.trim()),
+    refused_until: new Date(limit.resetAt).toISOString(),
+    refused_observed_at: new Date(limit.observedAt).toISOString(),
+    read_at: new Date(readAtMs).toISOString(),
+  });
+  return cleared;
+}
+
+/**
+ * Operator entrance: clear a scoped Claude or Codex refusal without touching other accounts
+ * or models. The 2026-11-19 incident needed exactly this intervention — clear Opus on
+ * `hey@tejas.nyc` without wiping the whole generation — and the fix had to be hand-written
+ * SQL because no CLI entrance existed. `clearProviderUsage(provider)` remains the big
+ * hammer; this is the scalpel.
+ *
+ * Omit both `account` and `model` to clear the entire provider (same effect as
+ * `clearProviderUsage`, plus it reports what was cleared). Passing `account` without
+ * `model` clears every scope under that account's hash. Passing both clears the one
+ * model-specific entry.
+ */
+export function clearProviderUsageScoped(
+  provider: UsageProvider,
+  account?: string | null,
+  model?: string | null,
+): { provider: UsageProvider; cleared: number; generation: number; resumed_work: boolean } {
+  if (!account && !model) {
+    const all = clearProviderUsage(provider);
+    return { provider: all.provider, cleared: -1, generation: all.generation, resumed_work: all.resumed_work };
+  }
+  const cleared = db.transaction(() => {
+    const state = read(provider);
+    const beforeCount = Object.keys(state.limits).length;
+    if (account && model && provider === "claude-code") {
+      const prefix = `${createHash("sha256").update(account.toLowerCase()).digest("hex").slice(0, 24)}:`;
+      const scope = `${prefix}${claudeUsageAllowanceModel(model.trim())}`;
+      delete state.limits[scope];
+    } else if (account && provider === "claude-code") {
+      const prefix = `${createHash("sha256").update(account.toLowerCase()).digest("hex").slice(0, 24)}:`;
+      for (const key of Object.keys(state.limits)) if (key.startsWith(prefix)) delete state.limits[key];
+    } else if (account && provider === "codex") {
+      const id = codexAccountIdForLabel(account);
+      if (id) delete state.limits[id];
+      else {
+        // No stable id for this label — walk and match the `account:<hash>` fallback.
+        const hashKey = `account:${createHash("sha256").update(account.toLowerCase()).digest("hex").slice(0, 24)}`;
+        delete state.limits[hashKey];
+      }
+    } else if (model) {
+      throw new Error("Clearing a Claude model-specific scope requires an account label.");
+    }
+    const after = Object.keys(state.limits).length;
+    if (after !== beforeCount) {
+      state.revision++;
+      write(provider, state);
+    }
+    // Any waiting work still parks on its own next-attempt time; a cache clear does not
+    // itself move it. The release count surfaces what the targeted clear woke.
+    const released = beforeCount !== after ? releaseScheduledProviderRetries(provider) : 0;
+    return { cleared: beforeCount - after, generation: state.generation, released };
+  }).immediate();
+  log("info", "provider_usage_cleared_scoped", { provider, account_known: !!account, model_known: !!model,
+    cleared: cleared.cleared, released: cleared.released });
+  return { provider, cleared: cleared.cleared, generation: cleared.generation, resumed_work: cleared.released > 0 };
 }
 
 /** A verified active Codex login permits ordinary and unbound scheduled work, not banked bindings. */

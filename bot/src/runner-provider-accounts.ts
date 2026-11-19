@@ -652,19 +652,60 @@ export function runnerAccountHome(key: AccountProvider, accountLabel: string): s
   return matches.length === 1 ? matches[0]! : null;
 }
 
-/** Enumerate credential-verified homes, for exact transcript discovery on this runner. */
+/**
+ * Enumerate credential-verified homes, one per account, for exact transcript discovery and
+ * dispatch on this runner. Candidates are walked in the order `[...per_account_folders,
+ * live_root]` and reduced into a `Map<account_label, home>` with first-writer-wins: the
+ * per-account folder beats the live root for the same account. The live root remains a
+ * valid home for an account that is NOT held in any per-account folder (a single-home
+ * install), but when both the live root and a per-account folder hold the same account's
+ * credentials, only the per-account folder is a dispatch candidate.
+ *
+ * On 2026-11-19 a hand `claude /login` in the live root wrote `hey@tejas.nyc` credentials
+ * to `/root/.claude/.credentials.json` while `/root/.claude-accounts/hey-tejas-nyc/` already
+ * held the same account. The previous enumeration returned both homes, and `accounts.validate`
+ * then refused every Claude dispatch with `resolution:"ambiguous"`: zero turns moved for
+ * the next hour. Dedupe at the resolver so a user action in their own shell can never
+ * create a duplicate candidate.
+ *
+ * Live-root mirroring (same account signed into both locations) is still worth surfacing
+ * to the operator — it tells them the live root is wasting a sign-in slot and can be
+ * emptied — but it is reported through `runnerLiveRootMirror`, never through the
+ * dispatch candidate list. See the `accounts.liveRootMirror` RPC below.
+ */
 export function runnerAccountHomes(key: AccountProvider): { account: string; home: string }[] {
-  const found = new Map<string, string>();
-  const active = key === "codex" ? codexAccount(liveRoot(key)) : claudeAccount(liveRoot(key));
-  if (active) found.set(liveRoot(key), active.label);
+  const byLabel = new Map<string, string>();
   let names: string[] = [];
-  try { names = readdirSync(accountRoot(key)).filter(name => !name.startsWith(".")); } catch { return [...found].map(([home, account]) => ({ account, home })); }
+  try { names = readdirSync(accountRoot(key)).filter(name => !name.startsWith(".")); } catch { names = []; }
   for (const name of names) {
     const home = join(accountRoot(key), name);
     const account = key === "codex" ? codexAccount(home) : claudeAccount(home);
-    if (account && !found.has(home)) found.set(home, account.label);
+    if (account && !byLabel.has(account.label)) byLabel.set(account.label, home);
   }
-  return [...found].map(([home, account]) => ({ account, home }));
+  const active = key === "codex" ? codexAccount(liveRoot(key)) : claudeAccount(liveRoot(key));
+  if (active && !byLabel.has(active.label)) byLabel.set(active.label, liveRoot(key));
+  return [...byLabel].map(([account, home]) => ({ account, home }));
+}
+
+/**
+ * Report accounts whose live-root credentials mirror an account already held in a
+ * per-account folder. The live root is still itself a home (the operator's own shell), but
+ * it is not a dispatch candidate for a mirrored account — the per-account folder is.
+ * This is informational: operators can adopt the live-root login into the canonical folder
+ * (or leave the mirror as-is) without fearing it will break dispatch.
+ */
+export function runnerLiveRootMirror(key: AccountProvider): { account: string; liveRoot: string; canonicalHome: string } | null {
+  const active = key === "codex" ? codexAccount(liveRoot(key)) : claudeAccount(liveRoot(key));
+  if (!active) return null;
+  let names: string[] = [];
+  try { names = readdirSync(accountRoot(key)).filter(name => !name.startsWith(".")); } catch { return null; }
+  for (const name of names) {
+    const home = join(accountRoot(key), name);
+    if (home === liveRoot(key)) continue;
+    const other = key === "codex" ? codexAccount(home) : claudeAccount(home);
+    if (other?.label === active.label) return { account: active.label, liveRoot: liveRoot(key), canonicalHome: home };
+  }
+  return null;
 }
 
 /** The terminal's Claude login can expose history but never identifies a saved agent account. */
@@ -838,8 +879,18 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
   if (method === "accounts.validate") {
     const key = provider(params.provider);
     if (typeof params.account !== "string" || !params.account.trim()) throw new Error("A provider account label is required.");
+    // F3 (2026-11-19): runnerAccountHomes now dedupes by account_label, so this cannot
+    // report "ambiguous" merely because the live root happens to mirror a per-account
+    // folder's credentials. "ambiguous" survives only for the genuine case of two
+    // different per-account folders holding the same label — which an operator action
+    // caused and must resolve by removing one.
     const matches = namedRunnerAccountHomes(key, params.account);
     return { available: matches.length === 1, resolution: matches.length === 1 ? "unique" : matches.length ? "ambiguous" : "missing" };
+  }
+  if (method === "accounts.liveRootMirror") {
+    const key = provider(params.provider);
+    const mirror = runnerLiveRootMirror(key);
+    return mirror ?? null;
   }
   if (method === "accounts.transcript") {
     const key = provider(params.provider);

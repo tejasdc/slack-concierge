@@ -156,12 +156,19 @@ case "${1:-}" in
     shift
     exec bun run "$BOT_DIR/scripts/messages-read.$ROUTER_SUFFIX" "$@"
     ;;
+  usage-clear)
+    # Scoped operator cache clear. F10 of the 2026-11-19 multi-account/multi-provider redesign:
+    # the intervention the 2026-11-19 incident needed had no CLI entrance, and had to be written
+    # as raw SQL. See docs/plans/2026-11-19-multi-account-multi-provider-redesign.md.
+    shift
+    exec bun run "$BOT_DIR/scripts/router-usage-clear.$ROUTER_SUFFIX" "$@"
+    ;;
   list-add)
     echo "list-add is retired: use todo-add so notes/TODOS.md remains authoritative" >&2
     exit 2
     ;;
   *)
-    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|external|projects|requirements|react|todo-add|test-capture|report|messages|channel-id|channels-list|help} <args>" >&2
+    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|external|projects|requirements|react|todo-add|test-capture|report|messages|usage-clear|channel-id|channels-list|help} <args>" >&2
     exit 2
     ;;
 esac

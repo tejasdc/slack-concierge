@@ -5,7 +5,8 @@ import { db, moveUsageHoldsEarlier, releaseUsageContinuationHolds } from "./stat
 import { log } from "./log";
 import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
-import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, retireCodexRefusalSupersededByReading, usageAttempt } from "./provider-usage";
+import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, retireClaudeRefusalSupersededByReading, retireCodexRefusalSupersededByReading, usageAttempt } from "./provider-usage";
+import { CLAUDE_USAGE_FALLBACK_CHAIN } from "./aliases";
 import { ACCOUNT_READING_MAX_AGE_MS, currentAccount, listProfiles, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import {accountReadingAt,accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
 import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead, requestMissingClaudeHomes, selectedClaudeHome } from "./provider-account-dispatch";
@@ -711,13 +712,31 @@ export async function refreshProviderAccountUsage(force = false): Promise<void> 
         if(!account.viaPeer&&readAt!==null&&accountReadingFresh(provider,usage,account))
           retireCodexRefusalSupersededByReading(account.label,includedAllowanceWindows(provider,account,null),readAt);
       }
+      // F2 (2026-11-19): Claude's model-specific caches retire the same way Codex's do — a
+      // fresh reading with every included window under 100% and no window's reset matching the
+      // cached refusal within 60s means that window has rolled over, so the cached refusal is
+      // from a prior cycle and must not keep blocking. Walks the fallback chain so each model's
+      // scope is checked against the account's current reading. The old Codex-only rule left
+      // hey@tejas.nyc stuck on a phantom Nov-22 Opus refusal while every window read Nov-19.
+      if(provider==='claude-code')for(const account of agentUsage.accounts){
+        const readAt=accountReadingAt(account);
+        if(account.viaPeer||readAt===null||!accountReadingFresh(provider,usage,account)) continue;
+        for(const candidate of CLAUDE_USAGE_FALLBACK_CHAIN){
+          const windows=includedAllowanceWindows(provider,account,candidate);
+          if(!windows.length) continue;
+          retireClaudeRefusalSupersededByReading(account.label,windows,candidate,readAt);
+        }
+      }
       // A provider-wide release has no turn model. It needs evidence across every Claude
       // window; an Opus-only reading cannot wake a Fable hold.
       const activeWindows=current?includedAllowanceWindows(provider,current,null):[];
       const activeHasRoom=!!current && accountReadingFresh(provider,usage,current,Date.now(),undefined,null) && activeWindows.length>0
         && accountCanTakeWork(provider,current,null)
         &&(provider!=='codex'||runnerIdentityConfirmed)
-        &&(provider!=='claude-code'||!claudeAccountCachedReset(current.label,null))
+        // Any-work: the active account's cache blocks the release only when every Claude
+        // allowance model is cached-refused. An Opus-only refusal (2026-11-19) must not
+        // hold a Sonnet turn that could run now.
+        &&(provider!=='claude-code'||!claudeAccountCachedReset(current.label,null,'any-work'))
         &&(provider!=='codex'||!cachedUsageLimit(usageAttempt('codex',undefined,current.label)));
       // A percentage drop cannot identify which window caused a model-specific refusal.
       // The exact model's success, a manual clear, or its stated reset retires that cache.
@@ -808,7 +827,7 @@ function releaseIfAccountChanged(provider: ProviderKey, usage: ProviderUsage): v
   accountInUse.set(provider, current.label);
   if (previous === undefined || previous === current.label) return;
   if (!accountCanTakeWork(provider,current,null)
-    ||provider==='claude-code'&&!!claudeAccountCachedReset(current.label,null)
+    ||provider==='claude-code'&&!!claudeAccountCachedReset(current.label,null,'any-work')
     ||provider==='codex'&&!!cachedUsageLimit(usageAttempt('codex',undefined,current.label))) {
     log("info", "provider_account_changed_still_spent", { provider });
     return;
