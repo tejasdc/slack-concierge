@@ -102,22 +102,44 @@ export function chooseAccountObservation(provider:AccountIdentityProvider,localU
     ?borrowed():local;
 }
 
-/** Keep historical bars visible with a source-time status, never a current room claim. */
+/**
+ * Keep historical bars visible with a source-time status, never a current room claim.
+ *
+ * As of 2026-11-19 (§10 of the rebuild), the `hasRoom` field is derived from the
+ * authority `canTakeAnyWork` rather than from the raw `/usage` percentages alone, so
+ * the UI can never show "room remains" while dispatch says "no room": the cached
+ * refusal path now feeds this badge. See `bot/src/account-authority.ts` and the
+ * architecture doc §10.
+ */
 export function markUncurrentAccountReadings(provider:AccountIdentityProvider,usage:ProviderUsage,
   now=Date.now()):ProviderUsage {
+  // Lazy-load to avoid a circular import; authority imports back into this module.
+  const { canTakeAnyWork } = require('./account-authority') as typeof import('./account-authority');
   return {...usage,accounts:usage.accounts.map(account=>{
     const at=accountReadingAt(account);
     // Accounts displays every window, so its whole row expires if any displayed window
     // resets. Dispatch instead supplies its actual model and evaluates only its windows.
     const validUntil=accountReadingValidUntil(provider,account,null);
     const fresh=accountReadingFresh(provider,usage,account,now,undefined,null);
+    // Authority answer: the model-agnostic "can this account take any work right now?".
+    // Provider boundary: `canTakeAnyWork` understands claude-code / codex / antigravity.
+    let authorityOk:boolean|null=null;
+    try {
+      const verdict=canTakeAnyWork(provider as "claude-code"|"codex"|"antigravity",{provider:provider as "claude-code"|"codex"|"antigravity",label:account.label},now);
+      authorityOk=verdict.ok;
+    } catch { /* authority unavailable in some read paths; fall back to reading-only hasRoom */ }
+    const readingHasRoom=fresh&&includedAllowanceWindows(provider,account).length>0
+      ?includedAllowanceWindows(provider,account).every(window=>window.usedPercent<100):null;
+    // Final hasRoom: trust the authority when it has an answer, else fall back to the
+    // reading-only value. The authority already incorporates cached refusals, so when
+    // it says `false` the UI must not say "room remains" from a stale reading.
+    const hasRoom=authorityOk===null?readingHasRoom:authorityOk;
     const status:NonNullable<AccountUsage['allowance']>['status']=account.problem||usage.problem
       ?'unreadable':at===null?'unknown':fresh?'current':'old';
     const allowance:NonNullable<AccountUsage['allowance']>={observedAt:at===null?null:new Date(at).toISOString(),
       evaluatedAt:new Date(now).toISOString(),
       validUntil:validUntil===null?null:new Date(validUntil).toISOString(),status,
-      hasRoom:fresh&&includedAllowanceWindows(provider,account).length>0
-        ?includedAllowanceWindows(provider,account).every(window=>window.usedPercent<100):null};
+      hasRoom};
     return {...account,allowance};
   })};
 }

@@ -34,6 +34,8 @@ import { log } from "./log";
 
 export type RefusalProvider = "codex" | "claude-code" | "antigravity";
 
+export type OverageReason = 'out_of_credits' | 'org_level_disabled' | 'hard_limit_reached' | 'other' | null;
+
 export type RefusalRecord = Readonly<{
   provider: RefusalProvider;
   accountLabel: string;
@@ -43,6 +45,8 @@ export type RefusalRecord = Readonly<{
   observedAtMs: number;
   generation: number;
   revision: number;
+  overageReason?: OverageReason;
+  rateLimitType?: string | null;
 }>;
 
 export type RefusalWriteToken = Readonly<{
@@ -54,7 +58,13 @@ export type RefusalWriteToken = Readonly<{
   revision: number;
 }>;
 
-type StoredLimit = { resetAt: number | null; observedAt: number; revision: number };
+type StoredLimit = {
+  resetAt: number | null;
+  observedAt: number;
+  revision: number;
+  overageReason?: OverageReason;
+  rateLimitType?: string | null;
+};
 type CacheState = { generation: number; revision: number; limits: Record<string, StoredLimit> };
 
 function readState(provider: RefusalProvider): CacheState {
@@ -127,8 +137,15 @@ export function openWrite(provider: RefusalProvider, accountLabel: string, model
   };
 }
 
-/** Record a 429 refusal. Preserves generation/revision checks. */
-export function recordRefusal(token: RefusalWriteToken, resetAtMs: number | null, now: number = Date.now()): boolean {
+/** Record a 429 refusal. Preserves generation/revision checks. Carries the structured
+ *  rate-limit type and overage reason from the provider's `rate_limit_event` so the
+ *  UI and CLI can surface "out of credits" vs "org disabled overage" distinctly. */
+export function recordRefusal(
+  token: RefusalWriteToken,
+  resetAtMs: number | null,
+  now: number = Date.now(),
+  details: { rateLimitType?: string | null; overageReason?: OverageReason } = {},
+): boolean {
   let committed = false;
   try {
     db.transaction(() => {
@@ -142,6 +159,8 @@ export function recordRefusal(token: RefusalWriteToken, resetAtMs: number | null
         resetAt: validReset ?? existing?.resetAt ?? null,
         observedAt: now,
         revision: ++state.revision,
+        rateLimitType: details.rateLimitType ?? existing?.rateLimitType ?? null,
+        overageReason: details.overageReason ?? existing?.overageReason ?? null,
       };
       writeState(token.provider, state);
       committed = true;
@@ -153,6 +172,8 @@ export function recordRefusal(token: RefusalWriteToken, resetAtMs: number | null
     log("info", "provider_usage_exhausted", {
       provider: token.provider, scope: token.scope,
       reset_at: resetAtMs, reset_known: resetAtMs !== null,
+      rate_limit_type: details.rateLimitType ?? null,
+      overage_reason: details.overageReason ?? null,
     });
   }
   return committed;
@@ -194,6 +215,8 @@ export function cachedRefusal(
     provider, accountLabel, model, scope,
     resetAtMs: limit.resetAt, observedAtMs: limit.observedAt,
     generation: state.generation, revision: limit.revision,
+    rateLimitType: limit.rateLimitType ?? null,
+    overageReason: limit.overageReason ?? null,
   };
 }
 
@@ -214,6 +237,8 @@ export function cachedRefusalsForAccount(
       provider, accountLabel, model, scope,
       resetAtMs: limit.resetAt, observedAtMs: limit.observedAt,
       generation: state.generation, revision: limit.revision,
+      rateLimitType: limit.rateLimitType ?? null,
+      overageReason: limit.overageReason ?? null,
     });
   }
   return records;

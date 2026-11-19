@@ -1855,8 +1855,8 @@ export class SessionExecutionHost {
           if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           return waitForCodexAppServerOrDrain(codexAppServerReady(),this.drainStarted,()=>this.draining);
         }}:{beforeProviderAdmission:()=>{}}),
-      services:{bindProviderSession:(sessionId,provider,uuid)=>{
-        bindSessionProvider(sessionId,provider,uuid);
+      services:{bindProviderSession:(sessionId,provider,uuid,account)=>{
+        bindSessionProvider(sessionId,provider,uuid,account);
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.
         if(provider==='codex'&&!metadata.outside)void this.options.providerSessionBound?.(uuid).catch(error=>log('warn','codex_session_subscription_failed',{provider_thread_uuid:uuid,...errorFields(error)}));
       },deliverResult:result=>this.deliverResult(result)},

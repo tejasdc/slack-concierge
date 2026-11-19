@@ -97,6 +97,12 @@ export type CapabilityEvidence = Readonly<{
   refusalObservedAtMs?: number;
   homeProvenAtMs?: number;
   conflict?: string;
+  /** Anthropic's `rate_limit_event.overageDisabledReason`, normalized, when the cache's
+   *  underlying refusal carried one. Different operator responses for different reasons:
+   *  `out_of_credits` → buy more; `org_level_disabled` → enable overage. */
+  overageReason?: 'out_of_credits' | 'org_level_disabled' | 'hard_limit_reached' | 'other' | null;
+  /** The provider's rate_limit_type on the cached refusal ("seven_day", "five_hour", …). */
+  rateLimitType?: string | null;
 }>;
 
 export type CapabilityVerdict = Readonly<{
@@ -105,10 +111,43 @@ export type CapabilityVerdict = Readonly<{
   clearsAtMs: number | null;
   why: string;
   source: CapabilityEvidence;
+  /** Short UI badge token: `ready` | `refused` | `signed-out` | `stale` | `unknown`.
+   *  Derived from `reason` so UI readers don't branch on reason enum. */
+  badge?: 'ready' | 'refused' | 'signed-out' | 'stale' | 'unknown';
+  /** Human-readable short text for the UI, in product language (no code identifiers). */
+  explain?: string;
 }>;
 
 function makeVerdict(ok: boolean, reason: CapabilityReason, clearsAtMs: number | null, why: string, source: CapabilityEvidence): CapabilityVerdict {
-  return { ok, reason, clearsAtMs, why, source };
+  return { ok, reason, clearsAtMs, why, source, badge: badgeFor(reason), explain: explainFor(reason, source, clearsAtMs) };
+}
+
+/** Maps the authority's `reason` to a stable UI badge token. */
+function badgeFor(reason: CapabilityReason): 'ready' | 'refused' | 'signed-out' | 'stale' | 'unknown' {
+  if (reason === 'ready' || reason === 'proven-attempt' || reason === 'last-showed-room') return 'ready';
+  if (reason === 'signed-out' || reason === 'no-home') return 'signed-out';
+  if (reason === 'cached-refusal' || reason === 'reading-exhausted') return 'refused';
+  if (reason === 'reading-stale') return 'stale';
+  return 'unknown';
+}
+
+/** Product-language short explanation for the UI. No code identifiers. */
+function explainFor(reason: CapabilityReason, source: CapabilityEvidence, clearsAtMs: number | null): string {
+  if (reason === 'ready') return `has room (${source.readingUsedPercent ?? 0}% used)`;
+  if (reason === 'last-showed-room') return `last reading showed room (${source.readingUsedPercent ?? 0}% used)`;
+  if (reason === 'proven-attempt') return 'recently proved by a successful turn';
+  if (reason === 'signed-out') return 'needs sign-in on this machine';
+  if (reason === 'no-home') return 'not set up on this machine';
+  if (reason === 'cached-refusal') {
+    const overage = source.overageReason;
+    if (overage === 'out_of_credits') return 'out of paid credits';
+    if (overage === 'org_level_disabled') return 'org disabled overage';
+    if (overage === 'hard_limit_reached') return 'hit billing hard cap';
+    return clearsAtMs ? `refused until ${new Date(clearsAtMs).toISOString()}` : 'refused';
+  }
+  if (reason === 'reading-exhausted') return clearsAtMs ? `fully used until ${new Date(clearsAtMs).toISOString()}` : 'fully used';
+  if (reason === 'reading-stale') return 'last reading too old';
+  return 'not readable';
 }
 
 /**
@@ -177,7 +216,9 @@ export function canTakeWork(
     } else {
       return makeVerdict(false, "cached-refusal", cache.resetAtMs,
         `account refused ${model} until ${new Date(cache.resetAtMs).toISOString()}`,
-        { home: homePath, liveRootMirror, refusalScope: cache.scope, refusalResetAtMs: cache.resetAtMs, refusalObservedAtMs: cache.observedAtMs });
+        { home: homePath, liveRootMirror, refusalScope: cache.scope,
+          refusalResetAtMs: cache.resetAtMs, refusalObservedAtMs: cache.observedAtMs,
+          overageReason: cache.overageReason ?? null, rateLimitType: cache.rateLimitType ?? null });
     }
   }
 

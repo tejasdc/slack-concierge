@@ -1603,7 +1603,12 @@ export async function runClaudeCodeTurn(input: {
         detail: rateLimitVerdict.conflict.detail,
       });
     }
-    if (usageExhausted && currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, resolvedResetAt);
+    if (usageExhausted && currentUsageAttempt) {
+      recordUsageExhaustion(currentUsageAttempt, resolvedResetAt, {
+        rateLimitType: rateLimitVerdict.rateLimitType,
+        overageReason: rateLimitVerdict.overageReason,
+      });
+    }
     // A usage rejection with a reported reset is a wait, not a death: Claude refused the
     // request outright, so the input can keep its place and be tried again then. Without a
     // reported reset there is nothing to wait for, and it stays terminal.

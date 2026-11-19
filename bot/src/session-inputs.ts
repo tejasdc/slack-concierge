@@ -192,7 +192,7 @@ export function createNativeSession(provider:ProviderId, metadata:NativeSessionM
     VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify({...placed,summary}));
   return getSessionById(Number(result.lastInsertRowid))!;
 }
-export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:string) {
+export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:string, account?: { label: string; accountUuid?: string | null; organizationUuid?: string | null; dispatchRevision?: number }) {
   if (!uuid) throw new Error('Provider returned an empty native session identity.');
   const current=getSessionById(sessionId);
   if(current&&holdsInbox(current)&&current.agent_session_uuid&&current.agent_session_uuid!==uuid)throw new Error(INBOX_PIN_REFUSAL);
@@ -200,6 +200,20 @@ export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:
     binding_generation=binding_generation+CASE WHEN agent_session_uuid IS NOT NULL AND agent_session_uuid<>? THEN 1 ELSE 0 END,
     last_turn_at=CURRENT_TIMESTAMP WHERE id=? AND provider_id=?`).run(uuid,uuid,sessionId,provider);
   if (bound.changes !== 1) throw new Error('Provider binding no longer belongs to the admitted session.');
+  // F3-deep (2026-11-19): record the dispatcher-signed Claude account binding so a later
+  // `--resume UUID` launch does NOT follow the JSONL `session-owner` header to a different
+  // account. See bot/src/claude-session-binding.ts for the full note.
+  if (provider === 'claude-code' && account?.label) {
+    try {
+      const { writeClaudeSessionBinding } = require('./claude-session-binding');
+      writeClaudeSessionBinding({
+        sessionUuid: uuid, accountLabel: account.label,
+        accountUuid: account.accountUuid ?? null,
+        organizationUuid: account.organizationUuid ?? null,
+        boundByDispatchRevision: account.dispatchRevision ?? 0,
+      });
+    } catch { /* binding is informational; never fail the primary bind */ }
+  }
   executionChanged();
 }
 export function getAcceptedSessionInput(id:string) {

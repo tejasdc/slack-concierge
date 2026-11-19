@@ -37,13 +37,27 @@ export type RateLimitEventPayload = {
     readonly resetAt?: string | number | null;
     readonly rateLimitType?: string;
     readonly utilization?: number;
+    /**
+     * Anthropic's structured reason the refusal cannot be bypassed by paid credits.
+     * `out_of_credits`: paid credits exhausted — operator action is "buy more".
+     * `org_level_disabled`: org admin turned overage off — operator action is to enable.
+     * `hard_limit_reached`: account at its billing-plan hard cap.
+     * `null`/absent: refusal clears at `resetsAt`, no overage story.
+     */
+    readonly overageDisabledReason?: string | null;
   };
 };
+
+export type OverageReason = 'out_of_credits' | 'org_level_disabled' | 'hard_limit_reached' | 'other' | null;
 
 export type RateLimitSignals = {
   sawStructuredAllowed: boolean;
   sawStructuredRejected: boolean;
   structuredResetAtMs: number | null;
+  /** The provider's rate_limit_type on the most recent rejected event ("seven_day", "five_hour", "daily", …). */
+  structuredRateLimitType: string | null;
+  /** The provider's overageDisabledReason on the most recent rejected event, normalized. */
+  overageReason: OverageReason;
   syntheticExhausted: boolean;
   syntheticResetAtMs: number | null;
   conflict: ConflictNote | null;
@@ -51,7 +65,7 @@ export type RateLimitSignals = {
 };
 
 export type ConflictNote = {
-  readonly kind: 'synthetic-overrides-structured' | 'reset-mismatch';
+  readonly kind: 'synthetic-overrides-structured' | 'reset-mismatch' | 'rate_limit_event_account_mismatch';
   readonly detail: string;
 };
 
@@ -67,13 +81,51 @@ export type TerminalVerdict = {
   readonly resetAtMs: number | null;
   readonly reason: 'structured-rejected' | 'structured-allowed' | 'synthetic-only' | 'no-signal';
   readonly conflict: ConflictNote | null;
+  readonly rateLimitType: string | null;
+  readonly overageReason: OverageReason;
 };
+
+/**
+ * A fresh account reading summary — just the resets the labeled account's windows
+ * actually reported. Used by `detectAccountMismatch` to spot a refusal whose resetsAt
+ * matches no window of the labeled account (strong signal of a wrong-home binding).
+ */
+export type AccountWindowResets = {
+  readonly accountLabel: string;
+  readonly windowResetAtMs: readonly number[];
+};
+
+/**
+ * Detect `rate_limit_event_account_mismatch`: a refusal with a known resetAtMs whose
+ * value matches NO window in the fresh reading for the labeled account. The 2026-11-19
+ * incident revealed this when chann.app's Nov-22 reset came back from an API call the
+ * dispatcher labeled as hey@tejas.nyc's; hey's windows ended Nov-19, nowhere near Nov-22.
+ *
+ * Returns `null` when no mismatch is detectable (no structured reset, no reading, or any
+ * window within 60 seconds of the structured reset). Returns a conflict note otherwise.
+ */
+export function detectAccountMismatch(
+  signals: RateLimitSignals,
+  reading: AccountWindowResets | null,
+): ConflictNote | null {
+  if (!signals.sawStructuredRejected) return null;
+  if (signals.structuredResetAtMs === null) return null;
+  if (!reading || reading.windowResetAtMs.length === 0) return null;
+  const withinWindow = reading.windowResetAtMs.some(ms => Math.abs(ms - signals.structuredResetAtMs!) < 60_000);
+  if (withinWindow) return null;
+  return {
+    kind: 'rate_limit_event_account_mismatch',
+    detail: `rate_limit_event resetsAt ${new Date(signals.structuredResetAtMs).toISOString()} matches no window of account "${reading.accountLabel}"; refusal likely belongs to a different account`,
+  };
+}
 
 export function emptySignals(): RateLimitSignals {
   return {
     sawStructuredAllowed: false,
     sawStructuredRejected: false,
     structuredResetAtMs: null,
+    structuredRateLimitType: null,
+    overageReason: null,
     syntheticExhausted: false,
     syntheticResetAtMs: null,
     conflict: null,
@@ -92,11 +144,23 @@ export function observeRateLimitEvent(signals: RateLimitSignals, event: RateLimi
   if (status === 'rejected') {
     signals.sawStructuredRejected = true;
     if (resetAtMs !== null) signals.structuredResetAtMs = resetAtMs;
+    const rateLimitType = event.rate_limit_info?.rateLimitType;
+    if (typeof rateLimitType === 'string' && rateLimitType) signals.structuredRateLimitType = rateLimitType;
+    signals.overageReason = normalizeOverageReason(event.rate_limit_info?.overageDisabledReason ?? null);
   } else if (status === 'allowed' || status === 'warning' || status === 'allowed_warning' || status === 'allow') {
     signals.sawStructuredAllowed = true;
   }
   signals.observations.push({ kind: 'structured', status, resetAtMs });
   updateConflict(signals);
+}
+
+function normalizeOverageReason(raw: string | null | undefined): OverageReason {
+  if (raw === null || raw === undefined) return null;
+  const lowered = String(raw).toLowerCase();
+  if (lowered === 'out_of_credits') return 'out_of_credits';
+  if (lowered === 'org_level_disabled') return 'org_level_disabled';
+  if (lowered === 'hard_limit_reached') return 'hard_limit_reached';
+  return 'other';
 }
 
 /**
@@ -127,6 +191,8 @@ export function clearSignals(signals: RateLimitSignals): void {
   signals.sawStructuredAllowed = false;
   signals.sawStructuredRejected = false;
   signals.structuredResetAtMs = null;
+  signals.structuredRateLimitType = null;
+  signals.overageReason = null;
   signals.syntheticExhausted = false;
   signals.syntheticResetAtMs = null;
   signals.conflict = null;
@@ -139,15 +205,19 @@ export function clearSignals(signals: RateLimitSignals): void {
  */
 export function terminalVerdict(signals: RateLimitSignals): TerminalVerdict {
   if (signals.sawStructuredRejected) {
-    return { usageExhausted: true, resetAtMs: signals.structuredResetAtMs, reason: 'structured-rejected', conflict: signals.conflict };
+    return { usageExhausted: true, resetAtMs: signals.structuredResetAtMs, reason: 'structured-rejected',
+      conflict: signals.conflict, rateLimitType: signals.structuredRateLimitType, overageReason: signals.overageReason };
   }
   if (signals.sawStructuredAllowed) {
-    return { usageExhausted: false, resetAtMs: null, reason: 'structured-allowed', conflict: signals.conflict };
+    return { usageExhausted: false, resetAtMs: null, reason: 'structured-allowed',
+      conflict: signals.conflict, rateLimitType: null, overageReason: null };
   }
   if (signals.syntheticExhausted) {
-    return { usageExhausted: true, resetAtMs: signals.syntheticResetAtMs, reason: 'synthetic-only', conflict: signals.conflict };
+    return { usageExhausted: true, resetAtMs: signals.syntheticResetAtMs, reason: 'synthetic-only',
+      conflict: signals.conflict, rateLimitType: null, overageReason: null };
   }
-  return { usageExhausted: false, resetAtMs: null, reason: 'no-signal', conflict: null };
+  return { usageExhausted: false, resetAtMs: null, reason: 'no-signal', conflict: null,
+    rateLimitType: null, overageReason: null };
 }
 
 function parseResetField(value: string | number | null | undefined): number | null {

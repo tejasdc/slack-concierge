@@ -880,6 +880,26 @@ addColumn("channels", "list_creation_started_at_ms", "list_creation_started_at_m
 addColumn("channels", "session_mode", "session_mode TEXT NOT NULL DEFAULT 'per-thread'");
 addColumn("channels", "default_session_uuid", "default_session_uuid TEXT");
 addColumn("sessions", "parent_message_idx", "parent_message_idx INTEGER");
+// Cross-provider failover order per session. JSON array of ProviderId values.
+// Default (null) means today's legacy behavior: Claude → Codex on `recoverExhaustedClaudeWork`.
+// Operator can set an explicit chain via `router-actions.sh accounts provider-chain`.
+// See docs/plans/2026-11-19-provider-account-rebuild-architecture.md §8.
+addColumn("sessions", "provider_chain", "provider_chain TEXT");
+
+// Dispatcher-signed binding of a Claude session UUID to the account the dispatcher
+// chose for it. Supersedes the JSONL first-row `session-owner` header as the source
+// of truth for which home the subprocess runs on. On 2026-11-19 the header pointed
+// at tejas@chann.app for sessions whose dispatcher had picked hey@tejas.nyc, and the
+// launcher silently rebound to chann.app, caching the refusal under the wrong label.
+// See docs/plans/2026-11-19-provider-account-rebuild-architecture.md §4.
+db.exec(`CREATE TABLE IF NOT EXISTS claude_session_account_bindings (
+  session_uuid TEXT PRIMARY KEY,
+  account_label TEXT NOT NULL,
+  account_uuid TEXT,
+  organization_uuid TEXT,
+  bound_at_ms INTEGER NOT NULL,
+  bound_by_dispatch_revision INTEGER NOT NULL DEFAULT 0
+)`);
 addColumn("turns", "owner_instance_id", "owner_instance_id TEXT");
 addColumn("turns", "delivery_status", "delivery_status TEXT NOT NULL DEFAULT 'not_ready'");
 addColumn("turns", "delivered_at", "delivered_at DATETIME");

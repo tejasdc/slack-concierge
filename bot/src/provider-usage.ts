@@ -138,7 +138,11 @@ export function assertUsageAvailable(attempt: UsageAttempt) {
     failureClass: "parked_terminal", terminalConfirmed: true, clearsAtMs: limit.resetAt });
 }
 
-export function recordUsageExhaustion(attempt: UsageAttempt, resetAt: number | null) {
+export function recordUsageExhaustion(
+  attempt: UsageAttempt,
+  resetAt: number | null,
+  details: { rateLimitType?: string | null; overageReason?: 'out_of_credits' | 'org_level_disabled' | 'hard_limit_reached' | 'other' | null } = {},
+) {
   persistUsageObservation(attempt, () => db.transaction(() => {
     const state = read(attempt.provider);
     if (state.generation !== attempt.generation) return false;
@@ -147,12 +151,17 @@ export function recordUsageExhaustion(attempt: UsageAttempt, resetAt: number | n
     // Comparing only this scope avoids losing a different account's real refusal.
     if ((state.limits[attempt.scope]?.revision ?? -1) > attempt.revision) return false;
     const validReset = resetAt !== null && Number.isSafeInteger(resetAt) && resetAt > Date.now() ? resetAt : null;
-    state.limits[attempt.scope] = { resetAt: validReset ?? state.limits[attempt.scope]?.resetAt ?? null,
-      observedAt: Date.now(), revision: ++state.revision };
+    const existing = state.limits[attempt.scope];
+    state.limits[attempt.scope] = { resetAt: validReset ?? existing?.resetAt ?? null,
+      observedAt: Date.now(), revision: ++state.revision,
+      ...(details.rateLimitType !== undefined ? { rateLimitType: details.rateLimitType } : (existing?.rateLimitType !== undefined ? { rateLimitType: existing.rateLimitType } : {})),
+      ...(details.overageReason !== undefined ? { overageReason: details.overageReason } : (existing?.overageReason !== undefined ? { overageReason: existing.overageReason } : {})),
+    } as any;
     write(attempt.provider, state);
     const retainedReset = state.limits[attempt.scope]!.resetAt;
     log("info", "provider_usage_exhausted", { provider: attempt.provider,
-      scope: attempt.scope, reset_at: retainedReset, reset_known: retainedReset !== null });
+      scope: attempt.scope, reset_at: retainedReset, reset_known: retainedReset !== null,
+      rate_limit_type: details.rateLimitType ?? null, overage_reason: details.overageReason ?? null });
   }).immediate());
 }
 

@@ -167,12 +167,76 @@ export function transferSession(sessionId:number):number {
   return transferred;
 }
 
-/** Runs on the owner after a confirmed usage hold, on fresh readings and after restart.
+/**
+ * The provider chain a session will fall back through. Reads `sessions.provider_chain`
+ * JSON; defaults to `[provider_id, otherProvider]` (today's hard-coded Claude→Codex is
+ * one case of this). See architecture doc §8.
+ */
+export function sessionProviderChain(sessionId: number): readonly ("claude-code"|"codex"|"antigravity")[] {
+  const row = db.query('SELECT provider_id, provider_chain FROM sessions WHERE id=?').get(sessionId) as
+    { provider_id: string; provider_chain: string | null } | null;
+  if (!row) return [];
+  if (row.provider_chain) {
+    try {
+      const parsed = JSON.parse(row.provider_chain);
+      if (Array.isArray(parsed) && parsed.every(v => v === 'claude-code' || v === 'codex' || v === 'antigravity')) {
+        return parsed;
+      }
+    } catch { /* fall through to default */ }
+  }
+  const origin = row.provider_id as "claude-code"|"codex"|"antigravity";
+  // Legacy default: Claude falls back to Codex only; Codex and Antigravity have no default chain.
+  if (origin === 'claude-code') return ['claude-code', 'codex'];
+  return [origin];
+}
+
+/** Can any account on this provider take any model's work right now? */
+function providerHasRoom(provider: "claude-code"|"codex"|"antigravity"): boolean {
+  const accounts = listAccounts(provider).map(home => ({ provider, label: home.label }));
+  return accounts.some(a => canTakeAnyWork(provider, a).ok);
+}
+
+/**
+ * Generic cross-provider recovery per the declared `provider_chain`. Walks the chain
+ * from the session's current provider onward, and transfers to the first downstream
+ * provider whose accounts can take work. Preserves the Mac signin-wait rule (an
+ * account with reading-room whose home is signed out is NOT a transfer target).
+ */
+export function recoverExhaustedWork(sessionId: number): "no-chain"|"stay"|"transferred"|"hold" {
+  const chain = sessionProviderChain(sessionId);
+  if (chain.length < 2) return "no-chain";
+  const session = getSessionById(sessionId);
+  if (!session) return "no-chain";
+  const startIndex = chain.indexOf(session.provider_id as any);
+  if (startIndex < 0) return "no-chain";
+  // Mac signin-wait preservation: if an account on the ORIGIN provider has reading-room
+  // but is signed out, the hold is for sign-in, not failover.
+  if (chain[0] === 'claude-code'
+    && accountsWithRoom('claude-code').some(claudeAccountAwaitingSignIn))
+    return "hold";
+  for (let i = startIndex + 1; i < chain.length; i++) {
+    const nextProvider = chain[i]!;
+    if (!providerHasRoom(nextProvider)) continue;
+    if (nextProvider !== 'codex') continue;  // Only Claude→Codex transfer is wired via transferSession today.
+    try { if (db.transaction(() => transferSession(sessionId)).immediate() > 0) return "transferred"; }
+    catch (error) {
+      log('error','provider_recovery_failed',{source_session_id:sessionId,
+        error:error instanceof Error?error.message:String(error)});
+    }
+  }
+  return "hold";
+}
+
+/**
+ * Runs on the owner after a confirmed usage hold, on fresh readings and after restart.
  * The same SQLite writer serializes this transaction with the FIFO claim.
  *
  * Gate change (2026-11-19, F7): use the single authority instead of `/usage` percentages.
  * The 2026-11-19 incident showed a Claude account at 39% weekly where every model was
  * cached-refused by Anthropic; the old percentage gate did not trigger a transfer.
+ *
+ * Now a thin wrapper that reads each held Claude session's `provider_chain` (default
+ * `[claude-code, codex]`) and calls `recoverExhaustedWork` per session.
  */
 export function recoverExhaustedClaudeWork():number {
   if(reconciling)return 0;

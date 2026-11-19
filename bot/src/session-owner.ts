@@ -5545,6 +5545,18 @@ ${input.text}`;
           throw new SessionOwnerError('Invalid Claude model.',400);
         result={choice:this.runtime.auth.chooseClaudeLaunch(model)};
       }
+      // F3-deep (2026-11-19): a `--resume UUID` launcher calls here BEFORE reading the JSONL
+      // `session-owner` header. If Concierge recorded a binding for this UUID, the launcher
+      // uses that account's home, not whatever the header says.
+      else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='claude-resume-binding'&&parts.length===2){
+        const sessionUUID=url.searchParams.get('sessionUUID')??'';
+        if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionUUID))
+          throw new SessionOwnerError('Invalid Claude session UUID.',400);
+        const { readClaudeSessionBinding } = await import('./claude-session-binding');
+        const binding=readClaudeSessionBinding(sessionUUID);
+        result={binding:binding?{accountLabel:binding.accountLabel,accountUuid:binding.accountUuid,
+          organizationUuid:binding.organizationUuid,boundAtMs:binding.boundAtMs}:null};
+      }
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='topics'&&parts.length===2){
         const state=url.searchParams.get('state')??'open';
         if(!['open','closed','background','all'].includes(state))throw new SessionOwnerError('Unknown thread list.');

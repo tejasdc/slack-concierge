@@ -8,6 +8,7 @@ import {accountReadingFresh,hasActiveFullAllowanceWindow,includedAllowanceWindow
 import type {AccountUsage,ProviderUsage} from './provider-account-usage';
 import type {AccountRoom} from './provider-account-choice';
 import {ProviderDispatchError} from './provider-failures';
+import {canTakeWork} from './account-authority';
 import {claudeAccountCachedReset,releaseUsageHeldWork} from './provider-usage';
 import {claudeAccountSelection,claudeHomeProven,claudeHomeSignedOut,recordClaudeHomeProof,recordClaudeHomeSignedOut} from './provider-account-selection';
 import {log} from './log';
@@ -316,22 +317,47 @@ export function admitProvenClaudeWaitingTurn(turnId:number,account:string,select
 const noOwnClaudeLogin=()=>new ProviderDispatchError({failureClass:'parked_access',terminalConfirmed:true,
   message:'Not logged in: no Claude account on this machine has a working sign-in of its own. Sign in to one in Accounts.'});
 
+/**
+ * Pick a Claude account for this turn. Collapsed in 2026-11-19 from 9 gates to a thin
+ * filter+rank over `canTakeWork`. The ranker is `chooseAccountForTurn` which preserves:
+ *
+ *   - 2026-10-07 — "where accounts have homes of their own, the main folder's login is
+ *     the terminal's; agents never run on it" (`claudeRunsFromOwnHomes`).
+ *   - 2026-10-09 — "selected account out, so with only that one free it read as 'no
+ *     account has room'" → eligible set always includes the selected account.
+ *   - 2026-10-15 — "an old reading is not a limit; a launchable account whose last
+ *     reading showed room is tried" → authority's `last-showed-room` branch admits it.
+ *   - 2026-10-30 — "Anthropic removes the 5-hour window from Ultra accounts; a reading
+ *     without it must still show room" → `includedAllowanceWindows` tolerates it.
+ *   - 2026-11-02 — "Mac's tejas@chann.app read 54% free while its home was signed out,
+ *     and the hold notice promised work would 'move to it by itself'" → authority's
+ *     `no-home`/`signed-out` branches exclude such accounts from the eligible set.
+ *   - 2026-11-15 — "warm account stays while its own pressure is at least half the best
+ *     one's" (WARM_STAY_BAND) → preserved by `chooseAccountForTurn`.
+ *   - 2026-11-16 — "aggregated usage per provider, not per single account" → ranker
+ *     uses lapse pressure, not just per-account percentage.
+ *   - 2026-11-19 — F1: Opus-only refusal does not block Sonnet/Haiku turns, because
+ *     the `canTakeWork` call is model-specific. F7: cross-provider recovery uses the
+ *     authority, not `/usage` percentages.
+ */
 export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,turnId?:number,model?:string|null,warmCacheAccount?:string|null,runnerTarget:string|null|undefined=undefined):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
   const proof=turnId===undefined?null:provenWaitingTurns.get(turnId)??null;
   if(turnId!==undefined)provenWaitingTurns.delete(turnId);
   const usage=providerAccountUsage('claude-code');
   const ownHomes=claudeRunsFromOwnHomes();
-  // Never the main folder's login where accounts have homes of their own; see claudeRunsFromOwnHomes.
   const defaultAccount=ownHomes?null:currentAccount('claude-code')?.label??usage?.accounts.find(account=>account.current)?.label??null;
   const selection=claudeAccountSelection();
   const provenAccount=proof&&proof.selectionRevision===(selection?.revision??0)?proof.account:null;
   const selectedAccount=selection&&selection.revision>seenSelectionRevision?selection.label:null;
   const selected=selectedClaudeHome(runnerTarget)?.label??null;
-  // Without a reading of the selected account (none at all, or the usage reader does not know an
-  // account just signed in through Accounts) nothing can be compared, so the work runs where he chose.
+  const expected=selectedAccount??prefer??selection?.label??defaultAccount;
+  const selectionRevision=selection?.revision??0;
+  const resolvedModel=model??'claude-opus-5-5';
+  // Own-homes with no reading yet: the operator-selected home gets one attempt via proof.
   if(ownHomes&&(!usage||(selected&&!usage.accounts.some(account=>account.label===selected)))){
     const home=selected?launchableClaudeHome(selected,selected,true,undefined,runnerTarget):null;
-    if(home&&!claudeAccountCachedReset(selected!,model))return {account:selected!,home,because:'stayed-on-its-account',expected:selected,selectionRevision:selection?.revision??0};
+    if(home&&!claudeAccountCachedReset(selected!,model))
+      return {account:selected!,home,because:'stayed-on-its-account',expected:selected,selectionRevision};
     if(!usage){
       const refusedUntil=selected?claudeAccountCachedReset(selected,model):null;
       if(home&&refusedUntil)throw new ProviderDispatchError({message:'This Claude account has a recorded model refusal.',
@@ -339,112 +365,38 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
       throw noOwnClaudeLogin();
     }
   }
-  // An ordinary one-home installation follows its existing path, including its existing
-  // usage refusal and retry handling. A stale or absent reading cannot justify a move.
   if(!usage||(!ownHomes&&!defaultAccount))return null;
-  // Add any link a new shared entry needs before choosing; a home still incomplete is skipped.
-  const homes=new Map(usage.accounts.filter(account=>account.label!==defaultAccount)
-    .map(account=>[account.label,launchableClaudeHome(account.label,selected,true,undefined,runnerTarget)] as const));
-  const extraHomes=usage.accounts.filter(account=>homes.get(account.label));
-  if(!extraHomes.length){
-    if(ownHomes)throw noOwnClaudeLogin();
-    return null;
-  }
-  const rooms=usage.accounts.map(account=>{
-    const home=account.label===defaultAccount?null:homes.get(account.label)??null;
-    const fresh=accountReadingFresh('claude-code',usage,account,Date.now(),undefined,model);
-    // The usage reader keeps its own copies of each login and reads with them; when it cannot,
-    // that says nothing about the selected account's own login. Its work is tried there, and a
-    // real limit comes back from Claude with its reset time as an ordinary usage hold.
-    return {
-      account:account.label,
-      tightestUsedPercent:fresh?accountUsedPercent('claude-code',account,model):null,
-      weeklyUsedPercent:fresh?account.windows.find(window=>window.name==='Weekly')?.usedPercent??null:null,
-      weeklyResetsAtMs:fresh?(()=>{const at=account.windows.find(window=>window.name==='Weekly')?.resetsAt;const ms=at?Date.parse(at):NaN;return Number.isFinite(ms)?ms:null;})():null,
-      home,
-      isDefault:account.label===defaultAccount,
-      problem:fresh?account.problem:'Usage reading is stale.',
-    };
-  });
-  // The selected account or default login is the continuity expectation for new work. A fresh
-  // selection wins the next turn; otherwise the chooser ranks eligible weekly room and uses
-  // this expectation only to break a tie.
-  const usual=selection?.label??defaultAccount;
-  // Where he would expect this turn to run, which is the one thing a notice is measured against.
-  const expected=selectedAccount??prefer??usual;
-  const proved=provenAccount?rooms.find(room=>room.account===provenAccount&&(room.home||room.isDefault)
-    &&!claudeAccountCachedReset(room.account,model)):null;
-  if(proved)return {account:proved.account,home:proved.home,because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision:selection?.revision??0};
-  const lastGoodRoom=(room:typeof rooms[number]):number|null=>{
-    if(!(room.home||room.isDefault)||claudeAccountCachedReset(room.account,model))return null;
-    if(room.tightestUsedPercent!==null)return !room.problem&&room.tightestUsedPercent<100?room.tightestUsedPercent:null;
-    const reading=usage.accounts.find(account=>account.label===room.account);
-    const used=reading&&!reading.problem&&!reading.signedOut?accountUsedPercent('claude-code',reading,model):null;
-    return used!==null&&used<100?used:null;
+  const rooms=savedWorkAccountRooms('claude-code',usage,Date.now(),model,runnerTarget);
+  if(ownHomes&&!rooms.some(r=>r.home||r.isDefault))throw noOwnClaudeLogin();
+  // Proof-admitted turn: the manual Accounts check released this exact turn against the proved account.
+  const proved=provenAccount?rooms.find(r=>r.account===provenAccount&&(r.home||r.isDefault)
+    &&!claudeAccountCachedReset(r.account,model)):null;
+  if(proved)return {account:proved.account,home:proved.home,
+    because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision};
+  // Authority-filtered eligibility. The ranker then picks by selection/warmth/room.
+  const now=Date.now();
+  const authorityOk=(account:string)=>{
+    const verdict=canTakeWork('claude-code',{provider:'claude-code',label:account},resolvedModel,now);
+    return verdict.ok;
   };
-  const warmRoom=warmCacheAccount?rooms.find(room=>room.account===warmCacheAccount&&lastGoodRoom(room)!==null):null;
-  // Selection grants an attempt when the usage reader cannot measure this login. It is
-  // not a fabricated zero-percent reading, and a known cached refusal still blocks it.
-  const selectedAttempt=selected?rooms.find(room=>{
-    const reading=usage.accounts.find(account=>account.label===room.account);
-    return room.account===selected&&room.home
-      &&(room.problem||room.tightestUsedPercent===null)
-      &&(!reading||!hasActiveFullAllowanceWindow('claude-code',reading,model))
-      &&!claudeAccountCachedReset(room.account,model);
-  }):null;
-  if(selectedAttempt&&(!warmRoom||!!selectedAccount))return {account:selectedAttempt.account,home:selectedAttempt.home,
-    because:'stayed-on-its-account',expected,selectionRevision:selection?.revision??0};
-  // A warm account with a fresh reading is weighed by the shared rule against the other accounts'
-  // lapse pressure (WARM_STAY_BAND); only a warm account whose reading has gone stale keeps the
-  // conversation on the last good reading alone, because nothing fresh can be compared. The
-  // unconditional stay here was what let the week ending Sunday be spent while the week ending
-  // Wednesday kept its room (2026-11-15), even after the rule itself had the band.
-  const warmFresh=!!warmRoom&&warmRoom.tightestUsedPercent!==null&&!warmRoom.problem;
-  if(warmRoom&&!selectedAccount&&!warmFresh)return {account:warmRoom.account,home:warmRoom.home,
-    because:'stayed-for-warm-cache',expected,selectionRevision:selection?.revision??0};
-  const choice=chooseAccountForTurn({accounts:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount:warmRoom?warmCacheAccount:null});
-  if(choice.account===null){
-    // A new account may be visible in the server's allowance read before this Mac has
-    // its own login. Ask the existing browser repair path to establish that local home;
-    // the server's credential cannot be copied here or used for this Mac session.
-    if(ownHomes&&turnId!==undefined)requestMissingClaudeHomes(model);
-    // An old reading is not a limit. Each account is read about every twelve minutes and a reading
-    // counts for six, so an account with room routinely looked unreadable here and work was held
-    // "until" the spent account's reset (2026-10-15, his account at 19% of its week). A launchable
-    // account whose last reading showed room is tried; Claude's own refusal, if it is full, is cached
-    // with its reset and excludes it next time.
-    // Only a reading that was good when taken counts: a sign-in or read problem keeps its last
-    // percentages but is not evidence the account can run.
-    const lastShowedRoom=rooms.flatMap(room=>{
-      if(room.tightestUsedPercent!==null||!room.home)return [];
-      const used=lastGoodRoom(room);
-      return used!==null?[{room,used}]:[];
-    }).sort((a,b)=>Number(b.room.account===warmCacheAccount)-Number(a.room.account===warmCacheAccount)
-      ||Number(b.room.account===expected)-Number(a.room.account===expected)||a.used-b.used)[0];
-    if(lastShowedRoom)return {account:lastShowedRoom.room.account,home:lastShowedRoom.room.home,
-      because:lastShowedRoom.room.account===warmCacheAccount?'stayed-for-warm-cache'
-        :lastShowedRoom.room.account===expected?'stayed-on-its-account':'moved-for-room',
-      expected,selectionRevision:selection?.revision??0};
-    // A failed usage read is not a provider refusal. If a proven login is available,
-    // let Claude decide whether it can run instead of parking work on missing evidence.
-    const unreadable=rooms.filter(room=>{
-      if(!(room.home||room.isDefault)||room.tightestUsedPercent!==null
-        ||claudeAccountCachedReset(room.account,model))return false;
-      const reading=usage.accounts.find(account=>account.label===room.account);
-      // A six-minute-old reading is not fresh room, but a full window whose reset is
-      // still in the future remains evidence that this account cannot run yet.
-      return !reading||!hasActiveFullAllowanceWindow('claude-code',reading,model);
-    })
-      .sort((a,b)=>Number(b.account===expected)-Number(a.account===expected)
-        ||Number(b.account===warmCacheAccount)-Number(a.account===warmCacheAccount))[0];
-    if(unreadable)return {account:unreadable.account,home:unreadable.home,
-      because:unreadable.account===expected?'stayed-on-its-account':unreadable.account===warmCacheAccount?'stayed-for-warm-cache':'moved-for-room',
-      expected,selectionRevision:selection?.revision??0};
-    // When each launchable account frees up comes from the one shared answer, so a hold and its notice name the same time.
-    const resets=accountAvailability('claude-code',model).filter(account=>rooms.some(room=>room.account===account.account&&(room.home||room.isDefault)))
-      .flatMap(account=>account.freeAt!==null&&account.freeAt>Date.now()?[account.freeAt]:[]);
-    throw new ProviderDispatchError({message:'Every available Claude account is out of room.',failureClass:'parked_terminal',
-      terminalConfirmed:true,clearsAtMs:resets.length?Math.min(...resets):null});
-  }
-  return {account:choice.account,home:choice.home,because:choice.because,expected,selectionRevision:selection?.revision??0};
+  const eligibleRooms=rooms.filter(r=>(r.home||r.isDefault)&&!claudeAccountCachedReset(r.account,model)&&authorityOk(r.account));
+  const choice=chooseAccountForTurn({accounts:eligibleRooms.length?eligibleRooms:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount});
+  if(choice.account!==null)return {account:choice.account,home:choice.home,because:choice.because,expected,selectionRevision};
+  // Fallthrough — nothing eligible. Give the selected home one admitted attempt if its verdict
+  // says the only block is "unknown"/"last-showed-room"/"proven-attempt" (hold-worthy but not refused).
+  const attemptRoom=rooms.find(r=>{
+    if(r.account!==selected||!r.home||claudeAccountCachedReset(r.account,model))return false;
+    const verdict=canTakeWork('claude-code',{provider:'claude-code',label:r.account},resolvedModel,now);
+    return verdict.ok||verdict.reason==='unknown'||verdict.reason==='last-showed-room'||verdict.reason==='proven-attempt';
+  });
+  if(attemptRoom)return {account:attemptRoom.account,home:attemptRoom.home,because:'stayed-on-its-account',expected,selectionRevision};
+  // Nobody can run. Ask the browser repair agent to establish any peer-discovered account.
+  if(ownHomes&&turnId!==undefined)requestMissingClaudeHomes(model);
+  // Earliest clearsAtMs across the eligible home set, from the authority.
+  const clearsAts=rooms.filter(r=>r.home||r.isDefault).flatMap(r=>{
+    const v=canTakeWork('claude-code',{provider:'claude-code',label:r.account},resolvedModel,now);
+    return v.clearsAtMs!==null?[v.clearsAtMs]:[];
+  });
+  throw new ProviderDispatchError({message:'Every available Claude account is out of room.',failureClass:'parked_terminal',
+    terminalConfirmed:true,clearsAtMs:clearsAts.length?Math.min(...clearsAts):null});
 }

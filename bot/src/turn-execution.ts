@@ -293,7 +293,7 @@ export interface NativeTurnDeliveryEnvelope {
 }
 
 export interface NativeTurnExecutionServices {
-  bindProviderSession(sessionId: number, provider: ProviderId, uuid: string): void;
+  bindProviderSession(sessionId: number, provider: ProviderId, uuid: string, account?: { label: string; accountUuid?: string | null; organizationUuid?: string | null; dispatchRevision?: number }): void;
   deliverResult(result: NativeTurnResult): Promise<"delivered" | "stopped" | "permanent_failure">;
   onProgress?: ProgressCb;
 }
@@ -362,7 +362,12 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
     db.query(`UPDATE turns SET provider_model=NULL,reasoning_effort=NULL,dispatch_next_attempt_ms=0,
       provider_started_at=NULL,provider_input_acknowledged_at=NULL,provider_turn_id=NULL WHERE id=?`)
       .run(input.turnId);
-    recordSessionEvent({eventId:`capacity-reroute:${input.turnId}`,sessionId:session.id,turnId:input.turnId,
+    // Tie the event id to (turn_id, dispatch_attempt) so a requeued turn can record
+    // its own reroute cleanly. On 2026-11-19 a single-key event blocked recovery of
+    // turn 33959 with `Event identity conflict`.
+    const dispatchAttemptForReroute=(db.query('SELECT dispatch_attempt FROM turns WHERE id=?')
+      .get(input.turnId) as {dispatch_attempt:number}|null)?.dispatch_attempt??0;
+    recordSessionEvent({eventId:`capacity-reroute:${input.turnId}:${dispatchAttemptForReroute}`,sessionId:session.id,turnId:input.turnId,
       kind:'provider',payload:{from:input.providerId,to:other,reason}});
     return true;
   })();
@@ -1852,7 +1857,16 @@ function recordProviderSession(
   sessionUUID: string | null,
 ) {
   if (input.presentation === "native") {
-    if (sessionUUID) input.services.bindProviderSession(input.session.id, input.providerId, sessionUUID);
+    if (sessionUUID) {
+      // F3-deep (2026-11-19): record the account the dispatcher chose for this Claude turn
+      // so a later `--resume UUID` launcher doesn't follow the JSONL `session-owner` header
+      // to a different account. See claude-session-binding.ts.
+      const claudeAccount = input.providerId === 'claude-code'
+        ? (sessionMetadata(input.session).claudeAccount as string | undefined) : undefined;
+      input.services.bindProviderSession(input.session.id, input.providerId, sessionUUID,
+        claudeAccount ? { label: claudeAccount,
+          dispatchRevision: (sessionMetadata(input.session).claudeSelectionRevision as number | undefined) ?? 0 } : undefined);
+    }
     return;
   }
   upsertSession(input.channelId, input.sessionThreadTs, input.providerId, sessionUUID, { status: "running" });
