@@ -466,7 +466,9 @@ a human one is refused with 409 `TOPIC_TITLE_HUMAN` unless `--reason` says `huma
 `list`, `read`, `resolve`, `questions-read`, `create`, `place`, `rename`, `summary`,
 `merge`, `close`, `reopen`, `request add|amend|link|close|reopen`, `questions`,
 `question settle`, `answer`, `acknowledge`, `file`, `focus`, `release`. `topics questions` takes
-the reconciliation array in `--json-file`; the owner assigns missing `questionId`s, bumps a
+the reconciliation array in `--json-file`. Run `sessions topics questions --help` for copyable
+declarations. Every entry needs its wording in the top-level `decision` field, including
+`kind: "asked"` questions. The owner assigns missing `questionId`s, bumps a
 question's `revision` whenever its decision, why, known, choices, uncertain, answerable,
 blocking, optional or context changed (a new revision is a new unread revision), and
 supersedes a replaced question with the replacement's id. A question's identity may be

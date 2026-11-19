@@ -722,6 +722,12 @@ Luna for a Codex designer by default; `--provider` may name a suitable cheaper
 tier in the same provider. The implementation request returns to the designer
 for review. `sessions --help` and the per-run request protocol carry the exact
 command. Use the same action ID on retry so the worktree and request stay one.
+Distinct implementation requests get distinct worktrees even for the same
+project. Repeat `--after-request <request-id>` for prerequisite work that must
+succeed before the implementation starts, or `--after-settled <request-id>`
+for pacing. These use the ordinary local request dependency rules. Concierge
+reserves the worktree when it accepts the request and waits before starting
+the implementation turn.
 
 Continue one exact owning session when it built the surface that the capture
 concerns and remains messageable. Use `sessions search` and `sessions context`

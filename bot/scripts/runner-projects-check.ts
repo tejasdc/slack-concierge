@@ -87,6 +87,8 @@ try {
     execFileSync('git',['-C',root,'worktree','add','--quiet','-b',`worktree-${name}`,join(root,'.wt',name),'HEAD']);
   }};
   const implementation=await serveProjectCall('projects.implementationWorktree',{project:'example-project',key:'a'.repeat(20)},worktreeServices) as any;
+  const independent=await serveProjectCall('projects.implementationWorktree',{project:'example-project',key:'b'.repeat(20)},worktreeServices) as any;
+  assert.notEqual(independent.cwd,implementation.cwd,'different implementation requests have separate checkouts');
   assert.equal(implementation.project,'example-project');
   assert.equal(implementation.path,`.wt/impl-${'a'.repeat(20)}`);
   assert.equal((await serveProjectCall('projects.implementationWorktree',{project:'example-project',key:'a'.repeat(20)},worktreeServices) as any).cwd,implementation.cwd);

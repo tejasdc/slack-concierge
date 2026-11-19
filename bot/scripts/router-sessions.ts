@@ -8,6 +8,25 @@ import {REQUEST_PROTOCOL} from '../src/request-protocol';
 import {nextDailyWallClock,validDailyWallClock} from '../src/daily-wall-clock';
 import {IMPLEMENTATION_ALIASES} from '../src/implementation-models';
 
+const questionsFileHelp = `router-actions.sh sessions topics questions <topicId> --source-input <id> --source-run <id> --action-id A --json-file <file>
+
+Write a nonempty JSON array of objects. Each object needs a nonblank top-level "decision" string containing the question or reading title, including for kind "asked".
+Replace the example IDs with exact IDs from the thread. Use one of these arrays as a starting point:
+
+A question Tejas asked. Use his wording, one human message ID from this thread in "sources", and the linked communication request ID in "owner.dispatchRequestId".
+[{"kind":"asked","decision":"When does the review start?","sources":["human-message-id"],"owner":{"dispatchRequestId":"linked-dispatch-id"}}]
+
+A decision Tejas needs to make. Give the reason, what he can answer now, his exact initiating words, and why they leave a gap.
+[{"kind":"decision","decision":"Which Alex should receive the signed agreement?","sources":["human-message-id"],"why":{"text":"Two contacts match Alex."},"answerable":"Name the intended recipient.","onlyHeCan":"ambiguous","hisWords":"Send the signed agreement to Alex.","whyNotSettled":"Your message names Alex and both contacts use that name."}]
+Supported "onlyHeCan" values: sign-in, secret, device, ambiguous, approval. For approval also supply "decisionId" and "approvalAction" from the permanent decision record.
+For sign-in, secret or device steps, supply "todo" with the open to-do ID, or "none" if there is no to-do. For device steps, name the physical action in the first sentence.
+Use "context":"agent_checking" while preparing a decision. "why.text" and "answerable" are required for "context":"ready".
+
+A reading for Tejas. Give the exact messages in this thread to read.
+[{"kind":"reading","decision":"Read the review findings","why":{"text":"The review is complete."},"answerable":"Read the findings in the linked message.","reads":["thread-message-id"]}]
+
+To revise an existing question, include its "questionId" (or "id") alongside the updated declaration. To replace it, put the old ID in "replaces" on the new declaration.`;
+
 const usage = `router-actions.sh sessions journal-review --review-file <JSON-path> --source-input <id> --source-run <id> --action-id <stable-id>
 router-actions.sh sessions projects <source-flags> [--peer <instance>]
 router-actions.sh sessions agents <source-flags>
@@ -32,7 +51,7 @@ router-actions.sh sessions ask <address> --response-mode context <source-flags> 
 router-actions.sh sessions ask --role <standing-agent-role> <source-flags> --action-id A --summary "<one line>" [--session-name <title>] -- <text>
 router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--small-task] [--effort <level>] [--codex-native-test-until <ISO-8601-time>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --purpose research|design-critique|design-review [--provider <alias> --provider-reason "<why ChatGPT Pro is not used>"] [--project <registered-project> (alternate coding provider only)] --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
-router-actions.sh sessions implement --project <registered-project> [--provider ${IMPLEMENTATION_ALIASES.join('|')}] --session-name <title> --summary "<fixed implementation goal>" <source-flags> --action-id A [--text-file F | -- <design and acceptance criteria>]
+router-actions.sh sessions implement --project <registered-project> [--provider ${IMPLEMENTATION_ALIASES.join('|')}] --session-name <title> --summary "<fixed implementation goal>" <source-flags> --action-id A [--after-request <request-id> ...] [--after-settled <request-id> ...] [--text-file F | -- <design and acceptance criteria>]
 router-actions.sh sessions ask <the frozen ask's exact flags, action ID and text> --resume-source-input <original input> --resume-source-run <original run> <this run's source-flags>
 Resumes an ask frozen by a run that has since ended: the same session's live run cites the original source pair; Concierge returns the one request already admitted under that pair and action, or admits it once. A changed payload is an idempotency conflict.
 router-actions.sh sessions edit-reason --reason "<why this turn still needs its thinking model>" <source-flags> --action-id A
@@ -142,7 +161,7 @@ router-actions.sh sessions topics request link <requestId> <source-flags> --acti
 router-actions.sh sessions topics request merge <duplicateRequestId> <source-flags> --action-id A --into <keeperRequestId> -- <why they are the same request (they share a source message in two threads)>
 router-actions.sh sessions topics request close <requestId> <source-flags> --action-id A --disposition completed|declined|withdrawn|superseded|failed [--evidence <id> ...] [--human-quote "<his exact withdrawal words>"] -- <reason>
 router-actions.sh sessions topics request reopen <requestId> <source-flags> --action-id A -- <reason>
-router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>
+router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>  # file examples: sessions topics questions --help
 router-actions.sh sessions topics question settle <questionId> <source-flags> --action-id A --state answered|declined|withdrawn|superseded|deferred [--answer <inputId>] [--replacement <questionId>] -- <reason>
 router-actions.sh sessions topics question restore <questionId> <source-flags> --action-id A --dispatch <erroneous finishing dispatch> --expected-revision N -- <reason>
 router-actions.sh sessions topics answer <inputId> <source-flags> --action-id A --json-file <file>
@@ -158,6 +177,8 @@ router-actions.sh sessions areas neighbor|unneighbor <areaId> <source-flags> --a
 router-actions.sh sessions areas rename|summary <areaId> <source-flags> --action-id A --title NAME | --summary TEXT
 
 A topic owns thread roots, the human requests inside them, the questions waiting on Tejas and the router's declared focus. Place a capture before routing or answering it. topics questions takes the reconciliation JSON array (--json-file); topics answer takes {"mappings":[…],"unresolved":[…],"acknowledged":[…]}. Only this Inbox may change topics; a worker session may call topics questions/read for a topic it holds a linked dispatch for. sessions post releases focus for the inputs it covers unless --keep-working.
+
+${questionsFileHelp}
 
 Every command requires one exact source pair:
   --source-input <inputId> --source-run <runId> from this concierge-session-input identity header's input.id and input.runId
@@ -353,7 +374,15 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     try { parsed = JSON.parse(readFileSync(path, "utf8")); }
     catch (error) { invalid(`--json-file could not be read as JSON: ${error instanceof Error ? error.message : String(error)}`); }
     if (verb === "questions") {
-      if (!Array.isArray(parsed)) invalid("topics questions expects a JSON array of question declarations.");
+      if (!Array.isArray(parsed) || parsed.length === 0) invalid("topics questions expects a nonempty JSON array of question declarations.");
+      for (const [index, item] of parsed.entries()) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          invalid(`--json-file entry ${index + 1} must be a JSON object.`);
+        }
+        if (typeof item.decision !== "string" || !item.decision.trim()) {
+          invalid(`--json-file entry ${index + 1} needs a nonblank top-level "decision" string containing the question or reading title. See sessions topics questions --help.`);
+        }
+      }
       body.questions = parsed;
     } else {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) invalid("topics answer expects a JSON object with mappings.");
@@ -1276,7 +1305,7 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
   }
   if(implementation){
     if(!project||!title||!summary||identity||role||peer||smallTask||outside||onRunner||savedKind||resurrect||hisChat
-      ||flags.has('--thread')||flags.has('--route-message')||flags.has('--consult')||after.length||pace.length
+      ||flags.has('--thread')||flags.has('--route-message')||flags.has('--consult')
       ||flags.has('--escalation-reason')||flags.has('--machine-need')||flags.has('--for-task')
       ||requestedEffect&&requestedEffect!=='work')
       invalid('implement needs one local project, session name, summary, fixed design, and no thread or other session mode.');
@@ -1359,9 +1388,11 @@ export async function runRouterSessions(request: SessionCommunicationRequest) {
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
+  const questionsCommand = args[0] === "topics" && args[1] === "questions";
   let request: SessionCommunicationRequest | undefined;
   try {
     if (args.length === 1 && (args[0] === "help" || args[0] === "--help")) console.log(usage);
+    else if (questionsCommand && args.length === 3 && (args[2] === "help" || args[2] === "--help")) console.log(questionsFileHelp);
     else {
       request = parseRouterSessionsArgs(args, process.env);
       const response = await runRouterSessions(request);
@@ -1381,7 +1412,7 @@ if (import.meta.main) {
       ok: false,
       error: invalidArguments ? "invalid_session_arguments" : "session_communication_unavailable",
       detail: error instanceof Error ? error.message : String(error),
-      ...(invalidArguments ? { usage } : request ? {
+      ...(invalidArguments ? { usage: questionsCommand ? questionsFileHelp : usage } : request ? {
         operation: request.operation,
         source: request.body.source,
         ...("action_id" in request.body ? { action_id: request.body.action_id } : {}),
