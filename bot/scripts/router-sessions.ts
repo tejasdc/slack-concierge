@@ -8,6 +8,25 @@ import {REQUEST_PROTOCOL} from '../src/request-protocol';
 import {nextDailyWallClock,validDailyWallClock} from '../src/daily-wall-clock';
 import {IMPLEMENTATION_ALIASES} from '../src/implementation-models';
 
+const questionsFileHelp = `router-actions.sh sessions topics questions <topicId> --source-input <id> --source-run <id> --action-id A --json-file <file>
+
+Write a nonempty JSON array of objects. Each object needs a nonblank top-level "decision" string containing the question or reading title, including for kind "asked".
+Replace the example IDs with exact IDs from the thread. Use one of these arrays as a starting point:
+
+A question Tejas asked. Use his wording, one human message ID from this thread in "sources", and the linked communication request ID in "owner.dispatchRequestId".
+[{"kind":"asked","decision":"When does the review start?","sources":["human-message-id"],"owner":{"dispatchRequestId":"linked-dispatch-id"}}]
+
+A decision Tejas needs to make. Give the reason, what he can answer now, his exact initiating words, and why they leave a gap.
+[{"kind":"decision","decision":"Which project did you mean?","sources":["human-message-id"],"why":{"text":"Two projects match the name."},"answerable":"Name the project to open.","onlyHeCan":"ambiguous","hisWords":"Open the demo project.","whyNotSettled":"Both projects are named Demo."}]
+Supported "onlyHeCan" values: sign-in, secret, device, ambiguous, approval. For approval also supply "decisionId" and "approvalAction" from the permanent decision record.
+For sign-in, secret or device steps, supply "todo" with the open to-do ID, or "none" if there is no to-do. For device steps, name the physical action in the first sentence.
+Use "context":"agent_checking" while preparing a decision. "why.text" and "answerable" are required for "context":"ready".
+
+A reading for Tejas. Give the exact messages in this thread to read.
+[{"kind":"reading","decision":"Read the review findings","reads":["thread-message-id"]}]
+
+To revise an existing question, include its "questionId" (or "id") alongside the updated declaration. To replace it, put the old ID in "replaces" on the new declaration.`;
+
 const usage = `router-actions.sh sessions journal-review --review-file <JSON-path> --source-input <id> --source-run <id> --action-id <stable-id>
 router-actions.sh sessions projects <source-flags> [--peer <instance>]
 router-actions.sh sessions agents <source-flags>
@@ -142,7 +161,7 @@ router-actions.sh sessions topics request link <requestId> <source-flags> --acti
 router-actions.sh sessions topics request merge <duplicateRequestId> <source-flags> --action-id A --into <keeperRequestId> -- <why they are the same request (they share a source message in two threads)>
 router-actions.sh sessions topics request close <requestId> <source-flags> --action-id A --disposition completed|declined|withdrawn|superseded|failed [--evidence <id> ...] [--human-quote "<his exact withdrawal words>"] -- <reason>
 router-actions.sh sessions topics request reopen <requestId> <source-flags> --action-id A -- <reason>
-router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>
+router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>  # file examples: sessions topics questions --help
 router-actions.sh sessions topics question settle <questionId> <source-flags> --action-id A --state answered|declined|withdrawn|superseded|deferred [--answer <inputId>] [--replacement <questionId>] -- <reason>
 router-actions.sh sessions topics question restore <questionId> <source-flags> --action-id A --dispatch <erroneous finishing dispatch> --expected-revision N -- <reason>
 router-actions.sh sessions topics answer <inputId> <source-flags> --action-id A --json-file <file>
@@ -158,6 +177,8 @@ router-actions.sh sessions areas neighbor|unneighbor <areaId> <source-flags> --a
 router-actions.sh sessions areas rename|summary <areaId> <source-flags> --action-id A --title NAME | --summary TEXT
 
 A topic owns thread roots, the human requests inside them, the questions waiting on Tejas and the router's declared focus. Place a capture before routing or answering it. topics questions takes the reconciliation JSON array (--json-file); topics answer takes {"mappings":[…],"unresolved":[…],"acknowledged":[…]}. Only this Inbox may change topics; a worker session may call topics questions/read for a topic it holds a linked dispatch for. sessions post releases focus for the inputs it covers unless --keep-working.
+
+${questionsFileHelp}
 
 Every command requires one exact source pair:
   --source-input <inputId> --source-run <runId> from this concierge-session-input identity header's input.id and input.runId
@@ -353,7 +374,15 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     try { parsed = JSON.parse(readFileSync(path, "utf8")); }
     catch (error) { invalid(`--json-file could not be read as JSON: ${error instanceof Error ? error.message : String(error)}`); }
     if (verb === "questions") {
-      if (!Array.isArray(parsed)) invalid("topics questions expects a JSON array of question declarations.");
+      if (!Array.isArray(parsed) || parsed.length === 0) invalid("topics questions expects a nonempty JSON array of question declarations.");
+      for (const [index, item] of parsed.entries()) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          invalid(`--json-file entry ${index + 1} must be a JSON object.`);
+        }
+        if (typeof item.decision !== "string" || !item.decision.trim()) {
+          invalid(`--json-file entry ${index + 1} needs a nonblank top-level "decision" string containing the question or reading title. See sessions topics questions --help.`);
+        }
+      }
       body.questions = parsed;
     } else {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) invalid("topics answer expects a JSON object with mappings.");
@@ -1354,6 +1383,7 @@ if (import.meta.main) {
   let request: SessionCommunicationRequest | undefined;
   try {
     if (args.length === 1 && (args[0] === "help" || args[0] === "--help")) console.log(usage);
+    else if (args.length === 3 && args[0] === "topics" && args[1] === "questions" && (args[2] === "help" || args[2] === "--help")) console.log(questionsFileHelp);
     else {
       request = parseRouterSessionsArgs(args);
       const response = await runRouterSessions(request);
