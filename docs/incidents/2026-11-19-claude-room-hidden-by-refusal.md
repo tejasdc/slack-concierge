@@ -25,3 +25,30 @@ When the fresh account reading and cached reset disagree, the owner requests one
 - **Action:** Refresh account usage or run the explicit held-usage check.
 - **Expected:** A runner probe on the selected account and model succeeds, the exact old refusal is retired, and the original queued turn starts without an additional input. A failed probe leaves the turn held and does not send a false room notice.
 - **Replayable offline:** no (the account identity and provider admission must be checked on the installed runner).
+
+## Installed acceptance and repeated refusal
+
+The first repair was installed at 4:48 PM Eastern. Its exact Opus check succeeded on
+`hey@tejas.nyc` and released two original turns. The Inbox turn completed. The other
+turn belonged to a Claude conversation last measured at 838,551 of its one million
+context tokens. It reached Claude and received a new 429 with the same November 22
+reset on Opus, Sonnet and Haiku, then returned to its own usage hold. A fresh exact
+Opus request under the same selected login completed; resuming and forking that long
+conversation under the same login reproduced the 429. The retained provider trace
+does not identify the quota owner on the wire, so the reason that continuation
+returns another account's reset remains unknown.
+
+The personal account independently read 0% weekly used with its own November 25
+reset and had a signed-in, proven local home. It too held an Opus cache entry with
+the November 22 reset. Both entries made the chooser exclude accounts that could
+accept fresh work. This second repair treats a reset that matches a different
+freshly read account's weekly window as an attribution conflict. The provider
+refusal still holds its exact turn, while the conflicting entry cannot block
+the selected account for unrelated work. A real future refusal whose reset
+matches its selected account remains a normal cached limit.
+
+The long conversation's queued watch and open requests were transferred by the
+ordinary same-provider handoff to a fresh Claude conversation. Acceptance moved
+linked copies of the two queued inputs and canceled their old executable copies;
+the old transcript remained intact. This is the recovery for that specific
+conversation, not evidence that all long continuations are automatically movable.
