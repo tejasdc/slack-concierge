@@ -137,9 +137,19 @@ export function openWrite(provider: RefusalProvider, accountLabel: string, model
   };
 }
 
-/** Record a 429 refusal. Preserves generation/revision checks. Carries the structured
- *  rate-limit type and overage reason from the provider's `rate_limit_event` so the
- *  UI and CLI can surface "out of credits" vs "org disabled overage" distinctly. */
+/**
+ * Record a 429 refusal. Preserves generation/revision checks. Carries the structured
+ * rate-limit type and overage reason from the provider's `rate_limit_event` so the
+ * UI and CLI can surface "out of credits" vs "org disabled overage" distinctly.
+ *
+ * **Writer boundary**: in production the writer is `recordUsageExhaustion` in
+ * `provider-usage.ts`, which shares the same SQLite table (`provider_usage_cache`)
+ * and generation/revision scheme. This `recordRefusal` entrance exists so direct
+ * tests can exercise the cache without routing through the UsageAttempt token
+ * pipeline. Both writers use the same keys and the same storage, so results are
+ * consistent; a future consolidation can retire this entrance in favour of
+ * `recordUsageExhaustion`.
+ */
 export function recordRefusal(
   token: RefusalWriteToken,
   resetAtMs: number | null,

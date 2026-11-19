@@ -123,17 +123,17 @@ export function markUncurrentAccountReadings(provider:AccountIdentityProvider,us
     const fresh=accountReadingFresh(provider,usage,account,now,undefined,null);
     // Authority answer: the model-agnostic "can this account take any work right now?".
     // Provider boundary: `canTakeAnyWork` understands claude-code / codex / antigravity.
-    let authorityOk:boolean|null=null;
+    // The authority incorporates cached refusals, so when it says false the UI must not
+    // say "room remains" from a stale reading — a verdict's `ok` is the only input
+    // to `hasRoom`. On a no-signal verdict (no reading AND no cache), the authority
+    // returns ok=false with reason='unknown'; the UI reads `null` for that case.
+    // If the authority itself throws (e.g. a DB read fails during a diagnostic path),
+    // surface the row as unknown rather than fabricating a reading-only badge.
+    let hasRoom:boolean|null=null;
     try {
       const verdict=canTakeAnyWork(provider as "claude-code"|"codex"|"antigravity",{provider:provider as "claude-code"|"codex"|"antigravity",label:account.label},now);
-      authorityOk=verdict.ok;
-    } catch { /* authority unavailable in some read paths; fall back to reading-only hasRoom */ }
-    const readingHasRoom=fresh&&includedAllowanceWindows(provider,account).length>0
-      ?includedAllowanceWindows(provider,account).every(window=>window.usedPercent<100):null;
-    // Final hasRoom: trust the authority when it has an answer, else fall back to the
-    // reading-only value. The authority already incorporates cached refusals, so when
-    // it says `false` the UI must not say "room remains" from a stale reading.
-    const hasRoom=authorityOk===null?readingHasRoom:authorityOk;
+      hasRoom=verdict.reason==='unknown'?null:verdict.ok;
+    } catch { hasRoom=null; }
     const status:NonNullable<AccountUsage['allowance']>['status']=account.problem||usage.problem
       ?'unreadable':at===null?'unknown':fresh?'current':'old';
     const allowance:NonNullable<AccountUsage['allowance']>={observedAt:at===null?null:new Date(at).toISOString(),

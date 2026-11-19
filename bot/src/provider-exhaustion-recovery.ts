@@ -201,8 +201,22 @@ function providerHasRoom(provider: "claude-code"|"codex"|"antigravity"): boolean
  * from the session's current provider onward, and transfers to the first downstream
  * provider whose accounts can take work. Preserves the Mac signin-wait rule (an
  * account with reading-room whose home is signed out is NOT a transfer target).
+ *
+ * **Current transfer target**: only `codex`. `transferSession` creates a Codex
+ * successor and reparents inputs via the `claude_usage_exhausted` recovery path;
+ * other providers (antigravity) don't have a matching successor mechanism yet.
+ * A chain entry that is not `codex` reaches `unsupported-target` and the session
+ * stays in `hold`; the operator's CLI will surface this as "chain requested
+ * antigravity but Concierge has no Claude→antigravity transfer path".
  */
-export function recoverExhaustedWork(sessionId: number): "no-chain"|"stay"|"transferred"|"hold" {
+export type ExhaustionRecoveryOutcome =
+  | "no-chain"
+  | "stay"
+  | "transferred"
+  | "hold"
+  | "unsupported-target";
+
+export function recoverExhaustedWork(sessionId: number): ExhaustionRecoveryOutcome {
   const chain = sessionProviderChain(sessionId);
   if (chain.length < 2) return "no-chain";
   const session = getSessionById(sessionId);
@@ -214,17 +228,24 @@ export function recoverExhaustedWork(sessionId: number): "no-chain"|"stay"|"tran
   if (chain[0] === 'claude-code'
     && accountsWithRoom('claude-code').some(claudeAccountAwaitingSignIn))
     return "hold";
+  let sawUnsupported = false;
   for (let i = startIndex + 1; i < chain.length; i++) {
     const nextProvider = chain[i]!;
+    if (nextProvider !== 'codex') {
+      // Only Claude→Codex transfer is wired via `transferSession` today. Record the
+      // gap so the operator sees why the walker didn't transfer rather than guessing.
+      log('info', 'provider_chain_target_unsupported', { source_session_id: sessionId, requested: nextProvider });
+      sawUnsupported = true;
+      continue;
+    }
     if (!providerHasRoom(nextProvider)) continue;
-    if (nextProvider !== 'codex') continue;  // Only Claude→Codex transfer is wired via transferSession today.
     try { if (db.transaction(() => transferSession(sessionId)).immediate() > 0) return "transferred"; }
     catch (error) {
       log('error','provider_recovery_failed',{source_session_id:sessionId,
         error:error instanceof Error?error.message:String(error)});
     }
   }
-  return "hold";
+  return sawUnsupported ? "unsupported-target" : "hold";
 }
 
 /**

@@ -202,7 +202,9 @@ export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:
   if (bound.changes !== 1) throw new Error('Provider binding no longer belongs to the admitted session.');
   // F3-deep (2026-11-19): record the dispatcher-signed Claude account binding so a later
   // `--resume UUID` launch does NOT follow the JSONL `session-owner` header to a different
-  // account. See bot/src/claude-session-binding.ts for the full note.
+  // account. See bot/src/claude-session-binding.ts for the full note. A write failure is
+  // logged but never breaks the primary binding — Finding 1 is only as reliable as this
+  // write, so the log line makes a silent regression visible.
   if (provider === 'claude-code' && account?.label) {
     try {
       const { writeClaudeSessionBinding } = require('./claude-session-binding');
@@ -212,7 +214,16 @@ export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:
         organizationUuid: account.organizationUuid ?? null,
         boundByDispatchRevision: account.dispatchRevision ?? 0,
       });
-    } catch { /* binding is informational; never fail the primary bind */ }
+    } catch (error) {
+      try {
+        const { log: logFn } = require('./log') as typeof import('./log');
+        logFn('warn', 'claude_session_binding_write_failed', {
+          session_uuid: uuid, account: account.label,
+          error_name: error instanceof Error ? error.name : 'unknown',
+          error_message: error instanceof Error ? error.message : String(error),
+        });
+      } catch { /* log module unavailable (e.g. during test teardown) — swallow */ }
+    }
   }
   executionChanged();
 }
