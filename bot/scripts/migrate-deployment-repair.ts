@@ -364,10 +364,13 @@ async function startPinnedCopy() {
   }
   const marker = join(`${backupPath}.publishing`, PINNED_MARKER);
   const deadline = Date.now() + PIN_WAIT_MS;
-  while (!existsSync(marker)) {
+  // A small ledger's copy can finish, and remove its staging with the marker, between two looks;
+  // a published, verified copy was pinned first.
+  const pinned = () => existsSync(marker) || isVerifiedBackup(backupPath);
+  while (!pinned()) {
     const ended = child ? child.exitCode !== null
       : !['activating', 'active'].includes(spawnSync('systemctl', ['show', unit, '-p', 'ActiveState', '--value'], { encoding: 'utf8' }).stdout.trim());
-    if (ended || Date.now() > deadline) {
+    if ((ended && !pinned()) || Date.now() > deadline) {
       if (child) { child.kill(); await child.exited; }
       else spawnSync('systemctl', ['stop', unit], { encoding: 'utf8', timeout: 60_000 });
       throw new Error(`The ledger copy ${ended ? 'ended' : 'did not pin the ledger in time'} before the schema step; the ledger is unchanged. See ${child ? 'its output' : `journalctl -u ${unit}`}.`);
