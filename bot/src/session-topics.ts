@@ -3988,13 +3988,52 @@ function whyThreadStaysOpen(topic:StoredTopic):string|null {
   if(topicRequests(topic.topicId).some(request=>request.state==='open'))return 'a request is open';
   if(topicQuestions(topic.topicId).some(question=>OPEN_QUESTION_STATES.includes(question.state)||(question.state==='deferred'&&!!question.deferUntil)))return 'something waits on him';
   if(workRunningIn(topic.topicId))return 'work is running';
+  // His reading is never what closes a thread: opening one ends its reading items, and closing
+  // on that ending took "Lauren Tan's skill stack vs ours" out of his list while he read it
+  // (2026-11-19: "I opened it, and I even read it. And suddenly it disappeared."). A thread he
+  // read stays in his list for a while after; the upkeep pass closes it once that has passed.
+  const lastRead=lastReadAt(topic.topicId);
+  if(lastRead&&Date.now()-new Date(lastRead).getTime()<READ_KEEPS_THREAD_OPEN_MS)return 'he read it recently';
   return null;
+}
+/**
+ * Twelve hours: long enough that the thread he just read is still in his list when he comes back
+ * to it later that day, short enough that it does not linger into the next. No signal says when
+ * he leaves a thread, so a fixed hold after his last read stands in for "until he has left it".
+ */
+const READ_KEEPS_THREAD_OPEN_MS=12*60*60*1000;
+/** When he last read or was shown something in this thread: a reading item he read, or an item his app reported shown. */
+function lastReadAt(topicId:string):string|null {
+  const row=db.query(`SELECT max(at) AS at FROM (
+      SELECT max(updated_at) AS at FROM inbox_questions WHERE topic_id=? AND state='read'
+      UNION ALL SELECT max(at) AS at FROM inbox_topic_reading WHERE topic_id=?)`).get(topicId,topicId) as {at:string|null}|null;
+  return row?.at??null;
+}
+/**
+ * Threads whose ending was held only by his recent reading. In memory on purpose: closing stays
+ * decided at an ending, so a thread reopened by hand is never swept shut; one held across a
+ * restart simply stays open until something in it ends again, the documented hand-reopen rule.
+ */
+const closingHeldForReading=new Set<string>();
+/** The ending a recent read held back is carried out once the hold has passed. */
+function closeThreadsReadAWhileAgo():number {
+  let closed=0;
+  for(const topicId of [...closingHeldForReading]) {
+    const lastRead=lastReadAt(topicId);
+    if(lastRead&&Date.now()-new Date(lastRead).getTime()<READ_KEEPS_THREAD_OPEN_MS)continue;
+    closingHeldForReading.delete(topicId);
+    if(closeThreadIfFinished(topicId,'read a while ago'))closed++;
+  }
+  return closed;
 }
 function closeThreadIfFinished(topicId:string,cause:string):boolean {
   const topic=db.query('SELECT * FROM inbox_topics WHERE topic_id=?').get(topicId) as any;
   if(!topic)return false;
   const stored=toStoredTopic(topic);
-  if(whyThreadStaysOpen(stored))return false;
+  const held=whyThreadStaysOpen(stored);
+  if(held==='he read it recently')closingHeldForReading.add(topicId);
+  if(held)return false;
+  closingHeldForReading.delete(topicId);
   const requests=topicRequests(topicId);
   const last=[...requests].sort((first,second)=>String(first.closure?.at??first.updatedAt).localeCompare(String(second.closure?.at??second.updatedAt))).at(-1);
   const why=last?`Everything asked here is finished; the last request, "${last.title}", closed ${last.disposition??'closed'}.`:'Nothing here is open or waiting on him any more.';
@@ -4452,6 +4491,8 @@ async function keepThreadsCurrentPass(admit?:(input:{sessionId:number;inputId:st
     catch(error){log('error','inbox_thread_upkeep_failed',{topic_id:topicId,message:error instanceof Error?error.message:String(error)});}
     if(Date.now()>=nextYield){await yieldThreadUpkeep();nextYield=Date.now()+40;}
   }
+  try{closeThreadsReadAWhileAgo();}
+  catch(error){log('error','inbox_read_hold_close_failed',{message:error instanceof Error?error.message:String(error)});}
   // A replaced attempt that was still waiting is withdrawn, so its agent does not redo the work
   // when its hold lifts. One attempt can be superseded in several threads; it is withdrawn once.
   let withdrawn=0;
