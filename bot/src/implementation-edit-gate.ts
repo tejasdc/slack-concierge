@@ -27,8 +27,8 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
       .get(input.sourceRunId) as {id:number}|null:null);
   if(!session)return {hold:false};
   const running=db.query(`SELECT id,session_id,accepted_input_id,provider_turn_id,owner_instance_id FROM turns
-    WHERE session_id=? AND (status IN ('running','delivering') OR (? AND status=?))
-      AND stop_requested_at IS NULL ORDER BY id DESC LIMIT 2`).all(session.id,input.terminalPid?1:0,CLAUDE_TERMINAL_SOURCE) as Running[];
+    WHERE session_id=? AND status IN (?,?) AND stop_requested_at IS NULL ORDER BY id DESC LIMIT 2`)
+    .all(session.id,...(input.terminalPid?[CLAUDE_TERMINAL_SOURCE,CLAUDE_TERMINAL_SOURCE]:['running','delivering'])) as Running[];
   const bound=getSessionById(session.id)!;
   const bindingKey=bound.provider_id==='codex'&&name(input.providerTurnId)?codexBindingEvent(session.id,input.providerTurnId):null;
   const binding=bindingKey?db.query(`SELECT event.turn_id,turn.status,turn.stop_requested_at,turn.accepted_input_id,turn.provider_turn_id,event.payload_json,session.status AS session_status,

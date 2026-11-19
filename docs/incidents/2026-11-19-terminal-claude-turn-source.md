@@ -33,7 +33,9 @@ file saves as outside the edit budget.
 The initial repair reserved a running turn for the terminal. A real Claude Code
 test returned to its prompt after Escape while the reservation stayed running.
 Terminal prompts now provide command source identity without an app execution
-lease. An app claim retires the previous terminal source atomically.
+lease. App work uses its own source and leaves the terminal source's lifecycle
+with the terminal. This also preserves terminal commands if app work starts
+while that terminal remains active.
 
 ## Acceptance scenario
 
@@ -42,6 +44,7 @@ lease. An app claim retires the previous terminal source atomically.
   project file, writes a scratch file and files a report.
 - **Expected:** Both files are written and the Inbox report attributes the
   current terminal prompt. Escape followed by app work in the same conversation
-  lets that work start and retires the prior terminal command source.
+  lets that work start. Starting app work while a terminal prompt runs leaves
+  both command sources usable under their respective identities.
 - **Replayable offline:** yes, through a disposable owner and process fixture
   for command source admission and a CLI hook check for scratch classification.

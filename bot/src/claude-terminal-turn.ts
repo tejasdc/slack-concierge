@@ -3,9 +3,14 @@ import {log} from './log';
 import {processIdentity} from './runtime-identity';
 import {supersededBy, withdrawnSuccessor} from './session-handoff';
 import {nativeRunId, recordSessionEvent, retainSessionInput, sessionMetadata} from './session-inputs';
-import {db, finishTurn, getSessionById, registerProcessInstance} from './state';
+import {db, getSessionById, registerProcessInstance} from './state';
 
 type SourceTurn = {id:number; owner_instance_id:string|null};
+
+function closeSource(turnId:number,outcome:'done'|'error'|'cancelled') {
+  db.query('UPDATE turns SET status=?,ended_at=CURRENT_TIMESTAMP WHERE id=? AND status=?')
+    .run(outcome,turnId,CLAUDE_TERMINAL_SOURCE);
+}
 
 /** The terminal handles delivery. Retain a command source without queueing the prompt for replay. */
 export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'start'|'stop'|'failure'; action_id:string}) {
@@ -27,7 +32,7 @@ export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'
         .get(session.id,CLAUDE_TERMINAL_SCOPE,input.action_id) as {turn_id:number|null}|null;
       if (own&&prompt?.turn_id===own.id) {
         const outcome=input.event==='failure'?'error':'done';
-        finishTurn(own.id,outcome,null);
+        closeSource(own.id,outcome);
         log('info','claude_terminal_turn_finished',{session_id:session.id,turn_id:own.id,outcome});
       }
       return {source:null};
@@ -37,15 +42,13 @@ export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'
       || metadata.interactionPolicy || metadata.canvasObservation || supersededBy(session.id) || withdrawnSuccessor(session.id)
       || db.query("SELECT 1 FROM session_inputs WHERE scope='lab:invocation' AND session_id=? LIMIT 1").get(session.id))
       throw new Error('This Claude Code conversation cannot accept terminal commands on this machine.');
-    if (db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering') LIMIT 1").get(session.id))
-      throw new Error('Concierge already has a running turn in this conversation.');
     const retained = retainSessionInput({sessionId:session.id,scope:CLAUDE_TERMINAL_SCOPE,actionId:input.action_id,
       kind:'input',origin:'service',payload:{text:'Claude Code terminal prompt',processKey}}).input;
     if (retained.turn_id) {
       return {source:own?.id === retained.turn_id ? {inputId:retained.id,runId:nativeRunId(own.id)} : null};
     }
     // An interrupt can skip Stop. A new prompt retires the previous command source.
-    if (current) finishTurn(current.id,'cancelled',null);
+    if (current) closeSource(current.id,'cancelled');
     registerProcessInstance(processKey,process.pid,process.bootId,process.startTicks);
     const turnId = Number(db.query(`INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status,turn_kind,
       accepted_input_id,owner_instance_id)

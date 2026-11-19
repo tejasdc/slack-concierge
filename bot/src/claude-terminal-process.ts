@@ -24,8 +24,7 @@ export function isLiveCommandTurn(db: Database, turn: CommandTurn|null|undefined
   const owner = db.query(`SELECT process.pid,process.boot_id AS bootId,process.process_start_ticks AS startTicks
     FROM process_instances process JOIN sessions session ON session.id=?
     WHERE process.instance_id=? AND session.status<>'archived'
-      AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0
-      AND NOT EXISTS (SELECT 1 FROM turns WHERE session_id=session.id AND status IN ('running','delivering'))`)
+      AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0`)
     .get(turn.session_id ?? null,turn.owner_instance_id ?? null) as ReturnType<typeof processIdentity>|null;
   return !!owner && isProcessIdentityAlive(owner);
 }

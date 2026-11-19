@@ -129,10 +129,11 @@ Registration stores the command source and keeps the prompt in Claude Code's
 transcript. Command source registration carries no execution lease, so it does
 not occupy the app queue or appear as an app run. Claude Code controls terminal
 execution. Its Stop and failure hooks close the exact prompt's source. The next
-terminal prompt retires the previous one. Starting app work retires the terminal
-source in the queue claim transaction, including when Escape skipped Stop.
-An open source requires its original live process for ordinary commands. The
-ledger retains source identity for report receipts and performs no replay.
+terminal prompt retires the previous one. App work uses its own execution and
+command source, so it can start after Escape even when Claude Code skipped Stop.
+It also leaves an active terminal prompt's command source usable. An open
+terminal source requires its original live process for ordinary commands. The
+ledger retains command identity for report receipts and performs no replay.
 
 The edit hook excludes named files outside Git worktrees from the implementation
 budget. Repository writes from the terminal are admitted against the exact live

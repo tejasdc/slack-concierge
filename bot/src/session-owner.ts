@@ -3466,7 +3466,8 @@ export class SessionOwner {
     const portions=validateJournalReview(review,canonical);
     revalidate?.();
     const live=db.query("SELECT * FROM turns WHERE native_run_id=? AND accepted_input_id=?").get(actor.runId,actor.inputId) as any;
-    if(!isLiveCommandTurn(db,live))throw new Error("Journal processing source is no longer active.");
+    if(!(live?.status==='running'?live.stop_requested_at===null:isLiveCommandTurn(db,live)))
+      throw new Error("Journal processing source is no longer active.");
     agentTestSource({inputId:source.input_id,runId:source.run_id});
     const saved=retainSessionInput({sessionId:actor.sessionId,scope:`journal-review:${actor.inputId}`,actionId:input.action_id,
       kind:'journal-review',origin:'agent',payload:review,sourceInputId:actor.inputId,sourceRunId:actor.runId}).input;

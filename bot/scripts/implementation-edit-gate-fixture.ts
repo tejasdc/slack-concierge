@@ -291,15 +291,21 @@ try{
       assert.equal(implementationEditDecision(edit).hold,true,'a tool call from the previous prompt cannot use the new source');
       claudeTerminalTurn({...secondStart,event:'failure'});
       assert.equal(implementationEditDecision(secondEdit).hold,true);
-      // Escape supplies no Stop hook. An app claim must still run and fence the old source.
-      const interrupted=claudeTerminalTurn({...start,action_id:randomUUID()});
+      // Escape supplies no Stop hook. A terminal source alone proves neither interruption nor execution.
+      const interruptedStart={...start,action_id:randomUUID()};
+      const interrupted=claudeTerminalTurn(interruptedStart);
       assert.ok(interrupted.source);
       const appInput=enqueueSessionInput(retainSessionInput({sessionId:session.id,scope:'fixture',actionId:'after-escape',
         kind:'input',origin:'human',payload:{text:'App work after Escape'}}).input.id);
       assert.ok(appInput.turn_id);
       const otherSessions=(db.query('SELECT id FROM sessions WHERE id<>?').all(session.id) as {id:number}[]).map(row=>row.id);
       assert.equal(claimNextQueuedTurn('fixture',Date.now(),otherSessions)?.turn_id,appInput.turn_id);
-      assert.throws(()=>communication.agents({source:{input_id:interrupted.source!.inputId,run_id:interrupted.source!.runId}}),/exact live run/);
+      const overlappingSource={input_id:interrupted.source.inputId,run_id:interrupted.source.runId};
+      assert.doesNotThrow(()=>communication.agents({source:overlappingSource}));
+      assert.equal(implementationEditDecision({...edit,terminalPromptId:interruptedStart.action_id}).hold,false);
+      claudeTerminalTurn({...interruptedStart,event:'stop'});
+      assert.throws(()=>communication.agents({source:overlappingSource}),/exact live run/);
+      assert.equal((db.query('SELECT status FROM turns WHERE id=?').get(appInput.turn_id) as {status:string}).status,'running');
     } finally {
       terminal.kill();
       await terminal.exited;
