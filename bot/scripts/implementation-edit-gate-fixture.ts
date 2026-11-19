@@ -253,7 +253,8 @@ try{
     const {claudeTerminalTurn}=await import('../src/claude-terminal-turn');
     const {agentTestSource}=await import('../src/session-owner');
     const sessionId=randomUUID();
-    const session=createNativeSession('claude-code',{purpose:'develop',origin:'native',title:'Disposable terminal turn',summary:undefined});
+    const session=createNativeSession('claude-code',{purpose:'develop',origin:'native',title:'Disposable terminal turn',
+      providerRunner:'fixture-managed-runner',summary:undefined});
     db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run(sessionId,session.id);
     const terminal=Bun.spawn(['/bin/bash','-c','printf claude > /proc/self/comm; printf ready; read -r line','fixture','--resume',sessionId],
       {stdin:'pipe',stdout:'pipe',stderr:'inherit'});

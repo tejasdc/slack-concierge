@@ -37,6 +37,11 @@ lease. App work uses its own source and leaves the terminal source's lifecycle
 with the terminal. This also preserves terminal commands if app work starts
 while that terminal remains active.
 
+The first installed check exposed a second source refusal for a managed-runner
+conversation. The app runner assignment excluded the interactive process even
+after it proved the exact local Claude Code resume. Registration now uses that
+local process proof and preserves the runner assignment for app work.
+
 ## Acceptance scenario
 
 - **Seed:** An idle Concierge Claude Code conversation with a known native UUID.
