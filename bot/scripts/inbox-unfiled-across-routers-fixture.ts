@@ -13,8 +13,8 @@ process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=INBOX_UNFILED_ACROSS_ROUTERS_TEST_AUTHORIZATION;
 
-const [{db},{createNativeSession,recordSessionEvent,retainSessionInput,updateSessionMetadata},topics]=await Promise.all([
-  import('../src/state'),import('../src/session-inputs'),import('../src/session-topics')]);
+const [{db},{createNativeSession,recordSessionEvent,retainSessionInput,updateSessionMetadata},topics,repairNotices]=await Promise.all([
+  import('../src/state'),import('../src/session-inputs'),import('../src/session-topics'),import('../src/repair-notices')]);
 
 try {
   const former=createNativeSession('codex',{title:'Inbox',summary:'Former router',inbox:true,inboxRole:'project-router',standingRole:'inbox'});
@@ -57,6 +57,9 @@ try {
   assert.notEqual(admitted[1].inputId,admitted[0].inputId);
   assert.deepEqual(topics.wakeRouterForUnfiled(current,admit,at+topics.UNFILED_ALARM_MS+60_000),{woken:false,alarmed:0});
   assert.equal((db.query("SELECT kind FROM repair_notices WHERE key='inbox-unfiled:capture:left-behind'").get() as {kind:string}).kind,'stuck_work');
+  const alertKey = 'inbox-unfiled:capture:left-behind';
+  const recoveryKey = alertKey + ':filed';
+  repairNotices.markRepairNoticesDelivered(db,[alertKey],'fixture:repair-alert');
   // A busy router is still notified at thirty minutes. Retaining a reminder does not
   // replace its running turn or resubmit the original capture.
   db.query("INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)").run('capture:left-behind','topic:filed');
@@ -86,6 +89,16 @@ try {
   db.query("INSERT INTO inbox_topic_roots(root_input_id,topic_id) VALUES(?,?)").run('capture:arrived-during-work','topic:filed');
   assert.deepEqual(topics.wakeRouterForUnfiled(successor,admit,at+63*60_000),{woken:false,alarmed:0});
   assert.equal((db.query("SELECT resolved_at_ms FROM repair_notices WHERE key='inbox-unfiled:capture:arrived-during-work'").get() as {resolved_at_ms:number|null}).resolved_at_ms!==null,true);
+  assert.deepEqual(repairNotices.pendingRepairNotices(db).map(notice=>notice.key),[recoveryKey]);
+  repairNotices.markRepairNoticesDelivered(db,[recoveryKey],'fixture:repair-recovery');
+  // A recovery previously created by the loop must also be terminal.
+  const legacyRecoveryKey = recoveryKey + ':filed';
+  repairNotices.recordRepairNotice(db,{key:legacyRecoveryKey,kind:'stuck_work',text:'Legacy duplicate recovery'});
+  repairNotices.markRepairNoticesDelivered(db,[legacyRecoveryKey],'fixture:legacy-recovery');
+  for (const minute of [64,65]) {
+    assert.deepEqual(topics.wakeRouterForUnfiled(successor,admit,at+minute*60_000),{woken:false,alarmed:0});
+    assert.deepEqual(repairNotices.pendingRepairNotices(db),[]);
+  }
   console.log('inbox-unfiled-across-routers-fixture: predecessor filing custody, idle wake, busy/queued thirty-minute reminder, deduplication, role change and filed cleanup pass.');
 } finally {
   rmSync(scratch,{recursive:true,force:true});
