@@ -1,5 +1,57 @@
 # Provider usage reset cache
 
+## Multi-account cache semantics (2026-11-19)
+
+The 2026-11-19 incident ([plan](../plans/2026-11-19-multi-account-multi-provider-redesign.md))
+left every Claude turn refused for the wrong reason: an Opus-only cached refusal on
+`hey@tejas.nyc` blocked Sonnet and Haiku dispatch because the model-agnostic cache gate
+returned the Opus reset for any question, the account's own fresh reading at 39% weekly
+could not retire the phantom cache, and a hand `claude /login` into the live root made
+`accounts.validate` report `ambiguous` for the one account that still had room. The
+authority for each question moved to one clearly-named rule:
+
+**`claudeAccountCachedReset(account, model, semantics)`** — the cache gate.
+
+- **Model known** → returns only that scope's cached refusal (or null). Opus's cache is
+  irrelevant to Sonnet dispatch; the gate says so.
+- **Model unknown + `semantics: "any-work"`** → returns the max cached reset only when
+  every Claude allowance model (the `CLAUDE_USAGE_FALLBACK_CHAIN`: fable, opus, sonnet,
+  haiku) has a future-reset entry. One spent model does not block a healthy one. Used by
+  release checks (`releaseUsageContinuationHolds`, `releaseUsageHeldWork`) and the "in
+  use" UI line.
+- **Model unknown + default `semantics: "model-specific"`** → throws. The two questions
+  are different and the caller must declare which one it is asking.
+
+**`retireClaudeRefusalSupersededByReading(label, windows, model, readAtMs)`** — the
+model-specific retirement rule, mirroring the Codex one introduced on 2026-11-06. When a
+fresh reading shows every included window under 100% and no window's `resetsAt` matches
+the cached refusal's `resetAt` within 60 seconds, the refused bucket has rolled over and
+the cache is dropped. Called once per model from the Claude reading loop.
+
+**`clearProviderUsageScoped(provider, account?, model?)`** — the scoped operator clear.
+Exposed as `router-actions.sh usage-clear <provider> [--account …] [--model …] [--all]`.
+A model-specific clear requires an account; an unscoped clear requires `--all`. The
+2026-11-19 intervention had to write SQL by hand for exactly this operation; now it does
+not.
+
+**`runnerAccountHomes(key)`** — one home per account, with per-account folder beating the
+live root for the same label. A hand `claude /login` in the live root that mirrors an
+account already held in a per-account folder is reported through `accounts.liveRootMirror`
+for the operator's awareness but is never a dispatch candidate: it cannot cause
+`accounts.validate` to refuse.
+
+**Parser rule (F4)** — Anthropic's `rate_limit_event` is authoritative when present. A
+turn that emits `status:"allowed"` is not an exhaustion, even if the CLI's `<synthetic>`
+assistant text says "weekly limit". `sawStructuredAllowed` and `sawStructuredRejected`
+latch the structured verdicts per attempt; the terminal decision is
+`sawStructuredRejected || (!sawStructuredAllowed && syntheticExhausted)`. A conflict
+logs `claude_synthetic_overridden_by_structured_event` so the frequency is measurable.
+
+A model-specific refusal still retains its model identity — the "percentage drop cannot
+identify which window caused a model-specific refusal" comment (previously in
+`provider-account-usage.ts`) is still a constraint, not an argument against retirement:
+the retirement rule compares each model's own windows and its own cached reset.
+
 ## Google quota disagreement evidence
 
 Google may refuse a turn while the metadata-only CLI allowance reading reports room.

@@ -578,7 +578,10 @@ export class SessionExecutionHost {
    * the automatic move to an account with room (2026-10-07).
    */
   private claudeInUseSentence(chosen:string,usage:ReturnType<typeof providerAccountUsage>):string{
-    const cached=claudeAccountCachedReset(chosen);
+    // The "in use" sentence shows a refusal only when every Claude model is cached-refused.
+    // Showing "last refused until Nov 22" from an Opus-only cache when Sonnet is fine misled
+    // the operator on 2026-11-19.
+    const cached=claudeAccountCachedReset(chosen,null,'any-work');
     if(cached)return `Claude last refused work on ${chosen} until ${noticeTime(db,cached)}. If you have reset its allowance, press Refresh to try the waiting work now.`;
     const reading=usage?.accounts.find(item=>item.label===chosen);
     if(!usage||!reading||!accountReadingFresh('claude-code',usage,reading))return '';

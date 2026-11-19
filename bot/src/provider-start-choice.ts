@@ -38,7 +38,7 @@ export function providerTotalRoom(provider: AutomaticProvider, now = Date.now())
   for (const account of usage.accounts) {
     const counted = provider === 'codex' ? !account.problem && !account.signedOut : launchable.has(account.label);
     if (!counted || !accountReadingFresh(provider,usage,account,now,undefined,model)) continue;
-    if (provider === 'claude-code' && claudeAccountCachedReset(account.label,model)) continue;
+    if (provider === 'claude-code' && claudeAccountCachedReset(account.label,model,model?'model-specific':'any-work')) continue;
     if (provider === 'codex' && cachedUsageLimit(usageAttempt('codex',undefined,account.label))) continue;
     const weekly = includedAllowanceWindows(provider,account,model).filter(window => !refillsWithinHours(window) && Number.isFinite(window.usedPercent));
     if (!weekly.length) continue;
@@ -61,7 +61,7 @@ function candidatesForNewWork(now: number,includeHeldClaude=false): Candidate[] 
     const storedClaude = provider === 'claude-code'
       ? new Set(listProfiles(provider).filter(profile => profile.signedIn).map(profile => profile.label)) : null;
     for (const room of rooms) {
-      const cachedReset = provider === 'claude-code' ? claudeAccountCachedReset(room.account,model) : null;
+      const cachedReset = provider === 'claude-code' ? claudeAccountCachedReset(room.account,model,model?'model-specific':'any-work') : null;
       const codexRefusal = provider === 'codex' ? cachedUsageLimit(usageAttempt('codex',undefined,room.account)) : null;
       // A real usage refusal can make an account fail a fresh launch proof until its reset.
       // It is still a valid *wait* target when its stored login and reset are known.

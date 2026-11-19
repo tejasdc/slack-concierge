@@ -292,7 +292,7 @@ export function accountAvailability(provider: AccountIdentityProvider,model?:str
   const usage = storedUsage(provider);
   if (!usage) return [];
   return usage.accounts.filter(account => account.label).flatMap(account => {
-    const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label,model)
+    const refusedUntil = provider === "claude-code" ? claudeAccountCachedReset(account.label,model,model?'model-specific':'any-work')
       : provider === 'codex' ? cachedUsageLimit(usageAttempt('codex',undefined,account.label))?.resetAt??null : null;
     if (!accountReadingFresh(provider,usage,account,Date.now(),undefined,model))
       return refusedUntil === null ? [] : [{account:account.label,selected:account.current,hasRoom:false,freeAt:refusedUntil}];
