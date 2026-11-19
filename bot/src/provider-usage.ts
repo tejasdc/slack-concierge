@@ -204,7 +204,9 @@ export function recordUsageSuccess(attempt: UsageAttempt) {
     const limit = state.limits[attempt.scope];
     // An older success cannot erase a quota failure observed after it started.
     if (state.generation !== attempt.generation || !limit || limit.revision > attempt.revision) return;
-    delete state.limits[attempt.scope];
+    // Clearing a limit still needs an ordering marker. An older request can return its
+    // refusal after this success, even after the account reading that proved room ages.
+    state.limits[attempt.scope] = { resetAt: null, observedAt: Date.now(), revision: ++state.revision };
     prune(state);
     write(attempt.provider, state);
   }).immediate());
