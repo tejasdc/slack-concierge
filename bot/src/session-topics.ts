@@ -289,9 +289,14 @@ const idList=(value:unknown,field:string):string[]=>{
 // rebuilding everything cost 85 s on the live ledger (2026-09-22), and links are frequent.
 let rootMemo=new Map<string,string|null>();
 let threadLinkWatermark=-1;
-export function invalidateTopicRoots() {rootMemo=new Map();threadLinkWatermark=-1;entryIndexState=null;}
+let conversationRootMemo={linkSequence:-1,roots:new Map<string,string|null>()};
+export function invalidateTopicRoots() {
+  rootMemo=new Map();threadLinkWatermark=-1;entryIndexState=null;
+  conversationRootMemo={linkSequence:-1,roots:new Map()};
+}
+const latestThreadLinkSequence=()=>(db.query("SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events WHERE kind='thread_link'").get() as {sequence:number}).sequence;
 export function refreshRootMemo() {
-  const current=(db.query("SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events WHERE kind='thread_link'").get() as {sequence:number}).sequence;
+  const current=latestThreadLinkSequence();
   if(current===threadLinkWatermark)return;
   if(threadLinkWatermark<0){rootMemo=new Map();entryIndexState=null;threadLinkWatermark=current;return;}
   const moved=db.query("SELECT input_id,payload_json FROM session_owner_events WHERE kind='thread_link' AND sequence>? ORDER BY sequence").all(threadLinkWatermark) as {input_id:string|null;payload_json:string}[];
@@ -307,9 +312,9 @@ export function refreshRootMemo() {
   for(const [key,root] of rootMemo)if((root&&affected.has(root))||[...affected].some(id=>key.endsWith(':'+id)))rootMemo.delete(key);
   if(entryIndexState)entryIndexState=reassignEntries(entryIndexState,affected);
 }
-function rootOf(sessionId:number,messageId:string):string|null {
+function rootOf(sessionId:number,messageId:string,memo=rootMemo):string|null {
   const key=`${sessionId}:${messageId}`;
-  if(rootMemo.has(key))return rootMemo.get(key)??null;
+  if(memo.has(key))return memo.get(key)??null;
   // A provider/cwd cutover created a new Inbox session, and its predecessors' messages are
   // still Inbox messages. Resolve through the session that actually holds the message.
   const root=inboxThreadRoot(sessionId,messageId)??(()=>{
@@ -318,7 +323,7 @@ function rootOf(sessionId:number,messageId:string):string|null {
   })();
   // Only a found root is remembered. A null can mean the owner retained a reply before
   // its accepted event exists. Remembering that null hid new replies until the next link.
-  if(root!==null)rootMemo.set(key,root);
+  if(root!==null)memo.set(key,root);
   return root;
 }
 type EntryRecord={sequence:number;at:string;sessionId:number};
@@ -1659,12 +1664,21 @@ export function topicEntries(topicId:string,cursor:string|null=null,limit:number
   return {messages,nextCursor:page.nextCursor,coverage:page.coverage};
 }
 
+// Conversation reads may have memoized a reply without ever reading the capture it follows.
+// A new placement can therefore change a root that is absent from this memo. Clear the
+// memo on any placement change rather than inferring the affected roots from partial reads.
+function conversationRoots() {
+  const linkSequence=latestThreadLinkSequence();
+  if(conversationRootMemo.linkSequence!==linkSequence)conversationRootMemo={linkSequence,roots:new Map()};
+  return conversationRootMemo.roots;
+}
+
 type ConversationMember={sequence:number;root:string|null};
 
 /** A human input can belong to another root only by a retained reply or a recorded placement.
  *  Exact roots, replies and placements are candidates. Current ledger resolution decides membership;
  *  a candidate from an old placement may now belong elsewhere. */
-function humanInboxMembers(roots:string[],sourceId:string,directSessionId:number|null):Map<string,ConversationMember> {
+function humanInboxMembers(roots:string[],sourceId:string,directSessionId:number|null,memo:Map<string,string|null>):Map<string,ConversationMember> {
   const rootSet=new Set(roots);
   const rows=db.query(`WITH roots AS (SELECT value AS id FROM json_each(?)),
     candidates AS (
@@ -1682,7 +1696,7 @@ function humanInboxMembers(roots:string[],sourceId:string,directSessionId:number
     ) ORDER BY sequence`).all(JSON.stringify(roots),sourceId,directSessionId) as {input_id:string;sequence:number;session_id:number}[];
   const members=new Map<string,ConversationMember>();
   for(const row of rows){
-    const root=rootOf(row.session_id,row.input_id);
+    const root=rootOf(row.session_id,row.input_id,memo);
     if(directSessionId!==null||row.input_id===sourceId||(root&&rootSet.has(root)))members.set(row.input_id,{sequence:row.sequence,root});
     else members.delete(row.input_id);
   }
@@ -1712,8 +1726,8 @@ export const verifiedHumanConversation=db.transaction((operationId:string,cursor
       throw new TopicError('Continue with an exact conversation cursor.',400,'CONVERSATION_CURSOR_INVALID');
   }
   const size=Math.min(200,Math.max(1,Number(limit)||100));
-  refreshRootMemo();
-  const root=rootOf(source.session_id,source.id);
+  const memo=conversationRoots();
+  const root=rootOf(source.session_id,source.id,memo);
   const topicId=root?topicOfRoot(root):null;
   const roots=topicId?topicRoots(topicId):root?[root]:[];
   // A message he sent straight to an ordinary session has no Inbox thread: its conversation is
@@ -1721,7 +1735,7 @@ export const verifiedHumanConversation=db.transaction((operationId:string,cursor
   // order is the session's accepted-input order rather than the Inbox event sequence.
   const inboxSource=!!(db.query("SELECT 1 FROM sessions WHERE id=? AND json_extract(native_metadata_json,'$.inbox')=1").get(source.session_id));
   const scope:'topic'|'thread'|'session'|'source'=topicId?'topic':root?'thread':inboxSource?'source':'session';
-  const inboxMembers=humanInboxMembers(roots,source.id,scope==='session'?source.session_id:null);
+  const inboxMembers=humanInboxMembers(roots,source.id,scope==='session'?source.session_id:null,memo);
   const members=scope==='session'?new Map<string,ConversationMember>():inboxMembers;
   if(scope==='session'){
     for(const row of db.query("SELECT rowid AS sequence,id FROM session_inputs WHERE session_id=? AND origin='human'").all(source.session_id) as {sequence:number;id:string}[])
