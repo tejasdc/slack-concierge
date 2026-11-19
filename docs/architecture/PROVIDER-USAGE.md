@@ -139,7 +139,9 @@ different freshly read account's weekly reset and differs from the selected acco
 The same rule excludes older conflicting cache entries from dispatch and from the blocking
 status read. On each fresh account reading, Concierge retires conflicting entries with a
 newer ordering marker. This keeps an old entry from blocking work when that reading later
-ages out, and prevents a refusal from an older in-flight attempt from restoring it. It does
+ages out, and prevents a refusal from an older in-flight attempt from restoring it. A later
+successful request clears the limit but keeps a newer ordering marker, so its success cannot
+erase that protection before an earlier request returns. It does
 not declare the selected account healthy: a new request may try that
 account and supply its own provider result. The refused conversation keeps its exact queued
 turn and provider reset; if that conversation cannot continue on an otherwise usable account,
