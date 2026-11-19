@@ -3,6 +3,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {Database} from 'bun:sqlite';
+import {ledgerWriteResults} from '../src/ledger-write-results';
 import {IMPLEMENTATION_EDIT_GATE_TEST_AUTHORIZATION} from '../src/test-authorizations';
 
 const scratch=mkdtempSync(join(tmpdir(),'concierge-provider-admission-history-'));
@@ -27,7 +28,7 @@ try{
   assert.equal(originalReceipt.admission.promptHash,first.promptHash);
 
   db.query("UPDATE turns SET status='error' WHERE id=?").run(claim.turn_id);
-  const recoveryWriter=new Database(join(scratch,'state.db'));
+  const recoveryWriter=ledgerWriteResults(new Database(join(scratch,'state.db'),{readwrite:true,create:false}));
   try {
     assert.throws(
       ()=>recoveryWriter.query("UPDATE turns SET status='queued', dispatch_attempt=0 WHERE id=? AND status='error'").run(claim.turn_id),
