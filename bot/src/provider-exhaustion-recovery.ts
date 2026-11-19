@@ -7,6 +7,7 @@ import {sessionAddress} from './session-address';
 import {log} from './log';
 import {automaticMoveRefusal} from './automatic-move-kind';
 import {aliasKeepingTier,resolveProviderAlias} from './aliases';
+import {canTakeAnyWork, listAccounts} from './account-authority';
 
 export type WaitingTurn={id:number;session_id:number;accepted_input_id:string;status:string;dispatch_attempt:number;
   dispatch_hold:string|null;provider_admission_intended_at:string|null;provider_started_at:string|null;
@@ -167,12 +168,26 @@ export function transferSession(sessionId:number):number {
 }
 
 /** Runs on the owner after a confirmed usage hold, on fresh readings and after restart.
- * The same SQLite writer serializes this transaction with the FIFO claim. */
+ * The same SQLite writer serializes this transaction with the FIFO claim.
+ *
+ * Gate change (2026-11-19, F7): use the single authority instead of `/usage` percentages.
+ * The 2026-11-19 incident showed a Claude account at 39% weekly where every model was
+ * cached-refused by Anthropic; the old percentage gate did not trigger a transfer.
+ */
 export function recoverExhaustedClaudeWork():number {
   if(reconciling)return 0;
+  const claudeAccounts=listAccounts('claude-code').map(home=>({provider:'claude-code' as const,label:home.label}));
+  const codexAccounts=listAccounts('codex').map(home=>({provider:'codex' as const,label:home.label}));
+  // Every Claude account refuses AND at least one Codex account can take work.
+  const everyClaudeRefused=claudeAccounts.length>0&&claudeAccounts.every(a=>!canTakeAnyWork('claude-code',a).ok);
+  const someCodexReady=codexAccounts.some(a=>canTakeAnyWork('codex',a).ok);
+  // Keep the legacy percentage gate as a safety net for the first roll-out.
   const claude=newWorkCapacity('claude-code');
   const codex=newWorkCapacity('codex');
-  if(!claude||claude.used<100||!codex||codex.used>=100){scanAfterTurnId=0;return 0;}
+  const percentageGate=claude&&claude.used>=100&&codex&&codex.used<100;
+  if(!everyClaudeRefused||!someCodexReady){
+    if(!percentageGate){scanAfterTurnId=0;return 0;}
+  }
   // An account with room whose login here is signed out is a sign-in wait, not an allowance wall: his
   // message stays held in the session he wrote it in until the sign-in lands. On 2026-11-02 the Mac moved
   // his 7:28 PM message into a new Codex session while he was signing tejas@chann.app back in, and in

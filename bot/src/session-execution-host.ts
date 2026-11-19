@@ -578,7 +578,7 @@ export class SessionExecutionHost {
    * the automatic move to an account with room (2026-10-07).
    */
   private claudeInUseSentence(chosen:string,usage:ReturnType<typeof providerAccountUsage>):string{
-    const cached=claudeAccountCachedReset(chosen);
+    const cached=claudeAccountCachedReset(chosen,null,"any-work");
     if(cached)return `Claude last refused work on ${chosen} until ${noticeTime(db,cached)}. If you have reset its allowance, press Refresh to try the waiting work now.`;
     const reading=usage?.accounts.find(item=>item.label===chosen);
     if(!usage||!reading||!accountReadingFresh('claude-code',usage,reading))return '';

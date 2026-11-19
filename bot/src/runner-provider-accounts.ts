@@ -14,6 +14,7 @@ import { useCodexResetCredit } from "./codex-reset-credit";
 import { readRunnerGoogleUsage } from "./runner-google-usage";
 import {createConnection} from 'node:net';
 import { CLAUDE_SCRATCH, isClaudePerLogin } from './claude-home-entries';
+import { listAccounts as listAccountsFromResolver } from './account-home-resolver';
 import {observeAppliedRuntimeMaintenance,progressRuntimeMaintenance,sameRuntime,sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState,type RuntimeMaintenanceObservation} from './codex-runtime-maintenance';
 import {isProcessIdentityAlive,processIdentity,type ProcessIdentity} from './runtime-identity';
 import {LEDGER_IMAGE_PATH} from './agent-ledger-image-boundary';
@@ -652,25 +653,42 @@ export function runnerAccountHome(key: AccountProvider, accountLabel: string): s
   return matches.length === 1 ? matches[0]! : null;
 }
 
-/** Enumerate credential-verified homes, for exact transcript discovery on this runner. */
+/**
+ * Enumerate credential-verified homes for this runner. Deduped by account label:
+ * when the live root is signed into the same account as a per-account folder, the
+ * per-account folder wins and the live root is NEVER returned as a second candidate.
+ *
+ * Before 2026-11-19 this returned both. A hand `claude /login` into the live root
+ * while the same account already had a per-account folder caused `accounts.validate`
+ * to refuse every Claude turn with `resolution:"ambiguous"`. See fault F3 of
+ * `docs/incidents/2026-11-19-opus-only-refusal-blocked-every-claude-turn.md`.
+ *
+ * Both the per-account folder and the resolver report whether a live-root mirror
+ * also exists, so transcript discovery that depends on the live root's history view
+ * can still find it via `runnerLiveRootMirror`.
+ */
 export function runnerAccountHomes(key: AccountProvider): { account: string; home: string }[] {
-  const found = new Map<string, string>();
-  const active = key === "codex" ? codexAccount(liveRoot(key)) : claudeAccount(liveRoot(key));
-  if (active) found.set(liveRoot(key), active.label);
-  let names: string[] = [];
-  try { names = readdirSync(accountRoot(key)).filter(name => !name.startsWith(".")); } catch { return [...found].map(([home, account]) => ({ account, home })); }
-  for (const name of names) {
-    const home = join(accountRoot(key), name);
-    const account = key === "codex" ? codexAccount(home) : claudeAccount(home);
-    if (account && !found.has(home)) found.set(home, account.label);
-  }
-  return [...found].map(([home, account]) => ({ account, home }));
+  return resolveAccountsFor(key).map(record => ({ account: record.label, home: record.canonicalHome }));
 }
 
-/** The terminal's Claude login can expose history but never identifies a saved agent account. */
+/** The one additional kind of candidate the transcript-discovery paths may need: a
+ *  live root that duplicates a per-account folder's sign-in. Dispatch never uses this. */
+export function runnerLiveRootMirror(key: AccountProvider): { account: string; liveRoot: string; canonicalHome: string } | null {
+  const record = resolveAccountsFor(key).find(record => record.liveRootMirror);
+  return record ? { account: record.label, liveRoot: record.liveRoot, canonicalHome: record.canonicalHome } : null;
+}
+
+function resolveAccountsFor(key: AccountProvider) {
+  return listAccountsFromResolver(key);
+}
+
+/**
+ * The terminal's Claude login can expose history but never identifies a saved agent account.
+ * Pre-rebuild filter preserved for backwards compatibility; new callers should use
+ * `resolveAccountHome(provider, label)` directly.
+ */
 function namedRunnerAccountHomes(key: AccountProvider, accountLabel: string) {
-  const terminalHome = key === "claude-code" ? liveRoot(key) : null;
-  return runnerAccountHomes(key).filter(candidate => candidate.home !== terminalHome && candidate.account === accountLabel);
+  return runnerAccountHomes(key).filter(candidate => candidate.account === accountLabel);
 }
 
 /**
@@ -838,6 +856,10 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
   if (method === "accounts.validate") {
     const key = provider(params.provider);
     if (typeof params.account !== "string" || !params.account.trim()) throw new Error("A provider account label is required.");
+    // F3 fix (2026-11-19): `runnerAccountHomes` now dedupes by label. A live-root
+    // mirror can never appear here as a second candidate, so "ambiguous" is only
+    // for genuinely ambiguous states — never for a hand `/login` that duplicated
+    // an existing per-account folder.
     const matches = namedRunnerAccountHomes(key, params.account);
     return { available: matches.length === 1, resolution: matches.length === 1 ? "unique" : matches.length ? "ambiguous" : "missing" };
   }

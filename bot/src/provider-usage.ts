@@ -2,10 +2,11 @@ import { db, paceReleasedWork, RELEASE_PACE_HOLD, releaseScheduledProviderRetrie
 import {createHash} from 'node:crypto';
 import { log } from "./log";
 import { ProviderDispatchError } from "./provider-failures";
-import { claudeUsageAllowanceModel } from "./aliases";
+import { claudeUsageAllowanceModel, CLAUDE_USAGE_FALLBACK_CHAIN } from "./aliases";
 import { accountScope, currentAccount, codexAccountIdForLabel } from "./provider-accounts";
 import { usageCacheTable } from "./provider-usage-tables";
 import { recordSessionEvent } from "./session-inputs";
+import { clearScoped, retireRefusalSupersededByReading as retireRefusalSupersededByReadingInner, type RefusalProvider } from "./account-refusal-cache";
 
 export type UsageProvider = "codex" | "claude-code" | "antigravity";
 type UsageLimit = { resetAt: number | null; observedAt: number; revision: number };
@@ -68,15 +69,45 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
   return limit?.resetAt != null && limit.resetAt > Date.now() ? limit : null;
 }
 
-/** A refusal from this account's attempted Claude model survives a process restart. */
-export function claudeAccountCachedReset(account:string,model?:string|null):number|null {
-  const prefix=`${createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,24)}:`;
-  const state=read('claude-code');
-  const exact=model?`${prefix}${claudeUsageAllowanceModel(model.trim())}`:null;
-  const resets=Object.entries(state.limits).filter(([scope,limit])=>(exact?scope===exact:scope.startsWith(prefix))
-    &&limit.resetAt!==null&&limit.resetAt>Date.now())
-    .map(([,limit])=>limit.resetAt!);
-  return resets.length?Math.max(...resets):null;
+/**
+ * A refusal from this account's attempted Claude model survives a process restart.
+ *
+ * `semantics`:
+ *   - `"model-specific"` (default): returns the refusal reset for exactly `<account, model>`,
+ *     or null if that scope has no active refusal. `model` is required.
+ *   - `"any-work"`: walks the Claude allowance chain (fable/opus/sonnet/haiku) and
+ *     returns the max reset only if EVERY model in the chain is currently refused.
+ *     Returns null if any model has room. Fixes 2026-11-19 F1: an Opus-only refusal
+ *     no longer poisons Sonnet/Haiku/any-model dispatch decisions.
+ *
+ * See `bot/src/account-refusal-cache.ts` for the underlying store; this is the thin
+ * backwards-compatible wrapper.
+ */
+export function claudeAccountCachedReset(
+  account: string,
+  model?: string | null,
+  semantics: "model-specific" | "any-work" = "model-specific",
+): number | null {
+  if (!model && semantics === "model-specific")
+    throw new Error("claudeAccountCachedReset requires a model when semantics is 'model-specific'.");
+  const prefix = `${createHash("sha256").update(account.toLowerCase()).digest("hex").slice(0, 24)}:`;
+  const state = read("claude-code");
+  const now = Date.now();
+  if (model) {
+    const exact = `${prefix}${claudeUsageAllowanceModel(model.trim())}`;
+    const limit = state.limits[exact];
+    return limit?.resetAt != null && limit.resetAt > now ? limit.resetAt : null;
+  }
+  // Any-work: the account is "spent" only when every allowance model in the chain is
+  // currently refused with a future reset.
+  const resets: number[] = [];
+  for (const candidate of CLAUDE_USAGE_FALLBACK_CHAIN) {
+    const scope = `${prefix}${claudeUsageAllowanceModel(candidate)}`;
+    const limit = state.limits[scope];
+    if (!limit || limit.resetAt === null || limit.resetAt <= now) return null;
+    resets.push(limit.resetAt);
+  }
+  return resets.length ? Math.max(...resets) : null;
 }
 
 export function usageLimitMessage(attempt: UsageAttempt, limit: UsageLimit): string {
@@ -139,6 +170,37 @@ function persistUsageObservation(attempt: UsageAttempt, effect: () => unknown) {
     // Cache persistence cannot turn completed provider effects into a retryable failure.
     log("warn", "provider_usage_cache_write_failed", { provider: attempt.provider, scope: attempt.scope });
   }
+}
+
+/**
+ * Scoped clear of the usage cache. Preserves 2026-11-19 F10: the Nov 19 incident
+ * needed a single-account, single-model clear that this CLI did not have, so the
+ * fix was written as SQL by hand. Routes through `account-refusal-cache.ts`.
+ */
+export function clearProviderUsageScoped(
+  provider: UsageProvider, accountLabel?: string | null, model?: string | null,
+): { provider: UsageProvider; cleared: number; generation: number; resumed_work: boolean } {
+  if (provider === "claude-code" && model && !accountLabel)
+    throw new Error("clearProviderUsageScoped requires an account label when a model is provided.");
+  const codexAccountId = provider === "codex" && accountLabel ? codexAccountIdForLabel(accountLabel) : null;
+  const result = clearScoped(provider as RefusalProvider, accountLabel ?? null, model ?? null, codexAccountId);
+  return { provider, cleared: result.cleared, generation: result.generation, resumed_work: result.cleared > 0 };
+}
+
+/**
+ * Generic retire-by-reading for Claude (previously Codex-only). Preserves 2026-11-19 F2:
+ * a fresh Claude reading with every window under 100% and no window reset matching the
+ * cache's reset within 60s retires the cache.
+ */
+export function retireClaudeRefusalSupersededByReading(
+  accountLabel: string, model: string,
+  windows: ReadonlyArray<{ usedPercent: number | null; resetsAt: string | null }>,
+  readAtMs: number,
+): boolean {
+  return retireRefusalSupersededByReadingInner(
+    "claude-code", accountLabel, claudeUsageAllowanceModel(model),
+    windows, readAtMs,
+  );
 }
 
 export function clearProviderUsage(provider: UsageProvider) {
