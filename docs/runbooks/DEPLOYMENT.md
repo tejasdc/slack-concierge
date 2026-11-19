@@ -668,7 +668,12 @@ own `failure=` line. Preparation and preactivation
 presentation checks allow 180 seconds: successful preparation took about 47 seconds, and
 the same candidate passed in 52 seconds under load after a 90-second timeout. This gives
 ordinary disk contention room while retaining a finite hang guard. The candidate's
-own child checks retain their specific deadlines and diagnostics. The running-agent copy guard
+own child checks retain their specific deadlines and diagnostics. The database safety check seeds
+its disposable write-ahead log in a single transaction with automatic checkpointing disabled. The
+compressed-copy check still verifies that those committed rows survive checkpoint, backup and
+restore. Its 30-second bound stays in place, and failure output includes exit status, signal and
+elapsed time. See the [November 18 database safety fixture timeout](../incidents/2026-11-18-compressed-copy-fixture-wal-timeout.md).
+The running-agent copy guard
 applies its ten-second hang bound to each child operation, not to the sum of bundle builds and
 all sequential wrapper invocations. It streams numbered start/completion markers to retained
 stderr and reports exit status, signal and elapsed time on child failure. The controller's

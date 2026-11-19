@@ -27,8 +27,10 @@ const loggingGuard=Bun.spawnSync(['/usr/bin/python3',join(import.meta.dir,'bound
 if(loggingGuard.exitCode!==0)throw new Error(`Logging source guard failed: ${loggingGuard.stderr.toString().slice(0,2000)}`);
 phase('logging-source-guard');
 const ledgerConstructors=checkLedgerConstructors(root);
+const safetyStarted=performance.now();
 const safety=Bun.spawnSync([process.execPath,join(import.meta.dir,'database-safety-fixture.ts')],{cwd:root,stdout:'pipe',stderr:'pipe',timeout:30_000});
-if(safety.exitCode!==0)throw new Error(`Database safety check failed: ${safety.stderr.toString().slice(-3000)}`);
+if(safety.exitCode!==0)throw new Error(
+  `Database safety check failed: exit=${safety.exitCode} signal=${safety.signalCode} elapsedMs=${Math.round(performance.now()-safetyStarted)}\n${safety.stderr.toString().slice(-3000)}`);
 phase('database-safety');
 // Each guard operation owns its hang bound; the controller owns the whole gate deadline.
 // Inherit progress so even an outer timeout retains the last operation reached.

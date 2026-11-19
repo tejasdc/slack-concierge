@@ -51,7 +51,10 @@ try {
   const live = ledgerWriteResults(new Database(ledger));
   live.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT)");
   const insert = live.prepare('INSERT INTO notes(body) VALUES (?)');
-  for (let n = 0; n < 4000; n++) insert.run(`note ${n} `.repeat(40));
+  // Use one commit to keep scratch seeding within the release gate's deadline.
+  live.transaction(() => {
+    for (let n = 0; n < 4000; n++) insert.run(`note ${n} `.repeat(40));
+  })();
   // Rows still only in the write-ahead log must reach the copy.
   assert(statSync(`${ledger}-wal`).size > 0);
   const zpath = (n: number) => join(compressedRoot, `state.pre-deployment-repair.${n}.db.zst`);
