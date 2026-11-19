@@ -507,6 +507,37 @@ his September report was refused.
 
 ### Agent issue reports
 
+**Found work waits for his accept** [decision: agent-found-work-waits-for-his-accept]. On
+2026-11-19 the email reader reported Apple mail about IdeaFlow's apps, which are no longer his; the
+report became Inbox work, thread upkeep re-sent it when it stalled, and the server signed in to
+App Store Connect, setting off Apple sign-in alerts on his Watch. Tejas: "do not create fucking work
+without, if you don't have 100% confidence ... Add it to my like a to-do list ... so I can ... accept
+or decline". So a `report` without `--certain "<why it is certainly his>"` is a **proposal**
+(`agent-proposals.ts`): the owner keeps it in `agent_proposals` and creates no capture, thread,
+request or router turn, so nothing can dispatch it and thread upkeep has nothing to remind about.
+The owner offers it as a candidate to-do in thnkr.ing (source type `concierge-proposal`, labelled
+with the proposing agent, linking its session, quoting the report) through the private to-dos
+capability, acting as the reporting agent. On its reading cadence, and only while a proposal is
+undecided, it reads his to-dos: **Accept** (the to-do becomes open) admits the retained report to
+the Inbox exactly as below and then marks the to-do done ("Sent to the Inbox"), because the work is
+now agents' and tracked there; **Dismiss** (dropped) closes it with no work and sends the
+proposing agent a service notice to change its own rules; **Done** means he handled it himself. A
+retry of the same action returns the proposal, or the Inbox receipt once accepted. An accepted proposal whose admission did not finish is admitted on the next pass before its to-do is closed. A lost to-do answer is recovered by the candidate's fixed ID; a proposal thnkr.ing refuses as a duplicate of another to-do (the same words and quote he already has or decided) is closed as `duplicate` and not offered again. `--certain` is the agent's own claim, recorded on the capture; only in-process owner calls can mark a report owner-made. One agent may
+have at most three undecided proposals; a fourth is refused so no agent floods him with maybes.
+Each proposal receipt lists that agent's recent decided proposals so it learns before proposing
+again, and `reports proposals` measures proposals and decisions per agent. Owner-made reports (his
+journal lines, journal processing failures, the leftover-process audit) are certain by
+construction. `--certain` needs a 12-500 character reason and is kept on the capture; use it for
+faults in his own systems (Concierge, thnkr.ing), his own words, or his standing instruction.
+
+The same rule covers `sessions ask --requested-effect work` (including `sessions implement`): a run
+that only a service woke (a watch, timer or notice) and that has no human lineage, meaning none of
+its inputs, its work grant, or the source chain behind them is his message, carries his
+originating message, or passes through an Inbox session, is refused unless it gives
+`--certain "<why>"`; the refusal points to `report` for a proposal. A run holding a message from him
+or another agent is not gated again: that agent's own ask was held to this rule. The Inbox router is exempt because the Inbox admits only his messages,
+accepted proposals and certain reports.
+
 `router-actions.sh report --source-input <id> --source-run <id> --action-id <stable id> --title "<issue>" [--file <path> ...] -- <observation, expected behavior, impact>` sends a likely bug or concerning issue the agent noticed outside its task. The local owner verifies the reporting run. A Mac report crosses the authenticated Concierge peer link to the server Inbox; no Mac Inbox is created. The server gateway marks only authenticated peer traffic, and the owner requires that mark before accepting Mac attribution; a local caller cannot assert it in a request header. The server retains the exact text and files under the agent's authorship, and atomically creates an Inbox thread in Agent reports with one open request before admitting it to the router. The receipt names the capture, thread and request. Repeating the action ID with the same text returns the same receipt; changing the text under that ID is refused. The router dispatches work from the report's capture root and links the dispatch to the existing request. Its stop check refuses an Inbox turn that received a report whose open request still has no linked dispatch; the router must check for a prior unlinked dispatch before sending another, or explicitly resolve the report. A settled answer closes the request under the normal thread upkeep rules; an uncertain end leaves it open for the router to resolve. The report cannot be imported silently or attributed to Tejas. A peer connection loss before a receipt is ambiguous; the caller retries the same action ID, and the owner returns the one retained report if it arrived.
 
 Admission recovery checks the exact accepted capture and live intent before starting a router turn. A locally authored report also has to match its retained source input and run; a verified Mac report has no local source-input relationship. This check applies both immediately after acceptance and during the owner's recovery sweep. It never releases a Focus review hold or replays a report that already has a turn.

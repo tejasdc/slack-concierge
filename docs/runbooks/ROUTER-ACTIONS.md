@@ -396,6 +396,14 @@ never needs the owner journal to learn that, for example, ChatGPT Pro's limit re
 
 ## Report evidence reads
 
+`router-actions.sh reports proposals [days]` (default 30) reads the agent proposals: work agents
+found on their own and were not certain was his, waiting for his Accept or Dismiss in thnkr.ing
+To-dos. Per proposing agent (its standing role, else its session) it counts proposed, accepted,
+declined, handled-by-him and still waiting, plus how many reports in the period were sent as
+certain, and lists the latest fifty with their to-do ID or the reason the to-do could not be made.
+A falling proposal count and decline rate is the measure that agents are learning from his
+answers. See [agent issue reports](../contracts/native-inbox.md#agent-issue-reports).
+
 `router-actions.sh reports capture <captureId>` reads one retained capture's exact words, source,
 attachment list and held state by its ID (with or without the `capture:` prefix), at any age and
 from any earlier Inbox session. Use it when a request cites his capture; the paged captures list
