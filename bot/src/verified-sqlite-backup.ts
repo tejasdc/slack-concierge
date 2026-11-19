@@ -115,25 +115,17 @@ export function pruneVerifiedBackups(folder: string, keep: number, maxBytes = Nu
   for (const name of automatic) {
     if (verified.includes(name) || newestVerified === null || stamp(name) >= newestVerified) continue;
     if (existsSync(join(folder, `${name}.publishing`))) continue;
-    for (const suffix of ['.verified.json', LEDGER_CHECK_SUFFIX, '-wal', '-shm', '-journal', ''])
+    for (const suffix of ['.verified.json', '-wal', '-shm', '-journal', ''])
       rmSync(join(folder, name + suffix), { force: true });
     removed++;
   }
-  // Staging left by a publisher killed mid-copy (it can hold gigabytes) and a ledger check whose
-  // copy was never written are superseded once a newer verified copy exists, like an unverified
-  // copy. A newer one may belong to a publisher still running and is left alone.
+  // Staging left by a publisher killed mid-copy (it can hold gigabytes) is superseded once a newer
+  // verified copy exists, like an unverified copy. A newer one may belong to a running publisher.
   for (const name of readdirSync(folder)) {
-    if (name.endsWith('.publishing')) {
-      const copy = name.slice(0, -'.publishing'.length);
-      if (AUTOMATIC_COPY_NAME.test(copy) && newestVerified !== null && stamp(copy) < newestVerified)
-        rmSync(join(folder, name), { recursive: true, force: true });
-      continue;
-    }
-    if (!name.endsWith(LEDGER_CHECK_SUFFIX)) continue;
-    const copy = name.slice(0, -LEDGER_CHECK_SUFFIX.length);
-    if (!AUTOMATIC_COPY_NAME.test(copy) || existsSync(join(folder, copy)) || existsSync(join(folder, `${copy}.publishing`))) continue;
-    if (newestVerified === null || stamp(copy) >= newestVerified) continue;
-    rmSync(join(folder, name), { force: true });
+    if (!name.endsWith('.publishing')) continue;
+    const copy = name.slice(0, -'.publishing'.length);
+    if (AUTOMATIC_COPY_NAME.test(copy) && newestVerified !== null && stamp(copy) < newestVerified)
+      rmSync(join(folder, name), { recursive: true, force: true });
   }
   syncPath(folder);
   return removed;
@@ -141,48 +133,8 @@ export function pruneVerifiedBackups(folder: string, keep: number, maxBytes = Nu
 
 /** Automatic pre-update copies: `.db` is a plain SQLite copy, `.db.zst` a compressed one. */
 export const AUTOMATIC_COPY_NAME = /^state\.pre-deployment-repair\.\d+\.db(\.zst)?$/;
-/** Beside a planned compressed copy: the whole-ledger check made while Concierge was still serving. */
-export const LEDGER_CHECK_SUFFIX = '.ledger-check.json';
-
-export type LedgerCheck = { integrity: 'ok'; foreignKeys: 'ok'; checkedAt: string; device: number; inode: number };
-
-function ledgerFileIdentity(path: string) {
-  const stat = statSync(realpathSync(path));
-  return { device: stat.dev, inode: stat.ino };
-}
-
-/**
- * The whole-ledger integrity and foreign-key check, run on the ledger itself through a read-only
- * connection. A compressed copy is the ledger's own bytes, so this check is what proves the copy
- * is a sound database. It runs while Concierge is still serving: on the stopped ledger it took
- * about two minutes at 8.4 GB (2026-11-04), longer than an agent's command waits.
- */
-export function checkLedgerInPlace(path: string): LedgerCheck {
-  const database = new Database(path, { readonly: true });
-  try {
-    database.exec('PRAGMA busy_timeout=5000');
-    checkSqliteBackup(database);
-  } finally { database.close(); }
-  return { integrity: 'ok', foreignKeys: 'ok', checkedAt: new Date().toISOString(), ...ledgerFileIdentity(path) };
-}
-
-export function recordLedgerCheck(copyPath: string, check: LedgerCheck): void {
-  const temporary = `${copyPath}${LEDGER_CHECK_SUFFIX}.partial`;
-  writeFileSync(temporary, JSON.stringify(check) + '\n', { mode: 0o600 });
-  syncPath(temporary);
-  renameSync(temporary, `${copyPath}${LEDGER_CHECK_SUFFIX}`);
-  syncPath(dirname(copyPath));
-}
-
-/** The serving-time check recorded for this planned copy, when it checked this same ledger file. */
-export function recordedLedgerCheck(copyPath: string, ledgerPath: string): LedgerCheck | null {
-  try {
-    const check = JSON.parse(readFileSync(`${copyPath}${LEDGER_CHECK_SUFFIX}`, 'utf8')) as LedgerCheck;
-    const file = ledgerFileIdentity(ledgerPath);
-    return check.integrity === 'ok' && check.foreignKeys === 'ok' && check.device === file.device && check.inode === file.inode
-      ? check : null;
-  } catch { return null; }
-}
+/** Created inside a compressed copy's staging folder once its ledger snapshot is pinned. */
+export const PINNED_MARKER = 'pinned';
 
 /** Compressed size over ledger size for the newest verified compressed copy, or null. */
 export function lastCompressionRatio(folder: string): number | null {
@@ -209,44 +161,64 @@ export function zstdCommand(): string {
   return found;
 }
 
+function fileState(path: string) {
+  const stat = statSync(realpathSync(path));
+  return { size: stat.size, modifiedNs: stat.mtimeMs, changedNs: stat.ctimeMs, inode: stat.ino, device: stat.dev };
+}
+
 /**
- * Writes the stopped ledger's exact bytes, compressed, as a verified copy. Nothing uncompressed is
- * written: the ledger is checkpointed into its main file and that file is streamed through zstd, so
- * the copy needs only its compressed size on disk and stops growing one-for-one with the ledger
- * (17.7 GB on 2026-11-18, when a full-size copy plus its margin no longer fit the root disk). The
- * writer reservation is held for the whole read, so no commit can land mid-copy.
+ * Writes the ledger's exact bytes as of the call, compressed, as a verified copy, without keeping
+ * Concierge stopped while it streams. Call it with every other ledger writer stopped; once
+ * `onPinned` has run, Concierge may start and write again.
+ *
+ * The pin: the log is checkpointed into the main file and emptied (TRUNCATE) while this process
+ * holds the writer reservation, and a read transaction then starts on the empty log. SQLite gives
+ * such a reader read-mark 0, and copying log pages into the main file needs that mark exclusively,
+ * so until this reader ends every later commit stays in the log and the main file's bytes cannot
+ * change (checked on this server 2026-11-18: 20,000 rows and an index written by another process,
+ * its PASSIVE checkpoint copied nothing and TRUNCATE returned busy; the main file was byte-identical).
+ * The main file is then the snapshot. The copy checks it (integrity and foreign keys, on the pinned
+ * reader), streams it through zstd with no uncompressed file, and confirms the main file's size and
+ * change times never moved, so a broken pin fails the copy instead of certifying a mixed file.
+ *
+ * Streamed in the stopped window, an 18.0 GB ledger kept Concierge stopped 76 s longer on
+ * 2026-11-18 (237 MB/s), and that grows with the ledger. While pinned the owner's checkpoints wait
+ * and its log grows by what it writes during the copy.
  * `freeFloorBytes`: the copy stops and is removed if the disk would fall below that much free.
- * The certificate records the SHA-256 of the ledger bytes; `restoreCompressedCopy` proves it.
  */
-export async function publishCompressedLedgerCopy(sourcePath: string, destination: string, check: LedgerCheck,
-  freeFloorBytes: number): Promise<{ bytes: number; sourceBytes: number; sha256: string }> {
+export async function publishCompressedLedgerCopy(sourcePath: string, destination: string, freeFloorBytes: number,
+  onPinned: (reservation: string) => void = () => {}): Promise<{ bytes: number; sourceBytes: number; sha256: string }> {
   if (!destination.endsWith('.zst')) throw new Error('A compressed ledger copy is named .zst.');
   const folder = dirname(destination);
   mkdirSync(folder, { recursive: true, mode: 0o700 });
   const reservation = `${destination}.publishing`;
   mkdirSync(reservation, { mode: 0o700 });
   const temporary = join(reservation, 'partial.db.zst');
-  let database: Database | null = null;
+  let writer: Database | null = null, reader: Database | null = null;
   let compressor: ReturnType<typeof Bun.spawn> | null = null;
   try {
     if (existsSync(destination) || existsSync(`${destination}.verified.json`))
       throw new Error('Refusing to replace an existing backup.');
-    const file = ledgerFileIdentity(sourcePath);
-    if (file.device !== check.device || file.inode !== check.inode)
-      throw new Error('The ledger check was made on a different file than the one being copied.');
-    database = ledgerWriteResults(new Database(sourcePath));
-    const checkpoint = database.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy: number };
-    database.exec('BEGIN IMMEDIATE');
+    writer = ledgerWriteResults(new Database(sourcePath));
+    const checkpoint = writer.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy: number };
+    writer.exec('BEGIN IMMEDIATE');
     // SQLite keeps the log beside the real file, not beside the state directory's link to it.
     const wal = `${realpathSync(sourcePath)}-wal`;
     if (checkpoint.busy !== 0 || (existsSync(wal) && statSync(wal).size !== 0))
       throw new Error('The ledger could not be checkpointed into its main file; another connection holds it.');
-    const pageSize = (database.query('PRAGMA page_size').get() as { page_size: number }).page_size;
-    const pageCount = (database.query('PRAGMA page_count').get() as { page_count: number }).page_count;
+    reader = new Database(sourcePath, { readonly: true });
+    reader.exec('BEGIN');
+    const pageSize = (reader.query('PRAGMA page_size').get() as { page_size: number }).page_size;
+    const pageCount = (reader.query('PRAGMA page_count').get() as { page_count: number }).page_count;
+    writer.exec('ROLLBACK');
+    writer.close(); writer = null;
     const sourceBytes = pageSize * pageCount;
-    if (statSync(sourcePath).size !== sourceBytes)
-      throw new Error(`Ledger file size ${statSync(sourcePath).size} is not its ${pageCount} pages of ${pageSize} bytes.`);
+    const pinned = fileState(sourcePath);
+    if (pinned.size !== sourceBytes)
+      throw new Error(`Ledger file size ${pinned.size} is not its ${pageCount} pages of ${pageSize} bytes.`);
+    onPinned(reservation);
 
+    checkSqliteBackup(reader);
     const hash = new Bun.CryptoHasher('sha256');
     const running = Bun.spawn([zstdCommand(), '-3', '-T0', '-q', '-c'], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
     compressor = running;
@@ -256,7 +228,7 @@ export async function publishCompressedLedgerCopy(sourcePath: string, destinatio
       fdatasyncSync(output); unflushed = 0;
       const disk = statfsSync(folder);
       if (Number(disk.bavail) * Number(disk.bsize) >= freeFloorBytes) return;
-      stopped = new Error(`The compressed ledger copy stopped at ${(bytes / 1024 ** 3).toFixed(1)} GiB: the disk fell below its ${(freeFloorBytes / 1024 ** 3).toFixed(1)} GiB free margin. Free space, then deploy again.`);
+      stopped = new Error(`The compressed ledger copy stopped at ${(bytes / 1024 ** 3).toFixed(1)} GiB: the disk fell below its ${(freeFloorBytes / 1024 ** 3).toFixed(1)} GiB free margin.`);
       running.kill();
     };
     const drain = (async () => {
@@ -268,8 +240,7 @@ export async function publishCompressedLedgerCopy(sourcePath: string, destinatio
           if (unflushed >= COPY_FLUSH_BYTES) flushAndCheckFloor();
         } catch (error) {
           // A failed write (a full disk, an I/O error) must stop zstd too: left running, it would
-          // block on its unread output and the read loop would wait on it forever, with the
-          // ledger's writer reservation held and Concierge stopped.
+          // block on its unread output and the read loop would wait on it forever with the pin held.
           stopped = new Error(`The compressed ledger copy could not be written: ${error instanceof Error ? error.message : String(error)}`);
           running.kill();
         }
@@ -304,20 +275,21 @@ export async function publishCompressedLedgerCopy(sourcePath: string, destinatio
       if (stopped) throw stopped;
       throw error;
     } finally { closeSync(output); }
-    database.exec('ROLLBACK');
-    database.close(); database = null;
+    const after = fileState(sourcePath);
+    if (after.size !== pinned.size || after.modifiedNs !== pinned.modifiedNs || after.changedNs !== pinned.changedNs
+      || after.inode !== pinned.inode || after.device !== pinned.device)
+      throw new Error('The ledger main file changed while it was being copied; the copy is not a snapshot.');
     const sha256 = hash.digest('hex');
     chmodSync(temporary, 0o400);
     syncPath(temporary);
     renameSync(temporary, destination);
     syncPath(folder);
-    certify(destination, sourcePath, reservation, { format: 'zstd', sourceBytes, sha256, ledgerCheckedAt: check.checkedAt });
-    rmSync(`${destination}${LEDGER_CHECK_SUFFIX}`, { force: true });
-    syncPath(folder);
+    certify(destination, sourcePath, reservation, { format: 'zstd', sourceBytes, sha256 });
     return { bytes: statSync(destination).size, sourceBytes, sha256 };
   } finally {
     if (compressor && compressor.exitCode === null) { compressor.kill(); await compressor.exited; }
-    if (database) { try { database.exec('ROLLBACK'); } catch {} database.close(); }
+    if (writer) { try { writer.exec('ROLLBACK'); } catch {} writer.close(); }
+    if (reader) { try { reader.exec('COMMIT'); } catch {} reader.close(); }
     rmSync(reservation, { recursive: true, force: true });
   }
 }

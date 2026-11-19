@@ -1290,38 +1290,56 @@ it automatically. Since 2026-11-18 an update's copy is compressed
 (`state.pre-deployment-repair.<ms>.db.zst`). A full-size copy needed the whole ledger plus a
 10 GiB margin on the shared root disk; at 17.7 GB that no longer fit after four refusals on
 2026-11-16, and the requirement grew one-for-one with the ledger. Compressing a full-size
-copy afterwards would still need the full size first, so the copy is the stopped ledger's own
-bytes streamed through `zstd -3` with no uncompressed file:
+copy afterwards would still need the full size first, so the copy is the ledger's own bytes
+streamed through `zstd -3` with no uncompressed file. The first one, on 2026-11-18, was 3.8 GB
+for an 18.0 GB ledger.
 
-1. While Concierge serves, when the release changes the schema, `--backup-if-needed` runs the
-   whole-ledger integrity and foreign-key check on the ledger itself (read-only), makes room
-   (below), records that check beside the planned name (`<copy>.ledger-check.json`, bound to
-   the ledger file's device and inode) and prints `copy_planned` with that path. A failed check
-   or too little room fails the update before Concierge stops.
-2. With Concierge stopped, `--schema-only --backup-path <that path>` checkpoints the log into
-   the main file (`wal_checkpoint(TRUNCATE)`), holds the writer reservation, and streams the file
-   through zstd in 8 MiB pieces, recording the SHA-256 of the ledger bytes. Output is flushed to
-   disk every 32 MiB and the copy stops, removing its partial output, if free space would fall
-   below the 10 GiB margin. It is published as before (read-only, renamed, directory synced)
-   with a verification record that also carries `format: zstd`, `sourceBytes`, `sha256` and when
-   the ledger was checked. If no serving-time check exists (the change appeared only after the
-   stop, or the combined manual command) the check runs in the stopped window instead. Then the
-   schema step proceeds unchanged. The stopped window grows by the stream time, roughly ledger
-   size over compression throughput; the update's journal records it as the
-   `compressed_copy` phase.
+The copy is pinned in the stopped window and streamed after Concierge restarts. Streaming it
+in the stopped window kept Concierge stopped 86 s instead of about 10 on 2026-11-18 (76 s of
+stream at 237 MB/s from the ledger's own filesystem), and that grew with the ledger.
+
+1. While Concierge serves, when the release changes the schema, `--backup-if-needed` checks
+   that zstd exists, waits (up to 20 minutes, still serving) for an earlier update's copy unit
+   that is still streaming, makes room (below) and prints `copy_planned` with the copy's path.
+2. With Concierge stopped, `--schema-only --backup-path <that path>` starts the copy in its own
+   transient unit, `concierge-ledger-copy-<ms>`, so the end of the update cannot kill it. The
+   unit checks that Concierge is fully stopped, checkpoints the log into the main file and
+   empties it (`wal_checkpoint(TRUNCATE)`) while holding the writer reservation, then starts a
+   read transaction on the empty log and releases the writer. SQLite gives that reader read-mark
+   0, and copying log pages into the main file needs that mark exclusively, so until the copy
+   ends every later commit (the schema step's, Concierge's) stays in the log and the main file
+   is a fixed snapshot. Checked on this server's SQLite: with the pin held, another process wrote
+   20,000 rows and an index; its passive checkpoint copied nothing, a truncating one returned
+   busy, and the main file stayed byte-identical. The unit marks the pin with a `pinned` file in
+   its staging folder; the migrator waits up to two minutes for it (about 0.1 s in practice), and
+   stops the unit before failing if it never comes, so a late pin cannot capture a later ledger.
+   The schema step then runs and Concierge restarts as before.
+3. The unit, with Concierge serving, runs the whole-ledger integrity and foreign-key check on
+   the pinned snapshot, streams the main file through zstd in 8 MiB pieces with a SHA-256 of the
+   ledger bytes, flushes every 32 MiB, and stops if free space would fall below the 10 GiB margin.
+   It then confirms the main file's size, inode and change times never moved during the copy,
+   publishes it as before (read-only, renamed, directory synced, with a verification record that
+   also carries `format: zstd`, `sourceBytes` and `sha256`), applies retention and ends the pin.
+   Its result is `deployment_migration_copy_written` or `deployment_migration_copy_failed` in
+   `journalctl -u concierge-ledger-copy-<ms>`; a failed unit stays listed by `systemctl --failed`.
+
+What this trades: the old copy was complete before the schema step ran. Now the schema step
+runs once the snapshot is pinned, and if the stream later fails (the disk falls below its margin,
+an I/O error, the unit is killed) that update has no copy; the pinned bytes return to normal
+checkpointing when the pin ends. Room is checked before Concierge stops to make that unlikely.
+While the pin is held (an 18 GB ledger: a few minutes for check and stream) the owner's
+checkpoints wait and its log grows by what it writes in that time.
 
 Room: the copy plus the 10 GiB margin, where the copy is estimated at the ledger size times the
-newest compressed copy's recorded ratio (one half before the first one; transcript-like text
-compressed 3.2x to 4.8x here, so half is pessimistic, and the whole size would keep the refusal
-this replaced). The estimate decides whether older copies the retention would drop are removed
-first and whether the update starts; the margin check during the stream is the guarantee.
-Those older copies are removed in the serving phase, so if the stopped phase then fails no
-verified copy remains; the ledger itself is untouched in that case, and the removed copy only
+newest compressed copy's recorded ratio (one half before the first one). The estimate decides
+whether older copies the retention would drop are removed first and whether the update starts;
+the margin check during the stream is the guarantee. Those older copies are removed in the
+serving phase; the ledger is untouched if the update then fails, and the removed copy only
 rolled back the previous release, which this update replaces. A failed write or a full disk
-stops zstd and the update; it never waits with the writer reservation held. `--backup-only`
-(control recovery and older controllers) still writes the plain `VACUUM INTO` copy below.
-Retention, retirement and the 12 GiB cap count both kinds; a ledger check whose copy was never
-written, and staging left by a publisher killed mid-copy, go once a newer verified copy exists.
+stops zstd; it never waits with the pin held. `--backup-only` (control recovery and older
+controllers) still writes the plain `VACUUM INTO` copy below, and the combined manual command
+streams its compressed copy in-process before migrating. Retention, retirement and the 12 GiB
+cap count both kinds; staging left by a killed publisher goes once a newer verified copy exists.
 The compressed file is not read back before it is certified: its writes are checked as they
 happen, and a restore proves its SHA-256.
 
