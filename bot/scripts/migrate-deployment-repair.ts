@@ -3,11 +3,11 @@
 import { Database } from "bun:sqlite";
 import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, realpathSync, statSync, statfsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { spawnSync } from 'node:child_process';
 import { canonicalSql } from '../src/canonical-sql';
-import { AUTOMATIC_COPY_NAME, checkLedgerInPlace, checkSqliteBackup as checks, isVerifiedBackup, lastCompressionRatio, publishCompressedLedgerCopy,
-  publishSqliteBackup, pruneVerifiedBackups, recordLedgerCheck, recordedLedgerCheck, restoreCompressedCopy, verifyMigrationBackup, zstdCommand } from '../src/verified-sqlite-backup';
+import { AUTOMATIC_COPY_NAME, checkSqliteBackup as checks, isVerifiedBackup, lastCompressionRatio, PINNED_MARKER, publishCompressedLedgerCopy,
+  publishSqliteBackup, pruneVerifiedBackups, restoreCompressedCopy, verifyMigrationBackup, zstdCommand } from '../src/verified-sqlite-backup';
 
 /**
  * The schema this release's code builds, read from a database it creates from nothing. Run in a
@@ -300,31 +300,91 @@ function backUpUncompressed() {
 }
 
 /**
- * While Concierge serves: check the whole ledger, make room and record the check beside the
- * planned copy's name. The copy itself is written in the stopped window, where the ledger's bytes
- * hold still, so it can be streamed compressed with no full-size temporary file.
+ * While Concierge serves: confirm compression is available, wait out a previous update's copy that
+ * is still streaming (its pin would make this update's pin fail), and make room. The copy itself
+ * starts in the stopped window.
  */
-function planCompressedCopy() {
+async function planCompressedCopy() {
   zstdCommand(); // Missing compression fails the update here, before Concierge stops.
-  const check = checkLedgerInPlace(statePath);
+  refuseWhileEarlierCopyRuns();
   requireRoomForCopy(expectedCompressedBytes());
-  recordLedgerCheck(backupPath, check);
+}
+/**
+ * An earlier update's copy still holds its pin, so this update's pin could not empty the log.
+ * Refuse at once rather than wait: by now the update has closed admission, and waiting out a copy
+ * of several minutes would hold every new agent turn that long.
+ */
+function refuseWhileEarlierCopyRuns() {
+  const running = runningCopyUnits();
+  if (running.length) throw new Error(`An earlier ledger copy is still running (${running.join(', ')}); the ledger is unchanged. Deploy again once it ends.`);
 }
 
-/** With Concierge stopped: write the compressed copy, using the serving-time check when there is one. */
-async function backUpCompressed() {
-  let check = recordedLedgerCheck(backupPath, statePath);
-  if (!check) {
-    // No serving-time check: the schema change appeared only after the coordinator stopped, or the
-    // combined manual command. Check here; slow on a large ledger, but the copy needs it.
-    const finishLedgerCheck = beginOfflinePhase('ledger_check');
-    check = checkLedgerInPlace(statePath);
-    finishLedgerCheck();
-  }
+/** In-process compressed copy, for the combined manual command: nothing waits on Concierge. */
+async function backUpCompressedInProcess() {
   requireRoomForCopy(expectedCompressedBytes());
-  const copy = await publishCompressedLedgerCopy(statePath, backupPath, check, COPY_MARGIN_BYTES);
+  const copy = await publishCompressedLedgerCopy(statePath, backupPath, COPY_MARGIN_BYTES);
   console.error(JSON.stringify({ event: 'deployment_migration_copy_written', backup_path: backupPath, ...copy }));
   pruneAutomaticCopies();
+}
+
+/** Copies stream in their own transient unit, so the end of the update cannot kill them. */
+const COPY_UNIT_PREFIX = 'concierge-ledger-copy-';
+// The pin is a checkpoint of the stopped ledger's log and two short transactions; a large log left
+// at the stop takes longer to copy into the main file.
+const PIN_WAIT_MS = 10 * 60_000;
+function scratchState() {
+  return realpathSync(stateDirectory!).startsWith(`${realpathSync(tmpdir())}/`);
+}
+function runningCopyUnits(): string[] {
+  if (scratchState()) return [];
+  const listed = spawnSync('systemctl', ['list-units', '--plain', '--no-legend', '--state=activating,active,deactivating',
+    `${COPY_UNIT_PREFIX}*`], { encoding: 'utf8' });
+  if (listed.status !== 0) throw new Error(`Running ledger copies could not be listed: ${listed.stderr}`);
+  return listed.stdout.split('\n').map(line => line.trim().split(/\s+/)[0]!).filter(Boolean);
+}
+
+/**
+ * With Concierge stopped: start the copy in its own unit and return once it has pinned the ledger
+ * (see publishCompressedLedgerCopy). From then on the main file holds the pre-migration bytes until
+ * the copy ends, so the schema step and Concierge's restart need not wait for the stream. A copy
+ * that has not pinned in time is stopped before this fails, so it can never pin a later ledger.
+ */
+async function startPinnedCopy() {
+  refuseWhileEarlierCopyRuns();
+  requireRoomForCopy(expectedCompressedBytes());
+  const unit = `${COPY_UNIT_PREFIX}${basename(backupPath).split('.')[2]}`;
+  const command = [process.execPath, Bun.main, '--pinned-copy', '--backup-path', backupPath];
+  const service = process.env.CONCIERGE_SERVICE || 'concierge-bot.service';
+  let child: ReturnType<typeof Bun.spawn> | null = null;
+  if (scratchState()) {
+    child = Bun.spawn(command, { env: process.env, stdio: ['ignore', 'ignore', 'inherit'] });
+  } else {
+    // Low CPU and disk priority: it reads the whole ledger while Concierge serves. Not collected, so
+    // a failed copy stays listed by systemctl --failed; a successful one unloads by itself.
+    const started = spawnSync('systemd-run', ['--unit', unit, '--no-block', '--property=Type=exec',
+      '--property=Nice=10', '--property=CPUWeight=20', '--property=IOWeight=20',
+      `--setenv=CONCIERGE_STATE_DIR=${stateDirectory}`, `--setenv=CONCIERGE_SERVICE=${service}`,
+      `--setenv=HOME=${process.env.HOME || '/root'}`, `--setenv=PATH=${process.env.PATH || '/usr/bin:/bin'}`, '--', ...command],
+      { encoding: 'utf8' });
+    if (started.status !== 0) throw new Error(`The ledger copy unit could not be started: ${started.stderr}`);
+  }
+  const marker = join(`${backupPath}.publishing`, PINNED_MARKER);
+  const deadline = Date.now() + PIN_WAIT_MS;
+  // A small ledger's copy can finish, and remove its staging with the marker, between two looks;
+  // a published, verified copy was pinned first.
+  const pinned = () => existsSync(marker) || isVerifiedBackup(backupPath);
+  while (!pinned()) {
+    const ended = child ? child.exitCode !== null
+      : !['activating', 'active'].includes(spawnSync('systemctl', ['show', unit, '-p', 'ActiveState', '--value'], { encoding: 'utf8' }).stdout.trim());
+    if ((ended && !pinned()) || Date.now() > deadline) {
+      if (child) { child.kill(); await child.exited; }
+      else spawnSync('systemctl', ['stop', unit], { encoding: 'utf8', timeout: 60_000 });
+      throw new Error(`The ledger copy ${ended ? 'ended' : 'did not pin the ledger in time'} before the schema step; the ledger is unchanged. See ${child ? 'its output' : `journalctl -u ${unit}`}.`);
+    }
+    await Bun.sleep(100);
+  }
+  child?.unref();
+  console.error(JSON.stringify({ event: 'deployment_migration_copy_pinned', backup_path: backupPath, unit: child ? null : unit }));
 }
 
 const restoreArgument = process.argv.indexOf('--restore-copy');
@@ -336,6 +396,26 @@ if (restoreArgument >= 0) {
   process.exit(0);
 }
 
+if (process.argv.includes('--pinned-copy')) {
+  // The copy unit. The stopped-coordinator check above ran first, so the pin is of a quiet ledger.
+  if (!namedBackup) throw new Error('A pinned copy names its --backup-path.');
+  try {
+    const copy = await publishCompressedLedgerCopy(statePath, backupPath, COPY_MARGIN_BYTES, reservation => {
+      const marker = join(reservation, PINNED_MARKER);
+      closeSync(openSync(marker, 'wx', 0o600));
+      const folder = openSync(reservation, 'r');
+      try { fsyncSync(folder); } finally { closeSync(folder); }
+    });
+    console.error(JSON.stringify({ event: 'deployment_migration_copy_written', backup_path: backupPath, ...copy }));
+    console.error(JSON.stringify({ event: 'deployment_migration_copy_retention', pruned: pruneAutomaticCopies() }));
+    process.exit(0);
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'deployment_migration_copy_failed', backup_path: backupPath,
+      error: error instanceof Error ? error.message : String(error) }));
+    process.exit(1);
+  }
+}
+
 if (process.argv.includes('--plan')) {
   // Read-only: what this release's schema step would add to the live ledger.
   console.log(JSON.stringify({ status: 'planned', changes: await schemaChanges() }));
@@ -345,7 +425,7 @@ if (backupIfNeeded) {
   // Run from the release being installed, before the coordinator stops: its own code says what its
   // schema step would add, and only then is the ledger copied.
   const changes = await schemaChanges();
-  if (changes.length) planCompressedCopy();
+  if (changes.length) await planCompressedCopy();
   else pruneAutomaticCopies();
   // backup_path names the copy the stopped schema step writes there.
   console.log(JSON.stringify(changes.length ? { status: 'copy_planned', backup_path: backupPath, changes }
@@ -365,14 +445,15 @@ if (schemaOnly && !namedBackup) {
     process.exit(0);
   }
   const finishLateBackup = beginOfflinePhase('late_backup');
-  await backUpCompressed();
+  await startPinnedCopy();
   finishLateBackup();
 } else if (backupOnly) backUpUncompressed();
-else if (!schemaOnly || !existsSync(backupPath)) {
-  // The copy this update planned while serving, or the combined manual command's copy.
-  const finishCompressedCopy = beginOfflinePhase('compressed_copy');
-  await backUpCompressed();
-  finishCompressedCopy();
+else if (!schemaOnly) await backUpCompressedInProcess();
+else if (!existsSync(backupPath)) {
+  // The copy this update planned while serving: pinned now, streamed after Concierge restarts.
+  const finishCopyPin = beginOfflinePhase('copy_pin');
+  await startPinnedCopy();
+  finishCopyPin();
 } else {
   const finishBackupVerification = beginOfflinePhase('backup_verification');
   verifyMigrationBackup(backupPath);
