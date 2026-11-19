@@ -1304,9 +1304,10 @@ stream at 237 MB/s from the ledger's own filesystem), and that grew with the led
    since admission is already closed), makes room (below) and prints `copy_planned` with the
    copy's path.
 2. With Concierge stopped, `--schema-only --backup-path <that path>` starts the copy in its own
-   transient unit, `concierge-ledger-copy-<ms>` (Nice 10, CPU and IO weight 20, four zstd
-   threads, because it reads the whole ledger while Concierge serves), so the end of the update
-   cannot kill it. The
+   transient unit, `concierge-ledger-copy-<ms>` (Nice 10, CPU weight 20, four zstd threads,
+   because it reads the whole ledger while Concierge serves; its IO weight 20 likely does nothing
+   on this host's `none`/`mq-deadline` disk schedulers, so if a copy shows up as disk wait, cap it
+   with IOReadBandwidthMax on the ledger's device), so the end of the update cannot kill it. The
    unit checks that Concierge is fully stopped, checkpoints the log into the main file and
    empties it (`wal_checkpoint(TRUNCATE)`) while holding the writer reservation, then starts a
    read transaction on the empty log and releases the writer. SQLite gives that reader read-mark
