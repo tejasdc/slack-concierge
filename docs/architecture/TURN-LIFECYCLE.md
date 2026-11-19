@@ -135,6 +135,9 @@ owner turn and `dispatch_attempt`. `GET /sessions/v1/operations/:operationId` ke
 records. A legacy receipt admission with no matching attempt event is included with
 `dispatchAttempt: null`; the owner does not infer its attempt, reconstruct a missing prompt hash,
 or invent a historical event. ChatGPT's immutable prepared-admission comparison remains in force.
+The ledger refuses any update that decreases a turn's attempt, including a requeue
+issued from another database connection. A new claim moves forward from the
+retained number. See the [attempt reset incident](../incidents/2026-11-19-requeue-reset-dispatch-attempt.md).
 
 This preservation starts with the admission retained when the correction is installed. For the
 already-recovered `concierge:3012` report-back, the first admission (prompt hash beginning
