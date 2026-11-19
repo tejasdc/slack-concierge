@@ -1340,7 +1340,9 @@ export class SessionExecutionHost {
     if(claim.turn_kind!=='native'||!claim.accepted_input_id)throw new Error('Native execution requires an accepted input.');
     const input=getAcceptedSessionInput(claim.accepted_input_id),session=getSessionById(claim.session_id);
     if(!input||!session||input.session_id!==session.id||input.turn_id!==claim.turn_id||input.steering_id!==null)throw new Error('Accepted native input binding changed.');
-    if(session.provider_id==='codex'&&process.platform==='linux')recordSessionEvent({eventId:`codex-process-audit-intent:${claim.turn_id}`,
+    // Key the audit intent by (turn, dispatch_attempt) so a re-queued turn can
+    // record its new attempt's intent; see 2026-11-19 event-identity incident.
+    if(session.provider_id==='codex'&&process.platform==='linux')recordSessionEvent({eventId:`codex-process-audit-intent:${claim.turn_id}:${claim.dispatch_attempt}`,
       sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'process_audit',payload:{}});
     if(!adoption)recordSessionEvent({eventId:`run:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
     else if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`terminal:${claim.turn_id}:${claim.dispatch_attempt}`)) {
