@@ -264,11 +264,11 @@ if [ -e "$managed" ] && [ ! -e "$claude_etc/.concierge-managed" ]; then
   exit 1
 fi
 mkdir -p "$claude_etc"
-printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]},{"matcher":"Bash|Edit|MultiEdit|Write|NotebookEdit|mcp__.*","hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}]}}' > "$tmp"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]},{"matcher":"Bash|Edit|MultiEdit|Write|NotebookEdit|mcp__.*","hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}],"Stop":[{"hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}]}}' > "$tmp"
 install -m 0644 "$tmp" "$managed"
 printf '%s\n' "$marker" > "$claude_etc/.concierge-managed"
 rm -f "$tmp"
-echo "Installed Claude Code managed history guard: $managed -> $guard"
+echo "Installed Claude Code managed hooks: $managed -> $guard, $edit_guard"
 
 # The Codex desktop app's SSH payload starts its own unmanaged App Server whenever none answers,
 # unless CODEX_SSH_SKIP_APP_SERVER_BOOT=true. On 2026-10-08 it won the ten seconds a Codex

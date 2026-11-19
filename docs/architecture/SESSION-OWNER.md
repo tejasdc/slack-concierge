@@ -115,6 +115,32 @@ The existing session projection subscribes to native terminal facts as well as S
 
 A confirmed nonretryable native provider refusal settles as a failed input and releases its session. It is not an uncertain send or an invitation to retry. The existing Slack remediation flow and genuinely ambiguous native effects retain their previous parking behavior.
 
+## Terminal Claude Code turns
+
+When a local interactive Claude Code process explicitly resumes an existing
+Concierge conversation by its provider UUID, the managed prompt hook registers
+the submitted prompt with the owner. The owner checks the local process and
+unique conversation binding and retains a service-authored input and run in one
+transaction. Claude Code passes the pair to the agent in that prompt's hook
+context. Router commands use the same source checks as on an app-started turn.
+Reports use the ordinary Inbox or proposal path and keep the agent attribution.
+
+Registration stores the turn's identity and keeps the prompt in Claude Code's
+transcript. The turn joins the session's running-work check so the owner queues
+its own work until the terminal prompt ends. Claude Code continues to execute and
+control it. The Stop hook closes the command source. A subsequent submitted
+prompt can retire an interrupted source from the same terminal process. The
+owner's existing process recovery handles a dead terminal without replaying its
+prompt.
+
+The edit hook excludes named files outside Git worktrees from the implementation
+budget. Repository writes from the terminal are admitted against the exact live
+process that registered the prompt. Managed work uses its existing edit budget.
+
+The journal records `claude_terminal_turn_admitted` and
+`claude_terminal_turn_finished` with the session and turn identity. The hook and
+local owner route carry no prompt text.
+
 ## Externally submitted Codex turns
 
 The Codex observer subscribes each uniquely bound provider thread while it runs and retains

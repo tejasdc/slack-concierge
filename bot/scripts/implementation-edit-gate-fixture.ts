@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
+import {mkdirSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Database} from 'bun:sqlite';
@@ -248,6 +249,46 @@ try{
   assert.equal((db.query('SELECT provider_turn_id FROM turns WHERE id=?').get(outsideTurn) as any).provider_turn_id,'outside-provider-turn');
   for(let i=0;i<4;i++)assert.equal(implementationEditDecision({providerSessionId:'outside-thread',ownerTurnId:outsideTurn,providerTurnId:'outside-provider-turn',providerModel:SOL,toolId:`outside-${i}`,toolName:'apply_patch'}).hold,false);
   assert.equal(implementationEditDecision({providerSessionId:'outside-thread',ownerTurnId:outsideTurn,providerTurnId:'outside-provider-turn',providerModel:SOL,toolId:'outside-fifth',toolName:'apply_patch'}).hold,true);
+  if(process.platform==='linux'){
+    const {claudeTerminalTurn}=await import('../src/claude-terminal-turn');
+    const {agentTestSource}=await import('../src/session-owner');
+    const sessionId=randomUUID();
+    const session=createNativeSession('claude-code',{purpose:'develop',origin:'native',title:'Disposable terminal turn',summary:undefined});
+    db.query('UPDATE sessions SET agent_session_uuid=? WHERE id=?').run(sessionId,session.id);
+    const terminal=Bun.spawn(['/bin/bash','-c','printf claude > /proc/self/comm; printf ready; read -r line','fixture','--resume',sessionId],
+      {stdin:'pipe',stdout:'pipe',stderr:'inherit'});
+    try{
+      const {value}=await terminal.stdout.getReader().read();
+      assert.equal(new TextDecoder().decode(value),'ready');
+      const start={sessionId,pid:terminal.pid,event:'start' as const,action_id:randomUUID()};
+      const edit={providerSessionId:sessionId,terminalPid:terminal.pid,toolName:'Write',toolId:'terminal-write'};
+      assert.equal(implementationEditDecision(edit).hold,true,'the terminal starts with no admitted turn');
+      const first=claudeTerminalTurn(start);
+      assert.ok(first.source);
+      assert.deepEqual(claudeTerminalTurn(start),first,'retry keeps the exact source');
+      assert.equal(agentTestSource(first.source)?.sessionId,session.id);
+      const source={input_id:first.source.inputId,run_id:first.source.runId};
+      assert.doesNotThrow(()=>communication.agents({source}));
+      assert.equal(implementationEditDecision(edit).exempt,'claude-terminal');
+      assert.equal(implementationEditDecision({...edit,terminalPid:process.pid}).hold,true);
+      assert.equal(owner.view(db.query('SELECT * FROM sessions WHERE id=?').get(session.id) as any).capabilities.stop,false);
+      mkdirSync(join(scratch,'slack-inbox','.git'),{recursive:true});
+      writeFileSync(join(scratch,'slack-inbox','AGENTS.md'),'Disposable Inbox fixture.\n');
+      const report=await owner.reportAgentIssue({source:first.source,actionId:'terminal-report',title:'Disposable report',
+        text:'The named-file edit gate refused a terminal-backed prompt.',certain:'Disposable Inbox test.'}) as {report?:{requestId:string}};
+      assert.ok(report.report?.requestId,'the ordinary report path retains an Inbox request');
+      const second=claudeTerminalTurn({...start,action_id:randomUUID()});
+      assert.ok(second.source);
+      assert.notEqual(second.source.runId,first.source.runId);
+      assert.equal(claudeTerminalTurn(start).source,null,'a late retry cannot replace the current prompt');
+      assert.throws(()=>communication.agents({source}),/exact live run/);
+      claudeTerminalTurn({...start,event:'stop'});
+      assert.equal(implementationEditDecision(edit).hold,true);
+    } finally {
+      terminal.kill();
+      await terminal.exited;
+    }
+  }
   const gatePath=new URL('../src/implementation-edit-gate.ts',import.meta.url).pathname;
   const statePath=new URL('../src/state.ts',import.meta.url).pathname;
   const reopened=Bun.spawnSync(['bun','-e',`const [{implementationEditDecision},{db}]=await Promise.all([import(${JSON.stringify(gatePath)}),import(${JSON.stringify(statePath)})]);
@@ -259,5 +300,5 @@ try{
   try{
     assert.equal((observer.query("SELECT COUNT(*) AS count FROM session_owner_events WHERE turn_id=? AND input_id=? AND kind='implementation_helper_edit'").get(lifecycleTurn,lifecycleInput.id) as any).count,8,'a fresh reader sees reopened continuation retain its original parent and input');
   }finally{observer.close();}
-  console.log('implementation edit gate: exact handoff, helper separation, retained Codex child identity and human model-picker custody passed');
+  console.log('implementation edit gate: terminal sources, exact handoff, helper separation, retained Codex child identity and human model-picker custody passed');
 }finally{db.close();rmSync(scratch,{recursive:true,force:true});}

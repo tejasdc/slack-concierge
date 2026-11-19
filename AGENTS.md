@@ -68,6 +68,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
 - Exact ChatGPT answer handling after a supported tool read preserves provider-return evidence; see [answer obligations](docs/architecture/CHATGPT-ANSWER-OBLIGATIONS.md#explicit-confirmation-after-a-supported-tool-read).
 - Marked messages held by per-session Pause retain their original admission identity;
   see [session recovery](docs/architecture/SESSION-OWNER.md#identity-and-admission).
+- Claude Code resumed directly in the terminal retains a command source for its
+  current prompt through the managed hooks. See
+  [terminal Claude Code turns](docs/architecture/SESSION-OWNER.md#terminal-claude-code-turns).
 
 ## Session and Inbox obligations
 

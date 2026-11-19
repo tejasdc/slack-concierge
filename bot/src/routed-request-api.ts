@@ -32,6 +32,7 @@ import {releaseFilesInUse} from './executions';
 import {defaultReleaseEnvironment,TrustedRootReleaseManager} from './deployment-release';
 import {enrollNativePipelineContinuation,tickNativePipelineContinuation} from './native-pipeline-continuation-owner';
 import {runnerRoutes} from './runner-routes';
+import {claudeTerminalTurn} from './claude-terminal-turn';
 import {listReadHead} from './presentation-topic-reader';
 import {activeGrafanaAlerts,type GrafanaFiringEvidence,type GrafanaRecoveryEvidence} from './grafana-alerts';
 import type {unfiledReceivedInputs} from './session-topics';
@@ -111,6 +112,11 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
       if (request.method === 'POST' && url.pathname.startsWith('/session-communication/') && sessions) {
         const operation = url.pathname.slice('/session-communication/'.length);
         const input = await request.json();
+        if (operation === 'claude-terminal-turn') {
+          if(request.headers.has('x-concierge-agent-principal')||request.headers.has('x-concierge-verified-peer'))
+            return Response.json({error:'Terminal prompts register on their local owner only.'},{status:403});
+          return Response.json(claudeTerminalTurn(input));
+        }
         const sourceInput=typeof input?.source?.input_id==='string'?getAcceptedSessionInput(input.source.input_id):null;
         const successor=sourceInput?supersededBy(sourceInput.session_id):null;
         const withdrawn=sourceInput?withdrawnSuccessor(sourceInput.session_id):false;
