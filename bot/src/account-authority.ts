@@ -211,7 +211,7 @@ export function canTakeWork(
   }
 
   // Step 4 — Proven-attempt override. If the home ran a real turn recently, allow one attempt.
-  if (provider === "claude-code" && homePath !== undefined && claudeHomeProven(homePath)) {
+  if (provider === "claude-code" && homePath !== undefined) {
     const provenAt = readClaudeHomeProvenAt(homePath);
     if (provenAt !== null && (now - provenAt) < HOME_PROOF_WINDOW_MS) {
       return makeVerdict(true, "proven-attempt", null,

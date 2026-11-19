@@ -153,6 +153,7 @@ Algorithm, strict order (every clause names the dated incident it preserves):
 - If `windows.length === 0` → fall through to Step 6. Preserves `2026-10-30 Ultra 5-hour removal` — some accounts have no 5-hour window at all.
 - If `windows.some(w => w.usedPercent !== null && w.usedPercent < 100)` → `{ ok:true, reason:'ready', clearsAtMs:null, why:'reading shows ${lowest}%', source:{readingUsedPercent,...} }`.
 - If `windows.every(w => w.usedPercent !== null && w.usedPercent >= 100)` → `{ ok:false, reason:'reading-exhausted', clearsAtMs:earliestResetMs(windows), why:'fresh reading says every window full', source:{...} }`.
+- **Codex paid-credits exception**: when the account has active usage credits that cover overage (`codexCreditsCanCover`), return `{ ok:true, reason:'ready', why:'Codex paid credits cover the spent allowance' }` even if every window ≥ 100%. Preserves the existing Codex credit rule in `account-allowance-observation.ts`.
 - Else → fall through to Step 5 (windows with null usedPercent are unknown).
 
 **Step 5 — Proven attempt within 10 minutes.** If `home.provenAtMs !== null && now - home.provenAtMs < 10*60_000`:
@@ -230,7 +231,12 @@ export function clearScoped(provider: ProviderId, label?: AccountLabel, model?: 
 export function clearAll(provider: ProviderId): { cleared: number; generation: number };
 ```
 
-Scope convention: `<provider>::<accountHash>::<canonicalAllowanceModel>` where `accountHash = sha256(label.toLowerCase()).slice(0,24)` and `canonicalAllowanceModel` runs the Claude Opus-1M collapse (today's `claudeUsageAllowanceModel`). For Codex, the model component is the literal `*`, since Codex refuses per-account.
+Scope convention — as implemented in `bot/src/account-refusal-cache.ts`:
+- Claude: `<accountHash>:<canonicalAllowanceModel>` where `accountHash = sha256(label.toLowerCase()).slice(0,24)` and `canonicalAllowanceModel` runs the Claude Opus-1M collapse (today's `claudeUsageAllowanceModel`).
+- Codex: `<account_id>` when the id is known, else `<accountHash>` — model component omitted since Codex refuses at account scope.
+- Antigravity: `<accountHash>:<model>` (no allowance collapse).
+
+The provider prefix is implicit via the per-provider SQLite table (`provider_usage_cache`, `antigravity_usage_cache`). An earlier draft wrote `<provider>::<accountHash>::<model>` with the provider prefixed and double colons; the implementation uses single-colon per-table scopes because the table already partitions by provider, and `cachedRefusalsForAccount` relies on the exact `scope.startsWith(prefix)` match. Doc now reflects the implementation.
 
 Invariants:
 - A record is a tombstone for exactly that `(provider, label, allowance-model)` triple. The old wildcard `claudeAccountCachedReset(account, null)` is deleted; model-agnostic callers go through `canTakeAnyWork` which walks the chain explicitly.

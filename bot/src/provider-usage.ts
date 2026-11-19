@@ -72,6 +72,13 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
 /**
  * A refusal from this account's attempted Claude model survives a process restart.
  *
+ * **Transition shim pending the §13.2 rewrite in
+ * `docs/plans/2026-11-19-provider-account-rebuild-architecture.md`.** New code should
+ * read the authority: `canTakeWork(provider, account, model)` for the model-specific
+ * answer, or `canTakeAnyWork(provider, account)` for the model-agnostic release view.
+ * This function is kept so the existing dispatch and release call sites compile while
+ * their rewrite lands; they consume the correct semantics via the `semantics` arg.
+ *
  * `semantics`:
  *   - `"model-specific"` (default): returns the refusal reset for exactly `<account, model>`,
  *     or null if that scope has no active refusal. `model` is required.
@@ -79,9 +86,6 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
  *     returns the max reset only if EVERY model in the chain is currently refused.
  *     Returns null if any model has room. Fixes 2026-11-19 F1: an Opus-only refusal
  *     no longer poisons Sonnet/Haiku/any-model dispatch decisions.
- *
- * See `bot/src/account-refusal-cache.ts` for the underlying store; this is the thin
- * backwards-compatible wrapper.
  */
 export function claudeAccountCachedReset(
   account: string,
