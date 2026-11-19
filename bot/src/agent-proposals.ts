@@ -5,6 +5,7 @@ import {thinkeringRequest} from './thinkering-capability-target';
 import {awaitingOutside} from './storage-observation';
 import {readTodos} from './question-todos';
 import {log} from './log';
+import {createHash} from 'node:crypto';
 
 /**
  * Work an agent finds on its own waits for his accept or decline unless the agent is certain it is
@@ -28,18 +29,18 @@ export const PENDING_PROPOSALS_PER_AGENT=3;
 const MIN_CERTAIN_WHY=12;
 
 export type ProposalRow={capture_id:string;reporter_key:string;reporter_session:string|null;title:string;capture_json:string;digest:string;
-  state:'proposed'|'accepted'|'declined'|'handled';todo_id:string|null;todo_error:string|null;created_at_ms:number;decided_at_ms:number|null;
+  state:'proposed'|'accepted'|'declined'|'handled'|'duplicate';todo_id:string|null;todo_error:string|null;created_at_ms:number;decided_at_ms:number|null;
   admitted_input_id:string|null;todo_closed_at_ms:number|null};
 
 export class ProposalError extends Error {constructor(message:string,readonly status:number,readonly code:string){super(message);}}
 
 /** Why a report is certainly his work, or null when it must wait for his accept. */
-export function certainReason(metadata:Record<string,unknown>|undefined):string|null {
-  if(!metadata)return null;
-  if(typeof metadata.certain==='string'&&metadata.certain.trim().length>=MIN_CERTAIN_WHY)return metadata.certain.trim();
-  // Owner-made reports: his own journal lines, a journal processing failure, and the grouped
-  // leftover-process audit are about his own system or his own words, never found work.
-  if(metadata.journal||metadata.journalProcessingFailure||metadata.issueKey)return 'owner-made report';
+export function certainReason(metadata:Record<string,unknown>|undefined,ownerMade=false):string|null {
+  // Owner-made reports (his own journal lines, a journal processing failure) and the grouped
+  // leftover-process audit (its key is admitted only with its exact title) are about his own
+  // system or his own words, never found work. Only in-process owner calls can claim ownerMade.
+  if(ownerMade||metadata?.issueKey)return 'owner-made report';
+  if(typeof metadata?.certain==='string'&&metadata.certain.trim().length>=MIN_CERTAIN_WHY)return metadata.certain.trim();
   return null;
 }
 export function validCertain(value:unknown):string|undefined {
@@ -88,6 +89,7 @@ export function proposalReceipt(row:ProposalRow) {
       ?'Not certain, so this is a proposal, not work: it waits in his thnkr.ing To-dos for Accept or Dismiss. Nothing is dispatched and no thread is opened unless he accepts. Do not chase it. If it is in fact certainly his (a fault in his own systems such as Concierge or thnkr.ing, his own words, or his standing instruction), report it again with a new --action-id and --certain "<why>".'
       :row.state==='accepted'?'He accepted this proposal; it entered the Inbox as an agent report.'
       :row.state==='declined'?'He dismissed this proposal; no work was sent. Do not propose this kind of work again.'
+      :row.state==='duplicate'?'It repeats a to-do he already has or already decided, so it was not offered again; his earlier decision stands.'
       :'He marked it done himself; no work was sent.',
     decidedBefore:decidedLately(row.reporter_key).map(item=>({title:item.title,decision:item.state}))}};
 }
@@ -111,6 +113,9 @@ function capability(method:'GET'|'POST',path:string,body:unknown,agent:{inputId:
 
 const reportOf=(row:ProposalRow)=>JSON.parse(row.capture_json) as {source:{title:string;recordedAt:string;metadata:{agentSource:{inputId:string;runId:string}}};text:string};
 
+/** thnkr.ing's fixed candidate id for a source (todo-candidate.ts), so a retry finds its own to-do. */
+export const proposalTodoId=(captureId:string)=>`candidate-${createHash('sha256').update(`concierge-proposal\0${captureId}\0proposal`).digest('hex').slice(0,48)}`;
+
 /** Offer each undecided proposal that has no to-do yet as a candidate in his To-dos. */
 export async function offerProposals():Promise<number> {
   const rows=db.query(`SELECT * FROM agent_proposals WHERE state='proposed' AND todo_id IS NULL ORDER BY created_at_ms LIMIT 20`).all() as ProposalRow[];
@@ -124,8 +129,21 @@ export async function offerProposals():Promise<number> {
         showFrom:at,dueAt:revisit,dueKind:'planning',
         source:{type:'concierge-proposal',id:row.capture_id,label,ref:row.reporter_session??'',quote:Array.from(report.text).slice(0,1000).join(''),at}},
         agent,'An agent found this work on its own and is not certain it is his; Accept sends it to the Inbox, Dismiss drops it.');
-      const todoId=typeof answer.body?.task?.id==='string'?answer.body.task.id:null;
+      let todoId=typeof answer.body?.task?.id==='string'?answer.body.task.id:null;
       if(answer.status>=300||!todoId){
+        // A lost answer leaves the candidate made under its fixed id; a retry is then refused as a
+        // duplicate of itself. Adopt it. A duplicate of a different to-do repeats something he
+        // already has or decided, so it is not offered again.
+        const expected=proposalTodoId(row.capture_id);
+        const existing=(await readTodos()).find(todo=>todo.id===expected);
+        if(existing)todoId=expected;
+        else if(answer.body?.error==='TODO_CANDIDATE_DUPLICATE'){
+          db.query(`UPDATE agent_proposals SET state='duplicate',decided_at_ms=?,todo_error='TODO_CANDIDATE_DUPLICATE' WHERE capture_id=? AND state='proposed'`).run(Date.now(),row.capture_id);
+          log('info','agent_proposal_duplicate',{proposal:row.capture_id,reporter:row.reporter_key});
+          continue;
+        }
+      }
+      if(!todoId){
         db.query('UPDATE agent_proposals SET todo_error=? WHERE capture_id=?').run(`HTTP ${answer.status}: ${JSON.stringify(answer.body).slice(0,200)}`,row.capture_id);
         log('warn','agent_proposal_offer_refused',{proposal:row.capture_id,status:answer.status,body:JSON.stringify(answer.body).slice(0,200)});
         continue;
@@ -161,6 +179,13 @@ export async function settleProposals(acceptReport:(captureJson:string)=>{inputI
     if(!todo)continue;
     try{
       if(row.state==='accepted'){
+        // Accepted but not yet admitted (admission failed or the owner stopped in between): admit
+        // again; admission is idempotent by capture, so a completed one returns the same input.
+        if(!row.admitted_input_id){
+          const admitted=acceptReport(row.capture_json);
+          db.query('UPDATE agent_proposals SET admitted_input_id=? WHERE capture_id=?').run(admitted.inputId,row.capture_id);
+          if(!admitted.inputId)continue;
+        }
         if(todo.status==='open'&&todo.updatedAt)await closeAcceptedTodo(row,todo.updatedAt);
         else db.query('UPDATE agent_proposals SET todo_closed_at_ms=? WHERE capture_id=?').run(Date.now(),row.capture_id);
         continue;
@@ -174,7 +199,7 @@ export async function settleProposals(acceptReport:(captureJson:string)=>{inputI
       if(state==='accepted'){
         const admitted=acceptReport(row.capture_json);
         db.query('UPDATE agent_proposals SET admitted_input_id=? WHERE capture_id=?').run(admitted.inputId,row.capture_id);
-        if(todo.updatedAt)await closeAcceptedTodo(row,todo.updatedAt);
+        if(admitted.inputId&&todo.updatedAt)await closeAcceptedTodo(row,todo.updatedAt);
       }
       else tellReporter(row,state,admit);
     }catch(error){log('error','agent_proposal_settle_failed',{proposal:row.capture_id,message:error instanceof Error?error.message:String(error)});}
@@ -215,7 +240,7 @@ function roleSession(role:string):number|null {
 export function proposalStats(days:number) {
   const since=Date.now()-days*86_400_000;
   const byAgent=db.query(`SELECT reporter_key AS agent,count(*) AS proposed,
-      sum(state='accepted') AS accepted,sum(state='declined') AS declined,sum(state='handled') AS handled,sum(state='proposed') AS waiting
+      sum(state='accepted') AS accepted,sum(state='declined') AS declined,sum(state='handled') AS handled,sum(state='duplicate') AS duplicate,sum(state='proposed') AS waiting
     FROM agent_proposals WHERE created_at_ms>=? GROUP BY reporter_key ORDER BY proposed DESC`).all(since);
   const certain=db.query(`SELECT count(*) AS count FROM session_inputs WHERE scope='capture:agent-report'
       AND json_extract(payload_json,'$.capture.source.metadata.certain') IS NOT NULL AND created_at>=datetime(?/1000,'unixepoch')`).get(since) as {count:number};

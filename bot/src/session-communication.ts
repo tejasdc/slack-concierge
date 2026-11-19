@@ -242,6 +242,15 @@ const FOUND_WORK_REFUSAL='No message of his and no Inbox dispatch is behind this
  * originating message, its work grant does, or a hop on its source chain is an Inbox session (the
  * Inbox only dispatches his messages, reports he accepted and reports certain to be his).
  */
+/**
+ * A run only a service woke (a watch, a timer, a notice) and with no human lineage is acting on
+ * work it found itself. A run holding any message from him or another agent is not: that agent's
+ * own ask was already held to this rule when it sent the work.
+ */
+export function foundOnItsOwn(sessionId:number,turnId:number,authorityInputId?:string):boolean {
+    const inputs=db.query("SELECT origin FROM session_inputs WHERE turn_id=? AND session_id=?").all(turnId,sessionId) as {origin:string}[];
+    return inputs.length>0&&inputs.every(input=>input.origin==='service')&&!hasHumanLineage(sessionId,turnId,authorityInputId);
+}
 export function hasHumanLineage(sessionId:number,turnId:number,authorityInputId?:string):boolean {
     const inboxIds=new Set((db.query(`SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1`).all() as {id:number}[]).map(row=>row.id));
     const traced=(start:AcceptedSessionInput|null):boolean=>{
@@ -2458,7 +2467,7 @@ export class SessionCommunicationCoordinator {
         // proposal in his To-dos; --certain records why it is certainly his and sends it now.
         if(input.requestedEffect==='work'&&input.responseMode===undefined){
             const certain=validCertain(input.certain);
-            if(!certain&&!sessionMetadata(getSessionById(actor.session)!).inbox&&!hasHumanLineage(actor.session,actor.turn,sender.authorityInputId))
+            if(!certain&&!sessionMetadata(getSessionById(actor.session)!).inbox&&foundOnItsOwn(actor.session,actor.turn,sender.authorityInputId))
                 throw new Error(FOUND_WORK_REFUSAL);
         }
         const frozen=input.address&&!input.provider&&!input.routeMessageId&&!input.resurrect&&input.peer===undefined&&!this.dependencies.peers?.splitAddress(input.address)

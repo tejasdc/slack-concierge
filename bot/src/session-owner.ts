@@ -2626,7 +2626,7 @@ export class SessionOwner {
     if(!this.peers)throw new SessionOwnerError('The server Inbox is unreachable.',503,'INBOX_PEER_UNAVAILABLE');
     return this.peers.client('cloud').request('POST','/sessions/v1/inbox',capture);
   }
-  acceptInboxCapture(body:unknown,verifiedPeer=false) {
+  acceptInboxCapture(body:unknown,verifiedPeer=false,ownerMade=false) {
     const input=object(body);only(input,['source','text','files','importOnly','urgency','holdForReview']);inputText(input);
     const source=object(input.source);only(source,['kind','id','recordedAt','title','metadata']);
     if(!isInboxProducerKind(source.kind)||typeof source.id!=='string'||!source.id||typeof source.recordedAt!=='string'||!Number.isFinite(Date.parse(source.recordedAt)))throw new SessionOwnerError('Exact producer source kind, ID and recordedAt are required.');
@@ -2691,7 +2691,7 @@ export class SessionOwner {
     // Work an agent found on its own, without certainty that it is his, waits for his accept in his
     // To-dos and never enters the Inbox until then (agent-proposals.ts).
     if(source.kind==='agent-report'&&input.importOnly===true)throw new SessionOwnerError('An agent report must enter the Inbox router.',400,'AGENT_REPORT_INVALID');
-    if(source.kind==='agent-report'&&!certainReason(source.metadata as Record<string,unknown>|undefined)
+    if(source.kind==='agent-report'&&!certainReason(source.metadata as Record<string,unknown>|undefined,ownerMade)
       &&proposalRow(captureId)?.state!=='accepted'&&!getAcceptedSessionInput(`capture:${captureId}`)){
       const {recordedAt:_,...stableSource}=source;
       const proposalDigest=hash(stablePayload({source:stableSource,text:input.text,files:input.files??[]}));
@@ -3441,7 +3441,7 @@ export class SessionOwner {
         metadata:{agentSource:{inputId:actor.inputId,runId:actor.runId},journalProcessingFailure:{rootId:obligation.rootId,inputId:actor.inputId,sourceArrivedAt:original.created_at,reason}}},
         text:`Processing the saved journal source ${obligation.rootId} failed. Source input: ${actor.inputId}. Recover the original processing obligation without replaying accepted or uncertain effects.\n\n${reason}`}}).input;
     if(intent.receipt_json)return JSON.parse(intent.receipt_json);
-    const accepted=this.acceptInboxCapture(JSON.parse(intent.payload_json));
+    const accepted=this.acceptInboxCapture(JSON.parse(intent.payload_json),false,true);
     const receipt={state:'failed',rootId:obligation.rootId,inputId:actor.inputId,reason:JSON.parse(intent.payload_json).source.metadata.journalProcessingFailure.reason,report:accepted.report};
     db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(receipt),intent.id);
     return receipt;
@@ -3488,7 +3488,7 @@ export class SessionOwner {
         if(!inbox&&!request)throw new Error("Existing request must be retained; unknown effects cannot be replayed.");
         if(!frozen.existingRelation)throw new Error("JOURNAL_EXISTING_RELATION_UNCONFIRMED: retained source relation is required; do not replay.");
         accepted={report:{requestId:existingRequestId,topicId:inbox?.topic_id??null,linked:true,reason:frozen.source.metadata.journal.reason,relation:frozen.existingRelation,evidence:request??inbox}};
-      }else {const {existingRequestId:_,...capture}=frozen;accepted=this.acceptInboxCapture(capture);}
+      }else {const {existingRequestId:_,...capture}=frozen;accepted=this.acceptInboxCapture(capture,false,true);}
       const receipt={identity:id,report:accepted.report,source:JSON.parse(intent.payload_json).source.metadata.journal};
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify(receipt),retained.id);
       return receipt;

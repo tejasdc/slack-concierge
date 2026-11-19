@@ -522,7 +522,7 @@ undecided, it reads his to-dos: **Accept** (the to-do becomes open) admits the r
 the Inbox exactly as below and then marks the to-do done ("Sent to the Inbox"), because the work is
 now agents' and tracked there; **Dismiss** (dropped) closes it with no work and sends the
 proposing agent a service notice to change its own rules; **Done** means he handled it himself. A
-retry of the same action returns the proposal, or the Inbox receipt once accepted. One agent may
+retry of the same action returns the proposal, or the Inbox receipt once accepted. An accepted proposal whose admission did not finish is admitted on the next pass before its to-do is closed. A lost to-do answer is recovered by the candidate's fixed ID; a proposal thnkr.ing refuses as a duplicate of another to-do (the same words and quote he already has or decided) is closed as `duplicate` and not offered again. `--certain` is the agent's own claim, recorded on the capture; only in-process owner calls can mark a report owner-made. One agent may
 have at most three undecided proposals; a fourth is refused so no agent floods him with maybes.
 Each proposal receipt lists that agent's recent decided proposals so it learns before proposing
 again, and `reports proposals` measures proposals and decisions per agent. Owner-made reports (his
@@ -531,10 +531,11 @@ construction. `--certain` needs a 12-500 character reason and is kept on the cap
 faults in his own systems (Concierge, thnkr.ing), his own words, or his standing instruction.
 
 The same rule covers `sessions ask --requested-effect work` (including `sessions implement`): a run
-with no human lineage, meaning none of its inputs, its work grant, or the source chain behind them
-is his message, carries his originating message, or passes through an Inbox session, is refused
-unless it gives `--certain "<why>"`; the refusal points to `report` for a proposal. A watch or
-timer wake is such a run. The Inbox router is exempt because the Inbox admits only his messages,
+that only a service woke (a watch, timer or notice) and that has no human lineage, meaning none of
+its inputs, its work grant, or the source chain behind them is his message, carries his
+originating message, or passes through an Inbox session, is refused unless it gives
+`--certain "<why>"`; the refusal points to `report` for a proposal. A run holding a message from him
+or another agent is not gated again: that agent's own ask was held to this rule. The Inbox router is exempt because the Inbox admits only his messages,
 accepted proposals and certain reports.
 
 `router-actions.sh report --source-input <id> --source-run <id> --action-id <stable id> --title "<issue>" [--file <path> ...] -- <observation, expected behavior, impact>` sends a likely bug or concerning issue the agent noticed outside its task. The local owner verifies the reporting run. A Mac report crosses the authenticated Concierge peer link to the server Inbox; no Mac Inbox is created. The server gateway marks only authenticated peer traffic, and the owner requires that mark before accepting Mac attribution; a local caller cannot assert it in a request header. The server retains the exact text and files under the agent's authorship, and atomically creates an Inbox thread in Agent reports with one open request before admitting it to the router. The receipt names the capture, thread and request. Repeating the action ID with the same text returns the same receipt; changing the text under that ID is refused. The router dispatches work from the report's capture root and links the dispatch to the existing request. Its stop check refuses an Inbox turn that received a report whose open request still has no linked dispatch; the router must check for a prior unlinked dispatch before sending another, or explicitly resolve the report. A settled answer closes the request under the normal thread upkeep rules; an uncertain end leaves it open for the router to resolve. The report cannot be imported silently or attributed to Tejas. A peer connection loss before a receipt is ambiguous; the caller retries the same action ID, and the owner returns the one retained report if it arrived.

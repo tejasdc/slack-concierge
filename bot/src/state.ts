@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS agent_proposals (
   title TEXT NOT NULL,
   capture_json TEXT NOT NULL,
   digest TEXT NOT NULL,
-  state TEXT NOT NULL CHECK(state IN ('proposed','accepted','declined','handled')),
+  state TEXT NOT NULL CHECK(state IN ('proposed','accepted','declined','handled','duplicate')),
   todo_id TEXT,
   todo_error TEXT,
   created_at_ms INTEGER NOT NULL,

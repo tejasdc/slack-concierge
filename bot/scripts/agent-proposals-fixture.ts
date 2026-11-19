@@ -18,14 +18,19 @@ delete process.env.CONCIERGE_THINKERING_CAPABILITY_URL;
 type Todo={id:string;text:string;status:string;updatedAt:string;source:any};
 const todos=new Map<string,Todo>();
 const calls:string[]=[];
+let loseNextAnswer=false;
+const {proposalTodoId}=await import('../src/agent-proposals');
 const server=Bun.serve({unix:socket,async fetch(request){
   const url=new URL(request.url);calls.push(`${request.method} ${url.pathname}`);
   if(request.method==='POST'&&url.pathname==='/todos'){
     const body=await request.json() as any;
     assert.equal(body.candidate,true);assert.equal(body.source.type,'concierge-proposal');
     assert.ok(request.headers.get('x-concierge-agent-source'),'The reporting agent is the actor');
-    const id=`todo-${body.source.id.slice(0,8)}`;
-    if(!todos.has(id))todos.set(id,{id,text:body.text,status:'candidate',updatedAt:new Date().toISOString(),source:body.source});
+    const id=proposalTodoId(body.source.id);
+    if(todos.has(id))return Response.json({error:'TODO_CANDIDATE_DUPLICATE'},{status:400});
+    if([...todos.values()].some(todo=>todo.text===body.text&&todo.source.quote===body.source.quote))return Response.json({error:'TODO_CANDIDATE_DUPLICATE'},{status:400});
+    todos.set(id,{id,text:body.text,status:'candidate',updatedAt:new Date().toISOString(),source:body.source});
+    if(loseNextAnswer){loseNextAnswer=false;return Response.json({error:'GATEWAY_TIMEOUT'},{status:504});}
     return Response.json({task:todos.get(id)});
   }
   if(request.method==='GET'&&url.pathname==='/todos/tasks')return Response.json({items:[...todos.values()]});
@@ -37,7 +42,7 @@ const server=Bun.serve({unix:socket,async fetch(request){
   }
   return Response.json({error:'NOT_FOUND'},{status:404});
 }});
-const [{db,finishTurn,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},{SessionOwner},{nativeRunId},{hasHumanLineage},{PENDING_PROPOSALS_PER_AGENT}]=await Promise.all([
+const [{db,finishTurn,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},{SessionOwner},{nativeRunId},{hasHumanLineage,foundOnItsOwn},{PENDING_PROPOSALS_PER_AGENT}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-inputs'),import('../src/session-communication'),import('../src/agent-proposals')]);
 const workspace=join(scratch,'workspace');mkdirSync(join(workspace,'slack-inbox','.git'),{recursive:true});
 writeFileSync(join(workspace,'slack-inbox','AGENTS.md'),'Disposable Inbox fixture.\n');
@@ -91,9 +96,32 @@ try{
   const next=await report('third-mail');
   assert.deepEqual(next.proposal.decidedBefore.map((item:any)=>item.decision).sort(),['accepted','declined'],'The receipt shows his earlier decisions');
 
+  // 3b. A lost answer: the to-do was made, the retry finds it by its fixed id.
+  loseNextAnswer=true;
+  const lost=await report('lost-answer');
+  await pass();
+  assert.equal((db.query('SELECT todo_id FROM agent_proposals WHERE capture_id=?').get(lost.proposal.id) as any).todo_id,null);
+  await pass();
+  assert.equal((db.query('SELECT todo_id FROM agent_proposals WHERE capture_id=?').get(lost.proposal.id) as any).todo_id,proposalTodoId(lost.proposal.id),'Adopts its own to-do');
+
   // 4. One agent cannot flood him.
-  for(let index=1;index<PENDING_PROPOSALS_PER_AGENT;index++)await report(`flood-${index}`);
+  const waiting=()=>count("SELECT count(*) AS n FROM agent_proposals WHERE state='proposed'");
+  for(let index=1;waiting()<PENDING_PROPOSALS_PER_AGENT;index++)await report(`flood-${index}`);
   await assert.rejects(report('flood-over'),/has not decided your 3 earlier proposals/);
+
+  // 4b. Accepted but admission never happened (the owner stopped in between): the next pass admits it.
+  const pending=db.query("SELECT capture_id,todo_id FROM agent_proposals WHERE state='proposed' AND todo_id IS NOT NULL LIMIT 1").get() as any;
+  db.query("UPDATE agent_proposals SET state='accepted',decided_at_ms=? WHERE capture_id=?").run(Date.now(),pending.capture_id);
+  todos.get(pending.todo_id)!.status='open';
+  await pass();
+  assert.ok((db.query('SELECT admitted_input_id FROM agent_proposals WHERE capture_id=?').get(pending.capture_id) as any).admitted_input_id,'Re-admitted');
+  assert.equal(todos.get(pending.todo_id)!.status,'done');
+
+  // 4c. Re-proposing what he dismissed (same words and quote) is not offered again.
+  await report('ideaflow-mail-again',{title:'Maybe handle ideaflow-mail',text:'Apple mail about an app (ideaflow-mail).'}).then(async again=>{
+    await pass();
+    assert.equal((db.query('SELECT state FROM agent_proposals WHERE capture_id=?').get(again.proposal.id) as any).state,'duplicate');
+  });
 
   // 5. Certain work goes straight to the Inbox; a short reason is refused.
   await assert.rejects(report('vague',{certain:'yes'}),/certainly his/);
@@ -107,7 +135,9 @@ try{
   let woken=claim('agent-proposals-fixture-2');
   for(let tries=0;woken.session_id!==first.session_id&&tries<10;tries++)woken=claim(`agent-proposals-fixture-${tries+3}`);
   assert.equal(woken.session_id,first.session_id);
-  assert.equal(hasHumanLineage(woken.session_id,woken.turn_id),false,'A watch wake is found work');
+  assert.equal(hasHumanLineage(woken.session_id,woken.turn_id),false,'A watch wake has no human lineage');
+  assert.equal(foundOnItsOwn(woken.session_id,woken.turn_id),true,'A watch wake is found work');
+  assert.equal(foundOnItsOwn(first.session_id,first.turn_id),false,'A run holding his message is not');
 
   const stats=owner.agentProposals(new URLSearchParams({days:'7'}));
   assert.equal(stats.certainReports,1);
