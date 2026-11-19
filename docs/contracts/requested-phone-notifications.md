@@ -55,8 +55,10 @@ and response outcomes use this same retained arm without depending on the router
 `--notify`; posts marked `--keep-working` and acknowledgements with dispatched work outstanding
 leave it pending. Dispatch matching uses the asking input, thread address and explicit
 source-to-request links, so another request in the same topic cannot consume it.
-A completed answer with `--quiet-because` consumes its matching arm silently and files no
-reading item; it cannot leave a pending promise for a later unrelated answer.
+A completed informational or quiet answer uses the same exact-message notification path.
+Its quiet filing controls unsolicited reading items. A matching human arm is consumed only
+with a requested notification for the posted answer. A failed final stays in the thread and
+leaves the arm for a substantive answer.
 If an answer also asks for Tejas's decision, its topic question remains a
 decision; the requested phone event uses the `response` outcome required by
 thnkr.ing's one-shot requested-result path.
@@ -66,9 +68,10 @@ post --notify` or `sessions reply --notify`. The owner requires a new message
 with words, names that message in the event, and emits
 `requestedNotification:true`. This also consumes an open topic arm, so the
 same answer never creates a second requested push. On a reply the flag is honored
-for a substantive partial `--answers-question` reply, or a final `completed` reply carrying
-`--checked` (a finished result checked live); on an ordinary progress partial, failed or unchecked reply it is dropped with a receipt notice and the reply
-is recorded as written. Tejas, 2026-11-02, after the think-aloud agent sent 14
+for a substantive partial `--answers-question` reply or a completed final with new words.
+A final informational reply is complete on receipt. A completed work reply records
+verification status independently of its requested delivery. A new notified progress partial
+is refused, and an ineligible final drops the flag with a receipt notice. Tejas, 2026-11-02, after the think-aloud agent sent 14
 partial-update alerts in two hours: "Why can't it wait until everything is deployed and
 tested and then let me know?" A bodyless final cannot use it. These commands are available on both local and
 peer sessions. The resulting push uses the answer's own words and the normal
@@ -182,6 +185,7 @@ which owns that repeat.
 `bot/scripts/inbox-requested-notification-fixture.ts` exercises a disposable owner ledger:
 explicit human arming, unmarked questions and notes staying unarmed, progress and dispatched
 acknowledgements staying quiet, prompt-answer partials with and without `--notify`, bodyless
-final closure, same-run duplicate suppression, later explicit rearming, quiet consumption,
+final closure, same-run duplicate suppression, later explicit rearming, quiet and informational
+answers honoring exact arms, explicit notification on informational and unchecked work finals,
 and direct router answers. It creates no production inputs and proves owner events, not
 physical phone receipt. Existing blocking-question delivery remains independent.

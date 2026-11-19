@@ -3213,11 +3213,14 @@ export class SessionCommunicationCoordinator {
         else if(input.answers_question&&!input.text.trim())
             dropAnswerMark('--answers-question was ignored because the reply has no words. It was recorded as ordinary progress.');
         // Prompt answers are substantive even while work continues; ordinary progress stays quiet.
-        // Preserve the finished-and-checked requirement for other explicit reply notifications.
+        // A final answer can request delivery independently of its verification evidence.
+        // An informational final is complete without a work disposition; work finals are
+        // checked for a valid disposition at admission below.
         const notifiedPartial=!input.final&&input.notify===true;
-        if(input.notify&&!((!input.final&&input.answers_question&&input.text.trim())||(input.final&&input.workDisposition==='completed'&&typeof input.checked==='string'&&input.checked.trim()))){
+        const completedFinal=input.final&&(input.workDisposition==='completed'||input.workDisposition===undefined);
+        if(input.notify&&!((!input.final&&input.answers_question&&input.text.trim())||completedFinal)){
             input={...input,notify:false};
-            answerNotice=(answerNotice?answerNotice+' ':'')+'--notify was ignored: only a substantive --partial --answers-question answer or a final completed reply with --checked rings his phone; progress, corrections and failures stay in the thread.';
+            answerNotice=(answerNotice?answerNotice+' ':'')+'--notify was ignored: only a substantive --partial --answers-question answer or a completed final reply rings his phone; progress, corrections and failures stay in the thread.';
         }
         const noted=<T extends object>(receipt:T):T=>answerNotice?{...receipt,notice:answerNotice}:receipt;
         if(input.waiting_on_watch!==undefined){
