@@ -32,7 +32,7 @@ router-actions.sh sessions ask <address> --response-mode context <source-flags> 
 router-actions.sh sessions ask --role <standing-agent-role> <source-flags> --action-id A --summary "<one line>" [--session-name <title>] -- <text>
 router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--small-task] [--effort <level>] [--codex-native-test-until <ISO-8601-time>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --purpose research|design-critique|design-review [--provider <alias> --provider-reason "<why ChatGPT Pro is not used>"] [--project <registered-project> (alternate coding provider only)] --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
-router-actions.sh sessions implement --project <registered-project> [--provider ${IMPLEMENTATION_ALIASES.join('|')}] --session-name <title> --summary "<fixed implementation goal>" <source-flags> --action-id A [--text-file F | -- <design and acceptance criteria>]
+router-actions.sh sessions implement --project <registered-project> [--provider ${IMPLEMENTATION_ALIASES.join('|')}] --session-name <title> --summary "<fixed implementation goal>" <source-flags> --action-id A [--after-request <request-id> ...] [--after-settled <request-id> ...] [--text-file F | -- <design and acceptance criteria>]
 router-actions.sh sessions ask <the frozen ask's exact flags, action ID and text> --resume-source-input <original input> --resume-source-run <original run> <this run's source-flags>
 Resumes an ask frozen by a run that has since ended: the same session's live run cites the original source pair; Concierge returns the one request already admitted under that pair and action, or admits it once. A changed payload is an idempotency conflict.
 router-actions.sh sessions edit-reason --reason "<why this turn still needs its thinking model>" <source-flags> --action-id A
@@ -1268,7 +1268,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   if(implementation){
     if(!project||!title||!summary||identity||role||peer||smallTask||outside||onRunner||savedKind||resurrect||hisChat
-      ||flags.has('--thread')||flags.has('--route-message')||flags.has('--consult')||after.length||pace.length
+      ||flags.has('--thread')||flags.has('--route-message')||flags.has('--consult')
       ||flags.has('--escalation-reason')||flags.has('--machine-need')||flags.has('--for-task')
       ||requestedEffect&&requestedEffect!=='work')
       invalid('implement needs one local project, session name, summary, fixed design, and no thread or other session mode.');
