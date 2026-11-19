@@ -1306,11 +1306,19 @@ bytes streamed through `zstd -3` with no uncompressed file:
    `compressed_copy` phase.
 
 Room: the copy plus the 10 GiB margin, where the copy is estimated at the ledger size times the
-newest compressed copy's recorded ratio (the whole ledger before the first one). The estimate
-decides only whether older copies the retention would drop are removed first; the margin check
-during the stream is the guarantee. `--backup-only` (control recovery and older controllers)
-still writes the plain `VACUUM INTO` copy below. Retention, retirement and the 12 GiB cap count
-both kinds; a ledger check whose copy was never written goes once a newer verified copy exists.
+newest compressed copy's recorded ratio (one half before the first one; transcript-like text
+compressed 3.2x to 4.8x here, so half is pessimistic, and the whole size would keep the refusal
+this replaced). The estimate decides whether older copies the retention would drop are removed
+first and whether the update starts; the margin check during the stream is the guarantee.
+Those older copies are removed in the serving phase, so if the stopped phase then fails no
+verified copy remains; the ledger itself is untouched in that case, and the removed copy only
+rolled back the previous release, which this update replaces. A failed write or a full disk
+stops zstd and the update; it never waits with the writer reservation held. `--backup-only`
+(control recovery and older controllers) still writes the plain `VACUUM INTO` copy below.
+Retention, retirement and the 12 GiB cap count both kinds; a ledger check whose copy was never
+written, and staging left by a publisher killed mid-copy, go once a newer verified copy exists.
+The compressed file is not read back before it is certified: its writes are checked as they
+happen, and a restore proves its SHA-256.
 
 Restore: with Concierge stopped, `bun run bot/scripts/migrate-deployment-repair.ts
 --restore-copy <copy>.db.zst --restore-to <new file>` decompresses to a new file only, proves

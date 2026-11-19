@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { spawnSync } from 'node:child_process';
 import { canonicalSql } from '../src/canonical-sql';
 import { AUTOMATIC_COPY_NAME, checkLedgerInPlace, checkSqliteBackup as checks, isVerifiedBackup, lastCompressionRatio, publishCompressedLedgerCopy,
-  publishSqliteBackup, pruneVerifiedBackups, recordLedgerCheck, recordedLedgerCheck, restoreCompressedCopy, verifyMigrationBackup } from '../src/verified-sqlite-backup';
+  publishSqliteBackup, pruneVerifiedBackups, recordLedgerCheck, recordedLedgerCheck, restoreCompressedCopy, verifyMigrationBackup, zstdCommand } from '../src/verified-sqlite-backup';
 
 /**
  * The schema this release's code builds, read from a database it creates from nothing. Run in a
@@ -251,16 +251,23 @@ function copiesTheNewCopyEvicts(newCopyBytes: number): string[] {
 }
 
 function ledgerBytes() {
-  const wal = existsSync(statePath + '-wal') ? statSync(statePath + '-wal').size : 0;
-  return statSync(statePath).size + wal;
+  // The log lives beside the real file, which the state directory links to.
+  const wal = `${realpathSync(statePath)}-wal`;
+  return statSync(statePath).size + (existsSync(wal) ? statSync(wal).size : 0);
 }
 /**
- * The compressed copy's expected size: the ledger at the last compressed copy's ratio, or the whole
- * ledger before any compressed copy exists. The estimate only decides whether older copies are
- * removed first and whether to start; the copy itself stops at the margin if it runs larger.
+ * Before any compressed copy has measured the ledger, assume it halves. Transcript-heavy text like
+ * the ledger's compressed 3.2x to 4.8x with zstd on this server (2026-11-18); half is deliberately
+ * pessimistic. Assuming the full size would keep the 2026-11-16 refusal it replaces.
+ */
+const FIRST_COMPRESSION_RATIO = 0.5;
+/**
+ * The compressed copy's expected size: the ledger at the last compressed copy's ratio. The estimate
+ * decides whether older copies are removed first and whether to start at all; the guarantee is the
+ * margin check while the copy is written, which stops it if it runs larger.
  */
 function expectedCompressedBytes() {
-  return Math.ceil(ledgerBytes() * Math.min(1, lastCompressionRatio(dirname(backupPath)) ?? 1));
+  return Math.ceil(ledgerBytes() * Math.min(1, lastCompressionRatio(dirname(backupPath)) ?? FIRST_COMPRESSION_RATIO));
 }
 function requireRoomForCopy(copyBytes: number) {
   const needed = copyBytes + COPY_MARGIN_BYTES;
@@ -298,6 +305,7 @@ function backUpUncompressed() {
  * hold still, so it can be streamed compressed with no full-size temporary file.
  */
 function planCompressedCopy() {
+  zstdCommand(); // Missing compression fails the update here, before Concierge stops.
   const check = checkLedgerInPlace(statePath);
   requireRoomForCopy(expectedCompressedBytes());
   recordLedgerCheck(backupPath, check);

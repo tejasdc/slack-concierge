@@ -119,9 +119,16 @@ export function pruneVerifiedBackups(folder: string, keep: number, maxBytes = Nu
       rmSync(join(folder, name + suffix), { force: true });
     removed++;
   }
-  // A ledger check whose copy was never written (the update failed before its stopped window)
-  // is superseded once a newer verified copy exists, like an unverified copy.
+  // Staging left by a publisher killed mid-copy (it can hold gigabytes) and a ledger check whose
+  // copy was never written are superseded once a newer verified copy exists, like an unverified
+  // copy. A newer one may belong to a publisher still running and is left alone.
   for (const name of readdirSync(folder)) {
+    if (name.endsWith('.publishing')) {
+      const copy = name.slice(0, -'.publishing'.length);
+      if (AUTOMATIC_COPY_NAME.test(copy) && newestVerified !== null && stamp(copy) < newestVerified)
+        rmSync(join(folder, name), { recursive: true, force: true });
+      continue;
+    }
     if (!name.endsWith(LEDGER_CHECK_SUFFIX)) continue;
     const copy = name.slice(0, -LEDGER_CHECK_SUFFIX.length);
     if (!AUTOMATIC_COPY_NAME.test(copy) || existsSync(join(folder, copy)) || existsSync(join(folder, `${copy}.publishing`))) continue;
@@ -196,7 +203,7 @@ const COPY_CHUNK_BYTES = 8 * 1024 * 1024;
 // the root filesystem (2026-10-23: a 5.4 GB buffered ledger copy held the owner for 31 seconds).
 const COPY_FLUSH_BYTES = 32 * 1024 * 1024;
 
-function zstdCommand(): string {
+export function zstdCommand(): string {
   const found = Bun.which('zstd', { PATH: `${process.env.PATH ?? ''}:/usr/bin:/bin` });
   if (!found) throw new Error('The zstd command is required for a compressed ledger copy.');
   return found;
@@ -230,7 +237,8 @@ export async function publishCompressedLedgerCopy(sourcePath: string, destinatio
     database = ledgerWriteResults(new Database(sourcePath));
     const checkpoint = database.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy: number };
     database.exec('BEGIN IMMEDIATE');
-    const wal = `${sourcePath}-wal`;
+    // SQLite keeps the log beside the real file, not beside the state directory's link to it.
+    const wal = `${realpathSync(sourcePath)}-wal`;
     if (checkpoint.busy !== 0 || (existsSync(wal) && statSync(wal).size !== 0))
       throw new Error('The ledger could not be checkpointed into its main file; another connection holds it.');
     const pageSize = (database.query('PRAGMA page_size').get() as { page_size: number }).page_size;
@@ -254,11 +262,23 @@ export async function publishCompressedLedgerCopy(sourcePath: string, destinatio
     const drain = (async () => {
       for await (const chunk of running.stdout) {
         if (stopped) continue;
-        writeSync(output, chunk);
-        bytes += chunk.byteLength; unflushed += chunk.byteLength;
-        if (unflushed >= COPY_FLUSH_BYTES) flushAndCheckFloor();
+        try {
+          writeSync(output, chunk);
+          bytes += chunk.byteLength; unflushed += chunk.byteLength;
+          if (unflushed >= COPY_FLUSH_BYTES) flushAndCheckFloor();
+        } catch (error) {
+          // A failed write (a full disk, an I/O error) must stop zstd too: left running, it would
+          // block on its unread output and the read loop would wait on it forever, with the
+          // ledger's writer reservation held and Concierge stopped.
+          stopped = new Error(`The compressed ledger copy could not be written: ${error instanceof Error ? error.message : String(error)}`);
+          running.kill();
+        }
       }
-      if (!stopped) flushAndCheckFloor();
+      if (!stopped) {
+        try { flushAndCheckFloor(); } catch (error) {
+          stopped = new Error(`The compressed ledger copy could not be written: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     })();
     try {
       const input = openSync(sourcePath, 'r');
