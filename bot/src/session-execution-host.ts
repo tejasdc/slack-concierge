@@ -724,11 +724,7 @@ export class SessionExecutionHost {
     if(this.checkedClaudeRefusals.has(key))return;
     log('info','claude_refusal_check_scheduled',{scope:attempt.scope,read_at:readAt,refused_until:limit.resetAt});
     void this.retryHeldUsage({turnId:waiting.turn_id,account:account.label,scope:attempt.scope,revision:limit.revision},
-      ()=>this.checkedClaudeRefusals.add(key)).then(result=>{
-      const status=(result as {status?:string})?.status;
-      if(status!=='available'&&status!=='still_limited')this.checkedClaudeRefusals.delete(key);
-    }).catch(error=>{
-      this.checkedClaudeRefusals.delete(key);
+      ()=>this.checkedClaudeRefusals.add(key)).catch(error=>{
       log('warn','claude_refusal_check_failed',errorFields(error));
     });
   }
