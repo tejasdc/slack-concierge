@@ -111,7 +111,8 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   requests close only on evidence for their exact obligation. See
   [native Inbox](docs/contracts/native-inbox.md),
   [filing before stopping](docs/contracts/native-inbox.md#filing-before-stopping),
-  and [requested phone delivery](docs/contracts/requested-phone-notifications.md).
+  and [requested phone delivery](docs/contracts/requested-phone-notifications.md)
+  for explicit delivery of completed answers, including informational replies.
 
 ## Find the authority
 

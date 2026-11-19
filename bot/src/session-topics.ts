@@ -3707,18 +3707,17 @@ function fileAgentAnswer(answer:{resolutionInputId?:string;inboxSessionId:number
     }
     const filedId=`topic-answer:${answer.eventId}`;
     if(seen(filedId))return;
-    // Completed work its agent said he need not read is posted and closes its request, and is filed
-    // for nobody: no reading item, no notification [decision: sends-notify-only-on-failure].
+    // Quiet controls unsolicited attention. An explicit request still rides on this exact post.
     if(answer.quiet&&answer.disposition==='completed'){
-      consumeThreadNotification(session.id,answer.root,answer.postId,true);
-      log('info','inbox_answer_quiet',{thread:answer.root,post:answer.postId,request_id:answer.dispatchRequestId});
+      if(answer.text.trim()&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))
+        notifyFiledAgentAnswer(answer);
       return;
     }
     const decision=answer.disposition==='needs_decision';
     const open=topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state));
     // One answer posted once is filed once, however many requests it closed.
     if(!decision&&open.some(question=>question.kind==='reading'&&Array.isArray(question.brief?.reads)&&question.brief.reads.includes(answer.postId))){
-      if(answer.text.trim()&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyFiledAgentAnswer(answer);
+      if(answer.disposition!=='failed'&&answer.text.trim()&&(answer.notify||hasPendingThreadNotification(session.id,answer.root)))notifyFiledAgentAnswer(answer);
       return;
     }
     // What he reads first, on his Lock Screen and in Needs you, is the agent's own one-line summary:
@@ -3738,8 +3737,9 @@ function fileAgentAnswer(answer:{resolutionInputId?:string;inboxSessionId:number
       return;
     }
     const rang=threadRangThisRun(session.id,answer.root,answer.askedInRun);
-    const notificationInputId=words?consumeThreadNotification(session.id,answer.root,answer.postId,false,answer.askedInRun??null):null;
-    const requestedResult=!!notificationInputId||!rang&&!!words&&!!answer.notify&&!messageAlreadyNotified(session.id,answer.postId);
+    const eligibleResult=answer.disposition!=='failed'&&!!words;
+    const notificationInputId=eligibleResult?consumeThreadNotification(session.id,answer.root,answer.postId,answer.askedInRun??null):null;
+    const requestedResult=!!notificationInputId||eligibleResult&&!rang&&!!answer.notify&&!messageAlreadyNotified(session.id,answer.postId);
     const at=nowIso(),generation=raiseGeneration(session);
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId,revision:1,state:'open',blocking:decision,optional:false,context:'ready',brief,
       // A decision belongs to the agent that asked, so its later final reply or the request's closure ends it;

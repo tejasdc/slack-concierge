@@ -44,7 +44,8 @@ try{
  const target=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
  const request=await communication.ask({source:router.source,action_id:'dispatch',address:target.session.address,thread:root,summary:'Answer the question',text:'Answer the retained question while repairing the issue.',requestedEffect:'work'});
  await communication.idle();const worker=run();
- const rings=()=>db.query("SELECT payload_json FROM session_owner_events WHERE kind='needs_you' AND json_extract(payload_json,'$.requestedNotification')=1 ORDER BY sequence").all().map((r:any)=>JSON.parse(r.payload_json));
+ const rings=()=>db.query("SELECT event_id,created_at,payload_json FROM session_owner_events WHERE kind='needs_you' AND json_extract(payload_json,'$.requestedNotification')=1 ORDER BY sequence")
+   .all().map((row:any)=>({...JSON.parse(row.payload_json),eventId:row.event_id,createdAtUtc:row.created_at}));
  communication.post({source:router.source,action_id:'acknowledgement',thread:root,text:'I have sent this to the working agent.'});
  assert.equal(rings().length,0,'Router acknowledgement leaves pending dispatched result quiet');
  assert.equal(hasPendingThreadNotification(inboxId,root),true);
@@ -74,23 +75,26 @@ try{
  const quiet=capture('Notify me when the send is confirmed.');place(quiet);
  const quietRequest=await communication.ask({source:router.source,action_id:'dispatch-quiet',address:target.session.address,thread:quiet,summary:'Check the send',text:'Check the send.',requestedEffect:'work'});await communication.idle();
  communication.reply({source:worker.source,action_id:'quiet-close',request_id:quietRequest.request_id,text:'The send was accepted.',final:true,workDisposition:'completed',summary:'Send accepted',all_done:true,checked:'Disposable send receipt.',quiet_because:'The send went exactly as requested.'});await communication.idle();
- assert.equal(rings().length,2);assert.equal(db.query('SELECT consumed_by_message_id FROM inbox_thread_notifications WHERE input_id=?').get(quiet).consumed_by_message_id!=null,true,'Quiet completion consumes its own arm silently');
+ assert.equal(rings().length,3);
+ assert.equal(rings()[2].notificationInputId,quiet,'Explicit human request overrides a quiet completion');
+ assert.equal(db.query('SELECT consumed_by_message_id FROM inbox_thread_notifications WHERE input_id=?').get(quiet).consumed_by_message_id,rings()[2].postId);
  assert.equal(db.query('SELECT consumed_by_message_id FROM inbox_thread_notifications WHERE input_id=?').get(unrelated).consumed_by_message_id,null,'Quiet completion cannot consume another request in the same topic');
  const direct=capture('Notify me when you have explained the result.');place(direct);
  communication.post({source:router.source,action_id:'direct-answer',thread:direct,text:'The result is retained and verified.'});
- assert.equal(rings().length,3,'Router answer consumes explicit human arm without notify flag');
- assert.equal(rings()[2].question,'The result is retained and verified.');
+ assert.equal(rings().length,4,'Router answer consumes explicit human arm without notify flag');
+ assert.equal(rings()[3].question,'The result is retained and verified.');
  const {recordTurnOutcome}=await import('../src/session-turn-outcome');
  const response=capture('Notify me with the explanation when it is ready.');place(response);
  communication.post({source:router.source,action_id:'response-answer',thread:response,text:'The explanation is now complete.',keep_working:true});
- assert.equal(rings().length,3,'A keep-working post does not consume the arm');
+ assert.equal(rings().length,4,'A keep-working post does not consume the arm');
  recordTurnOutcome({eventId:'outcome:response',sessionId:inboxId,turnId:router.actor.turnId,inputId:response,outcome:'response',text:'Read the explanation'});
- assert.equal(rings().length,4,'Response outcome consumes a later explicit arm in the same router run');
- assert.equal(rings()[3].question,'The explanation is now complete.');
+ assert.equal(rings().length,5,'Response outcome consumes a later explicit arm in the same router run');
+ assert.equal(rings()[4].question,'The explanation is now complete.');
  const quietOutcome=capture('Notify me with the receipt.');place(quietOutcome);
  communication.post({source:router.source,action_id:'quiet-outcome-answer',thread:quietOutcome,text:'The receipt is retained.',keep_working:true});
  recordTurnOutcome({eventId:'outcome:quiet',sessionId:inboxId,turnId:router.actor.turnId,inputId:quietOutcome,outcome:'done',text:null,quiet:'The send went as requested.'});
- assert.equal(rings().length,4);assert.equal(hasPendingThreadNotification(inboxId,quietOutcome),false,'Quiet router outcome consumes without a ring');
+ assert.equal(rings().length,6);assert.equal(hasPendingThreadNotification(inboxId,quietOutcome),false);
+ assert.equal(rings()[5].question,'The receipt is retained.','Quiet router outcome delivers his explicit request');
  const noticeRoot=capture("Check the direct notices.");
  const noticeTopic=topicsCommand(router.actor,{verb:"create",action_id:"notice-topic",title:"Direct notices",roots:[noticeRoot],area_ids:[area.id]}).topic.topicId;
  const parentTarget=await owner.create({clientActionId:randomUUID(),provider:"codex",purpose:"chat"});
@@ -113,10 +117,60 @@ try{
  const childPost=communication.post({...notice,source:childRun.source,action_id:"child-notice"});
  assert.equal(childPost.duplicate,false,"A worker can post through its parent’s linked work");
  assert.equal(communication.post({...notice,source:childRun.source,action_id:"child-notice"}).duplicate,true);
- const directRings=rings().slice(4);
+ const directRings=rings().slice(6);
  assert.deepEqual(directRings.map(ring=>ring.postId),[parentPost.post.messageId,childPost.post.messageId]);
  assert.throws(()=>communication.post({...notice,source:worker.source,action_id:"foreign-promise",promise_request:parent.request_id}),error=>/without a matching open Inbox request/.test(String(error))&&!String(error).includes(usableRequest));
  assert.equal(communication.inspect(parent.request_id).outcome,null);
  assert.equal(communication.inspect(child.request_id).outcome,null);
- assert.deepEqual(errors,[]);console.log(JSON.stringify({fixture:'inbox-requested-notification',explicitHumanRequest:true,progressQuiet:true,promptAnswer:true,explicitPartial:true,bodylessFinal:true,quietConsumes:true}));
+ const finalCheck=async(label:string,words:string,effect:'informational'|'work')=>{
+   const root=capture(words);
+   const key=label.toLowerCase().replaceAll(' ','-');
+   topicsCommand(router.actor,{verb:'create',action_id:`topic-${key}`,title:label,roots:[root],area_ids:[area.id]});
+   const dispatch=await communication.ask({source:router.source,action_id:`dispatch-${key}`,address:target.session.address,
+     thread:root,summary:'Answer this question',text:'Answer this question.',requestedEffect:effect});
+   await communication.idle();
+   return {root,request_id:dispatch.request_id,source:worker.source,action_id:`reply-${key}`,final:true,summary:'Here is the answer'};
+ };
+ const explicit=await finalCheck('Plain informational answer','How does this work?','informational');
+ const informationRings=rings().length;
+ const explicitReply={...explicit,text:'The answer was already in the retained report.',notify:true};
+ communication.reply(explicitReply);await communication.idle();
+ assert.equal(rings().length,informationRings+1,'Explicit notify on a completed informational final rings');
+ assert.equal(rings().at(-1).question,explicitReply.text);
+ communication.reply(explicitReply);await communication.idle();
+ assert.equal(rings().length,informationRings+1,'Exact retry cannot duplicate an informational answer notice');
+ const armed=await finalCheck('Requested informational answer','What happened? Notify me.','informational');
+ communication.reply({...armed,text:'The notification came from the retained post.'});await communication.idle();
+ assert.equal(rings().length,informationRings+2);
+ assert.equal(rings().at(-1).notificationInputId,armed.root,'Informational filing honors the human arm');
+ const unchecked=await finalCheck('Unchecked work answer','What does the report say?','work');
+ communication.reply({...unchecked,text:'The stored report has the answer.',notify:true,workDisposition:'completed',
+   all_done:true,not_checked:'This only explains the retained report.'});await communication.idle();
+ assert.equal(rings().length,informationRings+3,'A completed work final with unchecked evidence rings');
+ assert.match(communication.inspect(unchecked.request_id).result.closingLine,/^Completed · Not checked live:/);
+ const failed=await finalCheck('Failed answer','Notify me when the answer is ready.','work');
+ communication.reply({...failed,action_id:'progress-before-failure',final:false,text:'I am still looking.'});await communication.idle();
+ const afterFailureProgress=rings().length;
+ assert.equal(afterFailureProgress,informationRings+3,'Progress never produces a requested push');
+ communication.reply({...failed,text:'I could not find the answer.',notify:true,workDisposition:'failed'});await communication.idle();
+ const afterFailedFinal=rings().length;
+ assert.equal(afterFailedFinal,afterFailureProgress,'Failure never produces a requested push');
+ assert.equal(hasPendingThreadNotification(inboxId,failed.root),true,'Failure leaves the arm for an actual answer');
+ const quietUnarmed=await finalCheck('Quiet unrequested answer','What was sent?','work');
+ communication.reply({...quietUnarmed,text:'The send went as requested.',workDisposition:'completed',all_done:true,
+   checked:'The stored send receipt matches the request.',quiet_because:'The send went as requested.'});await communication.idle();
+ assert.equal(rings().length,informationRings+3,'An unrequested quiet completion stays quiet');
+ assert.deepEqual(errors,[]);
+ const results=rings();
+ const receipt=(ring:any)=>({eventId:ring.eventId,postId:ring.postId,createdAtUtc:ring.createdAtUtc,
+   ...(ring.notificationInputId?{armedInputId:ring.notificationInputId,consumedByPostId:db.query(
+     'SELECT consumed_by_message_id FROM inbox_thread_notifications WHERE input_id=?').get(ring.notificationInputId).consumed_by_message_id}:{})});
+ const failureEvents=db.query("SELECT event_id,kind FROM session_communication_events WHERE request_id=? AND kind IN ('progress','final') ORDER BY rowid")
+   .all(failed.request_id);
+ console.log(JSON.stringify({fixture:'inbox-requested-notification',explicitHumanRequest:true,progressQuiet:true,promptAnswer:true,explicitPartial:true,bodylessFinal:true,quietHonorsArm:true,informationalFinal:true,failedFinalQuiet:true,
+   evidence:{explicitInformational:receipt(results[informationRings]),armedInformational:receipt(results[informationRings+1]),
+     explicitUncheckedWork:receipt(results[informationRings+2]),armedQuietWork:receipt(results[2]),armedQuietRouter:receipt(results[5]),
+     progressAndFailure:{requestId:failed.request_id,acceptedEvents:failureEvents,armedInputId:failed.root,armPending:hasPendingThreadNotification(inboxId,failed.root),
+       requestedEventsFromProgress:afterFailureProgress-(informationRings+3),requestedEventsFromFailure:afterFailedFinal-afterFailureProgress},
+     quietUnrequested:{requestId:quietUnarmed.request_id,requestedEvents:results.length-afterFailedFinal}}}));
 }finally{await communication.stop();rmSync(scratch,{recursive:true,force:true});}
