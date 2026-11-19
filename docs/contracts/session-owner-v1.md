@@ -222,6 +222,31 @@ A human input whose provider keeps failing (a minute of Claude's own retries, or
 
 The source-bound `sessions codex-recover <request-id>` command carries the asking run's accepted input/run and a stable action ID. The owner resolves only the exact service `report-back:<request-id>` for an open work request. Recovery requires work authority from the asking run, retained human authority for the same session model, a complete owner-to-native attempt map, terminal empty native item pages for the selected attempts, no acknowledgement or other effects, current controls and binding, no later admission, and an available owner execution host. A durable reservation keyed by the accepted report-back input makes retries across action IDs return the same receipt even after the turn becomes queued. The original result identity is immutable; later attempts receive distinct result identities and the canonical readers select the latest result. The command never replays the original accepted work input. Exact recovery evidence and the parent-controlled procedure are in [the Codex empty report-back incident](../runbooks/CODEX-EMPTY-REPORT-BACK-RECOVERY-EVIDENCE.md).
 
+### Minimum owner write position
+
+Every non-GET response from the owner carries `x-concierge-owner-position: v1.<ledger>.<sequence>`:
+the ledger's 16-hex identity and its presentation change position read after the handler returned,
+so it covers every canonical write that request committed before answering (it may also cover
+unrelated later writes; that only makes it a slightly higher minimum). Work an operation does
+after its response, such as a provider turn, is not covered; follow its receipt instead.
+
+A prepared session-card (`sessions/window`, `sessions/changes`), receipt (`receipts/:session`,
+`receipts/:session/changes`), topic (`topics`, `incoming`, `topics/changes`, `topics/resolve`,
+`topics/:topic`, `topics/:topic/items`, `questions`) or Inbox-attention read accepts that value as
+`?minOwnerPosition=`. The read never waits for the worker. When that exact projection's applied
+checkpoint covers the position, the ordinary body is returned with
+`x-concierge-owner-position-applied`. When it does not, the answer is HTTP 200
+`{notReady:{code:"OWNER_POSITION_PENDING",projection:"session-cards"|"receipts"|"topics",requiredPosition,appliedPosition,retryAfterMs:500}}`
+with no rows: the caller keeps its own display and reads again. An unprepared or rebuilding projection answers
+through its reader's existing `presentation_indexing` or reset coverage without the applied header;
+a caller treats a missing applied header as unconfirmed, never as covered. A malformed value is 400
+`OWNER_POSITION_INVALID`; any other read is 400 `OWNER_POSITION_UNSUPPORTED`; a position from
+another ledger, or beyond this ledger's committed head, is 409 `OWNER_POSITION_FOREIGN` and should be
+dropped. Positions are per owner: a write forwarded to a peer is reflected in this owner's cards
+only once the peer catalogue syncs, which this position does not cover. Callers that omit the
+parameter see no change; an older owner sends no position header, which tells a caller not to
+send one.
+
 ## Surface operations
 
 The native Inbox's trusted producer admission, identity lookup and original capture
