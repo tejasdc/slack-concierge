@@ -38,7 +38,9 @@ export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'
       return {source:null};
     }
     const metadata = sessionMetadata(session);
-    if (session.status === 'archived' || metadata.suspended || metadata.providerRunner
+    // The managed runner selects where app work launches. The verified local process above
+    // establishes this terminal source's own machine without changing that managed binding.
+    if (session.status === 'archived' || metadata.suspended
       || metadata.interactionPolicy || metadata.canvasObservation || supersededBy(session.id) || withdrawnSuccessor(session.id)
       || db.query("SELECT 1 FROM session_inputs WHERE scope='lab:invocation' AND session_id=? LIMIT 1").get(session.id))
       throw new Error('This Claude Code conversation cannot accept terminal commands on this machine.');

@@ -124,6 +124,8 @@ unique conversation binding and retains a service-authored input and run in one
 transaction. Claude Code passes the pair to the agent in that prompt's hook
 context. Router commands use the same source checks as on an app-started turn.
 Reports use the ordinary Inbox or proposal path and keep the agent attribution.
+An assigned managed runner still owns app placement. The local terminal source
+is proved by the interactive process, independently of that assignment.
 
 Registration stores the command source and keeps the prompt in Claude Code's
 transcript. Command source registration carries no execution lease, so it does
