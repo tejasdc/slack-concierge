@@ -316,7 +316,8 @@ function rootOf(sessionId:number,messageId:string):string|null {
     const row=inboxRowByMessageId(null,messageId) as {session_id:number}|null;
     return row&&row.session_id!==sessionId?inboxThreadRoot(row.session_id,messageId):null;
   })();
-  // Only a found root is remembered. An input may be retained before its Inbox event exists.
+  // Only a found root is remembered. A null can mean the owner retained a reply before
+  // its accepted event exists. Remembering that null hid new replies until the next link.
   if(root!==null)rootMemo.set(key,root);
   return root;
 }
@@ -1663,11 +1664,12 @@ type ConversationMember={sequence:number;root:string|null};
 /** A human input can belong to another root only by a retained reply or a recorded placement.
  *  Exact roots, replies and placements are candidates. Current ledger resolution decides membership;
  *  a candidate from an old placement may now belong elsewhere. */
-function humanInboxMembers(roots:string[],sourceId:string):Map<string,ConversationMember> {
+function humanInboxMembers(roots:string[],sourceId:string,directSessionId:number|null):Map<string,ConversationMember> {
   const rootSet=new Set(roots);
   const rows=db.query(`WITH roots AS (SELECT value AS id FROM json_each(?)),
     candidates AS (
       SELECT id FROM roots UNION SELECT ?
+      UNION SELECT id FROM session_inputs WHERE session_id=? AND origin='human'
       UNION SELECT input_id FROM session_owner_events
         WHERE kind='thread_link' AND json_extract(payload_json,'$.root') IN (SELECT id FROM roots)
       UNION SELECT id FROM session_inputs
@@ -1677,11 +1679,11 @@ function humanInboxMembers(roots:string[],sourceId:string):Map<string,Conversati
     SELECT input_id,sequence,session_id FROM (
       ${inboxRows} AND event.kind IN ('accepted','inbox_capture')
         AND input.origin='human' AND event.input_id IN (SELECT id FROM candidates)
-    ) ORDER BY sequence`).all(JSON.stringify(roots),sourceId) as {input_id:string;sequence:number;session_id:number}[];
+    ) ORDER BY sequence`).all(JSON.stringify(roots),sourceId,directSessionId) as {input_id:string;sequence:number;session_id:number}[];
   const members=new Map<string,ConversationMember>();
   for(const row of rows){
     const root=rootOf(row.session_id,row.input_id);
-    if(row.input_id===sourceId||(root&&rootSet.has(root)))members.set(row.input_id,{sequence:row.sequence,root});
+    if(directSessionId!==null||row.input_id===sourceId||(root&&rootSet.has(root)))members.set(row.input_id,{sequence:row.sequence,root});
     else members.delete(row.input_id);
   }
   return members;
@@ -1719,10 +1721,11 @@ export const verifiedHumanConversation=db.transaction((operationId:string,cursor
   // order is the session's accepted-input order rather than the Inbox event sequence.
   const inboxSource=!!(db.query("SELECT 1 FROM sessions WHERE id=? AND json_extract(native_metadata_json,'$.inbox')=1").get(source.session_id));
   const scope:'topic'|'thread'|'session'|'source'=topicId?'topic':root?'thread':inboxSource?'source':'session';
-  const members=scope==='session'?new Map<string,ConversationMember>():humanInboxMembers(roots,source.id);
+  const inboxMembers=humanInboxMembers(roots,source.id,scope==='session'?source.session_id:null);
+  const members=scope==='session'?new Map<string,ConversationMember>():inboxMembers;
   if(scope==='session'){
     for(const row of db.query("SELECT rowid AS sequence,id FROM session_inputs WHERE session_id=? AND origin='human'").all(source.session_id) as {sequence:number;id:string}[])
-      members.set(row.id,{sequence:row.sequence,root:null});
+      members.set(row.id,{sequence:row.sequence,root:inboxMembers.get(row.id)?.root??null});
   }
   // The source is always part of its own conversation, even before its thread is placed.
   if(!members.has(source.id))members.set(source.id,{sequence:0,root});
