@@ -5,7 +5,7 @@ import { db, moveUsageHoldsEarlier, releaseUsageContinuationHolds } from "./stat
 import { log } from "./log";
 import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
-import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, retireCodexRefusalSupersededByReading, usageAttempt } from "./provider-usage";
+import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, retireCodexRefusalSupersededByReading, retireMisattributedClaudeRefusals, usageAttempt } from "./provider-usage";
 import { ACCOUNT_READING_MAX_AGE_MS, currentAccount, listProfiles, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import {accountReadingAt,accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
 import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead, requestMissingClaudeHomes, selectedClaudeHome } from "./provider-account-dispatch";
@@ -694,6 +694,7 @@ export async function refreshProviderAccountUsage(force = false): Promise<void> 
       db.query(`INSERT INTO ${accountUsageTable(provider)} (provider, observed_at, usage_json) VALUES (?, ?, ?)
         ON CONFLICT(provider) DO UPDATE SET observed_at = excluded.observed_at, usage_json = excluded.usage_json`)
         .run(provider, usage.observedAt, JSON.stringify(usage));
+      if (provider === 'claude-code') retireMisattributedClaudeRefusals();
       // Keeping the reading is what makes a rate possible. Until 2026-09-23 only the latest
       // one was kept, so there was no series to see a climb in and no way to warn early.
       recordUsageReading(provider, usage);

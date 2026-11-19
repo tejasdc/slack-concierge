@@ -83,6 +83,24 @@ function prune(state: UsageState, now = Date.now()) {
   }
 }
 
+/** Retire a refusal once a fresh account reading proves its reset belongs elsewhere. */
+export function retireMisattributedClaudeRefusals() {
+  try {
+    db.transaction(() => {
+      const state = read('claude-code');
+      let changed = false;
+      for (const [scope, limit] of Object.entries(state.limits)) {
+        if (limit.resetAt === null || limit.resetAt <= Date.now()) continue;
+        const account = claudeScopeAccount(scope);
+        if (!claudeRefusalAttributedToAnotherAccount(account, claudeScopeModel(scope), limit.resetAt)) continue;
+        state.limits[scope] = { resetAt: null, observedAt: Date.now(), revision: ++state.revision };
+        changed = true;
+      }
+      if (changed) write('claude-code', state);
+    }).immediate();
+  } catch { log('warn', 'claude_refusal_reconciliation_failed'); }
+}
+
 // A usage limit belongs to the account that earned it. Naming that account in
 // the scope is what stops a new account from inheriting the previous account's
 // exhaustion: its scope simply does not match the recorded limit. Codex
