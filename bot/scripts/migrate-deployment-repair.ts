@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from 'node:child_process';
 import { canonicalSql } from '../src/canonical-sql';
-import { checkSqliteBackup as checks, isVerifiedBackup, publishSqliteBackup, pruneVerifiedBackups, verifyMigrationBackup } from '../src/verified-sqlite-backup';
+import { AUTOMATIC_COPY_NAME, checkLedgerInPlace, checkSqliteBackup as checks, isVerifiedBackup, lastCompressionRatio, publishCompressedLedgerCopy,
+  publishSqliteBackup, pruneVerifiedBackups, recordLedgerCheck, recordedLedgerCheck, restoreCompressedCopy, verifyMigrationBackup } from '../src/verified-sqlite-backup';
 
 /**
  * The schema this release's code builds, read from a database it creates from nothing. Run in a
@@ -48,7 +49,9 @@ const pruneOnly = process.argv.includes('--prune-only');
 if ([backupOnly, backupIfNeeded, schemaOnly, pruneOnly].filter(Boolean).length > 1) throw new Error('Choose one of backup-only, backup-if-needed, schema-only or prune-only.');
 const backupArgument = process.argv.indexOf('--backup-path');
 const namedBackup = (backupArgument >= 0 ? process.argv[backupArgument + 1] : undefined) || process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP || '';
-const backupPath = namedBackup || join(stateDirectory, "backups", `state.pre-deployment-repair.${Date.now()}.db`);
+// An update's copy is compressed (see publishCompressedLedgerCopy); only the legacy serving-time
+// --backup-only copy, used by control recovery and older controllers, is a plain SQLite file.
+const backupPath = namedBackup || join(stateDirectory, "backups", `state.pre-deployment-repair.${Date.now()}.db${backupOnly ? '' : '.zst'}`);
 mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
 
 function beginOfflinePhase(phase: string): () => void {
@@ -165,14 +168,14 @@ function retireCapturedCopies(now = Date.now()) {
   const capturedBefore = offBoxBackupCapturedBefore();
   if (capturedBefore === null) return { offBoxBackup: null, removed: [] as string[] };
   const removed: string[] = [];
-  const companions = (path: string) => ['.verified.json', '.publishing', '-wal', '-shm', '-journal', ''].map(suffix => path + suffix);
+  const companions = (path: string) => ['.verified.json', '.publishing', '.ledger-check.json', '-wal', '-shm', '-journal', ''].map(suffix => path + suffix);
   const remove = (path: string) => {
     for (const part of companions(path)) rmSync(part, { force: true });
     removed.push(path);
   };
   const backups = dirname(backupPath);
   for (const name of readdirSync(backups)) {
-    if (!/^state\.pre-deployment-repair\.\d+\.db$/.test(name) || existsSync(join(backups, `${name}.publishing`))) continue;
+    if (!AUTOMATIC_COPY_NAME.test(name) || existsSync(join(backups, `${name}.publishing`))) continue;
     if (lastChanged(companions(join(backups, name))) >= capturedBefore) continue;
     remove(join(backups, name));
   }
@@ -206,7 +209,7 @@ if (pruneOnly) {
   process.exit(0);
 }
 
-if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan')) {
+if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan') && !process.argv.includes('--restore-copy')) {
   // An admission drain preserves agent hosts; it does not stop the serving owner's writes.
   // Schema work requires the coordinator fully stopped, including its prestart recovery.
   const service = process.env.CONCIERGE_SERVICE || 'concierge-bot.service';
@@ -217,10 +220,10 @@ if (!backupOnly && !backupIfNeeded && !process.argv.includes('--plan')) {
     throw new Error(`Schema migration requires ${service} fully stopped; observed ${JSON.stringify(values)}.`);
 }
 
-// The copy is the ledger's full size (12.9 GB on 2026-11-12) and is written before older copies are
-// pruned. That night's copy took the root disk from about 21 GB to 7 GB free in minutes; a copy
-// started with less room would fill it and stop every writer. Refuse instead, leaving the deploy
-// failed and the ledger untouched, unless the copy fits with a margin left over.
+// A copy is written before older copies are pruned. On 2026-11-12 a full-size copy (12.9 GB) took
+// the root disk from about 21 GB to 7 GB free in minutes; a copy started with less room would fill
+// it and stop every writer. Refuse instead, leaving the deploy failed and the ledger untouched,
+// unless the copy fits with this margin left over; the compressed copy also stops at the margin.
 const COPY_MARGIN_BYTES = 10 * 1024 ** 3;
 /**
  * Older automatic copies the retention cap will drop as soon as the new copy is published. With the
@@ -234,7 +237,7 @@ function copiesTheNewCopyEvicts(newCopyBytes: number): string[] {
   if (process.env.CONCIERGE_DEPLOYMENT_MIGRATION_BACKUP) return [];
   const folder = dirname(backupPath);
   const stamp = (name: string) => Number(name.split('.')[2]);
-  const verified = readdirSync(folder).filter(name => /^state\.pre-deployment-repair\.\d+\.db$/.test(name))
+  const verified = readdirSync(folder).filter(name => AUTOMATIC_COPY_NAME.test(name))
     .filter(name => isVerifiedBackup(join(folder, name))).sort((a, b) => stamp(b) - stamp(a));
   let kept = 1, bytes = newCopyBytes, full = false;
   const evicted: string[] = [];
@@ -247,9 +250,19 @@ function copiesTheNewCopyEvicts(newCopyBytes: number): string[] {
   return evicted;
 }
 
-function requireRoomForCopy() {
+function ledgerBytes() {
   const wal = existsSync(statePath + '-wal') ? statSync(statePath + '-wal').size : 0;
-  const copyBytes = statSync(statePath).size + wal;
+  return statSync(statePath).size + wal;
+}
+/**
+ * The compressed copy's expected size: the ledger at the last compressed copy's ratio, or the whole
+ * ledger before any compressed copy exists. The estimate only decides whether older copies are
+ * removed first and whether to start; the copy itself stops at the margin if it runs larger.
+ */
+function expectedCompressedBytes() {
+  return Math.ceil(ledgerBytes() * Math.min(1, lastCompressionRatio(dirname(backupPath)) ?? 1));
+}
+function requireRoomForCopy(copyBytes: number) {
   const needed = copyBytes + COPY_MARGIN_BYTES;
   const disk = statfsSync(dirname(backupPath));
   let free = Number(disk.bavail) * Number(disk.bsize);
@@ -269,13 +282,50 @@ function requireRoomForCopy() {
     }
   }
   if (free < needed)
-    throw new Error(`Not enough disk for the pre-migration ledger copy: ${(free / 1024 ** 3).toFixed(1)} GiB free, ${(needed / 1024 ** 3).toFixed(1)} GiB needed (ledger plus a 10 GiB margin). Free space, then deploy again.`);
+    throw new Error(`Not enough disk for the pre-migration ledger copy: ${(free / 1024 ** 3).toFixed(1)} GiB free, ${(needed / 1024 ** 3).toFixed(1)} GiB needed (the copy plus a 10 GiB margin). Free space, then deploy again.`);
 }
 
-function backUp() {
-  requireRoomForCopy();
+/** The legacy serving-time copy: a full-size plain SQLite file, checked after it is written. */
+function backUpUncompressed() {
+  requireRoomForCopy(ledgerBytes());
   publishSqliteBackup(statePath, backupPath);
   pruneAutomaticCopies();
+}
+
+/**
+ * While Concierge serves: check the whole ledger, make room and record the check beside the
+ * planned copy's name. The copy itself is written in the stopped window, where the ledger's bytes
+ * hold still, so it can be streamed compressed with no full-size temporary file.
+ */
+function planCompressedCopy() {
+  const check = checkLedgerInPlace(statePath);
+  requireRoomForCopy(expectedCompressedBytes());
+  recordLedgerCheck(backupPath, check);
+}
+
+/** With Concierge stopped: write the compressed copy, using the serving-time check when there is one. */
+async function backUpCompressed() {
+  let check = recordedLedgerCheck(backupPath, statePath);
+  if (!check) {
+    // No serving-time check: the schema change appeared only after the coordinator stopped, or the
+    // combined manual command. Check here; slow on a large ledger, but the copy needs it.
+    const finishLedgerCheck = beginOfflinePhase('ledger_check');
+    check = checkLedgerInPlace(statePath);
+    finishLedgerCheck();
+  }
+  requireRoomForCopy(expectedCompressedBytes());
+  const copy = await publishCompressedLedgerCopy(statePath, backupPath, check, COPY_MARGIN_BYTES);
+  console.error(JSON.stringify({ event: 'deployment_migration_copy_written', backup_path: backupPath, ...copy }));
+  pruneAutomaticCopies();
+}
+
+const restoreArgument = process.argv.indexOf('--restore-copy');
+if (restoreArgument >= 0) {
+  // Decompresses a verified compressed copy to a new file and proves it; never touches the ledger.
+  const copy = process.argv[restoreArgument + 1], target = process.argv[process.argv.indexOf('--restore-to') + 1];
+  if (!copy || !target || process.argv.indexOf('--restore-to') < 0) throw new Error('Usage: --restore-copy <copy.db.zst> --restore-to <new file>');
+  console.log(JSON.stringify({ status: 'restored', copy, target, ...await restoreCompressedCopy(copy, target) }));
+  process.exit(0);
 }
 
 if (process.argv.includes('--plan')) {
@@ -287,9 +337,10 @@ if (backupIfNeeded) {
   // Run from the release being installed, before the coordinator stops: its own code says what its
   // schema step would add, and only then is the ledger copied.
   const changes = await schemaChanges();
-  if (changes.length) backUp();
+  if (changes.length) planCompressedCopy();
   else pruneAutomaticCopies();
-  console.log(JSON.stringify(changes.length ? { status: 'backed_up', backup_path: backupPath, changes }
+  // backup_path names the copy the stopped schema step writes there.
+  console.log(JSON.stringify(changes.length ? { status: 'copy_planned', backup_path: backupPath, changes }
     : { status: 'no_schema_change', backup_path: null, changes }));
   process.exit(0);
 }
@@ -306,10 +357,15 @@ if (schemaOnly && !namedBackup) {
     process.exit(0);
   }
   const finishLateBackup = beginOfflinePhase('late_backup');
-  backUp();
+  await backUpCompressed();
   finishLateBackup();
-} else if (!schemaOnly) backUp();
-else {
+} else if (backupOnly) backUpUncompressed();
+else if (!schemaOnly || !existsSync(backupPath)) {
+  // The copy this update planned while serving, or the combined manual command's copy.
+  const finishCompressedCopy = beginOfflinePhase('compressed_copy');
+  await backUpCompressed();
+  finishCompressedCopy();
+} else {
   const finishBackupVerification = beginOfflinePhase('backup_verification');
   verifyMigrationBackup(backupPath);
   finishBackupVerification();

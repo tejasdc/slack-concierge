@@ -4,7 +4,8 @@ import { accessSync, constants, existsSync, linkSync, mkdirSync, mkdtempSync, re
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { ledgerWriteResults } from '../src/ledger-write-results';
-import { isVerifiedBackup, publishSqliteBackup, pruneVerifiedBackups } from '../src/verified-sqlite-backup';
+import { checkLedgerInPlace, isVerifiedBackup, lastCompressionRatio, publishCompressedLedgerCopy, publishSqliteBackup, pruneVerifiedBackups,
+  recordLedgerCheck, recordedLedgerCheck, restoreCompressedCopy } from '../src/verified-sqlite-backup';
 import { liveStoreCopyRefusal, liveStores } from '../src/live-store-copy-policy';
 import { inheritedDatabaseBoundary, privateDatabaseCommand } from '../src/private-database-command';
 import { DATABASE_SAFETY_FIXTURE_TEST_AUTHORIZATION } from '../src/test-authorizations';
@@ -41,6 +42,46 @@ try {
   assert.throws(() => publishSqliteBackup(source, path(3)), /foreign_key_check/);
   assert(!existsSync(path(3)) && !existsSync(`${path(3)}.verified.json`));
   assert(!readdirSync(root).some(name => name.endsWith('.publishing')));
+
+  // Compressed copies: the stopped ledger's exact bytes, streamed through zstd with no full-size
+  // temporary file, verified, retained beside plain copies, and restored byte for byte.
+  const compressedRoot = join(root, 'compressed');
+  mkdirSync(compressedRoot);
+  const ledger = join(compressedRoot, 'ledger.db');
+  const live = ledgerWriteResults(new Database(ledger));
+  live.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT)");
+  const insert = live.prepare('INSERT INTO notes(body) VALUES (?)');
+  for (let n = 0; n < 4000; n++) insert.run(`note ${n} `.repeat(40));
+  // Rows still only in the write-ahead log must reach the copy.
+  assert(statSync(`${ledger}-wal`).size > 0);
+  const zpath = (n: number) => join(compressedRoot, `state.pre-deployment-repair.${n}.db.zst`);
+  const ledgerCheck = checkLedgerInPlace(ledger);
+  recordLedgerCheck(zpath(10), ledgerCheck);
+  assert.deepEqual(recordedLedgerCheck(zpath(10), ledger), ledgerCheck);
+  live.close();
+  // Disk below the free margin: the copy stops and leaves nothing behind.
+  await assert.rejects(publishCompressedLedgerCopy(ledger, zpath(10), ledgerCheck, Number.MAX_SAFE_INTEGER), /free margin/);
+  assert(!existsSync(zpath(10)) && !existsSync(`${zpath(10)}.publishing`) && existsSync(`${zpath(10)}.ledger-check.json`));
+  const written = await publishCompressedLedgerCopy(ledger, zpath(10), ledgerCheck, 0);
+  assert(isVerifiedBackup(zpath(10)) && !existsSync(`${zpath(10)}.ledger-check.json`));
+  assert(written.bytes < written.sourceBytes / 4, JSON.stringify(written));
+  assert.equal(lastCompressionRatio(compressedRoot), written.bytes / written.sourceBytes);
+  await assert.rejects(publishCompressedLedgerCopy(ledger, zpath(10), ledgerCheck, 0), /replace/);
+  const restoredPath = join(compressedRoot, 'restored.db');
+  const restored = await restoreCompressedCopy(zpath(10), restoredPath);
+  assert.equal(restored.sha256, written.sha256);
+  assert.deepEqual(readFileSync(restoredPath), readFileSync(ledger));
+  const reopened = new Database(restoredPath, { readonly: true });
+  assert.equal((reopened.query('SELECT count(*) AS n FROM notes').get() as { n: number }).n, 4000);
+  reopened.close();
+  await assert.rejects(restoreCompressedCopy(zpath(10), restoredPath), /existing/);
+  // Retention counts compressed and plain copies together; a check left by a failed update goes
+  // once a newer verified copy exists.
+  publishSqliteBackup(restoredPath, join(compressedRoot, 'state.pre-deployment-repair.5.db'));
+  writeFileSync(`${zpath(7)}.ledger-check.json`, '{}');
+  assert.equal(pruneVerifiedBackups(compressedRoot, 1), 1);
+  assert(isVerifiedBackup(zpath(10)) && !existsSync(join(compressedRoot, 'state.pre-deployment-repair.5.db'))
+    && !existsSync(`${zpath(7)}.ledger-check.json`));
 
   assert(liveStoreCopyRefusal('sqlite3 /root/.local/state/concierge/state.db ".backup /tmp/copy.db"'));
   assert(liveStoreCopyRefusal('python3 scripts/diagnostic-sqlite-snapshot.py /a /b; cp /root/.local/state/concierge/state.db /tmp/raw.db'));
