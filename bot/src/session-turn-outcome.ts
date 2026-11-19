@@ -3,7 +3,7 @@ import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunI
 import {inboxThreadRoot} from './session-inbox';
 import {questionsDeclaredByRun,readsForTurn,type ReadingText} from './session-topics';
 import {log} from './log';
-import {consumeThreadNotification,dispatchedFromInput,messageAlreadyNotified,threadRangThisRun} from './thread-notifications';
+import {consumeThreadNotification,dispatchedFromInput,messageAlreadyNotified,notifyAgentPost,threadRangThisRun} from './thread-notifications';
 import {sessionAuthor} from './session-message-author';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
 import {hasOpenDirectChatGptOutcomeDuty,requireDirectChatGptOutcomeReady} from './chatgpt-obligations';
@@ -163,16 +163,16 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   const inputColumn=getAcceptedSessionInput(inputId)?inputId:null;
   db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
     .run(input.eventId,input.sessionId,inputColumn,input.turnId,'turn_outcome',JSON.stringify(payload));
-  if(quiet&&meta.inbox){
+  if(quiet&&meta.inbox&&!dispatchedFromInput(input.inputId)){
     const answer=readsForTurn(input.sessionId,input.turnId,new Set([inputId])).at(-1);
-    if(answer)consumeThreadNotification(input.sessionId,inputId,answer.messageId,true);
+    if(answer)notifyAgentPost(input.sessionId,inputId,answer.messageId,answer.text,false,runId);
   }
   if(question) {
     const answer=meta.inbox
       ?readsForTurn(input.sessionId,input.turnId,new Set([inputId])).at(-1):null;
     const rang=threadRangThisRun(input.sessionId,inputId,runId);
     const notificationInputId=outcome==='response'&&answer&&!dispatchedFromInput(input.inputId)
-      ?consumeThreadNotification(input.sessionId,inputId,answer.messageId,false,runId):null;
+      ?consumeThreadNotification(input.sessionId,inputId,answer.messageId,runId):null;
     const alreadyNotified=returnedDecision||!!answer&&messageAlreadyNotified(input.sessionId,answer.messageId)
       ||!notificationInputId&&!!runId&&!!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND json_extract(payload_json,'$.inputId')=? AND kind='needs_you'
         AND json_extract(payload_json,'$.blockingNotification')=1 AND json_extract(payload_json,'$.runId')=? LIMIT 1`).get(input.sessionId,inputId,runId)
