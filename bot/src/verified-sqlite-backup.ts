@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { chmodSync, closeSync, existsSync, fdatasyncSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { ledgerWriteResults } from './ledger-write-results';
 
 export function checkSqliteBackup(database: Database): void {
   const integrity = database.query('PRAGMA integrity_check').all() as Array<{ integrity_check: string }>;
@@ -226,8 +227,7 @@ export async function publishCompressedLedgerCopy(sourcePath: string, destinatio
     const file = ledgerFileIdentity(sourcePath);
     if (file.device !== check.device || file.inode !== check.inode)
       throw new Error('The ledger check was made on a different file than the one being copied.');
-    database = new Database(sourcePath);
-    database.exec('PRAGMA busy_timeout=5000');
+    database = ledgerWriteResults(new Database(sourcePath));
     const checkpoint = database.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy: number };
     database.exec('BEGIN IMMEDIATE');
     const wal = `${sourcePath}-wal`;
