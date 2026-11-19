@@ -106,7 +106,7 @@ test('long project paths preserve exact registered basename independently of dis
  const source=new Database(':memory:'),prepared=new Database(':memory:');
  source.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,provider_id TEXT,status TEXT,native_metadata_json TEXT,
   agent_session_uuid TEXT,slack_channel_id TEXT,slack_thread_ts TEXT,created_at TEXT,last_turn_at TEXT);
-  CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,started_at TEXT,provider_turn_id TEXT,
+  CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,turn_kind TEXT NOT NULL DEFAULT 'native',started_at TEXT,provider_turn_id TEXT,
   saved_kind TEXT,dispatch_failure_class TEXT,dispatch_next_attempt_ms INTEGER);
   INSERT INTO sessions(id,provider_id,status,native_metadata_json,created_at) VALUES(1,'claude-code','idle','{}','2026-10-08T00:00:00Z')`);
  let project='/'+('nested/'.repeat(110))+'registered-project';
