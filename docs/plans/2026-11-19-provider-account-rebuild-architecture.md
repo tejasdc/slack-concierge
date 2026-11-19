@@ -1,11 +1,25 @@
 # Provider / account / dispatch — rebuild architecture
 
-Status: design, 2026-11-19. Preceded by:
+Status: shipped on branch `worktree-agent-ada68178c2e5c0e31` as PR #1019 (2026-11-19).
+Preceded by:
 - `docs/incidents/2026-11-19-opus-only-refusal-blocked-every-claude-turn.md` — the failure the rebuild answers.
 - `docs/plans/2026-11-19-multi-account-multi-provider-redesign.md` — the research fork's direction.
 - `docs/plans/2026-11-19-provider-account-rebuild-inventory.md` — the full catalogue of what the rebuild replaces.
 
 Scope: the account / provider / dispatch subsystem, from `canTakeWork` to the operator CLI. No band-aids; every current question routes through one authority. Preserves every dated incident reason as a named test.
+
+Status of the sections in this doc (as of commit `8a1eae61`):
+- §3 One authority `canTakeWork` — SHIPPED (`bot/src/account-authority.ts`).
+- §4 Home resolution — SHIPPED (`bot/src/account-home-resolver.ts`) plus the dispatcher-signed binding (§4.1, `bot/src/claude-session-binding.ts`) that supersedes the JSONL `session-owner` header.
+- §5 Refusal cache — SHIPPED (`bot/src/account-refusal-cache.ts`), with `overageReason` and `rateLimitType` fields.
+- §6 Rate-limit signals — SHIPPED (`bot/src/rate-limit-signals.ts`), including `detectAccountMismatch`.
+- §7 Dispatch collapse — SHIPPED. `chooseClaudeDispatch` at `bot/src/provider-account-dispatch.ts` is 60 lines (was ~130) with a filter+rank over `canTakeWork`.
+- §8 `provider_chain` metadata — SHIPPED. Column added; `recoverExhaustedWork(sessionId)` walks the chain in `bot/src/provider-exhaustion-recovery.ts`.
+- §9 Operator CLI — SHIPPED (`bot/scripts/router-accounts.ts` + `systemd/router-actions.sh`: status, verdict, usage-clear, refusals).
+- §10 UI badge consolidation — SHIPPED. `markUncurrentAccountReadings` in `bot/src/account-allowance-observation.ts` consults the authority for `hasRoom`.
+- §11 Migration — SHIPPED (idempotent `addColumn`; `claude_session_account_bindings` created via `db.exec(CREATE TABLE IF NOT EXISTS …)`).
+- §12 Tests — 86 tests across 16 files pass.
+- §15 Open questions — the five flagged items keep their proposed defaults; the user overrides on review.
 
 ## 1. Why this rebuild
 
