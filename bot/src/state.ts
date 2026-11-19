@@ -983,6 +983,14 @@ addColumn("turns", "provider_input_acknowledged_at", "provider_input_acknowledge
 addColumn("turns", "stop_input_cutoff", "stop_input_cutoff INTEGER");
 addColumn("turns", "input_context_received_by_turn_id", "input_context_received_by_turn_id INTEGER");
 addColumn("turns", "dispatch_attempt", "dispatch_attempt INTEGER NOT NULL DEFAULT 0");
+// Admission and execution records use the attempt for durable identity. A requeue
+// may change scheduling state, but a writer must never reuse a previously spent attempt.
+db.exec(`CREATE TRIGGER IF NOT EXISTS turns_dispatch_attempt_monotonic
+  BEFORE UPDATE OF dispatch_attempt ON turns
+  WHEN NEW.dispatch_attempt < OLD.dispatch_attempt
+  BEGIN
+    SELECT RAISE(ABORT, 'Turn dispatch attempt cannot decrease');
+  END;`);
 addColumn("turns", "dispatch_failure_class", "dispatch_failure_class TEXT");
 // Every queued claim checks for a parked host in its session. Keep that lookup bounded even
 // for long-lived conversations such as the Inbox router.
