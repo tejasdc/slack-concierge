@@ -51,6 +51,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/requests/:id',purpose:'one exact addressed request and event set; needs paging',maxResponseBytes:8*MiB,kind:'legacy'},
  {path:'/reports/chain/:id',purpose:'one accepted input ancestry and its report links',maxResponseBytes:MiB,kind:'control'},
  {path:'/reports/window',purpose:'bounded accepted report window with request settlement and thread-post state',maxResponseBytes:8*MiB,kind:'control'},
+ {path:'/agent-proposals',purpose:'bounded counts of agent proposals waiting for his accept, his decisions per agent, and the latest fifty',maxResponseBytes:MiB,kind:'control'},
  {path:'/peers',purpose:'configured peer inventory',maxResponseBytes:MiB,kind:'control'},
  {path:'/work-thread',purpose:'which Inbox thread one change was made for; the turns running then and their transcripts',maxResponseBytes:MiB,kind:'control'},
  {path:'/peers/operations/:id',purpose:'one exact peer project setup receipt',maxResponseBytes:MiB,kind:'control'},

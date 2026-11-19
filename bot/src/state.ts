@@ -123,7 +123,24 @@ CREATE TABLE IF NOT EXISTS focus_capture_release_actions (
   action_id TEXT PRIMARY KEY,
   capture_ids_json TEXT NOT NULL,
   released_at_ms INTEGER NOT NULL
-)`);
+);
+CREATE TABLE IF NOT EXISTS agent_proposals (
+  capture_id TEXT PRIMARY KEY,
+  reporter_key TEXT NOT NULL,
+  reporter_session TEXT,
+  title TEXT NOT NULL,
+  capture_json TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('proposed','accepted','declined','handled')),
+  todo_id TEXT,
+  todo_error TEXT,
+  created_at_ms INTEGER NOT NULL,
+  decided_at_ms INTEGER,
+  admitted_input_id TEXT,
+  todo_closed_at_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS agent_proposals_open ON agent_proposals(state,created_at_ms);
+CREATE INDEX IF NOT EXISTS agent_proposals_reporter ON agent_proposals(reporter_key,created_at_ms)`);
 
 }).immediate();
 

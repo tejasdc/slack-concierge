@@ -15,6 +15,7 @@ import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, obs
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { acceptedInputForTurn, awaitingBankedContinuation, carryingTurn, enqueueSessionInput, getAcceptedSessionInput, handedToARun, withdrawUnstartedServiceInput, humanAuthored, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, stablePayload, sessionMetadata, updateSessionMetadata, sessionInputProvenance, type AcceptedSessionInput } from './session-inputs';
+import {validCertain} from './agent-proposals';
 import { heldRequestNotice, inputHold, inputWaitDetail, readInputExecution, resolveSessionAddress, sessionAddress, SessionOwnerError, type SessionOwner } from './session-owner';
 import { retainedInboxCapture, inboxRequestThread, inboxSession, inboxThreadLink, inboxThreadRoot, messageRouteForSource, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-request-root';
@@ -235,6 +236,36 @@ function questionTodo(input:{only_he_can?:string;todo?:string;todo_checked?:Todo
 
 type OwedRunning={session_id:number;turn_id:number;accepted_input_id:string|null};
 
+const FOUND_WORK_REFUSAL='No message of his and no Inbox dispatch is behind this run, so this is work you found on your own. He decided it waits for his accept unless you are certain it is his [decision: agent-found-work-waits-for-his-accept]. If you are certain, repeat this command with --certain "<why it is certainly his work>". Otherwise file it with router-actions.sh report (without --certain): it becomes a proposal in his To-dos and runs only if he accepts. Or ask with --requested-effect informational if you only need an answer.';
+/**
+ * Whether this run's work traces back to him: one of its inputs is his message or carries his
+ * originating message, its work grant does, or a hop on its source chain is an Inbox session (the
+ * Inbox only dispatches his messages, reports he accepted and reports certain to be his).
+ */
+export function hasHumanLineage(sessionId:number,turnId:number,authorityInputId?:string):boolean {
+    const inboxIds=new Set((db.query(`SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1`).all() as {id:number}[]).map(row=>row.id));
+    const traced=(start:AcceptedSessionInput|null):boolean=>{
+        let current=start;
+        for(let hop=0;current&&hop<16;hop++){
+            if(humanAuthored(current)||inboxIds.has(current.session_id))return true;
+            const provenance=sessionInputProvenance(current);
+            if(provenance?.originatingHuman)return true;
+            const sourceSession=Number(String(provenance?.source?.sessionId??'').replace(/^concierge:/,''));
+            if(Number.isSafeInteger(sourceSession)&&inboxIds.has(sourceSession))return true;
+            const next=provenance?.source?.inputId?getAcceptedSessionInput(provenance.source.inputId):null;
+            current=next&&next.id!==current.id?next:null;
+        }
+        return false;
+    };
+    const turnInputs=db.query("SELECT * FROM session_inputs WHERE turn_id=? AND session_id=?").all(turnId,sessionId) as AcceptedSessionInput[];
+    if(turnInputs.some(traced))return true;
+    if(authorityInputId&&traced(getAcceptedSessionInput(authorityInputId)))return true;
+    const grants=db.query(`SELECT target_input_id FROM session_communication_requests WHERE target_session_id=? AND outcome IS NULL
+        AND target_input_id IS NOT NULL AND json_extract(payload_json,'$.requestedEffect')='work'
+        UNION ALL SELECT target_input_id FROM session_peer_deliveries WHERE target_session_id=? AND closed_at_ms IS NULL AND requested_effect='work'`)
+        .all(sessionId,sessionId) as {target_input_id:string}[];
+    return grants.some(row=>traced(getAcceptedSessionInput(row.target_input_id)));
+}
 export class SessionCommunicationCoordinator {
     private readonly tasks = new Map<string, Promise<void>>();
     private readonly forwarding = new Set<string>();
@@ -2268,6 +2299,8 @@ export class SessionCommunicationCoordinator {
         /** A session a new one should consult for context; its address is put in the first input. */
         consult?:string;
         saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number;daily?:{time:string;timeZone:string};quietOnly?:boolean};
+        /** Why work this agent found on its own is certainly his (agent-proposals.ts). */
+        certain?:string;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
@@ -2419,6 +2452,15 @@ export class SessionCommunicationCoordinator {
         // unmarked requests from the lab coordinator arrived information-only and three agents
         // declined to build what Tejas had asked for (2026-10-08).
         if(input.requestedEffect===undefined)input={...input,requestedEffect:writing||!this.receivesWork(input)?'informational':sender.scope};
+        // Work an agent found on its own (a watch or timer woke it; no message of his and no Inbox
+        // dispatch is behind this run) waits for his accept unless the agent is certain it is his
+        // [decision: agent-found-work-waits-for-his-accept]. The report command turns it into a
+        // proposal in his To-dos; --certain records why it is certainly his and sends it now.
+        if(input.requestedEffect==='work'&&input.responseMode===undefined){
+            const certain=validCertain(input.certain);
+            if(!certain&&!sessionMetadata(getSessionById(actor.session)!).inbox&&!hasHumanLineage(actor.session,actor.turn,sender.authorityInputId))
+                throw new Error(FOUND_WORK_REFUSAL);
+        }
         const frozen=input.address&&!input.provider&&!input.routeMessageId&&!input.resurrect&&input.peer===undefined&&!this.dependencies.peers?.splitAddress(input.address)
             ?this.frozenSession(this.address(input.address).session):null;
         if(frozen) {

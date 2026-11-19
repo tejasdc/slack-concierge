@@ -10,7 +10,7 @@ import {awaitingOutside} from './storage-observation';
  * The to-dos live in thnkr.ing; this reads them over its local capability socket (over SSH from the
  * Mac, as the thesaurus does). Matching is by exact to-do id, never by wording.
  */
-export type TodoState={id:string;text:string;status:string;completedAt:string|null};
+export type TodoState={id:string;text:string;status:string;completedAt:string|null;updatedAt?:string|null};
 /** Steps he must take himself: these asks name their to-do (or say there is none). */
 export const STEP_ASKS=new Set(['sign-in','secret','device']);
 
@@ -54,7 +54,7 @@ export async function readTodos():Promise<TodoState[]>{
     const answer=JSON.parse(await awaitingOutside(()=>process.platform==='darwin'?overSsh(path):overSocket(path))) as {items?:any[]};
     const items=Array.isArray(answer.items)?answer.items:[];
     for(const item of items)if(typeof item?.id==='string')
-      all.push({id:item.id,text:String(item.text??''),status:String(item.status??''),completedAt:typeof item.completedAt==='string'?item.completedAt:null});
+      all.push({id:item.id,text:String(item.text??''),status:String(item.status??''),completedAt:typeof item.completedAt==='string'?item.completedAt:null,updatedAt:typeof item.updatedAt==='string'?item.updatedAt:null});
     if(items.length<PAGE)return all;
     const last=items.at(-1);
     if(typeof last?.position!=='number'||typeof last?.id!=='string')return all;

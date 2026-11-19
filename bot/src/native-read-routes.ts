@@ -57,7 +57,7 @@ const independentCanonical=new Set([
   '/agent-test/sessions/:id/events','/agent-test/sessions/:id/operations/:id','/agent-test/sessions/:id/runs/:id',
   '/events','/releases','/models','/usage/breakdown','/usage/allowance','/projects','/saved-work/settings','/pause-all',
   '/operations/:id','/operations/:id/human-conversation','/runs/:id','/work-thread','/inbox','/inbox/obligations','/sessions','/sessions/:id',
-  '/sessions/:id/view','/sessions/:id/capabilities','/reports/chain/:id','/reports/window',
+  '/sessions/:id/view','/sessions/:id/capabilities','/reports/chain/:id','/reports/window','/agent-proposals',
 ]);
 
 /** Fails the candidate if a new GET exception has no execution owner. */

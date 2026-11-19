@@ -137,6 +137,7 @@ import {currentAccount,localDefaultClaudeAccount,localClaudeAccountHome} from '.
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {PeerAccountAnswers} from './peer-account-answers';
 import {maybeStartStandingRoleFailover} from './standing-role-provider-failover';
+import {certainReason,ProposalError,proposalReceipt,proposalRow,proposalStats,recordProposal,reporterIdentity,settleProposals,validCertain} from './agent-proposals';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -2589,10 +2590,28 @@ export class SessionOwner {
     const original=this.upload({clientActionId:`capture-original:${captureId}`,name:'inbox-capture.txt',contentType:'text/plain',base64:Buffer.from(body.text).toString('base64')}).attachment.id;
     return [original,...(body.attachments??[])];
   }
+  private proposalPass:Promise<unknown>|null=null;
+  /** Offer new proposals in his To-dos and carry his Accept or Dismiss back; one pass at a time. */
+  settleProposalsSoon() {
+    if(this.selfMachine!=='cloud'||this.proposalPass)return;
+    this.proposalPass=settleProposals(captureJson=>{
+      // The report was verified when it arrived (a Mac report over the authenticated peer link).
+      const admitted=this.acceptInboxCapture(JSON.parse(captureJson),true) as {operation?:{id?:string}};
+      return {inputId:admitted.operation?.id??null};
+    },admission=>this.admit(admission)).catch(error=>log('error','agent_proposal_pass_failed',{message:error instanceof Error?error.message:String(error)}))
+      .finally(()=>{this.proposalPass=null;});
+  }
+  agentProposals(query:URLSearchParams) {
+    const days=Number(query.get('days')??30);
+    if(!Number.isInteger(days)||days<1||days>365)throw new SessionOwnerError('days must be 1-365.');
+    return proposalStats(days);
+  }
   async reportAgentIssue(body:unknown) {
-    const input=object(body);only(input,['source','actionId','title','text','files','issueKey']);
+    const input=object(body);only(input,['source','actionId','title','text','files','issueKey','certain']);
     const source=object(input.source);only(source,['inputId','runId']);
     const agent=agentTestSource(source)!;
+    let certain:string|undefined;
+    try{certain=validCertain(input.certain);}catch(error){if(error instanceof ProposalError)throw new SessionOwnerError(error.message,error.status,error.code);throw error;}
     if(typeof input.actionId!=='string'||!input.actionId.trim()||input.actionId.length>200
       ||typeof input.title!=='string'||!input.title.trim()||input.title.length>200
       ||typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('An agent report needs a stable action, short title and observation.',400,'AGENT_REPORT_INVALID');
@@ -2602,7 +2621,7 @@ export class SessionOwner {
     const capture={source:{kind:'agent-report',id,recordedAt:new Date().toISOString(),title:input.title,
       metadata:{agentSource:{inputId:agent.inputId,runId:agent.runId,
         ...(this.selfMachine==='cloud'?{}:{peer:this.selfMachine,sessionId:agent.sessionId})},
-        ...(input.issueKey?{issueKey:input.issueKey}:{})}},text:input.text,files:input.files??[]};
+        ...(input.issueKey?{issueKey:input.issueKey}:{}),...(certain?{certain}:{})}},text:input.text,files:input.files??[]};
     if(this.selfMachine==='cloud')return this.acceptInboxCapture(capture);
     if(!this.peers)throw new SessionOwnerError('The server Inbox is unreachable.',503,'INBOX_PEER_UNAVAILABLE');
     return this.peers.client('cloud').request('POST','/sessions/v1/inbox',capture);
@@ -2669,6 +2688,20 @@ export class SessionOwner {
     if(input.urgency!==undefined&&(outsideAgent||agent||remoteAgent||reader))
       throw new SessionOwnerError('Only a human capture may choose urgent delivery.',403,'CAPTURE_URGENCY_FORBIDDEN');
     const capture=input as InboxCapture,captureId=captureIdentity(capture.source);
+    // Work an agent found on its own, without certainty that it is his, waits for his accept in his
+    // To-dos and never enters the Inbox until then (agent-proposals.ts).
+    if(source.kind==='agent-report'&&input.importOnly===true)throw new SessionOwnerError('An agent report must enter the Inbox router.',400,'AGENT_REPORT_INVALID');
+    if(source.kind==='agent-report'&&!certainReason(source.metadata as Record<string,unknown>|undefined)
+      &&proposalRow(captureId)?.state!=='accepted'&&!getAcceptedSessionInput(`capture:${captureId}`)){
+      const {recordedAt:_,...stableSource}=source;
+      const proposalDigest=hash(stablePayload({source:stableSource,text:input.text,files:input.files??[]}));
+      const reporter=reporterIdentity(agentSource,agent?agent.sessionId:null);
+      let row;
+      try{row=recordProposal({captureId,capture,digest:proposalDigest,reporter,title:String(source.title).trim()});}
+      catch(error){if(error instanceof ProposalError)throw new SessionOwnerError(error.message,error.status,error.code);throw error;}
+      this.settleProposalsSoon();
+      return proposalReceipt(row);
+    }
     // A marked capture on another door is a test; Reader and issue reports enter the router as agents.
     const importOnly=input.importOnly===true||!!agent&&!reader&&source.kind!=='agent-report';
     if(source.kind==='agent-report'&&input.importOnly===true)throw new SessionOwnerError('An agent report must enter the Inbox router.',400,'AGENT_REPORT_INVALID');
@@ -5390,6 +5423,7 @@ ${input.text}`;
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)
         result=this.acceptInboxCapture(body,request.headers.get('x-concierge-verified-peer')==='1');
       else if(request.method==='POST'&&parts[0]==='agent-report'&&parts.length===1)result=await this.reportAgentIssue(body);
+      else if(request.method==='GET'&&parts[0]==='agent-proposals'&&parts.length===1)result=this.agentProposals(url.searchParams);
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='inbox-queue'&&parts.length===2)
         result=this.inboxQueue(url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),50)??50);
       else if(request.method==='GET'&&parts[0]==='presentation'&&parts[1]==='captures'&&parts.length===2)
