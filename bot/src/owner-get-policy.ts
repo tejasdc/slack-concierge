@@ -46,7 +46,7 @@ export const OWNER_GET_EXCEPTIONS:readonly Route[]=[
  {path:'/attachments/:id',purpose:'one retained attachment; size still capped',maxResponseBytes:64*MiB,kind:'control'},
  {path:'/attachments/:id/transcription',purpose:'one attachment transcription status',maxResponseBytes:MiB,kind:'control'},
  {path:'/operations/:id',purpose:'one exact operation receipt',maxResponseBytes:2*MiB,kind:'control'},
- {path:'/operations/:id/human-conversation',purpose:'his own messages around one exact message of his, from the ledger thread index; paged',maxResponseBytes:4*MiB,kind:'control'},
+ {path:'/operations/:id/human-conversation',purpose:'his own messages around one exact message of his, from the retained ledger; paged',maxResponseBytes:4*MiB,kind:'control'},
  {path:'/runs/:id',purpose:'one exact run status',maxResponseBytes:MiB,kind:'control'},
  {path:'/requests/:id',purpose:'one exact addressed request and event set; needs paging',maxResponseBytes:8*MiB,kind:'legacy'},
  {path:'/reports/chain/:id',purpose:'one accepted input ancestry and its report links',maxResponseBytes:MiB,kind:'control'},

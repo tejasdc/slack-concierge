@@ -11,7 +11,7 @@ export type NativeReadRoute=Readonly<{
 }>;
 
 const liveOwner=new Set([
-  '/status','/focus-hold','/projects/:id/status','/canvas-projects/:id','/peers','/peers/operations/:id','/operations/:id/human-conversation',
+  '/status','/focus-hold','/projects/:id/status','/canvas-projects/:id','/peers','/peers/operations/:id',
   '/peers/requests/:id','/peers/requests/:id/replies/:id','/requests/:id','/sources/refresh',
   '/auth/claude-launch-choice','/requirements',
 ]);
@@ -56,7 +56,7 @@ const independentCanonical=new Set([
   '/agent-test/sessions/:id/view','/agent-test/sessions/:id/capabilities','/agent-test/sessions/:id/receipts','/agent-test/sessions/:id/receipts/changes',
   '/agent-test/sessions/:id/events','/agent-test/sessions/:id/operations/:id','/agent-test/sessions/:id/runs/:id',
   '/events','/releases','/models','/usage/breakdown','/usage/allowance','/projects','/saved-work/settings','/pause-all',
-  '/operations/:id','/runs/:id','/work-thread','/inbox','/inbox/obligations','/sessions','/sessions/:id',
+  '/operations/:id','/operations/:id/human-conversation','/runs/:id','/work-thread','/inbox','/inbox/obligations','/sessions','/sessions/:id',
   '/sessions/:id/view','/sessions/:id/capabilities','/reports/chain/:id','/reports/window',
 ]);
 
