@@ -1299,10 +1299,14 @@ in the stopped window kept Concierge stopped 86 s instead of about 10 on 2026-11
 stream at 237 MB/s from the ledger's own filesystem), and that grew with the ledger.
 
 1. While Concierge serves, when the release changes the schema, `--backup-if-needed` checks
-   that zstd exists, waits (up to 20 minutes, still serving) for an earlier update's copy unit
-   that is still streaming, makes room (below) and prints `copy_planned` with the copy's path.
+   that zstd exists, refuses the update at once while an earlier update's copy unit is still
+   streaming (its pin would stop this one emptying the log; waiting would hold new agent turns,
+   since admission is already closed), makes room (below) and prints `copy_planned` with the
+   copy's path.
 2. With Concierge stopped, `--schema-only --backup-path <that path>` starts the copy in its own
-   transient unit, `concierge-ledger-copy-<ms>`, so the end of the update cannot kill it. The
+   transient unit, `concierge-ledger-copy-<ms>` (Nice 10, CPU and IO weight 20, four zstd
+   threads, because it reads the whole ledger while Concierge serves), so the end of the update
+   cannot kill it. The
    unit checks that Concierge is fully stopped, checkpoints the log into the main file and
    empties it (`wal_checkpoint(TRUNCATE)`) while holding the writer reservation, then starts a
    read transaction on the empty log and releases the writer. SQLite gives that reader read-mark
@@ -1311,7 +1315,7 @@ stream at 237 MB/s from the ledger's own filesystem), and that grew with the led
    is a fixed snapshot. Checked on this server's SQLite: with the pin held, another process wrote
    20,000 rows and an index; its passive checkpoint copied nothing, a truncating one returned
    busy, and the main file stayed byte-identical. The unit marks the pin with a `pinned` file in
-   its staging folder; the migrator waits up to two minutes for it (about 0.1 s in practice), and
+   its staging folder; the migrator waits up to ten minutes for it (about 0.1 s in practice), and
    stops the unit before failing if it never comes, so a late pin cannot capture a later ledger.
    The schema step then runs and Concierge restarts as before.
 3. The unit, with Concierge serving, runs the whole-ledger integrity and foreign-key check on
@@ -1321,7 +1325,10 @@ stream at 237 MB/s from the ledger's own filesystem), and that grew with the led
    publishes it as before (read-only, renamed, directory synced, with a verification record that
    also carries `format: zstd`, `sourceBytes` and `sha256`), applies retention and ends the pin.
    Its result is `deployment_migration_copy_written` or `deployment_migration_copy_failed` in
-   `journalctl -u concierge-ledger-copy-<ms>`; a failed unit stays listed by `systemctl --failed`.
+   `journalctl -u concierge-ledger-copy-<ms>`; the unit is not collected, so a failed copy stays
+   listed by `systemctl --failed` until reset, while a successful one unloads. The update itself
+   is already recorded as succeeded by then. When the pin ends the owner's next checkpoint copies
+   the log that built up meanwhile in one larger pass.
 
 What this trades: the old copy was complete before the schema step ran. Now the schema step
 runs once the snapshot is pinned, and if the stream later fails (the disk falls below its margin,

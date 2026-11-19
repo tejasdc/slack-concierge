@@ -306,13 +306,17 @@ function backUpUncompressed() {
  */
 async function planCompressedCopy() {
   zstdCommand(); // Missing compression fails the update here, before Concierge stops.
-  const deadline = Date.now() + EARLIER_COPY_WAIT_MS;
-  for (let running = runningCopyUnits(); running.length; running = runningCopyUnits()) {
-    if (Date.now() > deadline) throw new Error(`An earlier ledger copy is still running (${running.join(', ')}); deploy again once it ends.`);
-    console.error(JSON.stringify({ event: 'deployment_migration_copy_waiting', running }));
-    await Bun.sleep(5_000);
-  }
+  refuseWhileEarlierCopyRuns();
   requireRoomForCopy(expectedCompressedBytes());
+}
+/**
+ * An earlier update's copy still holds its pin, so this update's pin could not empty the log.
+ * Refuse at once rather than wait: by now the update has closed admission, and waiting out a copy
+ * of several minutes would hold every new agent turn that long.
+ */
+function refuseWhileEarlierCopyRuns() {
+  const running = runningCopyUnits();
+  if (running.length) throw new Error(`An earlier ledger copy is still running (${running.join(', ')}); the ledger is unchanged. Deploy again once it ends.`);
 }
 
 /** In-process compressed copy, for the combined manual command: nothing waits on Concierge. */
@@ -325,11 +329,9 @@ async function backUpCompressedInProcess() {
 
 /** Copies stream in their own transient unit, so the end of the update cannot kill them. */
 const COPY_UNIT_PREFIX = 'concierge-ledger-copy-';
-// Waiting out an earlier copy happens while Concierge serves; an 18 GB ledger's check and stream
-// together take a few minutes.
-const EARLIER_COPY_WAIT_MS = 20 * 60_000;
-// The pin itself is a checkpoint of an already-quiet log and two short transactions.
-const PIN_WAIT_MS = 120_000;
+// The pin is a checkpoint of the stopped ledger's log and two short transactions; a large log left
+// at the stop takes longer to copy into the main file.
+const PIN_WAIT_MS = 10 * 60_000;
 function scratchState() {
   return realpathSync(stateDirectory!).startsWith(`${realpathSync(tmpdir())}/`);
 }
@@ -348,6 +350,7 @@ function runningCopyUnits(): string[] {
  * that has not pinned in time is stopped before this fails, so it can never pin a later ledger.
  */
 async function startPinnedCopy() {
+  refuseWhileEarlierCopyRuns();
   requireRoomForCopy(expectedCompressedBytes());
   const unit = `${COPY_UNIT_PREFIX}${basename(backupPath).split('.')[2]}`;
   const command = [process.execPath, Bun.main, '--pinned-copy', '--backup-path', backupPath];
@@ -356,7 +359,10 @@ async function startPinnedCopy() {
   if (scratchState()) {
     child = Bun.spawn(command, { env: process.env, stdio: ['ignore', 'ignore', 'inherit'] });
   } else {
-    const started = spawnSync('systemd-run', ['--unit', unit, '--collect', '--no-block', '--property=Type=exec',
+    // Low CPU and disk priority: it reads the whole ledger while Concierge serves. Not collected, so
+    // a failed copy stays listed by systemctl --failed; a successful one unloads by itself.
+    const started = spawnSync('systemd-run', ['--unit', unit, '--no-block', '--property=Type=exec',
+      '--property=Nice=10', '--property=CPUWeight=20', '--property=IOWeight=20',
       `--setenv=CONCIERGE_STATE_DIR=${stateDirectory}`, `--setenv=CONCIERGE_SERVICE=${service}`,
       `--setenv=HOME=${process.env.HOME || '/root'}`, `--setenv=PATH=${process.env.PATH || '/usr/bin:/bin'}`, '--', ...command],
       { encoding: 'utf8' });

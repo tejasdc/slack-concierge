@@ -194,7 +194,7 @@ export async function publishCompressedLedgerCopy(sourcePath: string, destinatio
   const reservation = `${destination}.publishing`;
   mkdirSync(reservation, { mode: 0o700 });
   const temporary = join(reservation, 'partial.db.zst');
-  let writer: Database | null = null, reader: Database | null = null;
+  let writer: Database | null = null, reader: Database | null = null, input: number | null = null;
   let compressor: ReturnType<typeof Bun.spawn> | null = null;
   try {
     if (existsSync(destination) || existsSync(`${destination}.verified.json`))
@@ -220,7 +220,9 @@ export async function publishCompressedLedgerCopy(sourcePath: string, destinatio
 
     checkSqliteBackup(reader);
     const hash = new Bun.CryptoHasher('sha256');
-    const running = Bun.spawn([zstdCommand(), '-3', '-T0', '-q', '-c'], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
+    // Four threads, not every core: the copy now streams while Concierge serves (2026-11-18 live
+    // rate 237 MB/s was the ledger filesystem's read, not compression).
+    const running = Bun.spawn([zstdCommand(), '-3', '-T4', '-q', '-c'], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
     compressor = running;
     const output = openSync(temporary, 'wx', 0o600);
     let bytes = 0, unflushed = 0, stopped: Error | null = null;
@@ -252,19 +254,19 @@ export async function publishCompressedLedgerCopy(sourcePath: string, destinatio
       }
     })();
     try {
-      const input = openSync(sourcePath, 'r');
-      try {
-        const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
-        for (let offset = 0; offset < sourceBytes && !stopped;) {
-          const read = readSync(input, buffer, 0, Math.min(buffer.length, sourceBytes - offset), offset);
-          if (read <= 0) throw new Error('The ledger ended before its recorded page count.');
-          const piece = buffer.subarray(0, read);
-          hash.update(piece);
-          running.stdin.write(piece);
-          await running.stdin.flush();
-          offset += read;
-        }
-      } finally { closeSync(input); }
+      // Closing a descriptor on the ledger drops this process's POSIX locks on it, including the
+      // pinned reader's, so it stays open until that reader has closed (finally, below).
+      input = openSync(sourcePath, 'r');
+      const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
+      for (let offset = 0; offset < sourceBytes && !stopped;) {
+        const read = readSync(input, buffer, 0, Math.min(buffer.length, sourceBytes - offset), offset);
+        if (read <= 0) throw new Error('The ledger ended before its recorded page count.');
+        const piece = buffer.subarray(0, read);
+        hash.update(piece);
+        running.stdin.write(piece);
+        await running.stdin.flush();
+        offset += read;
+      }
       if (!stopped) await running.stdin.end();
       const exitCode = await running.exited;
       await drain;
@@ -290,6 +292,7 @@ export async function publishCompressedLedgerCopy(sourcePath: string, destinatio
     if (compressor && compressor.exitCode === null) { compressor.kill(); await compressor.exited; }
     if (writer) { try { writer.exec('ROLLBACK'); } catch {} writer.close(); }
     if (reader) { try { reader.exec('COMMIT'); } catch {} reader.close(); }
+    if (input !== null) closeSync(input);
     rmSync(reservation, { recursive: true, force: true });
   }
 }
