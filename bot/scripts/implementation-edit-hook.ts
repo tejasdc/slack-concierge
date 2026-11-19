@@ -1,5 +1,4 @@
 /** PreToolUse hook for both providers; the canonical owner counts recognized edits before execution. */
-import {randomUUID} from 'node:crypto';
 import {existsSync, lstatSync, realpathSync} from 'node:fs';
 import {dirname, isAbsolute, resolve} from 'node:path';
 import {isCodeEditTool} from '../src/implementation-models';
@@ -13,13 +12,13 @@ const toolName=String(hook.tool_name??'');
 const toolInput=hook.tool_input??{};
 const sessionId=String(hook.session_id??'');
 const sourceRunId=process.env.CONCIERGE_SOURCE_RUN_ID?.trim()||'';
-if(hook.hook_event_name==='UserPromptSubmit'||hook.hook_event_name==='Stop'){
+if(['UserPromptSubmit','Stop','StopFailure'].includes(hook.hook_event_name)){
   if(sourceRunId)process.exit(0);
   const pid=terminalClaudePid(sessionId);
   if(!pid)process.exit(0);
-  const event=hook.hook_event_name==='Stop'?'stop':'start';
+  const event=hook.hook_event_name==='UserPromptSubmit'?'start':hook.hook_event_name==='Stop'?'stop':'failure';
   const response=await requestApiResponse('/session-communication/claude-terminal-turn',{
-    sessionId,pid,event,...(event==='start'?{action_id:randomUUID()}:{})
+    sessionId,pid,event,action_id:hook.prompt_id
   },RETRY_POLICIES.ownerRestartInHook);
   if(event==='start'){
     const source=response.ok?response.result?.source:null;

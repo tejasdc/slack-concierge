@@ -269,7 +269,7 @@ try{
       assert.equal(agentTestSource(first.source)?.sessionId,session.id);
       const source={input_id:first.source.inputId,run_id:first.source.runId};
       assert.doesNotThrow(()=>communication.agents({source}));
-      assert.equal(implementationEditDecision(edit).exempt,'claude-terminal');
+      assert.equal(implementationEditDecision(edit).hold,false);
       assert.equal(implementationEditDecision({...edit,terminalPid:process.pid}).hold,true);
       assert.equal(owner.view(db.query('SELECT * FROM sessions WHERE id=?').get(session.id) as any).capabilities.stop,false);
       mkdirSync(join(scratch,'slack-inbox','.git'),{recursive:true});
@@ -277,12 +277,15 @@ try{
       const report=await owner.reportAgentIssue({source:first.source,actionId:'terminal-report',title:'Disposable report',
         text:'The named-file edit gate refused a terminal-backed prompt.',certain:'Disposable Inbox test.'}) as {report?:{requestId:string}};
       assert.ok(report.report?.requestId,'the ordinary report path retains an Inbox request');
-      const second=claudeTerminalTurn({...start,action_id:randomUUID()});
+      const secondStart={...start,action_id:randomUUID()};
+      const second=claudeTerminalTurn(secondStart);
       assert.ok(second.source);
       assert.notEqual(second.source.runId,first.source.runId);
       assert.equal(claudeTerminalTurn(start).source,null,'a late retry cannot replace the current prompt');
       assert.throws(()=>communication.agents({source}),/exact live run/);
       claudeTerminalTurn({...start,event:'stop'});
+      assert.equal(implementationEditDecision(edit).hold,false,'a Stop from the previous prompt cannot close the current prompt');
+      claudeTerminalTurn({...secondStart,event:'failure'});
       assert.equal(implementationEditDecision(edit).hold,true);
     } finally {
       terminal.kill();

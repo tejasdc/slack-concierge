@@ -7,10 +7,10 @@ import {db, finishTurn, getSessionById, registerProcessInstance} from './state';
 
 type LiveTurn = {id:number; owner_instance_id:string|null};
 
-/** The terminal already sent the prompt. Retain a command source without queueing it for replay. */
-export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'start'|'stop'; action_id?:string}) {
+/** The terminal handles delivery. Retain a command source without queueing the prompt for replay. */
+export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'start'|'stop'|'failure'; action_id:string}) {
   if (!isTerminalClaude(input.pid,input.sessionId)) throw new Error('The local Claude Code resume is unavailable.');
-  if (input.event !== 'stop' && (input.event !== 'start' || !/^[0-9a-f-]{36}$/i.test(input.action_id ?? '')))
+  if (!['start','stop','failure'].includes(input.event) || !/^[0-9a-f-]{36}$/i.test(input.action_id ?? ''))
     throw new Error('A terminal prompt needs its own action identity.');
   const process = processIdentity(input.pid);
   const processKey = terminalClaudeProcessKey(process);
@@ -22,10 +22,13 @@ export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'
     const live = db.query("SELECT id,owner_instance_id FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2")
       .all(session.id) as LiveTurn[];
     const own = live.find(turn => turn.owner_instance_id === processKey);
-    if (input.event === 'stop') {
-      if (own) {
-        finishTurn(own.id,'done',null);
-        log('info','claude_terminal_turn_finished',{session_id:session.id,turn_id:own.id});
+    if (input.event !== 'start') {
+      const prompt=db.query("SELECT turn_id FROM session_inputs WHERE session_id=? AND scope=? AND action_id=?")
+        .get(session.id,CLAUDE_TERMINAL_SCOPE,input.action_id) as {turn_id:number|null}|null;
+      if (own&&prompt?.turn_id===own.id) {
+        const outcome=input.event==='failure'?'error':'done';
+        finishTurn(own.id,outcome,null);
+        log('info','claude_terminal_turn_finished',{session_id:session.id,turn_id:own.id,outcome});
       }
       return {source:null};
     }
@@ -35,7 +38,7 @@ export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'
       || db.query("SELECT 1 FROM session_inputs WHERE scope='lab:invocation' AND session_id=? LIMIT 1").get(session.id))
       throw new Error('This Claude Code conversation cannot accept terminal commands on this machine.');
     if (live.some(turn => turn !== own)) throw new Error('Concierge already has a running turn in this conversation.');
-    const retained = retainSessionInput({sessionId:session.id,scope:CLAUDE_TERMINAL_SCOPE,actionId:input.action_id!,
+    const retained = retainSessionInput({sessionId:session.id,scope:CLAUDE_TERMINAL_SCOPE,actionId:input.action_id,
       kind:'input',origin:'service',payload:{text:'Claude Code terminal prompt',processKey}}).input;
     if (retained.turn_id) {
       return {source:own?.id === retained.turn_id ? {inputId:retained.id,runId:nativeRunId(own.id)} : null};

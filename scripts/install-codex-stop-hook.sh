@@ -264,7 +264,7 @@ if [ -e "$managed" ] && [ ! -e "$claude_etc/.concierge-managed" ]; then
   exit 1
 fi
 mkdir -p "$claude_etc"
-printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]},{"matcher":"Bash|Edit|MultiEdit|Write|NotebookEdit|mcp__.*","hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}],"Stop":[{"hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}]}}' > "$tmp"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Glob|NotebookRead|mcp__.*|Computer|computer.*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]},{"matcher":"Bash|Edit|MultiEdit|Write|NotebookEdit|mcp__.*","hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}],"Stop":[{"hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}],"StopFailure":[{"hooks":[{"type":"command","command":"'"$edit_guard"'","timeout":20}]}]}}' > "$tmp"
 install -m 0644 "$tmp" "$managed"
 printf '%s\n' "$marker" > "$claude_etc/.concierge-managed"
 rm -f "$tmp"

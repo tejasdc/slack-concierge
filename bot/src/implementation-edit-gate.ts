@@ -75,13 +75,14 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
   }
   const turn=retainedParent??exact??parent??(!input.providerTurnId?running.find(row=>input.ownerTurnId===row.id)??(running.length===1?running[0]:null):null);
   if(!turn)return {hold:true,message:'Concierge cannot identify the active turn for this code edit. Retry when its owner is available.'};
-  if(turn.accepted_input_id&&getAcceptedSessionInput(turn.accepted_input_id)?.scope===CLAUDE_TERMINAL_SCOPE){
+  const terminalSource=!!turn.accepted_input_id&&getAcceptedSessionInput(turn.accepted_input_id)?.scope===CLAUDE_TERMINAL_SCOPE;
+  if(terminalSource||input.terminalPid){
+    let matches=false;
     try{
-      if(input.terminalPid&&isTerminalClaude(input.terminalPid,input.providerSessionId)
-        &&turn.owner_instance_id===terminalClaudeProcessKey(processIdentity(input.terminalPid)))
-        return {hold:false,exempt:'claude-terminal'};
+      matches=!!(terminalSource&&input.terminalPid&&isTerminalClaude(input.terminalPid,input.providerSessionId)
+        &&turn.owner_instance_id===terminalClaudeProcessKey(processIdentity(input.terminalPid)));
     }catch{ /* The original terminal closed before the owner could confirm the edit. */ }
-    return {hold:true,message:'This Claude Code edit must come from the terminal driving the turn.'};
+    if(!matches)return {hold:true,message:'This Claude Code edit must come from the terminal driving the turn.'};
   }
   if(bound.provider_id==='claude-code'&&name(input.providerAgentId)){
     if((input.ownerTurnId&&input.ownerTurnId!==turn.id)||(input.sourceRunId&&input.sourceRunId!==nativeRunId(turn.id)))
