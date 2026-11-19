@@ -414,7 +414,11 @@ and on November 4 one thread's answer closed two other threads with the wrong te
 ([failure record](../incidents/2026-11-04-one-reply-closed-sibling-requests.md)).
 The recipient session is one
 conversation: a run that follows an interruption may answer requests delivered to the
-earlier run. An ambiguous steering input cited by its own live run is a valid source. That is strong
+earlier run. The reply command takes the older request ID as its destination. When
+source flags are omitted on an ordinary reply, the command uses the input and run
+supplied to its shell by Concierge. The owner still checks that the pair is live
+and that the session holds the delivered request. An exact retry across turns
+uses the original reply source pair and action ID. An ambiguous steering input cited by its own live run is a valid source. That is strong
 evidence of receipt rather than proof, because its ID derives from a request ID that another
 message can quote, so the owner records no acknowledgement from it.
 Partial replies neither extend nor replace the original overdue
