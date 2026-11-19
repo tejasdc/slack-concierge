@@ -11,11 +11,14 @@ import { launchRefusalReason } from "./claude-launch-refusal";
 import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion, isContextOverflowRefusal } from "./provider-failures";
 import {
   clearSignals as clearRateLimitSignals,
+  detectAccountMismatch,
   emptySignals as emptyRateLimitSignals,
   observeRateLimitEvent,
   observeSyntheticText,
   terminalVerdict as rateLimitTerminalVerdict,
 } from "./rate-limit-signals";
+import { providerAccountUsage } from "./provider-account-usage";
+import { accountReadingFresh } from "./account-allowance-observation";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { WriteOutcomeUnknownError } from "./execution-host-client";
 import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-transcript-watch";
@@ -1603,7 +1606,34 @@ export async function runClaudeCodeTurn(input: {
         detail: rateLimitVerdict.conflict.detail,
       });
     }
-    if (usageExhausted && currentUsageAttempt) {
+    // 2026-11-19 Finding 3: before caching, check whether the structured reset matches
+    // any window of the labeled account. If no window within 60s matches, the refusal
+    // likely belongs to a different account (wrong-home binding, F3-deep) and we must
+    // NOT cache under this label. Log `rate_limit_event_account_mismatch` for diagnosis.
+    let suppressedByMismatch = false;
+    if (usageExhausted && rateLimitVerdict.resetAtMs !== null && input.accountLabel) {
+      const usage = providerAccountUsage("claude-code");
+      const account = usage?.accounts.find(a => a.label === input.accountLabel) ?? null;
+      if (account && accountReadingFresh("claude-code", usage!, account)) {
+        const windows = account.windows.map(w => Date.parse(w.resetsAt ?? ""))
+          .filter(v => Number.isFinite(v)) as number[];
+        if (windows.length > 0) {
+          const mismatch = detectAccountMismatch(rateLimitSignals, {
+            accountLabel: input.accountLabel, windowResetAtMs: windows,
+          });
+          if (mismatch) {
+            log("warn", "rate_limit_event_account_mismatch", {
+              session_uuid: parsed.sessionUUID,
+              account: input.accountLabel,
+              reset_at: rateLimitVerdict.resetAtMs,
+              detail: mismatch.detail,
+            });
+            suppressedByMismatch = true;
+          }
+        }
+      }
+    }
+    if (usageExhausted && !suppressedByMismatch && currentUsageAttempt) {
       recordUsageExhaustion(currentUsageAttempt, resolvedResetAt, {
         rateLimitType: rateLimitVerdict.rateLimitType,
         overageReason: rateLimitVerdict.overageReason,
