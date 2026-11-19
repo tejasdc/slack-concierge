@@ -636,19 +636,20 @@ async function runnerSocketRepair(activeTurns:number):Promise<{status:string;det
 /** Resolve a label to this runner's home after validating the account stored there. */
 export function runnerAccountHome(key: AccountProvider, accountLabel: string): string | null {
   if (!accountLabel.trim()) return null;
+  if (key === "claude-code") {
+    const matches = namedRunnerAccountHomes(key, accountLabel);
+    return matches.length === 1 ? matches[0]!.home : null;
+  }
   const root = liveRoot(key);
-  const active = key === "codex" ? codexAccount(root) : claudeAccount(root);
   const matches: string[] = [];
-  if (active?.label === accountLabel) matches.push(root);
+  if (codexAccount(root)?.label === accountLabel) matches.push(root);
   let names: string[] = [];
   try { names = readdirSync(accountRoot(key)).filter(name => !name.startsWith(".")); } catch { return null; }
   for (const name of names) {
     const home = join(accountRoot(key), name);
-    const account = key === "codex" ? codexAccount(home) : claudeAccount(home);
-    if (account?.label === accountLabel) matches.push(home);
+    if (codexAccount(home)?.label === accountLabel) matches.push(home);
   }
-  const unique = [...new Set(matches)];
-  return unique.length === 1 ? unique[0]! : null;
+  return matches.length === 1 ? matches[0]! : null;
 }
 
 /** Enumerate credential-verified homes, for exact transcript discovery on this runner. */
@@ -664,6 +665,12 @@ export function runnerAccountHomes(key: AccountProvider): { account: string; hom
     if (account && !found.has(home)) found.set(home, account.label);
   }
   return [...found].map(([home, account]) => ({ account, home }));
+}
+
+/** The terminal's Claude login can expose history but never identifies a saved agent account. */
+function namedRunnerAccountHomes(key: AccountProvider, accountLabel: string) {
+  const terminalHome = key === "claude-code" ? liveRoot(key) : null;
+  return runnerAccountHomes(key).filter(candidate => candidate.home !== terminalHome && candidate.account === accountLabel);
 }
 
 /**
@@ -831,7 +838,7 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
   if (method === "accounts.validate") {
     const key = provider(params.provider);
     if (typeof params.account !== "string" || !params.account.trim()) throw new Error("A provider account label is required.");
-    const matches = runnerAccountHomes(key).filter(home => home.account === params.account);
+    const matches = namedRunnerAccountHomes(key, params.account);
     return { available: matches.length === 1, resolution: matches.length === 1 ? "unique" : matches.length ? "ambiguous" : "missing" };
   }
   if (method === "accounts.transcript") {
@@ -840,8 +847,7 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
     if (params.account !== null && account === null) throw new Error("account must be a provider label or null.");
     if (typeof params.nativeId !== "string") throw new Error("an exact native session id is required.");
     if (!/^[A-Za-z0-9-]{8,128}$/.test(params.nativeId)) return { account: null, resolution: "missing" };
-    const homes = runnerAccountHomes(key);
-    const candidates = account === null ? homes : homes.filter(home => home.account === account);
+    const candidates = account === null ? runnerAccountHomes(key) : namedRunnerAccountHomes(key, account);
     if (account !== null && candidates.length !== 1)
       return { account: null, resolution: candidates.length > 1 ? "ambiguous" : "missing" };
     const matches = candidates.flatMap(candidate => exactProviderTranscripts(key, candidate.home, params.nativeId as string)
@@ -855,7 +861,7 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
       return { account: null, resolution: matches.length ? "ambiguous" : "missing" };
     }
     if(key==='codex'&&matches.length===1
-      &&homes.filter(home=>home.account===matches[0]!.account).length===1)
+      &&candidates.filter(home=>home.account===matches[0]!.account).length===1)
       return {account:matches[0]!.account,resolution:'unique'};
     if (key === "claude-code" && matches.length > 0
       && new Set(matches.map(match => match.transcript)).size === 1)

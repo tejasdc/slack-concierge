@@ -137,6 +137,9 @@ try {
     "a failed daemon probe must not be mistaken for proof that the App Server is absent");
   assert.deepEqual(accounts.runnerAccountIdentity("codex"), { id: "active-id", label: "active@example.com" });
   assert.equal(accounts.runnerAccountHome("codex", "saved@example.com"), join(root, ".codex-accounts", "saved"));
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.validate", { provider: "claude-code", account: "wrong-default@example.com" }),
+    { available: false, resolution: "missing" }, "the terminal login alone cannot authorize a runner turn");
+  writeFileSync(join(root, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "writer@example.com" } }));
   assert.equal(accounts.runnerAccountHome("claude-code", "writer@example.com"), claude);
   assert.equal(accounts.runnerAccountHome("claude-code", "unknown@example.com"), null);
   assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.identity", { provider: "claude-code" }), null,
@@ -145,6 +148,11 @@ try {
     { id: createHash("sha256").update("opaque-refresh").digest("hex").slice(0, 16), label: "writer@example.com" });
   assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.validate", { provider: "claude-code", account: "writer@example.com" }),
     { available: true, resolution: "unique" }, "the owner can bind shared history only after validating its chosen account on the runner");
+  writeFileSync(join(claudeOther, ".account-email"), "writer@example.com");
+  assert.equal(accounts.runnerAccountHome("claude-code", "writer@example.com"), null);
+  assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.validate", { provider: "claude-code", account: "writer@example.com" }),
+    { available: false, resolution: "ambiguous" }, "two saved homes still require an unambiguous selection");
+  writeFileSync(join(claudeOther, ".account-email"), "other@example.com");
   assert.deepEqual(await accounts.serveRunnerAccountCall("accounts.transcript", { provider: "claude-code", account: null, nativeId: claudeTranscriptId }),
     { account: null, resolution: "shared" }, "shared symlinks identify one physical transcript while leaving account binding to the owner");
   const distinctClaudeHome=join(root,".claude-accounts","distinct");

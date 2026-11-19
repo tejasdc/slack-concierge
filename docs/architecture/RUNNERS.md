@@ -473,7 +473,9 @@ when the configured runner is unavailable, its prior snapshot remains visible wi
 timestamp and cannot be refreshed from the owner's credential files.
 Claude identity requires the exact selected account label. The runner verifies that label against
 its own saved home and returns no identity when the label is absent or maps to multiple homes; it
-never treats the runner's default `.claude` folder as the selected account. A newly filed Claude
+excludes the terminal's default `.claude` home from named validation, launch and named transcript
+lookup. An unscoped historical search can still read its transcripts without binding that login
+to a session. See the [saved runner identity incident](../incidents/2026-11-19-claude-terminal-login-blocked-saved-runner-account.md). A newly filed Claude
 sign-in links the machine-shared settings, instructions, hooks, skills and project history into
 that account home while keeping credentials and other per-login files separate. Conflicting
 private shared files are retained under `.unlinked-*` before the shared link is installed.
