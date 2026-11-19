@@ -32,7 +32,7 @@ import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
 import {codexLeftoverProcesses,codexProcessStillRunning} from '../src/codex-leftover-processes';
 import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
-import {runnerAccountHome,runnerAccountHomes,findRunnerProviderSessionHome,runnerCodexRepairActive,serveRunnerAccountCall} from '../src/runner-provider-accounts';
+import {runnerAccountHome,runnerAccountHomes,runnerClaudeAccountEmail,findRunnerProviderSessionHome,runnerCodexRepairActive,serveRunnerAccountCall} from '../src/runner-provider-accounts';
 import {serveProviderHistoryCall} from '../src/runner-provider-history';
 import {serveRunnerProviderForkCall} from '../src/runner-provider-fork';
 import {serveProjectCall} from '../src/runner-projects';
@@ -352,6 +352,13 @@ class Turn {
         writeFileSync(file.path,Buffer.from(file.base64,'base64'),{mode:0o600});
       }
       if(!existsSync(manifest.cwd))throw new HostNotStartedError(`the turn's folder ${manifest.cwd} does not exist on this runner`);
+      if(this.environment.CONCIERGE_PROVIDER_ID==='claude-code'&&this.environment.CONCIERGE_PROVIDER_ACCOUNT){
+        const observed=await runnerClaudeAccountEmail(this.environment.CLAUDE_CONFIG_DIR!,manifest.cwd,this.environment);
+        say('runner_claude_account_checked',{job:this.job.jobId,selected_account:this.environment.CONCIERGE_PROVIDER_ACCOUNT,
+          observed_account:observed,matched:observed===this.environment.CONCIERGE_PROVIDER_ACCOUNT});
+        if(observed!==this.environment.CONCIERGE_PROVIDER_ACCOUNT)
+          throw new HostNotStartedError('The selected Claude account does not match this runner’s effective login. No request was sent.');
+      }
       const args=manifest.args.map((arg:string)=>resolveRunnerArg(String(arg),this.executionId));
       hostLaunchAttempted=true;
       await startHost({stateDir:stateDir!,executionId:this.executionId,routerBotDir:botDir,

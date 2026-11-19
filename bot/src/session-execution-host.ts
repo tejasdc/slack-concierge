@@ -167,7 +167,7 @@ import {currentAccount,accountMemoryFallback,listProfiles,saveProfile,refreshCla
 import {beginCodexAccountSwitch} from './codex-saved-login-renewal';
 import {ClaudeAccountLogin} from './claude-account-login';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,usageRefreshing,type ProviderUsage} from './provider-account-usage';
-import {accountReadingFresh,includedAllowanceWindows,markUncurrentAccountReadings} from './account-allowance-observation';
+import {accountReadingAt,accountReadingFresh,includedAllowanceWindows,markUncurrentAccountReadings} from './account-allowance-observation';
 import {antigravityAuthView} from './provider-auth-read';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {needClaudeSignInRenewal} from './signin-renewal';
@@ -184,7 +184,7 @@ import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
 import {accountHome,setRunnerAccountInUse} from './provider-accounts';
 import {providerRunnerTarget} from './provider-runner-target';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
-import {claudeAccountCachedReset,clearCodexAccountUsage,releaseCodexUnboundUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
+import {claudeAccountCachedReset,clearClaudeAccountUsageAfterProof,clearCodexAccountUsage,releaseCodexUnboundUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
 import {isWritingSession,WRITING_SESSION_STANDING} from './session-roles';
 import {readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {providerOwnerEnvironment} from './provider-owner-environment';
@@ -697,16 +697,51 @@ export class SessionExecutionHost {
   private usageCheck:Promise<unknown>|null=null;
   private usageProbeRunning=false;
   private usageProbeContext:{provider:'claude-code'|'codex';account:string;model:string|null}|null=null;
-  private retryHeldUsage(){
+  private checkedClaudeRefusals=new Set<string>();
+  /** A newer, different allowance window warrants one real check, never automatic cache clearing. */
+  checkContradictedClaudeHold(){
+    if(!providerRunnerTarget('claude-code')||this.usageCheck||this.usageProbeRunning)return;
+    const waiting=db.query(`SELECT turns.id AS turn_id, COALESCE(turns.provider_model,
+      (SELECT earlier.provider_model FROM turns earlier WHERE earlier.session_id=turns.session_id
+        AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model
+      FROM turns JOIN sessions ON sessions.id=turns.session_id
+      WHERE turns.status='queued' AND turns.dispatch_hold='usage'
+        AND turns.dispatch_failure_class IN ('backoff','usage_wait') AND sessions.provider_id='claude-code'
+        AND (turns.provider_model IS NOT NULL OR EXISTS (SELECT 1 FROM turns earlier
+          WHERE earlier.session_id=turns.session_id AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL))
+      ORDER BY turns.id LIMIT 1`).get() as {turn_id:number;model:string|null}|null;
+    const usage=providerAccountUsage('claude-code');
+    const account=usage?.accounts.find(item=>item.current);
+    if(!waiting?.model||!usage||!account||account.viaPeer||account.signedOut
+      ||!accountReadingFresh('claude-code',usage,account,Date.now(),undefined,waiting.model))return;
+    const attempt=usageAttempt('claude-code',waiting.model,account.label);
+    const limit=cachedUsageLimit(attempt),readAt=accountReadingAt(account);
+    const windows=includedAllowanceWindows('claude-code',account,waiting.model);
+    if(!limit||readAt===null||readAt<=limit.observedAt||!windows.length
+      ||!windows.every(window=>window.usedPercent<100&&window.resetsAt&&Number.isFinite(Date.parse(window.resetsAt)))
+      ||windows.some(window=>Math.abs(Date.parse(window.resetsAt!)-limit.resetAt!)<60_000))return;
+    const key=`${attempt.scope}:${limit.revision}:${windows.map(window=>window.resetsAt).join(',')}`;
+    if(this.checkedClaudeRefusals.has(key))return;
+    log('info','claude_refusal_check_scheduled',{scope:attempt.scope,read_at:readAt,refused_until:limit.resetAt});
+    void this.retryHeldUsage({turnId:waiting.turn_id,account:account.label,scope:attempt.scope,revision:limit.revision},
+      ()=>this.checkedClaudeRefusals.add(key)).then(result=>{
+      const status=(result as {status?:string})?.status;
+      if(status!=='available'&&status!=='still_limited')this.checkedClaudeRefusals.delete(key);
+    }).catch(error=>{
+      this.checkedClaudeRefusals.delete(key);
+      log('warn','claude_refusal_check_failed',errorFields(error));
+    });
+  }
+  private retryHeldUsage(candidate?:{turnId:number;account:string;scope:string;revision:number},onProbeStart?:()=>void){
     if(this.usageCheck)return this.usageCheck;
-    const check=this.checkHeldUsage().finally(()=>{if(this.usageCheck===check)this.usageCheck=null;});
+    const check=this.checkHeldUsage(candidate,onProbeStart).finally(()=>{if(this.usageCheck===check)this.usageCheck=null;});
     this.usageCheck=check;
     return check;
   }
-  private async checkHeldUsage(){
+  private async checkHeldUsage(candidate?:{turnId:number;account:string;scope:string;revision:number},onProbeStart?:()=>void){
     if(this.usageProbeRunning)return {status:'unconfirmed',...this.usageProbeContext,
       detail:'The previous provider check is still stopping; no new check was started.'};
-    for(const provider of ['claude-code','codex'] as const){
+    for(const provider of candidate?['claude-code'] as const:['claude-code','codex'] as const){
       const waiting=db.query(`SELECT COALESCE(turns.provider_model,
           (SELECT earlier.provider_model FROM turns earlier WHERE earlier.session_id=turns.session_id
             AND earlier.id<turns.id AND earlier.provider_model IS NOT NULL ORDER BY earlier.id DESC LIMIT 1)) AS model,
@@ -714,7 +749,8 @@ export class SessionExecutionHost {
         FROM turns JOIN sessions ON sessions.id=turns.session_id
         WHERE turns.status='queued' AND turns.dispatch_hold='usage'
           AND turns.dispatch_failure_class IN ('backoff','usage_wait')
-          AND sessions.provider_id=? ORDER BY turns.id LIMIT 1`).get(provider) as {model:string|null;metadata_json:string}|null;
+          AND sessions.provider_id=? AND (? IS NULL OR turns.id=?) ORDER BY turns.id LIMIT 1`)
+        .get(provider,candidate?.turnId??null,candidate?.turnId??null) as {model:string|null;metadata_json:string}|null;
       if(!waiting)continue;
       let savedRunner:string|null=null,savedAccount:string|null=null;
       try{const metadata=JSON.parse(waiting.metadata_json);savedRunner=typeof metadata.providerRunner==='string'?metadata.providerRunner:null;
@@ -730,18 +766,40 @@ export class SessionExecutionHost {
       const accountLabel=runnerTarget?runnerIdentity?.label:home?.label??currentAccount(provider)?.label;
       if(!accountLabel) return {status:'unconfirmed',provider,account:null,detail:'No exact active account identity is available for this held turn.'};
       const attempt=usageAttempt(provider,waiting.model??'unresolved',accountLabel);
+      if(candidate&&(accountLabel!==candidate.account||attempt.scope!==candidate.scope
+        ||cachedUsageLimit(attempt)?.revision!==candidate.revision))
+        return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
+          detail:'The held Claude account or refusal changed before its check started.'};
       const priorLimit=cachedUsageLimit(attempt);
       if(runnerTarget){
         try{
-          const readings=await runnerMachineCall<Record<string,any>>(runnerTarget,'accounts.readings',{},100_000);
-          const usage=readings?.[provider];
-          const reading=usage?.accounts?.find((item:any)=>item.label===accountLabel);
-          const hasRoom=!!usage&&!!reading&&reading.signedOut!==true
-            &&accountReadingFresh(provider,usage,reading,Date.now(),undefined,waiting.model)
-            &&includedAllowanceWindows(provider,reading,waiting.model).length>0
-            &&includedAllowanceWindows(provider,reading,waiting.model).every(window=>window.usedPercent<100);
-          if(!hasRoom)return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
-            detail:`Runner ${runnerTarget} has no fresh allowance proof for ${accountLabel}; waiting work remains held.`};
+          if(provider==='codex'){
+            const readings=await runnerMachineCall<Record<string,any>>(runnerTarget,'accounts.readings',{},100_000);
+            const usage=readings?.[provider];
+            const reading=usage?.accounts?.find((item:any)=>item.label===accountLabel);
+            const hasRoom=!!usage&&!!reading&&reading.signedOut!==true
+              &&accountReadingFresh(provider,usage,reading,Date.now(),undefined,waiting.model)
+              &&includedAllowanceWindows(provider,reading,waiting.model).length>0
+              &&includedAllowanceWindows(provider,reading,waiting.model).every(window=>window.usedPercent<100);
+            if(!hasRoom)return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
+              detail:`Runner ${runnerTarget} has no fresh allowance proof for ${accountLabel}; waiting work remains held.`};
+            const {released}=releaseProvenUsageHolds(attempt,accountLabel);
+            if(released)this.options.wake();
+            return {status:'available',provider,account:accountLabel,model:waiting.model,released};
+          }
+          if(!waiting.model)return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
+            detail:'This runner check needs the held Claude turn’s exact model.'};
+          const checkStartedAtMs=Date.now();
+          onProbeStart?.();
+          const proof=await runnerMachineCall<{status:string;account?:string;model?:string;startedAtMs?:number;detail?:string}>(
+            runnerTarget,'accounts.claude.usageProbe',{account:accountLabel,model:waiting.model},80_000);
+          if(proof.status!=='available'||proof.account!==accountLabel||!proof.model)
+            return {status:proof.status==='still_limited'?'still_limited':'unconfirmed',provider,account:accountLabel,model:waiting.model,
+              detail:proof.detail??'The selected Claude account did not complete the model check.'};
+          clearClaudeAccountUsageAfterProof(accountLabel,proof.model,checkStartedAtMs);
+          if(cachedUsageLimit(usageAttempt('claude-code',waiting.model,accountLabel)))
+            return {status:'unconfirmed',provider,account:accountLabel,model:waiting.model,
+              detail:'A newer Claude refusal arrived during the check; the held work remains queued.'};
           const {released,turnIds}=releaseProvenUsageHolds(attempt,accountLabel,provider==='claude-code'&&!waiting.model);
           if(provider==='claude-code'&&released){const revision=claudeAccountSelection()?.revision??0;
             for(const turnId of turnIds)admitProvenClaudeWaitingTurn(turnId,accountLabel,revision);}

@@ -177,6 +177,23 @@ export function clearCodexAccountUsage(accountId: string, verifiedReadStartedAtM
   return cleared;
 }
 
+/** A completed model request on this account supersedes older refusals for that exact allowance. */
+export function clearClaudeAccountUsageAfterProof(account:string,model:string,probeStartedAtMs:number):boolean {
+  if(!account||!model||!Number.isSafeInteger(probeStartedAtMs)||probeStartedAtMs>Date.now())
+    throw new Error('An exact Claude account, model and completed check start are required.');
+  const scope=`${createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,24)}:${claudeUsageAllowanceModel(model)}`;
+  const cleared=db.transaction(()=>{
+    const state=read('claude-code');
+    const prior=state.limits[scope];
+    if(!prior||prior.observedAt>=probeStartedAtMs)return false;
+    state.limits[scope]={resetAt:null,observedAt:Date.now(),revision:++state.revision};
+    write('claude-code',state);
+    return true;
+  }).immediate();
+  log('info','claude_refusal_cleared_after_provider_success',{scope,cleared});
+  return cleared;
+}
+
 /**
  * A Codex refusal is retired by a later reading of the same account that shows every window
  * with room and no window still ending at the refused reset time: the window that refused has
