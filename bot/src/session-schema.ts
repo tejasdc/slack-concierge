@@ -231,6 +231,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           WHERE accepted_input_id IS NOT NULL AND NOT (status='failed' AND provider_sent_at IS NULL);
         CREATE INDEX IF NOT EXISTS steering_accepted_input_attempts ON turn_steering_messages(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS communication_source_input ON session_communication_requests(source_input_id,action_id) WHERE source_input_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS session_inputs_human_reply ON session_inputs(id)
+          WHERE origin='human' AND json_type(payload_json,'$.replyToMessage.messageId')='text';
         CREATE INDEX IF NOT EXISTS session_inputs_lab_pending ON session_inputs(id)
           WHERE kind='lab-activation' AND json_extract(receipt_json,'$.state')='pending';
         CREATE INDEX IF NOT EXISTS session_inputs_lab_content ON session_inputs(session_id) WHERE scope='lab:invocation';

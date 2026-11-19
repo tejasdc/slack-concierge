@@ -421,11 +421,14 @@ logged as `inbox_entry_index_warmed`. A provider prompt reads its own topic's re
 request, return and post identities to decide whether a returned answer still needs
 relaying. It does not wait for the global entry index. The accepted input keeps its
 identity and durability fence; the owner can serve other requests between warm-up
-steps. `GET /operations/:id/human-conversation` awaits the same yielding warm
-(`warmedEntryIndex`) before it reads, so it never finishes the index synchronously: on
-2026-11-17 thnkr.ing's send check, polling it about 19 times a minute, reached it 4 to 14
-seconds after each restart and held the owner 9.1 to 9.8 seconds with about 185,000 ledger
-calls. The thread-upkeep pass (`keepThreadsCurrent`) awaits it too: its unfiled wake skipped
+steps. The human-conversation read uses one canonical ledger snapshot in the
+native read pool. The ledger indexes explicit human replies. Along with exact
+roots and recorded placements, these supply the candidates for current root
+resolution and current authorship checks. The read is independent of the global
+index warm and the asynchronously prepared display. The November 17 change
+avoided the 9.1 to 9.8-second owner block by awaiting the global warm. That left
+the first read waiting up to 35 seconds after a restart.
+The thread-upkeep pass (`keepThreadsCurrent`) awaits it too: its unfiled wake skipped
 only while a warm ran, so a pass before the startup warm began (the usage watch's first tick,
 thirty seconds after start) built the cold index in one 8.5-second block. Other general topic
 reads and actions that arrive first still finish the remaining index synchronously. On 2026-11-06, a prompt arriving during restart warm-up had

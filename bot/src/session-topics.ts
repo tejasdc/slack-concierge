@@ -289,9 +289,14 @@ const idList=(value:unknown,field:string):string[]=>{
 // rebuilding everything cost 85 s on the live ledger (2026-09-22), and links are frequent.
 let rootMemo=new Map<string,string|null>();
 let threadLinkWatermark=-1;
-export function invalidateTopicRoots() {rootMemo=new Map();threadLinkWatermark=-1;entryIndexState=null;}
+let conversationRootMemo={linkSequence:-1,roots:new Map<string,string|null>()};
+export function invalidateTopicRoots() {
+  rootMemo=new Map();threadLinkWatermark=-1;entryIndexState=null;
+  conversationRootMemo={linkSequence:-1,roots:new Map()};
+}
+const latestThreadLinkSequence=()=>(db.query("SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events WHERE kind='thread_link'").get() as {sequence:number}).sequence;
 export function refreshRootMemo() {
-  const current=(db.query("SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events WHERE kind='thread_link'").get() as {sequence:number}).sequence;
+  const current=latestThreadLinkSequence();
   if(current===threadLinkWatermark)return;
   if(threadLinkWatermark<0){rootMemo=new Map();entryIndexState=null;threadLinkWatermark=current;return;}
   const moved=db.query("SELECT input_id,payload_json FROM session_owner_events WHERE kind='thread_link' AND sequence>? ORDER BY sequence").all(threadLinkWatermark) as {input_id:string|null;payload_json:string}[];
@@ -307,24 +312,20 @@ export function refreshRootMemo() {
   for(const [key,root] of rootMemo)if((root&&affected.has(root))||[...affected].some(id=>key.endsWith(':'+id)))rootMemo.delete(key);
   if(entryIndexState)entryIndexState=reassignEntries(entryIndexState,affected);
 }
-function rootOf(sessionId:number,messageId:string):string|null {
+function rootOf(sessionId:number,messageId:string,memo=rootMemo):string|null {
   const key=`${sessionId}:${messageId}`;
-  if(rootMemo.has(key))return rootMemo.get(key)??null;
+  if(memo.has(key))return memo.get(key)??null;
   // A provider/cwd cutover created a new Inbox session, and its predecessors' messages are
   // still Inbox messages. Resolve through the session that actually holds the message.
   const root=inboxThreadRoot(sessionId,messageId)??(()=>{
     const row=inboxRowByMessageId(null,messageId) as {session_id:number}|null;
     return row&&row.session_id!==sessionId?inboxThreadRoot(row.session_id,messageId):null;
   })();
-  // Only a found root is remembered. A null means there is no Inbox row for this message yet,
-  // and that is usually a reply the owner has retained but not enqueued: submit refreshes the
-  // session view (whose read index asks for every human input's root) before the accepted
-  // event exists. Remembering that null hid every reply from its thread until an unrelated
-  // thread link reset the memo, which is why his 12:51 reply appeared at 12:57 (2026-09-23).
-  if(root!==null)rootMemo.set(key,root);
+  // Only a found root is remembered. A null can mean the owner retained a reply before
+  // its accepted event exists. Remembering that null hid new replies until the next link.
+  if(root!==null)memo.set(key,root);
   return root;
 }
-
 type EntryRecord={sequence:number;at:string;sessionId:number};
 /** `final` is a worker's final answer returned into this thread; `post` the router's deliberate reply there. */
 type EntryKind='final'|'post'|'other';
@@ -399,13 +400,7 @@ export async function warmEntryIndex(options:{stopped?:()=>boolean;batch?:number
   }
   } finally {entryIndexWarmers--;}
 }
-/**
- * The index for a request read: whatever is not yet indexed is filled in the same yielding steps as the
- * startup warm, never in one synchronous pass. On 2026-11-17 thnkr.ing's send check (about 19 reads a
- * minute) reached his human conversation 4 to 14 seconds after each restart, finished the remaining
- * ~22,000 rows itself and held the owner 9.1 to 9.8 seconds with ~185,000 ledger calls each time. Once
- * warm, this costs one tail query, exactly as `entryIndex()` does.
- */
+// Upkeep needs the entire Inbox. Finish the cold part in yielding steps before using it.
 export async function warmedEntryIndex():Promise<EntryIndex> {
   await warmEntryIndex();
   return entryIndex();
@@ -1669,10 +1664,49 @@ export function topicEntries(topicId:string,cursor:string|null=null,limit:number
   return {messages,nextCursor:page.nextCursor,coverage:page.coverage};
 }
 
+// Conversation reads may have memoized a reply without ever reading the capture it follows.
+// A new placement can therefore change a root that is absent from this memo. Clear the
+// memo on any placement change rather than inferring the affected roots from partial reads.
+function conversationRoots() {
+  const linkSequence=latestThreadLinkSequence();
+  if(conversationRootMemo.linkSequence!==linkSequence)conversationRootMemo={linkSequence,roots:new Map()};
+  return conversationRootMemo.roots;
+}
+
+type ConversationMember={sequence:number;root:string|null};
+
+/** A human input can belong to another root only by a retained reply or a recorded placement.
+ *  Exact roots, replies and placements are candidates. Current ledger resolution decides membership;
+ *  a candidate from an old placement may now belong elsewhere. */
+function humanInboxMembers(roots:string[],sourceId:string,directSessionId:number|null,memo:Map<string,string|null>):Map<string,ConversationMember> {
+  const rootSet=new Set(roots);
+  const rows=db.query(`WITH roots AS (SELECT value AS id FROM json_each(?)),
+    candidates AS (
+      SELECT id FROM roots UNION SELECT ?
+      UNION SELECT id FROM session_inputs WHERE session_id=? AND origin='human'
+      UNION SELECT input_id FROM session_owner_events
+        WHERE kind='thread_link' AND json_extract(payload_json,'$.root') IN (SELECT id FROM roots)
+      UNION SELECT id FROM session_inputs
+        WHERE EXISTS (SELECT 1 FROM roots)
+          AND origin='human' AND json_type(payload_json,'$.replyToMessage.messageId')='text'
+    )
+    SELECT input_id,sequence,session_id FROM (
+      ${inboxRows} AND event.kind IN ('accepted','inbox_capture')
+        AND input.origin='human' AND event.input_id IN (SELECT id FROM candidates)
+    ) ORDER BY sequence`).all(JSON.stringify(roots),sourceId,directSessionId) as {input_id:string;sequence:number;session_id:number}[];
+  const members=new Map<string,ConversationMember>();
+  for(const row of rows){
+    const root=rootOf(row.session_id,row.input_id,memo);
+    if(directSessionId!==null||row.input_id===sourceId||(root&&rootSet.has(root)))members.set(row.input_id,{sequence:row.sequence,root});
+    else members.delete(row.input_id);
+  }
+  return members;
+}
+
 /**
  * His own words around one exact message of his, for checks that act in his name: every
  * message he authored in that message's thread and, when the thread is placed in a topic, in
- * the topic's other threads, in ledger order. Read from the owner's thread index and the
+ * the topic's other threads, in ledger order. Read from the owner's thread links and the
  * accepted inputs themselves, never from the Threads display copy. On 2026-11-17 thnkr.ing's
  * send check read the topic through the display copy, which refuses while it lags the ledger,
  * so his "send it to Rohan" stayed held for as long as agents kept the Inbox busy.
@@ -1681,10 +1715,7 @@ export function topicEntries(topicId:string,cursor:string|null=null,limit:number
  * activity never changes it, so a busy Inbox cannot keep restarting the read. The cursor
  * carries the digest, sequence and input ID, so messages sharing a sequence are never skipped.
  */
-export async function verifiedHumanConversation(operationId:string,cursor:string|null=null,limit:number|null=null) {
-  // Everything below reads in one synchronous step after the index is current, so the answer is the
-  // same one the unwaited read gave; only the filling of a cold index yields.
-  const index=await warmedEntryIndex();
+export const verifiedHumanConversation=db.transaction((operationId:string,cursor:string|null=null,limit:number|null=null)=>{
   const source=getAcceptedSessionInput(operationId);
   if(!source)throw new TopicError('Unknown operation.',404,'OPERATION_UNKNOWN');
   if(!humanAuthored(source))throw new TopicError('This operation is not his own message.',409,'NOT_HUMAN_SOURCE');
@@ -1695,23 +1726,24 @@ export async function verifiedHumanConversation(operationId:string,cursor:string
       throw new TopicError('Continue with an exact conversation cursor.',400,'CONVERSATION_CURSOR_INVALID');
   }
   const size=Math.min(200,Math.max(1,Number(limit)||100));
-  const root=rootOf(source.session_id,source.id);
+  const memo=conversationRoots();
+  const root=rootOf(source.session_id,source.id,memo);
   const topicId=root?topicOfRoot(root):null;
   const roots=topicId?topicRoots(topicId):root?[root]:[];
-  const inRoots=new Set(roots);
-  const members=new Map<string,number>();
   // A message he sent straight to an ordinary session has no Inbox thread: its conversation is
   // that session's own accepted messages, so a later "hold off" there is never missed. Their
   // order is the session's accepted-input order rather than the Inbox event sequence.
   const inboxSource=!!(db.query("SELECT 1 FROM sessions WHERE id=? AND json_extract(native_metadata_json,'$.inbox')=1").get(source.session_id));
   const scope:'topic'|'thread'|'session'|'source'=topicId?'topic':root?'thread':inboxSource?'source':'session';
+  const inboxMembers=humanInboxMembers(roots,source.id,scope==='session'?source.session_id:null,memo);
+  const members=scope==='session'?new Map<string,ConversationMember>():inboxMembers;
   if(scope==='session'){
     for(const row of db.query("SELECT rowid AS sequence,id FROM session_inputs WHERE session_id=? AND origin='human'").all(source.session_id) as {sequence:number;id:string}[])
-      members.set(row.id,row.sequence);
-  }else for(const [messageId,entry] of index.messages)if(entry.root&&inRoots.has(entry.root))members.set(messageId,entry.sequence);
+      members.set(row.id,{sequence:row.sequence,root:inboxMembers.get(row.id)?.root??null});
+  }
   // The source is always part of its own conversation, even before its thread is placed.
-  if(!members.has(source.id))members.set(source.id,index.messages.get(source.id)?.sequence??0);
-  const human=[...members].map(([messageId,sequence])=>({input:getAcceptedSessionInput(messageId),sequence}))
+  if(!members.has(source.id))members.set(source.id,{sequence:0,root});
+  const human=[...members].map(([messageId,{sequence}])=>({input:getAcceptedSessionInput(messageId),sequence}))
     .filter((entry):entry is {input:AcceptedSessionInput;sequence:number}=>!!entry.input&&humanAuthored(entry.input))
     .sort((a,b)=>a.sequence-b.sequence||(a.input.id<b.input.id?-1:a.input.id>b.input.id?1:0));
   // Every member passes the same content admission as its own exact operation read; one this
@@ -1721,7 +1753,7 @@ export async function verifiedHumanConversation(operationId:string,cursor:string
     const payload=JSON.parse(input.payload_json);
     const replyTo=retainedReplyTarget(input);
     return {inputId:input.id,sessionId:`concierge:${input.session_id}`,sequence,
-      rootInputId:index.messages.get(input.id)?.root??(input.id===source.id?root:null),
+      rootInputId:members.get(input.id)?.root??(input.id===source.id?root:null),
       kind:input.kind,createdAt:iso(input.created_at),text:payload.text??payload.firstInput?.text??null,
       ...(payload.capture?.id?{captureId:payload.capture.id}:{}),
       ...(typeof replyTo?.messageId==='string'?{replyToMessageId:replyTo.messageId}:{})};
@@ -1736,10 +1768,10 @@ export async function verifiedHumanConversation(operationId:string,cursor:string
   const last=messages[messages.length-1];
   return {version:1 as const,operationId:source.id,scope,threadContext,roots,contextDigest,
     // The owner ledger position this answer reflects, for audit; compare contextDigest for consistency.
-    revision:index.watermark,messages,
+    revision:(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events').get() as {sequence:number}).sequence,messages,
     nextCursor:page.length>size&&last?Buffer.from(JSON.stringify({d:contextDigest,s:last.sequence,i:last.inputId})).toString('base64url'):null,
     complete:true as const};
-}
+});
 
 export function resolveTopicMessage(messageId:string) {
   const session=inboxOrThrow();

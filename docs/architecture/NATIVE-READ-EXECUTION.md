@@ -8,6 +8,10 @@ Pause status uses a read executor because its gate, stopped runs and last peer
 observation are retained in the ledger. This keeps the screen responsive even when
 an Inbox command occupies the canonical owner's loop. The executor uses a single
 read transaction and the same configured peer names; only the owner refreshes peers.
+The exact human-conversation read also runs in a read executor. It takes live
+thread membership and authorship from one ledger snapshot and can answer while
+the owner is still warming the general Inbox index. The request keeps the same
+content admission and cursor checks.
 The owner keeps each event stream's live subscription and cursor. For each bounded replay
 page it asks the local gateway to run the retained event projection in a read executor,
 then forwards the executor's complete SSE frames. The gateway's private page entrance is

@@ -23,10 +23,7 @@ activity. `topicId` is `null` for a thread not yet placed in a topic. Lists do n
 
 `GET /operations/:id/human-conversation` gives a check that acts in his name his own words
 around one exact message of his: every message he authored, now, in its thread and in the
-topic's other threads, in ledger order, with the source always included. `scope` says which conversation that is: `topic` or `thread` for the Inbox; `session` for a message sent straight to an ordinary session, which has no Inbox thread, so the read returns every message he sent in that session in accepted order and a later hold there is never missed; `source` for an Inbox message not yet placed in a thread. The live owner serves
-it from its thread index and the accepted inputs, never from the Threads display copy, so it
-never answers "still indexing"; after a restart it waits for that index's yielding warm-up
-rather than filling it in one owner-blocking pass. Every message in it passes the same content admission as its own exact operation read, and one the reader may not see fails the whole read. Pages agree through `contextDigest`, a hash over only that
+topic's other threads, in ledger order, with the source always included. `scope` says which conversation that is: `topic` or `thread` for the Inbox; `session` for a message sent straight to an ordinary session, which has no Inbox thread, so the read returns every message he sent in that session in accepted order and a later hold there is never missed; `source` for an Inbox message not yet placed in a thread. The native read executor serves it from one ledger snapshot. Exact roots, retained human replies and recorded placements supply candidates. The reader checks each candidate's current thread and authorship against the ledger, without waiting for either the Inbox warm-up or the Threads display copy. Every message in it passes the same content admission as its own exact operation read, and one the reader may not see fails the whole read. Pages agree through `contextDigest`, a hash over only that
 conversation, so unrelated Inbox activity cannot restart a read; an opaque cursor carries the
 digest, sequence and input ID, and a changed conversation answers `409 CONVERSATION_CHANGED`.
 
