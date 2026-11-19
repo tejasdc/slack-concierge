@@ -17,13 +17,13 @@ A question Tejas asked. Use his wording, one human message ID from this thread i
 [{"kind":"asked","decision":"When does the review start?","sources":["human-message-id"],"owner":{"dispatchRequestId":"linked-dispatch-id"}}]
 
 A decision Tejas needs to make. Give the reason, what he can answer now, his exact initiating words, and why they leave a gap.
-[{"kind":"decision","decision":"Which project did you mean?","sources":["human-message-id"],"why":{"text":"Two projects match the name."},"answerable":"Name the project to open.","onlyHeCan":"ambiguous","hisWords":"Open the demo project.","whyNotSettled":"Both projects are named Demo."}]
+[{"kind":"decision","decision":"Which Alex should receive the signed agreement?","sources":["human-message-id"],"why":{"text":"Two contacts match Alex."},"answerable":"Name the intended recipient.","onlyHeCan":"ambiguous","hisWords":"Send the signed agreement to Alex.","whyNotSettled":"Your message names Alex and both contacts use that name."}]
 Supported "onlyHeCan" values: sign-in, secret, device, ambiguous, approval. For approval also supply "decisionId" and "approvalAction" from the permanent decision record.
 For sign-in, secret or device steps, supply "todo" with the open to-do ID, or "none" if there is no to-do. For device steps, name the physical action in the first sentence.
 Use "context":"agent_checking" while preparing a decision. "why.text" and "answerable" are required for "context":"ready".
 
 A reading for Tejas. Give the exact messages in this thread to read.
-[{"kind":"reading","decision":"Read the review findings","reads":["thread-message-id"]}]
+[{"kind":"reading","decision":"Read the review findings","why":{"text":"The review is complete."},"answerable":"Read the findings in the linked message.","reads":["thread-message-id"]}]
 
 To revise an existing question, include its "questionId" (or "id") alongside the updated declaration. To replace it, put the old ID in "replaces" on the new declaration.`;
 
@@ -1380,10 +1380,11 @@ export async function runRouterSessions(request: SessionCommunicationRequest) {
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
+  const questionsCommand = args[0] === "topics" && args[1] === "questions";
   let request: SessionCommunicationRequest | undefined;
   try {
     if (args.length === 1 && (args[0] === "help" || args[0] === "--help")) console.log(usage);
-    else if (args.length === 3 && args[0] === "topics" && args[1] === "questions" && (args[2] === "help" || args[2] === "--help")) console.log(questionsFileHelp);
+    else if (questionsCommand && args.length === 3 && (args[2] === "help" || args[2] === "--help")) console.log(questionsFileHelp);
     else {
       request = parseRouterSessionsArgs(args);
       const response = await runRouterSessions(request);
@@ -1403,7 +1404,7 @@ if (import.meta.main) {
       ok: false,
       error: invalidArguments ? "invalid_session_arguments" : "session_communication_unavailable",
       detail: error instanceof Error ? error.message : String(error),
-      ...(invalidArguments ? { usage } : request ? {
+      ...(invalidArguments ? { usage: questionsCommand ? questionsFileHelp : usage } : request ? {
         operation: request.operation,
         source: request.body.source,
         ...("action_id" in request.body ? { action_id: request.body.action_id } : {}),
