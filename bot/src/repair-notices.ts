@@ -49,7 +49,12 @@ export type PendingRepairNotice = { key: string; kind: string; text: string; cre
 
 export function pendingRepairNotices(db: Database): PendingRepairNotice[] {
   ensureTable(db);
-  return db.query("SELECT key,kind,text,created_at_ms FROM repair_notices WHERE delivered_input_id IS NULL AND resolved_at_ms IS NULL ORDER BY created_at_ms,key")
+  // Older Inbox upkeep could generate a second recovery from the first. Preserve those
+  // records, but never admit stale duplicates, even before the first upkeep pass at startup.
+  return db.query(`SELECT key,kind,text,created_at_ms FROM repair_notices
+    WHERE delivered_input_id IS NULL AND resolved_at_ms IS NULL
+      AND key NOT GLOB 'inbox-unfiled:*:filed:filed'
+    ORDER BY created_at_ms,key`)
     .all() as PendingRepairNotice[];
 }
 
