@@ -137,6 +137,8 @@ import {currentAccount,localDefaultClaudeAccount,localClaudeAccountHome} from '.
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import {PeerAccountAnswers} from './peer-account-answers';
 import {maybeStartStandingRoleFailover} from './standing-role-provider-failover';
+import {ownerPositionGate,withOwnerPosition,OWNER_POSITION_APPLIED_HEADER} from './owner-position';
+import type {presentationContractFor} from './presentation-reader-contracts';
 import {certainReason,ProposalError,proposalReceipt,proposalRow,proposalStats,recordProposal,reporterIdentity,settleProposals,validCertain} from './agent-proposals';
 
 export class SessionOwnerError extends Error {
@@ -5230,10 +5232,13 @@ ${input.text}`;
     try {
       const policy=ownerGetPolicy(request.method,url.pathname);
       const contract=policy?.kind==='presentation'?policy.contract:null;
-      const run=()=>{
+      const run=async()=>{
         if(request.method==='GET'&&!policy)
           return ownerJson({error:{code:'READER_CONTRACT_REQUIRED',message:'This owner read has no declared cost contract or named control exception.'}},{status:503});
-        return withContentReader(request,()=>contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request));
+        if(request.method==='GET')return this.positionedRead(request,url,contract);
+        const answer=await withContentReader(request,()=>this.handleRequest(request));
+        // The write has committed by now; its position lets the caller ask a prepared read for it.
+        return answer&&withOwnerPosition(answer,db);
       };
       let response=await withTaskLabel(`request ${label}`,()=>observeStorageOperation(label,run,measured=>{work=measured;}));
       if(policy&&policy.maxResponseBytes>0&&Number(response?.headers.get('content-length'))>policy.maxResponseBytes){
@@ -5271,9 +5276,17 @@ ${input.text}`;
     const policy=ownerGetPolicy('GET',url.pathname);
     if(!policy)return ownerJson({error:{code:'READER_CONTRACT_REQUIRED',message:'This owner read has no declared cost contract or named control exception.'}},{status:503});
     const contract=policy.kind==='presentation'?policy.contract:null;
-    const response=await withContentReader(request,()=>contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request));
+    const response=await this.positionedRead(request,url,contract);
     if(response&&policy.maxResponseBytes>0&&Number(response.headers.get('content-length'))>policy.maxResponseBytes)
       return ownerJson({error:{code:'READ_BUDGET_EXCEEDED',message:'This page exceeded its declared read size.'}},{status:503});
+    return response;
+  }
+  /** A read, after its optional minimum owner write position; see owner-position.ts. */
+  private async positionedRead(request:Request,url:URL,contract:ReturnType<typeof presentationContractFor>|null):Promise<Response|null> {
+    const gate=ownerPositionGate(db,url,contract?.name??null);
+    if(gate&&'response' in gate)return gate.response;
+    const response=await withContentReader(request,()=>contract?withStorageReadBudget(contract.storage,()=>this.handleRequest(request)):this.handleRequest(request));
+    if(response&&gate?.appliedHeader)response.headers.set(OWNER_POSITION_APPLIED_HEADER,gate.appliedHeader);
     return response;
   }
   private async handleRequest(request:Request):Promise<Response|null> {

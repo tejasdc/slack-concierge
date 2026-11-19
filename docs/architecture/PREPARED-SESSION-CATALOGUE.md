@@ -108,6 +108,17 @@ spaces, attention changes and generation reset. Change readers explicitly select
 space-and-sequence index: without that requirement SQLite can choose the general sequence
 index and walk unrelated changes before satisfying a small page.
 
+## Reading after one's own write
+
+A caller that just wrote can ask whether a prepared card, receipt or topic read includes that
+write: pass the write response's owner position as `minOwnerPosition` (contract:
+[minimum owner write position](../contracts/session-owner-v1.md#minimum-owner-write-position)).
+The gate in `owner-position.ts` compares it with that projection's own checkpoint and answers
+not-ready at once rather than waiting, because the worker's batches take 0.7 to 3.6 seconds and a
+wait inside the read was rejected on November 12. The position is the write's, not the moving
+ledger head, so unrelated agent activity never holds it back.
+`bot/tests/owner-write-position.test.ts` checks not-ready, caught-up, foreign and unsupported answers.
+
 ## Topic and question readers
 
 The same worker prepares topic summaries, question counts, paged requests and questions,

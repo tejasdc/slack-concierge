@@ -85,7 +85,14 @@ export function initializePresentationChanges(db:Database) {
     epoch INTEGER NOT NULL,
     retained_after INTEGER NOT NULL DEFAULT 0
   );
-  INSERT OR IGNORE INTO presentation_change_epoch(singleton,epoch) VALUES(1,1);`);
+  INSERT OR IGNORE INTO presentation_change_epoch(singleton,epoch) VALUES(1,1);
+  -- Names this ledger in owner write positions, so a position from another owner (the Mac's,
+  -- or a ledger recreated from scratch) is refused rather than compared as a bare number.
+  CREATE TABLE IF NOT EXISTS presentation_change_ledger(
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    ledger_id TEXT NOT NULL
+  );
+  INSERT OR IGNORE INTO presentation_change_ledger(singleton,ledger_id) VALUES(1,lower(hex(randomblob(8))));`);
   for(const table of Object.keys(PRESENTATION_CHANGE_TABLES) as TableName[]) {
     for(const kind of ['INSERT','UPDATE','DELETE'] as const) {
       const trigger=`presentation_change_${table}_${kind.toLowerCase()}`;
