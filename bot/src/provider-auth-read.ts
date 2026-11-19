@@ -18,9 +18,21 @@ function claudeInUseSentence(chosen:string,usage:ProviderUsage|null):string {
   const full=includedAllowanceWindows('claude-code',reading).filter(window=>window.usedPercent>=100&&window.resetsAt);
   if(!full.length)return '';
   const until=Math.max(...full.map(window=>Date.parse(window.resetsAt!)));
-  const other=usage.accounts.find(item=>item.label!==chosen&&accountReadingFresh('claude-code',usage,item)
-    &&includedAllowanceWindows('claude-code',item).length>0
-    &&includedAllowanceWindows('claude-code',item).every(window=>window.usedPercent<100));
+  // §10 UI consolidation (2026-11-19): "any other account has included room" is the
+  // authority's answer, not a raw `/usage` percentage. On 2026-11-19 a cached refusal
+  // made hey@tejas.nyc unlaunchable while its reading still showed room; the sentence
+  // must agree with the dispatcher.
+  const { canTakeAnyWork } = require('./account-authority') as typeof import('./account-authority');
+  const other=usage.accounts.find(item=>{
+    if(item.label===chosen)return false;
+    try{ return canTakeAnyWork('claude-code',{provider:'claude-code',label:item.label}).ok; }
+    catch{
+      // Defensive fallback: the pre-§10 reading-only check.
+      return accountReadingFresh('claude-code',usage,item)
+        &&includedAllowanceWindows('claude-code',item).length>0
+        &&includedAllowanceWindows('claude-code',item).every(window=>window.usedPercent<100);
+    }
+  });
   const when=noticeTime(db,until);
   return other
     ?`${chosen}'s included Claude allowance is fully used until ${when}. A fresh allowance reading shows ${other.label} has included room; new Claude work checks launch eligibility when requested.`
