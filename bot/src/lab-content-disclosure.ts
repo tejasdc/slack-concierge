@@ -3,6 +3,7 @@ import {db,getSessionById} from './state';
 import {getAcceptedSessionInput,nativeRunId,sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {parseAgentPrincipalHeader,type AgentPrincipal} from './agent-token-verify';
 import {comparisonContext,type ComparisonContext} from './lab-invocation-facts';
+import {isLiveCommandTurn} from './claude-terminal-process';
 
 type Source={inputId:string;runId:string};
 type Authority={agent:boolean;principal?:AgentPrincipal;source?:Source;invalid?:string;expired?:boolean};
@@ -54,7 +55,7 @@ export function contentReader():Reader {
   turn=db.query('SELECT * FROM turns WHERE id=? AND session_id=?').get(scope.principal.turnId,scope.principal.sessionId) as any;
   input=turn?.accepted_input_id?getAcceptedSessionInput(turn.accepted_input_id):null;
  }
- const live=!!input&&!!turn&&turn.session_id===input.session_id&&turn.status==='running'&&!!turn.provider_admission_intended_at&&!turn.stop_requested_at
+ const live=!!input&&!!turn&&turn.session_id===input.session_id&&isLiveCommandTurn(db,turn)
   &&(!scope.source||nativeRunId(turn.id)===scope.source.runId);
  if(!live){if(scope.source)throw new LabDisclosureError('AGENT_SOURCE_REQUIRED');return {kind:'unknown'};}
  if(scope.principal?.kind==='run'&&(scope.principal.sessionId!==input!.session_id||scope.principal.turnId!==turn.id))throw new LabDisclosureError('AGENT_SOURCE_MISMATCH');

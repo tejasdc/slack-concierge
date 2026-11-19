@@ -1,11 +1,11 @@
-import {CLAUDE_TERMINAL_SCOPE, isTerminalClaude, terminalClaudeProcessKey} from './claude-terminal-process';
+import {CLAUDE_TERMINAL_SCOPE, CLAUDE_TERMINAL_SOURCE, isTerminalClaude, terminalClaudeProcessKey} from './claude-terminal-process';
 import {log} from './log';
 import {processIdentity} from './runtime-identity';
 import {supersededBy, withdrawnSuccessor} from './session-handoff';
 import {nativeRunId, recordSessionEvent, retainSessionInput, sessionMetadata} from './session-inputs';
 import {db, finishTurn, getSessionById, registerProcessInstance} from './state';
 
-type LiveTurn = {id:number; owner_instance_id:string|null};
+type SourceTurn = {id:number; owner_instance_id:string|null};
 
 /** The terminal handles delivery. Retain a command source without queueing the prompt for replay. */
 export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'start'|'stop'|'failure'; action_id:string}) {
@@ -19,9 +19,9 @@ export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'
       .all(input.sessionId) as {id:number}[];
     if (bindings.length !== 1) return {source:null};
     const session = getSessionById(bindings[0]!.id)!;
-    const live = db.query("SELECT id,owner_instance_id FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2")
-      .all(session.id) as LiveTurn[];
-    const own = live.find(turn => turn.owner_instance_id === processKey);
+    const current = db.query('SELECT id,owner_instance_id FROM turns WHERE session_id=? AND status=? ORDER BY id DESC LIMIT 1')
+      .get(session.id,CLAUDE_TERMINAL_SOURCE) as SourceTurn|null;
+    const own = current?.owner_instance_id === processKey ? current : null;
     if (input.event !== 'start') {
       const prompt=db.query("SELECT turn_id FROM session_inputs WHERE session_id=? AND scope=? AND action_id=?")
         .get(session.id,CLAUDE_TERMINAL_SCOPE,input.action_id) as {turn_id:number|null}|null;
@@ -37,23 +37,24 @@ export function claudeTerminalTurn(input: {sessionId:string; pid:number; event:'
       || metadata.interactionPolicy || metadata.canvasObservation || supersededBy(session.id) || withdrawnSuccessor(session.id)
       || db.query("SELECT 1 FROM session_inputs WHERE scope='lab:invocation' AND session_id=? LIMIT 1").get(session.id))
       throw new Error('This Claude Code conversation cannot accept terminal commands on this machine.');
-    if (live.some(turn => turn !== own)) throw new Error('Concierge already has a running turn in this conversation.');
+    if (db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering') LIMIT 1").get(session.id))
+      throw new Error('Concierge already has a running turn in this conversation.');
     const retained = retainSessionInput({sessionId:session.id,scope:CLAUDE_TERMINAL_SCOPE,actionId:input.action_id,
       kind:'input',origin:'service',payload:{text:'Claude Code terminal prompt',processKey}}).input;
     if (retained.turn_id) {
       return {source:own?.id === retained.turn_id ? {inputId:retained.id,runId:nativeRunId(own.id)} : null};
     }
-    // An interrupt can skip Stop. The next submitted prompt supersedes only this process's turn.
-    if (own) finishTurn(own.id,'cancelled',null);
+    // An interrupt can skip Stop. A new prompt retires the previous command source.
+    if (current) finishTurn(current.id,'cancelled',null);
     registerProcessInstance(processKey,process.pid,process.bootId,process.startTicks);
     const turnId = Number(db.query(`INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status,turn_kind,
-      accepted_input_id,owner_instance_id,provider_admission_intended_at,provider_started_at)
-      VALUES(?,NULL,?,'running','native',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
-      .run(session.id,'Claude Code terminal prompt',retained.id,processKey).lastInsertRowid);
+      accepted_input_id,owner_instance_id)
+      VALUES(?,NULL,?,?,?,?,?)`)
+      .run(session.id,'Claude Code terminal prompt',CLAUDE_TERMINAL_SOURCE,CLAUDE_TERMINAL_SOURCE,retained.id,processKey).lastInsertRowid);
     db.query('UPDATE session_inputs SET turn_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(turnId,retained.id);
     const runId = nativeRunId(turnId);
     recordSessionEvent({eventId:`terminal-prompt:${retained.id}`,sessionId:session.id,inputId:retained.id,turnId,
-      kind:'accepted',payload:{origin:'service',entrance:'claude-terminal'}});
+      kind:'terminal_command_source',payload:{entrance:'claude-terminal'}});
     log('info','claude_terminal_turn_admitted',{session_id:session.id,turn_id:turnId});
     return {source:{inputId:retained.id,runId}};
   })();

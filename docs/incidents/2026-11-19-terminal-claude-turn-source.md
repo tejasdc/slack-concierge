@@ -30,12 +30,18 @@ conversation, with ordinary source checks on the resulting commands. The edit
 gate checks terminal repository edits against that process and treats scratch
 file saves as outside the edit budget.
 
+The initial repair reserved a running turn for the terminal. A real Claude Code
+test returned to its prompt after Escape while the reservation stayed running.
+Terminal prompts now provide command source identity without an app execution
+lease. An app claim retires the previous terminal source atomically.
+
 ## Acceptance scenario
 
 - **Seed:** An idle Concierge Claude Code conversation with a known native UUID.
 - **Action:** Resume it by UUID in a terminal and submit a prompt that writes a
   project file, writes a scratch file and files a report.
 - **Expected:** Both files are written and the Inbox report attributes the
-  current terminal turn. The next prompt gets its own pair.
+  current terminal prompt. Escape followed by app work in the same conversation
+  lets that work start and retires the prior terminal command source.
 - **Replayable offline:** yes, through a disposable owner and process fixture
   for command source admission and a CLI hook check for scratch classification.

@@ -1,5 +1,5 @@
 import {isWritingSession} from './session-roles';
-import {CLAUDE_TERMINAL_PROCESS_PREFIX, CLAUDE_TERMINAL_SCOPE} from './claude-terminal-process';
+import {isLiveCommandTurn} from './claude-terminal-process';
 import {keepWorkingView} from './keep-working';
 import {readHeldMessageSnapshot} from './held-message-resolution-capability';
 import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
@@ -994,7 +994,6 @@ export class SessionOwner {
             COALESCE(json_extract(session.native_metadata_json,'$.title'),'Untitled conversation'),?
           FROM turns turn JOIN sessions session ON session.id=turn.session_id
           WHERE turn.status='running' AND turn.native_run_id IS NOT NULL AND turn.stop_requested_at IS NULL
-            AND COALESCE(turn.owner_instance_id,'') NOT LIKE '${CLAUDE_TERMINAL_PROCESS_PREFIX}%'
             AND COALESCE(json_extract(session.native_metadata_json,'$.inboxRole'),'')<>'project-router'
             AND COALESCE(json_extract(session.native_metadata_json,'$.outside'),0)=0
             AND NOT EXISTS (SELECT 1 FROM global_pause_exceptions allowed WHERE allowed.generation=?
@@ -1002,7 +1001,6 @@ export class SessionOwner {
         db.query(`UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at,CURRENT_TIMESTAMP),
           stop_input_cutoff=COALESCE(stop_input_cutoff,(SELECT max(id) FROM turns))
           WHERE status='running' AND native_run_id IS NOT NULL
-            AND COALESCE(owner_instance_id,'') NOT LIKE '${CLAUDE_TERMINAL_PROCESS_PREFIX}%'
             AND session_id IN (SELECT id FROM sessions WHERE provider_id<>'chatgpt'
               AND COALESCE(json_extract(native_metadata_json,'$.inboxRole'),'')<>'project-router'
               -- An outside request's run is outside Concierge's controls; Stop on its session still ends it.
@@ -1511,8 +1509,7 @@ export class SessionOwner {
     const preparedAttention=meta.inbox?preparedInboxAttention(session.id):null;
     const attentionOpen=meta.inbox?preparedAttention!.needs:openNeeds(meta);
     const providerCaps=this.runtime.capabilities?.(session)??{};
-    const activeInput=active?acceptedInputForTurn(active.id):null;
-    const modelExecution=activeInput?.kind!=='fork'&&activeInput?.scope!==CLAUDE_TERMINAL_SCOPE;
+    const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
     const consultationReadiness=origin==='imported'?this.consultationReadiness(meta):{ready:false,reason:null};
     const consult=!meta.canvasObservation&&origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&consultationReadiness.ready&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended;
     const inputRefused=meta.canvasObservation?null:inputRefusalStreak(db,session.id);
@@ -3468,8 +3465,8 @@ export class SessionOwner {
     const canonical=await this.runtime.readJournalEntry(review.rootId);
     const portions=validateJournalReview(review,canonical);
     revalidate?.();
-    const live=db.query("SELECT status,stop_requested_at FROM turns WHERE native_run_id=? AND accepted_input_id=?").get(actor.runId,actor.inputId) as any;
-    if(!live||live.status!=='running'||live.stop_requested_at!==null)throw new Error("Journal processing source is no longer active.");
+    const live=db.query("SELECT * FROM turns WHERE native_run_id=? AND accepted_input_id=?").get(actor.runId,actor.inputId) as any;
+    if(!isLiveCommandTurn(db,live))throw new Error("Journal processing source is no longer active.");
     agentTestSource({inputId:source.input_id,runId:source.run_id});
     const saved=retainSessionInput({sessionId:actor.sessionId,scope:`journal-review:${actor.inputId}`,actionId:input.action_id,
       kind:'journal-review',origin:'agent',payload:review,sourceInputId:actor.inputId,sourceRunId:actor.runId}).input;

@@ -261,7 +261,7 @@ try{
       const {value}=await terminal.stdout.getReader().read();
       assert.equal(new TextDecoder().decode(value),'ready');
       const start={sessionId,pid:terminal.pid,event:'start' as const,action_id:randomUUID()};
-      const edit={providerSessionId:sessionId,terminalPid:terminal.pid,toolName:'Write',toolId:'terminal-write'};
+      const edit={providerSessionId:sessionId,terminalPid:terminal.pid,terminalPromptId:start.action_id,toolName:'Write',toolId:'terminal-write'};
       assert.equal(implementationEditDecision(edit).hold,true,'the terminal starts with no admitted turn');
       const first=claudeTerminalTurn(start);
       assert.ok(first.source);
@@ -271,7 +271,9 @@ try{
       assert.doesNotThrow(()=>communication.agents({source}));
       assert.equal(implementationEditDecision(edit).hold,false);
       assert.equal(implementationEditDecision({...edit,terminalPid:process.pid}).hold,true);
-      assert.equal(owner.view(db.query('SELECT * FROM sessions WHERE id=?').get(session.id) as any).capabilities.stop,false);
+      const terminalView=owner.view(db.query('SELECT * FROM sessions WHERE id=?').get(session.id) as any);
+      assert.equal(terminalView.activeRunId,null,'a terminal command source is not an app execution');
+      assert.equal(terminalView.capabilities.stop,false);
       mkdirSync(join(scratch,'slack-inbox','.git'),{recursive:true});
       writeFileSync(join(scratch,'slack-inbox','AGENTS.md'),'Disposable Inbox fixture.\n');
       const report=await owner.reportAgentIssue({source:first.source,actionId:'terminal-report',title:'Disposable report',
@@ -284,9 +286,20 @@ try{
       assert.equal(claudeTerminalTurn(start).source,null,'a late retry cannot replace the current prompt');
       assert.throws(()=>communication.agents({source}),/exact live run/);
       claudeTerminalTurn({...start,event:'stop'});
-      assert.equal(implementationEditDecision(edit).hold,false,'a Stop from the previous prompt cannot close the current prompt');
+      const secondEdit={...edit,terminalPromptId:secondStart.action_id};
+      assert.equal(implementationEditDecision(secondEdit).hold,false,'a Stop from the previous prompt cannot close the current prompt');
+      assert.equal(implementationEditDecision(edit).hold,true,'a tool call from the previous prompt cannot use the new source');
       claudeTerminalTurn({...secondStart,event:'failure'});
-      assert.equal(implementationEditDecision(edit).hold,true);
+      assert.equal(implementationEditDecision(secondEdit).hold,true);
+      // Escape supplies no Stop hook. An app claim must still run and fence the old source.
+      const interrupted=claudeTerminalTurn({...start,action_id:randomUUID()});
+      assert.ok(interrupted.source);
+      const appInput=enqueueSessionInput(retainSessionInput({sessionId:session.id,scope:'fixture',actionId:'after-escape',
+        kind:'input',origin:'human',payload:{text:'App work after Escape'}}).input.id);
+      assert.ok(appInput.turn_id);
+      const otherSessions=(db.query('SELECT id FROM sessions WHERE id<>?').all(session.id) as {id:number}[]).map(row=>row.id);
+      assert.equal(claimNextQueuedTurn('fixture',Date.now(),otherSessions)?.turn_id,appInput.turn_id);
+      assert.throws(()=>communication.agents({source:{input_id:interrupted.source!.inputId,run_id:interrupted.source!.runId}}),/exact live run/);
     } finally {
       terminal.kill();
       await terminal.exited;

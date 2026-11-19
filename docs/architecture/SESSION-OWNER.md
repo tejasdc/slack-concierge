@@ -125,13 +125,14 @@ transaction. Claude Code passes the pair to the agent in that prompt's hook
 context. Router commands use the same source checks as on an app-started turn.
 Reports use the ordinary Inbox or proposal path and keep the agent attribution.
 
-Registration stores the turn's identity and keeps the prompt in Claude Code's
-transcript. The turn joins the session's running-work check so the owner queues
-its own work until the terminal prompt ends. Claude Code continues to execute and
-control it. The Stop hook closes the command source. A subsequent submitted
-prompt can retire an interrupted source from the same terminal process. The
-owner's existing process recovery handles a dead terminal without replaying its
-prompt.
+Registration stores the command source and keeps the prompt in Claude Code's
+transcript. Command source registration carries no execution lease, so it does
+not occupy the app queue or appear as an app run. Claude Code controls terminal
+execution. Its Stop and failure hooks close the exact prompt's source. The next
+terminal prompt retires the previous one. Starting app work retires the terminal
+source in the queue claim transaction, including when Escape skipped Stop.
+An open source requires its original live process for ordinary commands. The
+ledger retains source identity for report receipts and performs no replay.
 
 The edit hook excludes named files outside Git worktrees from the implementation
 budget. Repository writes from the terminal are admitted against the exact live

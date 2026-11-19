@@ -36,7 +36,7 @@ const ownerTurnId=Number(process.env.CONCIERGE_TURN_ID??'');
 const terminalPid=!sourceRunId&&typeof hook.turn_id!=='string'?terminalClaudePid(sessionId):null;
 const response=await requestApiResponse('/session-communication/edit-gate',{
   providerSessionId:sessionId,...(sourceRunId?{sourceRunId}:{}),providerTurnId:typeof hook.turn_id==='string'?hook.turn_id:undefined,
-  ...(terminalPid?{terminalPid}:{}),
+  ...(terminalPid?{terminalPid,terminalPromptId:hook.prompt_id}:{}),
   ...(typeof hook.model==='string'?{providerModel:hook.model}:{}),
   ...(typeof hook.agent_id==='string'?{providerAgentId:hook.agent_id}:{}),
   ...(Number.isSafeInteger(ownerTurnId)&&ownerTurnId>0?{ownerTurnId}:{}),

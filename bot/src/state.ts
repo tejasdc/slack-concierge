@@ -1,3 +1,4 @@
+import {CLAUDE_TERMINAL_SOURCE} from './claude-terminal-process';
 import {HELD_RESOLUTION_SCOPE,heldResolutionCurrentSql} from './held-message-resolution';
 import { ensureKeepWorkingTable } from "./keep-working";
 import {renumberWaitingStarts,START_ORDER_SQL,decideStart,deferStart,ensureStartPaceTables,recordStart,slotWaitingStarts,startIsExempt,startPaceConfig,type StartPaceConfig} from './start-pace';
@@ -6123,6 +6124,10 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
       `).run(ownerInstanceId, candidate.turn_id);
       mutationMs += performance.now() - phase;
       if (claimed.changes !== 1) { settlePace(); outcome='declined'; return null; }
+      // Claiming app work retires command authority from the previously attached terminal prompt.
+      // The provider itself remains under terminal control.
+      db.query('UPDATE turns SET status=\'cancelled\',ended_at=CURRENT_TIMESTAMP WHERE session_id=? AND status=?')
+        .run(candidate.session_id,CLAUDE_TERMINAL_SOURCE);
       if (pace) { recordStart(db, candidate.turn_id, nowMs); settlePace(); if (renumberWaitingStarts(db)) paceWaiting = true; }
       phase = performance.now();
       restoreRetriedTurnProgressMessage(candidate.turn_id, ownerInstanceId);

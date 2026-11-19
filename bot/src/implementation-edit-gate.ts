@@ -3,10 +3,10 @@ import {db,getClaudePreferredModel,getSessionById} from './state';
 import {isCodeEditTool,isThinkingModel} from './implementation-models';
 import {getAcceptedSessionInput,nativeRunId,recordSessionEvent,sessionMetadata} from './session-inputs';
 import {humanChoseThinkingModel} from './model-escalation-custody';
-import {CLAUDE_TERMINAL_SCOPE,isTerminalClaude,terminalClaudeProcessKey} from './claude-terminal-process';
+import {CLAUDE_TERMINAL_SCOPE,CLAUDE_TERMINAL_SOURCE,isTerminalClaude,terminalClaudeProcessKey} from './claude-terminal-process';
 import {processIdentity} from './runtime-identity';
 
-type GateInput={providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;providerAgentId?:string;ownerTurnId?:number;terminalPid?:number;toolId:string;toolName:string;toolInput?:unknown};
+type GateInput={providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;providerAgentId?:string;ownerTurnId?:number;terminalPid?:number;terminalPromptId?:string;toolId:string;toolName:string;toolInput?:unknown};
 type Running={id:number;session_id:number;accepted_input_id:string|null;provider_turn_id:string|null;owner_instance_id?:string|null};
 type HelperBinding={turn_id:number;accepted_input_id:string|null;provider_turn_id:string|null;payload_json:string;status:string;stop_requested_at:string|null;session_status:string;native_metadata_json:string};
 const name=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=256?value:null;
@@ -27,7 +27,8 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
       .get(input.sourceRunId) as {id:number}|null:null);
   if(!session)return {hold:false};
   const running=db.query(`SELECT id,session_id,accepted_input_id,provider_turn_id,owner_instance_id FROM turns
-    WHERE session_id=? AND status IN ('running','delivering') AND stop_requested_at IS NULL ORDER BY id DESC LIMIT 2`).all(session.id) as Running[];
+    WHERE session_id=? AND (status IN ('running','delivering') OR (? AND status=?))
+      AND stop_requested_at IS NULL ORDER BY id DESC LIMIT 2`).all(session.id,input.terminalPid?1:0,CLAUDE_TERMINAL_SOURCE) as Running[];
   const bound=getSessionById(session.id)!;
   const bindingKey=bound.provider_id==='codex'&&name(input.providerTurnId)?codexBindingEvent(session.id,input.providerTurnId):null;
   const binding=bindingKey?db.query(`SELECT event.turn_id,turn.status,turn.stop_requested_at,turn.accepted_input_id,turn.provider_turn_id,event.payload_json,session.status AS session_status,
@@ -75,11 +76,13 @@ export function implementationEditDecision(input:GateInput):{hold:boolean;messag
   }
   const turn=retainedParent??exact??parent??(!input.providerTurnId?running.find(row=>input.ownerTurnId===row.id)??(running.length===1?running[0]:null):null);
   if(!turn)return {hold:true,message:'Concierge cannot identify the active turn for this code edit. Retry when its owner is available.'};
-  const terminalSource=!!turn.accepted_input_id&&getAcceptedSessionInput(turn.accepted_input_id)?.scope===CLAUDE_TERMINAL_SCOPE;
+  const terminalInput=turn.accepted_input_id?getAcceptedSessionInput(turn.accepted_input_id):null;
+  const terminalSource=terminalInput?.scope===CLAUDE_TERMINAL_SCOPE;
   if(terminalSource||input.terminalPid){
     let matches=false;
     try{
-      matches=!!(terminalSource&&input.terminalPid&&isTerminalClaude(input.terminalPid,input.providerSessionId)
+      matches=!!(terminalSource&&terminalInput?.action_id===input.terminalPromptId
+        &&input.terminalPid&&isTerminalClaude(input.terminalPid,input.providerSessionId)
         &&turn.owner_instance_id===terminalClaudeProcessKey(processIdentity(input.terminalPid)));
     }catch{ /* The original terminal closed before the owner could confirm the edit. */ }
     if(!matches)return {hold:true,message:'This Claude Code edit must come from the terminal driving the turn.'};
