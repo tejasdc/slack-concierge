@@ -1,4 +1,5 @@
 import {releaseWorkerPath} from "./release-worker";
+import {noteDetail,notePhase,timedPhase} from "./history-read-phases";
 import { forkSession, getSessionMessages, type GetSessionMessagesOptions, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Database } from "bun:sqlite";
 import {createHash,randomUUID} from 'node:crypto';
@@ -328,7 +329,10 @@ const windowDialogue=(segments:readonly CodexWindowSegment[])=>{
 /** The kept window for one thread, topped up from the App Server; built once when none is kept. */
 export async function readCodexHistoryWindow(input:{sessionUuid:string;want?:{dialogue:number;untilInput:boolean};runner?:string;account?:string},
   request:CodexHistoryRequest=codexRequest()):Promise<ProviderHistoryPage>{
+  let mark=performance.now();
+  const lap=(name:string)=>{const now=performance.now();notePhase(name,now-mark);mark=now;};
   const thread=input.sessionUuid,loaded=loadCodexWindow(thread),kept=loaded?.window??null;
+  lap('window_load_ms');
   const head=kept?.segments[0]?.entries.at(-1);
   // Listed items are always projected afresh (one still being written can change); only their
   // timestamps are reused, so a top-up reads just the rollout bytes written since.
@@ -338,7 +342,8 @@ export async function readCodexHistoryWindow(input:{sessionUuid:string;want?:{di
   const pages:{data:any[];next:string|null}[]=[];
   let cursor:string|null=null,met=-1,topUp=!!head;
   for(let page=0;page<CODEX_WINDOW_BUILD_PAGES;page++){
-    const listed=codexPage(await request("thread/items/list",{threadId:thread,cursor,limit:CODEX_WINDOW_PAGE,sortDirection:"desc"}));
+    const listed=codexPage(await timedPhase('codex_list_ms',()=>request("thread/items/list",{threadId:thread,cursor,limit:CODEX_WINDOW_PAGE,sortDirection:"desc"})));
+    notePhase('codex_list_pages',1);
     if(listed.nextCursor!==null&&listed.nextCursor===cursor)throw new Error("PROVIDER_HISTORY_INVALID");
     pages.push({data:listed.data,next:listed.nextCursor});
     if(topUp){
@@ -354,6 +359,8 @@ export async function readCodexHistoryWindow(input:{sessionUuid:string;want?:{di
     if(!listed.nextCursor)break;
     cursor=listed.nextCursor;
   }
+  mark=performance.now();
+  noteDetail('window_reuse',met>=0?'top-up':kept?'rebuilt':'built');
   let window:CodexWindow;
   {
     // Timestamps for listed items not already kept: only the rollout bytes after the kept mark,
@@ -364,6 +371,8 @@ export async function readCodexHistoryWindow(input:{sessionUuid:string;want?:{di
     const timestamps=input.runner&&input.account
       ?await readRunnerCodexTimestamps(input.runner,input.account,thread,identities)
       :read?.timestamps??new Map<string,string|null>();
+    noteDetail('timestamps_from',input.runner&&input.account?'runner':'local');
+    lap('timestamps_ms');
     const omissions=new Set<string>(met>=0?kept!.omissions:[]);
     const segments:CodexWindowSegment[]=pages.map(page=>({next:page.next,entries:page.data.slice().reverse().map(entry=>{
       if(typeof entry?.turnId!=="string")throw new Error("PROVIDER_HISTORY_INVALID");
@@ -394,7 +403,9 @@ export async function readCodexHistoryWindow(input:{sessionUuid:string;want?:{di
     window={version:2,thread,segments:segments.slice(0,keep),omissions:[...omissions]};
     // A rollout that only gained bookkeeping (token counts) leaves the kept window as it was.
     const text=JSON.stringify(window);
+    lap('window_build_ms');
     saveCodexWindow(thread,text===loaded?.text?null:text,read?.mark??null);
+    lap('window_save_ms');
   }
   // Answer with the newest pages that complete what was asked, not the whole kept window.
   let answer=window.segments.length;
