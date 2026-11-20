@@ -127,10 +127,16 @@ function resolveAll(provider: ResolverProvider): Enumerated {
     if (!info) continue;
     perAccount.push({ home, label: info.label, accountId: info.accountId });
   }
+  // Count per-account folders per label. Two folders with the same label are a REAL
+  // ambiguity: neither is a safe launch home. The dedup here is only about the live-root
+  // mirroring a per-account folder for the same label (where "per-account folder wins"
+  // is safe because they point at the same account). It is NOT about silently picking
+  // between two different per-account folders that claim the same label.
+  const labelCounts = new Map<string, number>();
+  for (const entry of perAccount) labelCounts.set(entry.label, (labelCounts.get(entry.label) ?? 0) + 1);
   const byLabel = new Map<string, { home: string; accountId: string | null }>();
-  // Per-account folders are added first so they win on duplicates.
   for (const entry of perAccount) {
-    if (!byLabel.has(entry.label)) byLabel.set(entry.label, { home: entry.home, accountId: entry.accountId });
+    if (labelCounts.get(entry.label) === 1) byLabel.set(entry.label, { home: entry.home, accountId: entry.accountId });
   }
   const resolved: HomeRecord[] = [];
   const liveRootOrphans: LiveRootNewAccount[] = [];
