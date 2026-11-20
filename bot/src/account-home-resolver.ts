@@ -24,6 +24,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { claudeHomeKeychainMayHoldLogin } from "./claude-keychain";
 
 export type ResolverProvider = "claude-code" | "codex";
 
@@ -180,8 +181,11 @@ function readCodexHome(home: string): RawHomeInfo | null {
 
 function readClaudeHome(home: string): RawHomeInfo | null {
   const credentials = readJsonFile(join(home, ".credentials.json"));
-  const refresh = credentials?.claudeAiOauth?.refreshToken;
-  if (typeof refresh !== "string" || !refresh) return null;
+  const fileRefresh = credentials?.claudeAiOauth?.refreshToken;
+  const refresh = typeof fileRefresh === "string" && fileRefresh ? fileRefresh : null;
+  // On a Mac, Claude Code keeps the login in the Keychain and writes no file. Reading only the
+  // file found no Claude home on the Mac and failed every Mac Claude turn (2026-11-20).
+  if (!refresh && !claudeHomeKeychainMayHoldLogin(home)) return null;
   const recorded = readTextFile(join(home, ".account-email"));
   const live = readJsonFile(join(homeRoot(), ".claude.json"))?.oauthAccount?.emailAddress;
   const subscription = credentials?.claudeAiOauth?.subscriptionType;
@@ -189,7 +193,7 @@ function readClaudeHome(home: string): RawHomeInfo | null {
     ? `Claude ${subscription.charAt(0).toUpperCase()}${subscription.slice(1)}` : "Claude subscription";
   const liveRoot = liveRootFor("claude-code");
   const label = recorded ?? (home === liveRoot && typeof live === "string" && live ? live : plan);
-  const accountId = createHash("sha256").update(refresh).digest("hex").slice(0, 16);
+  const accountId = refresh ? createHash("sha256").update(refresh).digest("hex").slice(0, 16) : null;
   return { label, accountId };
 }
 

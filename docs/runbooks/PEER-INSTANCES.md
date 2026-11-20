@@ -412,6 +412,13 @@ will tell you the Mac is signed out when it is signed in. Ask the Mac's own Conc
 truth. The same fact is why a sign-in started there can write the Keychain without anything
 appearing on his screen.
 
+The same applies to code: on the Mac no Claude account folder has a `.credentials.json`.
+Every check that a folder holds a login asks the file first and then whether the folder's
+Keychain item exists (never reading the secret). On 2026-11-20 the account-home lookup read
+only the file, found no Claude account on the Mac, and failed every Mac Claude turn as
+"Every available Claude account is out of room"; the server showed those requests as "could
+not receive". A run the Mac received but could not start now reports its own reason.
+
 ## Token rotation
 
 1. `openssl rand -hex 32 > ~/Library/Application\ Support/concierge/peer.token` on the Mac.

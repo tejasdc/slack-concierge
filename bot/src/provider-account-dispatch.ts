@@ -406,6 +406,11 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   if(attemptRoom)return {account:attemptRoom.account,home:attemptRoom.home,because:'stayed-on-its-account',expected,selectionRevision};
   // Nobody can run. Ask the browser repair agent to establish any peer-discovered account.
   if(ownHomes&&turnId!==undefined)requestMissingClaudeHomes(model);
+  // No account here has a usable sign-in: that is a sign-in hold, not "out of room". On
+  // 2026-11-20 the Mac's home lookup missed its Keychain logins and every Mac Claude turn was
+  // failed as out of room while every account had room.
+  const launchable=rooms.filter(r=>r.home||r.isDefault);
+  if(launchable.length&&launchable.every(r=>['no-home','signed-out'].includes(authorityVerdict(r.account).reason)))throw noOwnClaudeLogin();
   // Earliest clearsAtMs across the eligible home set, from the authority.
   const clearsAts=rooms.filter(r=>r.home||r.isDefault).flatMap(r=>{
     const v=authorityVerdict(r.account);

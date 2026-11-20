@@ -60,10 +60,47 @@ function readSecret(service: string): string | null {
   return secret.startsWith("{") ? secret : null;
 }
 
+/** The Keychain item Claude Code reads for this folder: the main `~/.claude` uses the unsuffixed name. */
+function claudeHomeKeychainService(home: string): string {
+  return home.replace(/\/+$/, "") === join(homedir(), ".claude") ? "Claude Code-credentials" : claudeKeychainService(home);
+}
+
+const homeLoginSeen = new Map<string, { atMs: number; present: boolean }>();
+const HOME_LOGIN_SEEN_MS = 15_000;
+
+/**
+ * Whether a Claude folder's login may be in the Keychain, for the account-home lookup that runs on
+ * every account decision. Asks only whether the item exists (never reads the secret) and remembers
+ * a definite answer for 15 seconds so a decision does not spawn `security` once per folder per
+ * check. An unanswered lookup is not evidence of a missing login and is not remembered.
+ * On 2026-11-20 the home lookup read only `.credentials.json`, found no Claude home on the Mac, and
+ * every Mac Claude turn failed as "Every available Claude account is out of room".
+ */
+let keychainProbeForTesting: ((service: string) => number | null) | null = null;
+/** @internal tests only: answer `security find-generic-password` with an exit status. */
+export function setClaudeKeychainProbeForTesting(probe: ((service: string) => number | null) | null): void {
+  keychainProbeForTesting = probe;
+  homeLoginSeen.clear();
+}
+
+export function claudeHomeKeychainMayHoldLogin(home: string, now: number = Date.now()): boolean {
+  if (process.platform !== "darwin" && !keychainProbeForTesting) return false;
+  const seen = homeLoginSeen.get(home);
+  if (seen && now - seen.atMs < HOME_LOGIN_SEEN_MS) return seen.present;
+  const service = claudeHomeKeychainService(home);
+  const found = keychainProbeForTesting ? { status: keychainProbeForTesting(service) }
+    : spawnSync(SECURITY, ["find-generic-password", "-s", service], { stdio: "ignore", timeout: 5_000 });
+  if (found.status === 0 || found.status === ITEM_NOT_FOUND) {
+    homeLoginSeen.set(home, { atMs: now, present: found.status === 0 });
+    return found.status === 0;
+  }
+  return true;
+}
+
 /** Read the login where Claude Code keeps it on the Mac, without moving or writing it. */
 export function claudeKeychainOauth(home: string): { oauth: Record<string, unknown>; version: string } | null {
   if (process.platform !== "darwin") return null;
-  const service = home === join(homedir(), ".claude") ? "Claude Code-credentials" : claudeKeychainService(home);
+  const service = claudeHomeKeychainService(home);
   const secret = readSecret(service);
   if (!secret) return null;
   try {

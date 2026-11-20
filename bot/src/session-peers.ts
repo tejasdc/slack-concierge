@@ -1614,6 +1614,9 @@ export class SessionPeers {
     // stopped it. Two Mac runs of over an hour were reported as "could not receive" (2026-09-30).
     if(remote.inputState==='failed'){this.settle(row,'failed',remote.inputError?.message??(typeof remote.inputError==='string'?remote.inputError:null)
       ??(execution?.acknowledged?`The run on ${row.peer} started but stopped before it finished${execution.error?`: ${execution.error}`:'.'}`:null)
+      // Received, then refused before the provider started: say the refusal. Two Mac turns refused
+      // by account choice were reported as "could not receive" (2026-11-20, b4875c1a, 577f219e).
+      ??(execution?.error?`${row.peer} received this request but could not start its run: ${execution.error}`:null)
       ??'The peer target could not receive this request.');return;}
     // The worker's machine says the request stalled: tell the requester once. It stays open.
     if(remote.stalled&&row.stalled_at_ms===null){
