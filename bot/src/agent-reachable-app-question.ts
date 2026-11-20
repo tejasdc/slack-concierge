@@ -65,9 +65,14 @@ function namesHisDevice(action:string):boolean {
   return false;
 }
 
-/** Context after the ask: a statement by the agent about itself or the device, never a second ask of him. */
+/**
+ * Context after the ask: a statement by the agent about itself or the device, never a second ask
+ * of him. The sentence's own subject keeps "Then open the app." out, so "then" inside the agent's
+ * plan is allowed: on 2026-11-20 "I will have a Mac agent write it …, then point the server's
+ * printer straight at the printer once the Pi is online." was refused for that word alone.
+ */
 function isAgentStatement(sentence:string):boolean {
   return !/\?\s*$/.test(sentence)
-    &&!/\b(?:you|please|then)\b/i.test(sentence)
-    &&/^(?:I|I'm|I'll|I've|I\s+will|We|The|This|That|It|It's|Its|My|Our|Nothing|No|Everything|Other|Every|All)\b/i.test(sentence);
+    &&!/\b(?:you|please)\b/i.test(sentence)
+    &&/^(?:I|I'm|I'll|I've|I\s+will|We|An?|The|This|That|It|It's|Its|My|Our|Nothing|No|Everything|Other|Every|All)\b/i.test(sentence);
 }

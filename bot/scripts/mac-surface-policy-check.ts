@@ -375,6 +375,8 @@ for(const question of ['Please unlock your iPhone. Then open the app.',
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Please drag the screenshot thumbnail in the corner of your Mac’s screen onto the Desktop.',
   'Can you drag the new screenshot thumbnail into the open Finder window on your Mac? I will check the saved file after it lands.',
+  'Please insert a microSD card into your Mac. I will have a Mac agent write it with your Wi-Fi and private network, then point the server\'s printer straight at the printer once the Pi is online.',
+  'Please insert a microSD card (16 GB or more) into your Mac. An agent on the Mac will then write it.',
   'Please tap Allow on your iPhone.','Can you press the side button on your Apple Watch?',
   'Please plug in the charger to your Kindle.','Can you click the menu bar clock on your Mac?',
   'Please swipe down from the top of your iPhone screen so I can read the banner.',
