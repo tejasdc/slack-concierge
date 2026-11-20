@@ -280,7 +280,8 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   const slowHistory=history&&durationMs>=300;
   // Captures and Lab (about 20 reads a day together) are logged on every read as well: the
   // 2026-11-20 review found both over 300 ms at p95, and one read in a hundred named nothing.
-  const everyRead=route.pattern==='/sessions/v1/presentation/captures'||route.pattern==='/lab';
+  // Both are presentation readers, whose pattern keeps the /sessions/v1 prefix.
+  const everyRead=route.pattern==='/sessions/v1/presentation/captures'||route.pattern==='/sessions/v1/lab';
   const slowEveryRead=everyRead&&durationMs>=300;
   // Accounts reads (about 60 a day) are all logged with where their time went: the 2026-11-20
   // nightly review found its p95 over 300 ms twice running and nothing here could name the wait.
