@@ -10,6 +10,7 @@ import {logSinkCounters} from './log';
 import {log} from './log';
 import {observeStorageOperation,type StorageWork} from './storage-observation';
 import {exitWithin,exitWithParent,PARENT_GONE_EXIT_MS} from './exit-with-parent';
+import {withHistoryReadPhases,type HistoryReadPhases} from './history-read-phases';
 
 if(process.env.CONCIERGE_READ_WORKER!=='1')throw new Error('NATIVE_READ_WORKER_REQUIRED');
 const socket=process.env.CONCIERGE_READ_SOCKET;
@@ -248,13 +249,14 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   let response:Response;
   let work:StorageWork|null=null;
   const accountPhases:AccountPhases={};
+  const historyPhases:HistoryReadPhases={};
   try{
-    response=await observeStorageOperation(route.pattern,async()=>{
+    response=await observeStorageOperation(route.pattern,()=>withHistoryReadPhases(historyPhases,async()=>{
       if(route.source==='account')return authProviders(url,accountPhases);
       if(route.pattern==='/files')return await remoteFile(url)??await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
       if(route.pattern==='/projects/:id/files')return await remoteProjectFiles(url)??await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
       return await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
-    },measured=>{work=measured;});
+    }),measured=>{work=measured;});
   }catch(error){
     if(error instanceof SessionOwnerError||error instanceof WorkspaceFileError||error instanceof LabDisclosureError)
       response=failure(error.status,error.code,error.message);
@@ -276,14 +278,22 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   // About 3,000 reads a day; slow ones (300 ms, thnkr.ing's budget) are warnings.
   const history=route.pattern==='/sessions/:id/history';
   const slowHistory=history&&durationMs>=300;
+  // Captures and Lab (about 20 reads a day together) are logged on every read as well: the
+  // 2026-11-20 review found both over 300 ms at p95, and one read in a hundred named nothing.
+  const everyRead=route.pattern==='/sessions/v1/presentation/captures'||route.pattern==='/lab';
+  const slowEveryRead=everyRead&&durationMs>=300;
   // Accounts reads (about 60 a day) are all logged with where their time went: the 2026-11-20
   // nightly review found its p95 over 300 ms twice running and nothing here could name the wait.
   const account=route.source==='account';
   const slowAccount=account&&durationMs>=300;
-  if(response.status>=400||durationMs>=2000||history||account||requests.completed%100===0)
-    log(response.status>=400||durationMs>=2000||slowHistory||slowAccount?'warn':'info','native_read_request_completed',{
+  if(response.status>=400||durationMs>=2000||history||account||everyRead||requests.completed%100===0)
+    log(response.status>=400||durationMs>=2000||slowHistory||slowAccount||slowEveryRead?'warn':'info','native_read_request_completed',{
       admission_id:admissionId,route:route.pattern,status:response.status,duration_ms:durationMs,...(work??{}),
       ...(account?accountPhases:{}),
+      ...(everyRead?{bytes:Number(response.headers.get('content-length'))||null}:{}),
+      // Where a history read's time went: the history worker's phases, the round trip to it,
+      // and the rest spent here preparing the answer.
+      ...(history?{...historyPhases,read_worker_ms:Math.max(0,durationMs-Math.round(Number(historyPhases.history_round_trip_ms)||0))}:{}),
       ...(history?{session_id:decodeURIComponent(/\/sessions\/([^/]+)\/history$/.exec(url.pathname)?.[1]??''),bytes:Number(response.headers.get('content-length'))||null,
         conversation_kind:response.headers.get('x-concierge-conversation-kind'),history_read:response.headers.get('x-concierge-history-read'),
         window:url.searchParams.has('dialogue')||url.searchParams.has('untilInput')}:{}),
