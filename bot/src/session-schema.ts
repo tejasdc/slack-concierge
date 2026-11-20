@@ -231,6 +231,10 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           WHERE accepted_input_id IS NOT NULL AND NOT (status='failed' AND provider_sent_at IS NULL);
         CREATE INDEX IF NOT EXISTS steering_accepted_input_attempts ON turn_steering_messages(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS communication_source_input ON session_communication_requests(source_input_id,action_id) WHERE source_input_id IS NOT NULL;
+        -- Inbox history asks which threads each shown turn's requests named; without these every
+        -- turn scanned both request tables (about 13 ms a turn, 130 ms an Inbox open, 2026-11-20).
+        -- (The peer table's index follows that table's creation below.)
+        CREATE INDEX IF NOT EXISTS session_communication_source_turn ON session_communication_requests(source_turn_id);
         CREATE INDEX IF NOT EXISTS session_inputs_human_reply ON session_inputs(id)
           WHERE origin='human' AND json_type(payload_json,'$.replyToMessage.messageId')='text';
         CREATE INDEX IF NOT EXISTS session_inputs_lab_pending ON session_inputs(id)
@@ -810,6 +814,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
         CREATE INDEX IF NOT EXISTS session_peer_events_request ON session_peer_events(request_id);
         CREATE INDEX IF NOT EXISTS session_peer_events_accepted_input ON session_peer_events(accepted_input_id) WHERE accepted_input_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS session_peer_replies_request ON session_peer_replies(request_id);
+        -- Inbox history's per-turn thread lookup; see session_communication_source_turn above.
+        CREATE INDEX IF NOT EXISTS session_peer_source_turn ON session_peer_requests(source_turn_id);
         CREATE INDEX IF NOT EXISTS session_peer_deliveries_target_input ON session_peer_deliveries(target_input_id);
         CREATE INDEX IF NOT EXISTS session_communication_requests_routed ON session_communication_requests(routed_request_id) WHERE routed_request_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS session_peer_requests_open ON session_peer_requests(request_id) WHERE outcome IS NULL;
