@@ -9,7 +9,17 @@ import { recordSessionEvent } from "./session-inputs";
 import { clearScoped, retireRefusalSupersededByReading as retireRefusalSupersededByReadingInner, type RefusalProvider } from "./account-refusal-cache";
 
 export type UsageProvider = "codex" | "claude-code" | "antigravity";
-type UsageLimit = { resetAt: number | null; observedAt: number; revision: number };
+/** M1 (2026-11-19): `rateLimitType` and `overageReason` are first-class fields on the
+ *  stored limit so writers and readers share one type. Before, they were assigned
+ *  through `as any` and no reader could surface them typed. */
+export type UsageLimitOverageReason = "out_of_credits" | "org_level_disabled" | "hard_limit_reached" | "other" | null;
+export type UsageLimit = {
+  resetAt: number | null;
+  observedAt: number;
+  revision: number;
+  rateLimitType?: string | null;
+  overageReason?: UsageLimitOverageReason;
+};
 type UsageState = { generation: number; revision: number; limits: Record<string, UsageLimit> };
 export type UsageAttempt = { provider: UsageProvider; scope: string; label: string; generation: number; revision: number };
 
@@ -172,11 +182,13 @@ export function recordUsageExhaustion(
     if ((state.limits[attempt.scope]?.revision ?? -1) > attempt.revision) return false;
     const validReset = resetAt !== null && Number.isSafeInteger(resetAt) && resetAt > Date.now() ? resetAt : null;
     const existing = state.limits[attempt.scope];
-    state.limits[attempt.scope] = { resetAt: validReset ?? existing?.resetAt ?? null,
-      observedAt: Date.now(), revision: ++state.revision,
-      ...(details.rateLimitType !== undefined ? { rateLimitType: details.rateLimitType } : (existing?.rateLimitType !== undefined ? { rateLimitType: existing.rateLimitType } : {})),
-      ...(details.overageReason !== undefined ? { overageReason: details.overageReason } : (existing?.overageReason !== undefined ? { overageReason: existing.overageReason } : {})),
-    } as any;
+    const nextLimit: UsageLimit = { resetAt: validReset ?? existing?.resetAt ?? null,
+      observedAt: Date.now(), revision: ++state.revision };
+    if (details.rateLimitType !== undefined) nextLimit.rateLimitType = details.rateLimitType;
+    else if (existing?.rateLimitType !== undefined) nextLimit.rateLimitType = existing.rateLimitType;
+    if (details.overageReason !== undefined) nextLimit.overageReason = details.overageReason;
+    else if (existing?.overageReason !== undefined) nextLimit.overageReason = existing.overageReason;
+    state.limits[attempt.scope] = nextLimit;
     write(attempt.provider, state);
     const retainedReset = state.limits[attempt.scope]!.resetAt;
     log("info", "provider_usage_exhausted", { provider: attempt.provider,

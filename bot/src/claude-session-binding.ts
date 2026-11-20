@@ -55,16 +55,35 @@ export function writeClaudeSessionBinding(binding: {
   accountUuid?: string | null;
   organizationUuid?: string | null;
   boundByDispatchRevision?: number;
-}): void {
-  if (!binding.sessionUuid?.trim() || !binding.accountLabel?.trim()) return;
+}): { written: boolean; reason?: "stale-revision" | "same" } {
+  if (!binding.sessionUuid?.trim() || !binding.accountLabel?.trim()) return { written: false, reason: "same" };
   const now = Date.now();
   const existing = readClaudeSessionBinding(binding.sessionUuid);
+  const incomingRevision = binding.boundByDispatchRevision ?? 0;
+  // I4 (2026-11-19): CAS on `bound_by_dispatch_revision`. The schema stored the field
+  // but UPSERT overwrote unconditionally — a stale write from an in-flight dispatcher
+  // could clobber a newer selection. The guarded UPDATE WHERE existing <= new only
+  // commits when the incoming revision is at least as high as the stored one.
+  if (existing && existing.boundByDispatchRevision > incomingRevision) {
+    log("info", "claude_session_binding_write_stale", {
+      session_uuid: binding.sessionUuid,
+      stored_revision: existing.boundByDispatchRevision,
+      incoming_revision: incomingRevision,
+      stored_account: existing.accountLabel,
+      incoming_account: binding.accountLabel,
+    });
+    return { written: false, reason: "stale-revision" };
+  }
   if (existing && existing.accountLabel !== binding.accountLabel) {
     log("warn", "claude_session_account_rebound", {
       session_uuid: binding.sessionUuid,
       from_account: existing.accountLabel, to_account: binding.accountLabel,
+      from_revision: existing.boundByDispatchRevision, to_revision: incomingRevision,
     });
   }
+  // The guarded UPDATE: an INSERT must still run for first-time bindings, but on CONFLICT
+  // the UPDATE is conditional on the incoming revision winning. SQLite's "WHERE" in an
+  // ON CONFLICT DO UPDATE clause acts as the CAS guard.
   db.query(
     `INSERT INTO claude_session_account_bindings
        (session_uuid, account_label, account_uuid, organization_uuid, bound_at_ms, bound_by_dispatch_revision)
@@ -74,15 +93,17 @@ export function writeClaudeSessionBinding(binding: {
        account_uuid = COALESCE(excluded.account_uuid, account_uuid),
        organization_uuid = COALESCE(excluded.organization_uuid, organization_uuid),
        bound_at_ms = excluded.bound_at_ms,
-       bound_by_dispatch_revision = excluded.bound_by_dispatch_revision`,
+       bound_by_dispatch_revision = excluded.bound_by_dispatch_revision
+     WHERE excluded.bound_by_dispatch_revision >= bound_by_dispatch_revision`,
   ).run(
     binding.sessionUuid,
     binding.accountLabel,
     binding.accountUuid ?? null,
     binding.organizationUuid ?? null,
     now,
-    binding.boundByDispatchRevision ?? 0,
+    incomingRevision,
   );
+  return { written: true };
 }
 
 /**

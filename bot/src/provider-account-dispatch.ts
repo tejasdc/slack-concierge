@@ -353,40 +353,43 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   const expected=selectedAccount??prefer??selection?.label??defaultAccount;
   const selectionRevision=selection?.revision??0;
   const resolvedModel=model??'claude-opus-5-5';
+  // I1 (2026-11-19): the cached-refusal check lives inside the authority (`canTakeWork`
+  // Step 2). The dispatcher used to double-gate with `claudeAccountCachedReset(r.account,model)`
+  // AND `authorityOk`, bypassing the `resolvedModel` fallback on the raw call. Collapse
+  // to the authority-only view with `resolvedModel` so the whole dispatcher asks the
+  // same question through the same door.
+  const now=Date.now();
+  const authorityVerdict=(account:string)=>canTakeWork('claude-code',{provider:'claude-code',label:account},resolvedModel,now);
   // Own-homes with no reading yet: the operator-selected home gets one attempt via proof.
   if(ownHomes&&(!usage||(selected&&!usage.accounts.some(account=>account.label===selected)))){
     const home=selected?launchableClaudeHome(selected,selected,true,undefined,runnerTarget):null;
-    if(home&&!claudeAccountCachedReset(selected!,model))
-      return {account:selected!,home,because:'stayed-on-its-account',expected:selected,selectionRevision};
-    if(!usage){
-      const refusedUntil=selected?claudeAccountCachedReset(selected,model):null;
-      if(home&&refusedUntil)throw new ProviderDispatchError({message:'This Claude account has a recorded model refusal.',
-        failureClass:'parked_terminal',terminalConfirmed:true,clearsAtMs:refusedUntil});
-      throw noOwnClaudeLogin();
+    if(home&&selected){
+      const verdict=authorityVerdict(selected);
+      if(verdict.reason!=='cached-refusal')
+        return {account:selected,home,because:'stayed-on-its-account',expected:selected,selectionRevision};
+      if(!usage&&verdict.clearsAtMs)throw new ProviderDispatchError({message:'This Claude account has a recorded model refusal.',
+        failureClass:'parked_terminal',terminalConfirmed:true,clearsAtMs:verdict.clearsAtMs});
     }
+    if(!usage){throw noOwnClaudeLogin();}
   }
   if(!usage||(!ownHomes&&!defaultAccount))return null;
   const rooms=savedWorkAccountRooms('claude-code',usage,Date.now(),model,runnerTarget);
   if(ownHomes&&!rooms.some(r=>r.home||r.isDefault))throw noOwnClaudeLogin();
   // Proof-admitted turn: the manual Accounts check released this exact turn against the proved account.
   const proved=provenAccount?rooms.find(r=>r.account===provenAccount&&(r.home||r.isDefault)
-    &&!claudeAccountCachedReset(r.account,model)):null;
+    &&authorityVerdict(r.account).reason!=='cached-refusal'):null;
   if(proved)return {account:proved.account,home:proved.home,
     because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision};
   // Authority-filtered eligibility. The ranker then picks by selection/warmth/room.
-  const now=Date.now();
-  const authorityOk=(account:string)=>{
-    const verdict=canTakeWork('claude-code',{provider:'claude-code',label:account},resolvedModel,now);
-    return verdict.ok;
-  };
-  const eligibleRooms=rooms.filter(r=>(r.home||r.isDefault)&&!claudeAccountCachedReset(r.account,model)&&authorityOk(r.account));
+  const eligibleRooms=rooms.filter(r=>(r.home||r.isDefault)&&authorityVerdict(r.account).ok);
   const choice=chooseAccountForTurn({accounts:eligibleRooms.length?eligibleRooms:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount});
   if(choice.account!==null)return {account:choice.account,home:choice.home,because:choice.because,expected,selectionRevision};
   // Fallthrough — nothing eligible. Give the selected home one admitted attempt if its verdict
   // says the only block is "unknown"/"last-showed-room"/"proven-attempt" (hold-worthy but not refused).
   const attemptRoom=rooms.find(r=>{
-    if(r.account!==selected||!r.home||claudeAccountCachedReset(r.account,model))return false;
-    const verdict=canTakeWork('claude-code',{provider:'claude-code',label:r.account},resolvedModel,now);
+    if(r.account!==selected||!r.home)return false;
+    const verdict=authorityVerdict(r.account);
+    if(verdict.reason==='cached-refusal')return false;
     return verdict.ok||verdict.reason==='unknown'||verdict.reason==='last-showed-room'||verdict.reason==='proven-attempt';
   });
   if(attemptRoom)return {account:attemptRoom.account,home:attemptRoom.home,because:'stayed-on-its-account',expected,selectionRevision};
@@ -394,7 +397,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   if(ownHomes&&turnId!==undefined)requestMissingClaudeHomes(model);
   // Earliest clearsAtMs across the eligible home set, from the authority.
   const clearsAts=rooms.filter(r=>r.home||r.isDefault).flatMap(r=>{
-    const v=canTakeWork('claude-code',{provider:'claude-code',label:r.account},resolvedModel,now);
+    const v=authorityVerdict(r.account);
     return v.clearsAtMs!==null?[v.clearsAtMs]:[];
   });
   throw new ProviderDispatchError({message:'Every available Claude account is out of room.',failureClass:'parked_terminal',

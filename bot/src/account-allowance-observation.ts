@@ -127,13 +127,25 @@ export function markUncurrentAccountReadings(provider:AccountIdentityProvider,us
     // say "room remains" from a stale reading — a verdict's `ok` is the only input
     // to `hasRoom`. On a no-signal verdict (no reading AND no cache), the authority
     // returns ok=false with reason='unknown'; the UI reads `null` for that case.
-    // If the authority itself throws (e.g. a DB read fails during a diagnostic path),
-    // surface the row as unknown rather than fabricating a reading-only badge.
+    // M3 (2026-11-19): if the authority itself throws (e.g. a DB read fails during
+    // a diagnostic path), surface the row as unknown AND log the throw so the
+    // silent-regression path has evidence. Fabricating a reading-only badge here
+    // was explicitly rejected by the review — one source of truth.
     let hasRoom:boolean|null=null;
     try {
       const verdict=canTakeAnyWork(provider as "claude-code"|"codex"|"antigravity",{provider:provider as "claude-code"|"codex"|"antigravity",label:account.label},now);
       hasRoom=verdict.reason==='unknown'?null:verdict.ok;
-    } catch { hasRoom=null; }
+    } catch (error) {
+      hasRoom=null;
+      try {
+        const { log } = require('./log') as typeof import('./log');
+        log('warn','authority_threw_for_account',{
+          provider, account:account.label,
+          error_name:error instanceof Error?error.name:'unknown',
+          error_message:error instanceof Error?error.message:String(error),
+        });
+      } catch { /* log module unavailable during teardown; swallow */ }
+    }
     const status:NonNullable<AccountUsage['allowance']>['status']=account.problem||usage.problem
       ?'unreadable':at===null?'unknown':fresh?'current':'old';
     const allowance:NonNullable<AccountUsage['allowance']>={observedAt:at===null?null:new Date(at).toISOString(),

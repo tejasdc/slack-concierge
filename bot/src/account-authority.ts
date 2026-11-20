@@ -199,7 +199,7 @@ export function canTakeWork(
   const usage = providerAccountUsage(providerKey);
   const accountUsage = usage?.accounts.find(entry => entry.label === label) ?? null;
   const reading = buildReadingView(providerKey, usage, accountUsage, now);
-  const cache = refusalFor(provider, label, model, accountUsage, now);
+  let cache = refusalFor(provider, label, model, accountUsage, now);
   const canonicalModel = provider === "claude-code" ? claudeUsageAllowanceModel(model) : model;
 
   // Step 1b — Account-reading-level signed-out verdict.
@@ -212,7 +212,12 @@ export function canTakeWork(
   // Step 2 — Cache + reading reconciliation.
   if (cache && cache.resetAtMs !== null && cache.resetAtMs > now) {
     if (reading.fresh && reading.problem === null && accountUsage && tryRetireCacheByReading(provider, label, canonicalModel, accountUsage, reading.readAtMs ?? now, cache)) {
-      // Fall through — cache was just retired.
+      // Fall through — cache was just retired. M4 fix (2026-11-19): re-read the
+      // local `cache` binding to null so Steps 4 and 5 can engage on the same
+      // call. Before: Steps 4/5 were gated on `!cache` with the pre-retire value
+      // still truthy, so the account couldn't be admitted via proven-attempt or
+      // last-showed-room until the next call observed the retire.
+      cache = null;
     } else {
       return makeVerdict(false, "cached-refusal", cache.resetAtMs,
         `account refused ${model} until ${new Date(cache.resetAtMs).toISOString()}`,
@@ -366,7 +371,7 @@ type ReadingView = { readAtMs: number | null; fresh: boolean; problem: string | 
 function buildReadingView(provider: ProviderId, usage: ProviderUsage | null, accountUsage: AccountUsage | null, now: number): ReadingView {
   if (!usage || !accountUsage) return { readAtMs: null, fresh: false, problem: null, stale: false };
   const readAtMs = accountReadingAt(accountUsage);
-  const fresh = accountReadingFresh(provider as any, usage, accountUsage, now);
+  const fresh = accountReadingFresh(provider, usage, accountUsage, now);
   const problem = accountUsage.problem ?? usage.problem ?? null;
   const stale = readAtMs !== null && (now - readAtMs) > ACCOUNT_READING_STALE_AFTER_MS;
   return { readAtMs, fresh, problem, stale };
@@ -385,7 +390,7 @@ function tryRetireCacheByReading(
   accountUsage: AccountUsage, readAtMs: number, cache: RefusalRecord,
 ): boolean {
   if (provider === "antigravity") return false;
-  const windows = includedAllowanceWindows(provider as any, accountUsage, allowanceModel)
+  const windows = includedAllowanceWindows(provider, accountUsage, allowanceModel)
     .map(w => ({ usedPercent: w.usedPercent, resetsAt: w.resetsAt ?? null }));
   const retired = retireRefusalSupersededByReading(
     provider as RefusalProvider, label,

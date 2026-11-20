@@ -156,11 +156,20 @@ if(!passthrough){
     const defaultHome=join(root,'.claude');
     let names:string[]=[];
     try{names=readdirSync(join(root,'.claude-accounts')).filter(name=>!name.startsWith('.'));}catch{}
-    const homes=[defaultHome,...names.map(name=>join(root,'.claude-accounts',name))];
+    // I3 (2026-11-19): per-account folders iterate FIRST, live root last. The resolver's
+    // invariant says per-account folder wins when both resolve to the same account; before
+    // this fix the launcher's search started at defaultHome and would match it first, so
+    // the launcher's binding resolution disagreed with `canTakeWork`'s home selection.
+    const homes=[...names.map(name=>join(root,'.claude-accounts',name)),defaultHome];
     // F3-deep (2026-11-19): check the dispatcher-signed binding BEFORE reading the JSONL
     // `session-owner` header. If Concierge recorded a binding for this session UUID, the
     // header is informational and the binding wins. See bot/src/claude-session-binding.ts
     // and docs/plans/2026-11-19-provider-account-rebuild-architecture.md §4.
+    //
+    // I2 (2026-11-19): endpoint failure (owner restart, path typo, 503) emits
+    // `claude_resume_binding_endpoint_unavailable` to stderr so the silent-regression
+    // path is visible. Fallback to JSONL header is retained for availability but
+    // observability for the regression is now explicit.
     try {
       const bindingResponse=await requestApiResponse(`/sessions/v1/auth/claude-resume-binding?sessionUUID=${encodeURIComponent(exactResume)}`);
       const binding=(bindingResponse as any)?.binding;
@@ -187,7 +196,15 @@ if(!passthrough){
           }catch{}
         }
       }
-    } catch { /* fall through to JSONL header behavior */ }
+    } catch (error) {
+      // I2: visible log — any silent regression is now diagnosable.
+      process.stderr.write(JSON.stringify({
+        level:'warn',event:'claude_resume_binding_endpoint_unavailable',
+        session_uuid:exactResume,
+        error_name:error instanceof Error?error.name:'unknown',
+        error_message:error instanceof Error?error.message:String(error),
+      })+"\n");
+    }
     if(!bindingResolved){
     const paths=new Set<string>();
     for(const home of homes){

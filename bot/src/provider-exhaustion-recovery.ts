@@ -221,7 +221,7 @@ export function recoverExhaustedWork(sessionId: number): ExhaustionRecoveryOutco
   if (chain.length < 2) return "no-chain";
   const session = getSessionById(sessionId);
   if (!session) return "no-chain";
-  const startIndex = chain.indexOf(session.provider_id as any);
+  const startIndex = chain.indexOf(session.provider_id as "claude-code"|"codex"|"antigravity");
   if (startIndex < 0) return "no-chain";
   // Mac signin-wait preservation: if an account on the ORIGIN provider has reading-room
   // but is signed out, the hold is for sign-in, not failover.

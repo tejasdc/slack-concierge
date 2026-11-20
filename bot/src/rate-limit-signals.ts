@@ -53,6 +53,15 @@ export type OverageReason = 'out_of_credits' | 'org_level_disabled' | 'hard_limi
 export type RateLimitSignals = {
   sawStructuredAllowed: boolean;
   sawStructuredRejected: boolean;
+  /**
+   * M2 (2026-11-19): true for ANY structured `rate_limit_event`, regardless of the
+   * `status` enum value. If Anthropic ships a new status ("throttled", "degraded",
+   * anything), stale synthetic text must not win — the fact that the provider
+   * spoke at all is what beats synthetic text. Only `sawStructuredRejected` with
+   * a known status enters the "yes it refused" terminal branch; `sawStructured`
+   * alone is enough to suppress a stale synthetic verdict.
+   */
+  sawStructured: boolean;
   structuredResetAtMs: number | null;
   /** The provider's rate_limit_type on the most recent rejected event ("seven_day", "five_hour", "daily", …). */
   structuredRateLimitType: string | null;
@@ -123,6 +132,7 @@ export function emptySignals(): RateLimitSignals {
   return {
     sawStructuredAllowed: false,
     sawStructuredRejected: false,
+    sawStructured: false,
     structuredResetAtMs: null,
     structuredRateLimitType: null,
     overageReason: null,
@@ -140,6 +150,10 @@ export function emptySignals(): RateLimitSignals {
 export function observeRateLimitEvent(signals: RateLimitSignals, event: RateLimitEventPayload): void {
   const status = event.rate_limit_info?.status;
   if (typeof status !== 'string') return;
+  // M2 (2026-11-19): record that the provider SPOKE, regardless of whether we
+  // recognize the status enum. A future "throttled" or "degraded" must still
+  // beat stale synthetic text.
+  signals.sawStructured = true;
   const resetAtMs = parseResetField(event.rate_limit_info?.resetsAt ?? event.rate_limit_info?.resetAt ?? null);
   if (status === 'rejected') {
     signals.sawStructuredRejected = true;
@@ -150,6 +164,10 @@ export function observeRateLimitEvent(signals: RateLimitSignals, event: RateLimi
   } else if (status === 'allowed' || status === 'warning' || status === 'allowed_warning' || status === 'allow') {
     signals.sawStructuredAllowed = true;
   }
+  // Any other known-to-us status (new/unknown) still sets sawStructured but
+  // not sawStructuredAllowed / sawStructuredRejected — the terminal rule
+  // treats it as "not exhausted" (no explicit refusal) while still suppressing
+  // the synthetic-only branch.
   signals.observations.push({ kind: 'structured', status, resetAtMs });
   updateConflict(signals);
 }
@@ -190,6 +208,7 @@ export function observeSyntheticText(
 export function clearSignals(signals: RateLimitSignals): void {
   signals.sawStructuredAllowed = false;
   signals.sawStructuredRejected = false;
+  signals.sawStructured = false;
   signals.structuredResetAtMs = null;
   signals.structuredRateLimitType = null;
   signals.overageReason = null;
@@ -211,6 +230,13 @@ export function terminalVerdict(signals: RateLimitSignals): TerminalVerdict {
   if (signals.sawStructuredAllowed) {
     return { usageExhausted: false, resetAtMs: null, reason: 'structured-allowed',
       conflict: signals.conflict, rateLimitType: null, overageReason: null };
+  }
+  // M2: a structured event with an unknown status (e.g. future "throttled") still
+  // suppresses synthetic-only exhaustion. The provider spoke; the synthetic string
+  // is stale CLI notice text we should not trust against it.
+  if (signals.sawStructured) {
+    return { usageExhausted: false, resetAtMs: null, reason: 'structured-allowed',
+      conflict: signals.conflict, rateLimitType: signals.structuredRateLimitType, overageReason: null };
   }
   if (signals.syntheticExhausted) {
     return { usageExhausted: true, resetAtMs: signals.syntheticResetAtMs, reason: 'synthetic-only',
