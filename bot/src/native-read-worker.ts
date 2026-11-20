@@ -123,7 +123,9 @@ function peerAccountView(name:string,fresh:boolean,actedAt:number):Promise<Recor
         :error instanceof Error?error.message:`${name} could not be read right now.`,providers:[]}};}
   });
 }
-async function authProviders(url:URL):Promise<Response>{
+/** Where an Accounts read spent its time: the owner's sign-in state, this machine's rows, the peers. */
+type AccountPhases={ephemera_ms?:number;local_ms?:number;peers_ms?:number;fresh?:boolean;machine?:string|null};
+async function authProviders(url:URL,phases:AccountPhases={}):Promise<Response>{
   const machine=url.searchParams.get('machine');
   if(machine!==null&&(!/^[a-z][a-z0-9-]{0,31}$/.test(machine)))
     throw new SessionOwnerError('A machine name is required.',400,'MACHINE_INVALID');
@@ -133,11 +135,17 @@ async function authProviders(url:URL):Promise<Response>{
     const providers=answer?.providers??[];
     return Response.json({providers,machines:[{name:machine,self:false,reachable:true,note:null,providers}]});
   }
+  phases.fresh=fresh;phases.machine=machine;
+  let mark=performance.now();
+  const lap=()=>{const now=performance.now(),ms=Math.round(now-mark);mark=now;return ms;};
   const ephemera=await ownerEphemera(fresh);
+  phases.ephemera_ms=lap();
   const providers=providerAuthRead(ephemera);
+  phases.local_ms=lap();
   const here={name:self,self:true,reachable:true,note:null,providers};
   if(machine!==null)return Response.json({providers,machines:[here]});
   const remote=await Promise.all(peers.peers.map(peer=>peerAccountView(peer.name,fresh,ephemera.peerAuthActedAtMs?.[peer.name]??0)));
+  phases.peers_ms=lap();
   return Response.json({providers,machines:[here,...remote]});
 }
 async function remoteFile(url:URL):Promise<Response|null>{
@@ -236,9 +244,10 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
     route?'This read belongs to the canonical owner.':'This read has no declared execution owner.');
   let response:Response;
   let work:StorageWork|null=null;
+  const accountPhases:AccountPhases={};
   try{
     response=await observeStorageOperation(route.pattern,async()=>{
-      if(route.source==='account')return authProviders(url);
+      if(route.source==='account')return authProviders(url,accountPhases);
       if(route.pattern==='/files')return await remoteFile(url)??await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
       if(route.pattern==='/projects/:id/files')return await remoteProjectFiles(url)??await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
       return await composition.owner.handleRead(request)??failure(404,'NOT_FOUND','Read unavailable.');
@@ -264,9 +273,14 @@ const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   // About 3,000 reads a day; slow ones (300 ms, thnkr.ing's budget) are warnings.
   const history=route.pattern==='/sessions/:id/history';
   const slowHistory=history&&durationMs>=300;
-  if(response.status>=400||durationMs>=2000||history||requests.completed%100===0)
-    log(response.status>=400||durationMs>=2000||slowHistory?'warn':'info','native_read_request_completed',{
+  // Accounts reads (about 60 a day) are all logged with where their time went: the 2026-11-20
+  // nightly review found its p95 over 300 ms twice running and nothing here could name the wait.
+  const account=route.source==='account';
+  const slowAccount=account&&durationMs>=300;
+  if(response.status>=400||durationMs>=2000||history||account||requests.completed%100===0)
+    log(response.status>=400||durationMs>=2000||slowHistory||slowAccount?'warn':'info','native_read_request_completed',{
       admission_id:admissionId,route:route.pattern,status:response.status,duration_ms:durationMs,...(work??{}),
+      ...(account?accountPhases:{}),
       ...(history?{session_id:decodeURIComponent(/\/sessions\/([^/]+)\/history$/.exec(url.pathname)?.[1]??''),bytes:Number(response.headers.get('content-length'))||null,
         conversation_kind:response.headers.get('x-concierge-conversation-kind'),history_read:response.headers.get('x-concierge-history-read'),
         window:url.searchParams.has('dialogue')||url.searchParams.has('untilInput')}:{}),
