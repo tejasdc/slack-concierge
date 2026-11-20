@@ -373,7 +373,10 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     if(!usage){throw noOwnClaudeLogin();}
   }
   if(!usage||(!ownHomes&&!defaultAccount))return null;
-  const rooms=savedWorkAccountRooms('claude-code',usage,Date.now(),model,runnerTarget);
+  // F1 (2026-11-20): pass resolvedModel into the room read. When model is null, the raw path
+  // used any-work semantics and returned the Opus-refused account as "has room" if Sonnet/
+  // Haiku/Fable had none. The authority filter below now matches the ranker's view.
+  const rooms=savedWorkAccountRooms('claude-code',usage,Date.now(),resolvedModel,runnerTarget);
   if(ownHomes&&!rooms.some(r=>r.home||r.isDefault))throw noOwnClaudeLogin();
   // Proof-admitted turn: the manual Accounts check released this exact turn against the proved account.
   const proved=provenAccount?rooms.find(r=>r.account===provenAccount&&(r.home||r.isDefault)
@@ -382,16 +385,24 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
     because:proved.account===expected?'stayed-on-its-account':'moved-for-room',expected,selectionRevision};
   // Authority-filtered eligibility. The ranker then picks by selection/warmth/room.
   const eligibleRooms=rooms.filter(r=>(r.home||r.isDefault)&&authorityVerdict(r.account).ok);
-  const choice=chooseAccountForTurn({accounts:eligibleRooms.length?eligibleRooms:rooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount});
+  // F1 (2026-11-20): the fallback used to pass raw `rooms` when eligibleRooms was empty, which
+  // undid the authority's refusal filter — a cached-refused account could win on the ranker's
+  // "weekly < 100%" check. Keep the authority-filtered view; if the authority says nothing is
+  // eligible, the attemptRoom branch below decides whether to admit a hold-worthy account.
+  const choice=chooseAccountForTurn({accounts:eligibleRooms,bound:null,prefer:expected,newlySelected:!!selectedAccount,warmCacheAccount});
   if(choice.account!==null)return {account:choice.account,home:choice.home,because:choice.because,expected,selectionRevision};
-  // Fallthrough — nothing eligible. Give the selected home one admitted attempt if its verdict
-  // says the only block is "unknown"/"last-showed-room"/"proven-attempt" (hold-worthy but not refused).
-  const attemptRoom=rooms.find(r=>{
-    if(r.account!==selected||!r.home)return false;
+  // Fallthrough — nothing eligible per the authority. Admit any home whose verdict is
+  // hold-worthy (`unknown` / `last-showed-room` / `proven-attempt`), preferring the selected
+  // one. F3 (2026-11-20): before, this was gated to `r.account===selected`, which threw
+  // "every account out of room" when the only hold-worthy home was a non-selected account
+  // with a stale-but-positive reading.
+  const attemptRoomCandidates=rooms.filter(r=>{
+    if(!r.home)return false;
     const verdict=authorityVerdict(r.account);
     if(verdict.reason==='cached-refusal')return false;
     return verdict.ok||verdict.reason==='unknown'||verdict.reason==='last-showed-room'||verdict.reason==='proven-attempt';
   });
+  const attemptRoom=attemptRoomCandidates.find(r=>r.account===selected)??attemptRoomCandidates[0]??null;
   if(attemptRoom)return {account:attemptRoom.account,home:attemptRoom.home,because:'stayed-on-its-account',expected,selectionRevision};
   // Nobody can run. Ask the browser repair agent to establish any peer-discovered account.
   if(ownHomes&&turnId!==undefined)requestMissingClaudeHomes(model);
