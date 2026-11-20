@@ -60,17 +60,29 @@ export function accountCanTakeWork(provider:AccountIdentityProvider,account:Acco
     || provider==='codex'&&codexCreditsCanCover(account));
 }
 
-/** A provider observation belongs to an account, not to the batch or peer transfer. */
-export function accountReadingAt(account:AccountUsage):number|null {
-  // Every reader writes readAt; old records without it remain unknown. The batch timestamp
-  // can be new even when a cached per-account reading or peer copy is old.
+/** A provider observation belongs to an account, not to the batch or peer transfer.
+ *
+ * Preference order: per-account `readAt` wins; when it is absent, the second arg
+ * `batchObservedAt` is a safe lower bound on every account's read time in that
+ * batch (fixtures, older readers, peer copies without per-account readAt). Before
+ * 2026-11-20, a reading without per-account readAt never counted as fresh and the
+ * downstream freshness gates (Step 3 of `canTakeWork`, `savedWorkAccountRooms`)
+ * silently skipped the row — which surfaced in CI's inbox-session-pin fixture as
+ * "Every available Claude account is out of room" even though every window was
+ * at 10% used. */
+export function accountReadingAt(account:AccountUsage,batchObservedAt?:string|null):number|null {
   const at=Date.parse(account.readAt??'');
-  return Number.isFinite(at)?at:null;
+  if(Number.isFinite(at))return at;
+  if(batchObservedAt){
+    const fallback=Date.parse(batchObservedAt);
+    if(Number.isFinite(fallback))return fallback;
+  }
+  return null;
 }
 
 export function accountReadingValidUntil(provider:AccountIdentityProvider,account:AccountUsage,
-  model?:string|null):number|null {
-  const source=accountReadingAt(account);
+  model?:string|null,batchObservedAt?:string|null):number|null {
+  const source=accountReadingAt(account,batchObservedAt);
   if(source===null)return null;
   const resets=includedAllowanceWindows(provider,account,model).map(window=>Date.parse(window.resetsAt??''))
     .filter(value=>Number.isFinite(value)&&value>source);
@@ -79,8 +91,11 @@ export function accountReadingValidUntil(provider:AccountIdentityProvider,accoun
 
 export function accountReadingFresh(provider:AccountIdentityProvider,usage:ProviderUsage,
   account:AccountUsage,now=Date.now(),maxAgeMs=ACCOUNT_READING_MAX_AGE_MS,model?:string|null):boolean {
-  const at=accountReadingAt(account);
-  const validUntil=accountReadingValidUntil(provider,account,model);
+  // The batch's observedAt is a safe lower bound on every row's read time: use it when
+  // per-account readAt is absent (fixtures, peer copies, older readers). See the
+  // accountReadingAt docstring above for the dated incident (2026-11-20).
+  const at=accountReadingAt(account,usage.observedAt);
+  const validUntil=accountReadingValidUntil(provider,account,model,usage.observedAt);
   return !usage.problem&&!account.problem&&at!==null&&at<=now&&validUntil!==null
     &&now<Math.min(validUntil,at+maxAgeMs);
 }

@@ -119,15 +119,7 @@ export type CapabilityVerdict = Readonly<{
 }>;
 
 function makeVerdict(ok: boolean, reason: CapabilityReason, clearsAtMs: number | null, why: string, source: CapabilityEvidence): CapabilityVerdict {
-  const verdict = { ok, reason, clearsAtMs, why, source, badge: badgeFor(reason), explain: explainFor(reason, source, clearsAtMs) };
-  // CI diagnostic: trace every verdict when CONCIERGE_DIAG_AUTHORITY is set.
-  if (process.env.CONCIERGE_DIAG_AUTHORITY === "1") {
-    try {
-      const { log } = require("./log") as typeof import("./log");
-      log("info", "canTakeWork_verdict", { ok, reason, why, home: source.home });
-    } catch { /* ignore */ }
-  }
-  return verdict;
+  return { ok, reason, clearsAtMs, why, source, badge: badgeFor(reason), explain: explainFor(reason, source, clearsAtMs) };
 }
 
 /** Maps the authority's `reason` to a stable UI badge token. */
@@ -378,23 +370,12 @@ type ReadingView = { readAtMs: number | null; fresh: boolean; problem: string | 
 
 function buildReadingView(provider: ProviderId, usage: ProviderUsage | null, accountUsage: AccountUsage | null, now: number): ReadingView {
   if (!usage || !accountUsage) return { readAtMs: null, fresh: false, problem: null, stale: false };
-  // A per-account `readAt` is the preferred timestamp (the readers set it); when it is
-  // missing we fall back to the batch's `observedAt`, which is a safe lower bound on
-  // every account's read time in that batch. Without the fallback, a reading inserted
-  // without per-account readAt (fixtures, older readers) never counts as fresh and
-  // Step 3 / the retire-by-reading path never engages — exactly the CI-RED behavior
-  // the inbox-session-pin fixture surfaced.
-  const perAccountReadAt = accountReadingAt(accountUsage);
-  const observedAtMs = Date.parse(usage.observedAt ?? "");
-  const readAtMs = perAccountReadAt ?? (Number.isFinite(observedAtMs) ? observedAtMs : null);
+  // `accountReadingAt` falls back to the batch's `observedAt` when per-account
+  // `readAt` is absent (fixtures, peer copies, older readers). See its docstring
+  // in account-allowance-observation.ts for the dated incident.
+  const readAtMs = accountReadingAt(accountUsage, usage.observedAt);
   const problem = accountUsage.problem ?? usage.problem ?? null;
-  // Prefer the strict helper when it can decide. Only fall through to the
-  // observedAt-based freshness when the strict helper refused solely because
-  // the per-account readAt was absent.
-  const strictFresh = accountReadingFresh(provider, usage, accountUsage, now);
-  const freshViaObservedAt = perAccountReadAt === null && readAtMs !== null && problem === null
-    && readAtMs <= now && (now - readAtMs) < ACCOUNT_READING_MAX_AGE_MS;
-  const fresh = strictFresh || freshViaObservedAt;
+  const fresh = accountReadingFresh(provider, usage, accountUsage, now);
   const stale = readAtMs !== null && (now - readAtMs) > ACCOUNT_READING_STALE_AFTER_MS;
   return { readAtMs, fresh, problem, stale };
 }
