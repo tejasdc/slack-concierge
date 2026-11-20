@@ -707,7 +707,20 @@ export function findRunnerProviderSessionHome(key: AccountProvider, accountLabel
   // read path and the codex-custody-successor fixture's recovery inventory refused
   // every runner worktree lookup with "unavailable or ambiguous".
   const candidates = accountLabel === null
-    ? runnerAccountHomes(key)
+    ? (() => {
+        // Codex always passes accountLabel=null to this reader — see runner-projects.ts:255.
+        // The resolver's canonical homes alone miss the live-root mirror: a transcript
+        // written under the live root (first login not yet migrated to a per-account folder,
+        // or a historical thread written before the per-account folder existed) belongs to
+        // this reader's scan. Walk canonical homes AND the live root for a complete scan.
+        // Dedup by home path so a live-root mirror of a canonical home is not counted twice.
+        const canonical = runnerAccountHomes(key);
+        const liveHome = liveRoot(key);
+        const haveLive = canonical.some(c => c.home === liveHome);
+        if (haveLive) return canonical;
+        const rawAccount = key === "codex" ? codexAccount(liveHome) : claudeAccount(liveHome);
+        return rawAccount ? [...canonical, { account: rawAccount.label, home: liveHome }] : canonical;
+      })()
     : (() => {
         const home = runnerAccountHome(key, accountLabel);
         if (home) return [{ account: accountLabel, home }];
