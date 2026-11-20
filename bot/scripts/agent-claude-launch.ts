@@ -150,12 +150,62 @@ if(!passthrough){
     if(environment[name])throw new Error(`Claude account selection refused a competing ${name} credential or provider setting. Explicitly pin an intentional route.`);
   }
   let useConciergeChoice=!exactResume;
+  let bindingResolved=false;
   if(exactResume){
     const root=process.env.HOME??'';
     const defaultHome=join(root,'.claude');
     let names:string[]=[];
     try{names=readdirSync(join(root,'.claude-accounts')).filter(name=>!name.startsWith('.'));}catch{}
-    const homes=[defaultHome,...names.map(name=>join(root,'.claude-accounts',name))];
+    // I3 (2026-11-19): per-account folders iterate FIRST, live root last. The resolver's
+    // invariant says per-account folder wins when both resolve to the same account; before
+    // this fix the launcher's search started at defaultHome and would match it first, so
+    // the launcher's binding resolution disagreed with `canTakeWork`'s home selection.
+    const homes=[...names.map(name=>join(root,'.claude-accounts',name)),defaultHome];
+    // F3-deep (2026-11-19): check the dispatcher-signed binding BEFORE reading the JSONL
+    // `session-owner` header. If Concierge recorded a binding for this session UUID, the
+    // header is informational and the binding wins. See bot/src/claude-session-binding.ts
+    // and docs/plans/2026-11-19-provider-account-rebuild-architecture.md §4.
+    //
+    // I2 (2026-11-19): endpoint failure (owner restart, path typo, 503) emits
+    // `claude_resume_binding_endpoint_unavailable` to stderr so the silent-regression
+    // path is visible. Fallback to JSONL header is retained for availability but
+    // observability for the regression is now explicit.
+    try {
+      const bindingResponse=await requestApiResponse(`/sessions/v1/auth/claude-resume-binding?sessionUUID=${encodeURIComponent(exactResume)}`);
+      const binding=(bindingResponse as any)?.binding;
+      if(binding?.accountLabel){
+        for(const home of homes){
+          try{
+            const configFile=home===defaultHome?join(root,'.claude.json'):join(home,'.claude.json');
+            const config=JSON.parse(readFileSync(configFile,'utf8'))?.oauthAccount;
+            if(typeof config?.emailAddress!=='string'||config.emailAddress!==binding.accountLabel)continue;
+            const label=join(home,'.account-email');
+            if(existsSync(label)&&readFileSync(label,'utf8').trim()!==config.emailAddress)continue;
+            const env={...environment};
+            if(process.platform==='darwin'&&home===defaultHome)delete env.CLAUDE_CONFIG_DIR;
+            else env.CLAUDE_CONFIG_DIR=home;
+            const status=spawnSync(executable,['auth','status'],{env,encoding:'utf8',timeout:15_000});
+            const identity=JSON.parse(status.stdout??'');
+            if(status.status!==0||identity.loggedIn!==true||identity.email!==config.emailAddress)continue;
+            if(process.platform==='darwin'&&home===defaultHome)delete environment.CLAUDE_CONFIG_DIR;
+            else environment.CLAUDE_CONFIG_DIR=home;
+            // Dispatcher's binding wins. Skip header validation entirely.
+            useConciergeChoice=false;
+            bindingResolved=true;
+            break;
+          }catch{}
+        }
+      }
+    } catch (error) {
+      // I2: visible log — any silent regression is now diagnosable.
+      process.stderr.write(JSON.stringify({
+        level:'warn',event:'claude_resume_binding_endpoint_unavailable',
+        session_uuid:exactResume,
+        error_name:error instanceof Error?error.name:'unknown',
+        error_message:error instanceof Error?error.message:String(error),
+      })+"\n");
+    }
+    if(!bindingResolved){
     const paths=new Set<string>();
     for(const home of homes){
       let projects:string[]=[];
@@ -214,6 +264,7 @@ if(!passthrough){
     if(process.platform==='darwin'&&matches[0]===defaultHome)delete environment.CLAUDE_CONFIG_DIR;
     else environment.CLAUDE_CONFIG_DIR=matches[0];
     }else useConciergeChoice=true;
+    } // end !bindingResolved
   }
   if(useConciergeChoice){
   const response=await requestApiResponse(`/sessions/v1/auth/claude-launch-choice${model?`?model=${encodeURIComponent(model)}`:''}`);

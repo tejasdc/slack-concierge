@@ -192,7 +192,7 @@ export function createNativeSession(provider:ProviderId, metadata:NativeSessionM
     VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify({...placed,summary}));
   return getSessionById(Number(result.lastInsertRowid))!;
 }
-export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:string) {
+export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:string, account?: { label: string; accountUuid?: string | null; organizationUuid?: string | null; dispatchRevision?: number }) {
   if (!uuid) throw new Error('Provider returned an empty native session identity.');
   const current=getSessionById(sessionId);
   if(current&&holdsInbox(current)&&current.agent_session_uuid&&current.agent_session_uuid!==uuid)throw new Error(INBOX_PIN_REFUSAL);
@@ -200,6 +200,31 @@ export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:
     binding_generation=binding_generation+CASE WHEN agent_session_uuid IS NOT NULL AND agent_session_uuid<>? THEN 1 ELSE 0 END,
     last_turn_at=CURRENT_TIMESTAMP WHERE id=? AND provider_id=?`).run(uuid,uuid,sessionId,provider);
   if (bound.changes !== 1) throw new Error('Provider binding no longer belongs to the admitted session.');
+  // F3-deep (2026-11-19): record the dispatcher-signed Claude account binding so a later
+  // `--resume UUID` launch does NOT follow the JSONL `session-owner` header to a different
+  // account. See bot/src/claude-session-binding.ts for the full note. A write failure is
+  // logged but never breaks the primary binding — Finding 1 is only as reliable as this
+  // write, so the log line makes a silent regression visible.
+  if (provider === 'claude-code' && account?.label) {
+    try {
+      const { writeClaudeSessionBinding } = require('./claude-session-binding');
+      writeClaudeSessionBinding({
+        sessionUuid: uuid, accountLabel: account.label,
+        accountUuid: account.accountUuid ?? null,
+        organizationUuid: account.organizationUuid ?? null,
+        boundByDispatchRevision: account.dispatchRevision ?? 0,
+      });
+    } catch (error) {
+      try {
+        const { log: logFn } = require('./log') as typeof import('./log');
+        logFn('warn', 'claude_session_binding_write_failed', {
+          session_uuid: uuid, account: account.label,
+          error_name: error instanceof Error ? error.name : 'unknown',
+          error_message: error instanceof Error ? error.message : String(error),
+        });
+      } catch { /* log module unavailable (e.g. during test teardown) — swallow */ }
+    }
+  }
   executionChanged();
 }
 export function getAcceptedSessionInput(id:string) {

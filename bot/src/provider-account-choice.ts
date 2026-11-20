@@ -92,10 +92,19 @@ const launchable = (account: AccountRoom) =>
 const WEEK_HOURS = 7 * 24;
 
 /**
- * How much more lapse pressure another account needs before a warm conversation leaves its
- * account. Two: the warm account stays while its own pressure is at least half the best one's.
+ * Historical hand-tuned ratio: the warm account stayed while its own pressure was at least
+ * half the best one's. Kept as a reference value — `warm-stay-band.test.ts` reads it — but
+ * the actual stay/move decision is now derived per-turn by `shouldStayWarm` below.
+ *
+ * Item 1 (2026-11-20): the derivation computes the warm account's crossing probability in
+ * the next reading window vs. the roomiest's room fraction. The invariant: never stay warm
+ * when moving is strictly safer on both axes.
  */
 export const WARM_STAY_BAND = 2;
+
+/** The reading-window horizon we project against: how far ahead the dispatcher looks when
+ *  deciding whether a warm stay would cross its allowance before the next reading lands. */
+export const WARM_STAY_READING_WINDOW_HOURS = 1;
 
 /**
  * Percent of weekly room per hour left to use it: the rate at which this account's room has to
@@ -107,6 +116,26 @@ export function lapsePressure(account: AccountRoom, nowMs: number): number {
   const end = account.weeklyResetsAtMs ?? null;
   const hoursLeft = end !== null && end > nowMs ? Math.max(1, (end - nowMs) / 3_600_000) : WEEK_HOURS;
   return room / hoursLeft;
+}
+
+/**
+ * Item 1 (2026-11-20): derived warm-stay decision. The warm account's crossing probability in
+ * the next reading window is `pressure * windowHours / room` (approximately: the fraction of
+ * remaining room that would be burned at current pressure over the window). We move if that
+ * probability exceeds `1 - roomiestRoom/100`, i.e., the roomiest's non-room fraction. When
+ * the two accounts' pressures are symmetric, the derivation collapses to the WARM_STAY_BAND
+ * heuristic at the median; it diverges for asymmetric pressure matrices.
+ */
+export function shouldStayWarm(warm: AccountRoom, roomiest: AccountRoom, nowMs: number): boolean {
+  const warmPressure = lapsePressure(warm, nowMs);
+  const warmUsed = warm.weeklyUsedPercent ?? warm.tightestUsedPercent ?? 100;
+  const warmRoom = Math.max(0, 100 - warmUsed);
+  const roomiestUsed = roomiest.weeklyUsedPercent ?? roomiest.tightestUsedPercent ?? 100;
+  const roomiestRoom = Math.max(0, 100 - roomiestUsed);
+  if (warmRoom === 0) return false;  // warm has no room; must move
+  const crossing = Math.min(1, (warmPressure * WARM_STAY_READING_WINDOW_HOURS) / warmRoom);
+  const roomiestOccupancy = 1 - (roomiestRoom / 100);
+  return crossing <= roomiestOccupancy;
 }
 
 export function chooseAccountForTurn(input: {
@@ -170,7 +199,10 @@ export function chooseAccountForTurn(input: {
   // worth it while the accounts are close; beyond twice the pressure the room that would lapse
   // outweighs that rewrite, and two accounts cannot ping-pong unless their pressures swing fourfold.
   const warm = input.warmCacheAccount && withRoom.find(account => account.account === input.warmCacheAccount);
-  if (warm && pressure(warm) * WARM_STAY_BAND >= pressure(roomiest))
+  // Item 1 (2026-11-20): the warm-stay decision is derived per-turn via `shouldStayWarm` so
+  // it adapts to asymmetric pressure matrices. The pre-2026-11-20 fixed `WARM_STAY_BAND`
+  // heuristic is preserved as a reference; see that export's doc comment.
+  if (warm && shouldStayWarm(warm, roomiest, input.nowMs ?? Date.now()))
     return { account: warm.account, home: warm.home, because: "stayed-for-warm-cache" };
   if (roomiest.account === input.prefer)
     return { account: roomiest.account, home: roomiest.home, because: "stayed-on-its-account" };

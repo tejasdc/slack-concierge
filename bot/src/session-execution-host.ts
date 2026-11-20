@@ -578,7 +578,7 @@ export class SessionExecutionHost {
    * the automatic move to an account with room (2026-10-07).
    */
   private claudeInUseSentence(chosen:string,usage:ReturnType<typeof providerAccountUsage>):string{
-    const cached=claudeAccountCachedReset(chosen);
+    const cached=claudeAccountCachedReset(chosen,null,"any-work");
     if(cached)return `Claude last refused work on ${chosen} until ${noticeTime(db,cached)}. If you have reset its allowance, press Refresh to try the waiting work now.`;
     const reading=usage?.accounts.find(item=>item.label===chosen);
     if(!usage||!reading||!accountReadingFresh('claude-code',usage,reading))return '';
@@ -1394,7 +1394,9 @@ export class SessionExecutionHost {
     if(claim.turn_kind!=='native'||!claim.accepted_input_id)throw new Error('Native execution requires an accepted input.');
     const input=getAcceptedSessionInput(claim.accepted_input_id),session=getSessionById(claim.session_id);
     if(!input||!session||input.session_id!==session.id||input.turn_id!==claim.turn_id||input.steering_id!==null)throw new Error('Accepted native input binding changed.');
-    if(session.provider_id==='codex'&&process.platform==='linux')recordSessionEvent({eventId:`codex-process-audit-intent:${claim.turn_id}`,
+    // Key the audit intent by (turn, dispatch_attempt) so a re-queued turn can
+    // record its new attempt's intent; see 2026-11-19 event-identity incident.
+    if(session.provider_id==='codex'&&process.platform==='linux')recordSessionEvent({eventId:`codex-process-audit-intent:${claim.turn_id}:${claim.dispatch_attempt}`,
       sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'process_audit',payload:{}});
     if(!adoption)recordSessionEvent({eventId:`run:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
     else if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(`terminal:${claim.turn_id}:${claim.dispatch_attempt}`)) {
@@ -1909,8 +1911,8 @@ export class SessionExecutionHost {
           if(this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
           return waitForCodexAppServerOrDrain(codexAppServerReady(),this.drainStarted,()=>this.draining);
         }}:{beforeProviderAdmission:()=>{}}),
-      services:{bindProviderSession:(sessionId,provider,uuid)=>{
-        bindSessionProvider(sessionId,provider,uuid);
+      services:{bindProviderSession:(sessionId,provider,uuid,account)=>{
+        bindSessionProvider(sessionId,provider,uuid,account);
         // An outside run's thread lives in its own CLI process; the shared App Server must not load it.
         if(provider==='codex'&&!metadata.outside)void this.options.providerSessionBound?.(uuid).catch(error=>log('warn','codex_session_subscription_failed',{provider_thread_uuid:uuid,...errorFields(error)}));
       },deliverResult:result=>this.deliverResult(result)},

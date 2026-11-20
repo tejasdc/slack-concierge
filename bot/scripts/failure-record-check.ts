@@ -156,7 +156,11 @@ function range(spec:string){
     const own=declaration(message);
     const found=own.kind==='missing'&&lateValue?declaration(`Failure-record: ${lateValue}`):own;
     if(found.kind==='missing'&&!listed)problems.push(`${short} "${subject}" has no Failure-record: line and no record lists it in fix_commits.`);
-    if(found.kind==='records'){
+    // When the commit is listed in a record's `fix_commits`, that record is the
+    // authoritative declaration — the pushed commit's own trailer may carry an
+    // older URL, path or formatting that pre-dates the record. Skip own-trailer
+    // validation in that case to avoid refusing fixes that the record vouches for.
+    if(found.kind==='records'&&!listed){
       for(const path of found.paths){
         if(!isRecordPath(path))problems.push(`${short} names ${path}, which is not under ${RECORD_DIRS.join(' or ')}.`);
         else if(!gitOk('cat-file','-e',`${head}:${path}`)&&!gitOk('cat-file','-e',`${commit}:${path}`))problems.push(`${short} names ${path}, which does not exist.`);

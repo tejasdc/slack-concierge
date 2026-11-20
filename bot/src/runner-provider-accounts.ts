@@ -14,6 +14,7 @@ import { useCodexResetCredit } from "./codex-reset-credit";
 import { readRunnerGoogleUsage } from "./runner-google-usage";
 import {createConnection} from 'node:net';
 import { CLAUDE_SCRATCH, isClaudePerLogin } from './claude-home-entries';
+import { listAccounts as listAccountsFromResolver } from './account-home-resolver';
 import {observeAppliedRuntimeMaintenance,progressRuntimeMaintenance,sameRuntime,sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState,type RuntimeMaintenanceObservation} from './codex-runtime-maintenance';
 import {isProcessIdentityAlive,processIdentity,type ProcessIdentity} from './runtime-identity';
 import {LEDGER_IMAGE_PATH} from './agent-ledger-image-boundary';
@@ -656,25 +657,42 @@ export function runnerAccountHome(key: AccountProvider, accountLabel: string): s
   return matches.length === 1 ? matches[0]! : null;
 }
 
-/** Enumerate credential-verified homes, for exact transcript discovery on this runner. */
+/**
+ * Enumerate credential-verified homes for this runner. Deduped by account label:
+ * when the live root is signed into the same account as a per-account folder, the
+ * per-account folder wins and the live root is NEVER returned as a second candidate.
+ *
+ * Before 2026-11-19 this returned both. A hand `claude /login` into the live root
+ * while the same account already had a per-account folder caused `accounts.validate`
+ * to refuse every Claude turn with `resolution:"ambiguous"`. See fault F3 of
+ * `docs/incidents/2026-11-19-opus-only-refusal-blocked-every-claude-turn.md`.
+ *
+ * Both the per-account folder and the resolver report whether a live-root mirror
+ * also exists, so transcript discovery that depends on the live root's history view
+ * can still find it via `runnerLiveRootMirror`.
+ */
 export function runnerAccountHomes(key: AccountProvider): { account: string; home: string }[] {
-  const found = new Map<string, string>();
-  const active = key === "codex" ? codexAccount(liveRoot(key)) : claudeAccount(liveRoot(key));
-  if (active) found.set(liveRoot(key), active.label);
-  let names: string[] = [];
-  try { names = readdirSync(accountRoot(key)).filter(name => !name.startsWith(".")); } catch { return [...found].map(([home, account]) => ({ account, home })); }
-  for (const name of names) {
-    const home = join(accountRoot(key), name);
-    const account = key === "codex" ? codexAccount(home) : claudeAccount(home);
-    if (account && !found.has(home)) found.set(home, account.label);
-  }
-  return [...found].map(([home, account]) => ({ account, home }));
+  return resolveAccountsFor(key).map(record => ({ account: record.label, home: record.canonicalHome }));
 }
 
-/** The terminal's Claude login can expose history but never identifies a saved agent account. */
+/** The one additional kind of candidate the transcript-discovery paths may need: a
+ *  live root that duplicates a per-account folder's sign-in. Dispatch never uses this. */
+export function runnerLiveRootMirror(key: AccountProvider): { account: string; liveRoot: string; canonicalHome: string } | null {
+  const record = resolveAccountsFor(key).find(record => record.liveRootMirror);
+  return record ? { account: record.label, liveRoot: record.liveRoot, canonicalHome: record.canonicalHome } : null;
+}
+
+function resolveAccountsFor(key: AccountProvider) {
+  return listAccountsFromResolver(key);
+}
+
+/**
+ * The terminal's Claude login can expose history but never identifies a saved agent account.
+ * Pre-rebuild filter preserved for backwards compatibility; new callers should use
+ * `resolveAccountHome(provider, label)` directly.
+ */
 function namedRunnerAccountHomes(key: AccountProvider, accountLabel: string) {
-  const terminalHome = key === "claude-code" ? liveRoot(key) : null;
-  return runnerAccountHomes(key).filter(candidate => candidate.home !== terminalHome && candidate.account === accountLabel);
+  return runnerAccountHomes(key).filter(candidate => candidate.account === accountLabel);
 }
 
 /**
@@ -685,9 +703,44 @@ function namedRunnerAccountHomes(key: AccountProvider, accountLabel: string) {
 export function findRunnerProviderSessionHome(key: AccountProvider, accountLabel: string | null, nativeId: string):
   { account: string | null; home: string | null; transcript: string } | null {
   if (!/^[A-Za-z0-9-]{8,128}$/.test(nativeId)) return null;
+  // Transcript resolution is READ-ONLY. It must NOT be gated on the dispatch-grade
+  // dedup rules the resolver enforces. If a label has a per-account folder, use it;
+  // if only the live root carries that label (a `codex login` into the live root
+  // without an accountRoot folder), the live root is still the transcript's home.
+  // Before 2026-11-20 the dispatch path's refusal of ambiguous homes bled into this
+  // read path and the codex-custody-successor fixture's recovery inventory refused
+  // every runner worktree lookup with "unavailable or ambiguous".
   const candidates = accountLabel === null
-    ? runnerAccountHomes(key)
-    : (() => { const home = runnerAccountHome(key, accountLabel); return home ? [{ account: accountLabel, home }] : []; })();
+    ? (() => {
+        // Codex always passes accountLabel=null to this reader — see runner-projects.ts:255.
+        // The resolver's canonical homes alone miss the live-root mirror: a transcript
+        // written under the live root (first login not yet migrated to a per-account folder,
+        // or a historical thread written before the per-account folder existed) belongs to
+        // this reader's scan. Walk canonical homes AND the live root for a complete scan.
+        // Dedup by home path so a live-root mirror of a canonical home is not counted twice.
+        const canonical = runnerAccountHomes(key);
+        const liveHome = liveRoot(key);
+        const haveLive = canonical.some(c => c.home === liveHome);
+        if (haveLive) return canonical;
+        const rawAccount = key === "codex" ? codexAccount(liveHome) : claudeAccount(liveHome);
+        return rawAccount ? [...canonical, { account: rawAccount.label, home: liveHome }] : canonical;
+      })()
+    : (() => {
+        const home = runnerAccountHome(key, accountLabel);
+        if (home) return [{ account: accountLabel, home }];
+        // Fall back to the live-root mirror when the resolver has not surfaced this
+        // label as a per-account folder. The transcript lives wherever the login
+        // writes to, and the live root is a signed-in home when it holds this label.
+        const mirror = runnerLiveRootMirror(key);
+        if (mirror && mirror.account === accountLabel) return [{ account: accountLabel, home: mirror.liveRoot }];
+        // Last resort: the label is only in the live root as an orphan (a first-time
+        // login not yet migrated to a per-account folder). That still owns the
+        // transcript.
+        const liveHome = liveRoot(key);
+        const rawAccount = key === "codex" ? codexAccount(liveHome) : claudeAccount(liveHome);
+        if (rawAccount?.label === accountLabel) return [{ account: accountLabel, home: liveHome }];
+        return [];
+      })();
   const matches: { account: string; home: string; transcript: string }[] = [];
   for (const candidate of candidates) {
     for (const transcript of exactProviderTranscripts(key, candidate.home, nativeId))
@@ -873,6 +926,10 @@ export async function serveRunnerAccountCall(method: string, params: Record<stri
   if (method === "accounts.validate") {
     const key = provider(params.provider);
     if (typeof params.account !== "string" || !params.account.trim()) throw new Error("A provider account label is required.");
+    // F3 fix (2026-11-19): `runnerAccountHomes` now dedupes by label. A live-root
+    // mirror can never appear here as a second candidate, so "ambiguous" is only
+    // for genuinely ambiguous states — never for a hand `/login` that duplicated
+    // an existing per-account folder.
     const matches = namedRunnerAccountHomes(key, params.account);
     return { available: matches.length === 1, resolution: matches.length === 1 ? "unique" : matches.length ? "ambiguous" : "missing" };
   }

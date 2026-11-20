@@ -7,6 +7,7 @@ import {sessionAddress} from './session-address';
 import {log} from './log';
 import {automaticMoveRefusal} from './automatic-move-kind';
 import {aliasKeepingTier,resolveProviderAlias} from './aliases';
+import {canTakeAnyWork, listAccounts} from './account-authority';
 
 export type WaitingTurn={id:number;session_id:number;accepted_input_id:string;status:string;dispatch_attempt:number;
   dispatch_hold:string|null;provider_admission_intended_at:string|null;provider_started_at:string|null;
@@ -31,15 +32,21 @@ export function safeTurn(turn:WaitingTurn,input:AcceptedSessionInput):boolean {
   const terminalZeroWorkUsageHold=turn.dispatch_hold==='usage';
   if(turn.provider_input_acknowledged_at!==null&&!terminalZeroWorkUsageHold)return false;
   const receipt=input.receipt_json?JSON.parse(input.receipt_json):{};
-  // The admission a receipt records is the owner preparing a send on the session's own provider; the
-  // hold and turn columns below say whether anything reached it. Until 2026-11-11 this demanded a
-  // Claude admission, written when only Claude work moved, so every Codex input the owner had ever
-  // claimed was unmovable: the Diwali session's handoff to Claude (concierge:7992 → 9328) was refused
-  // for an input Codex never received. A capture's `admissionIntent: 'live'` only says it was not held
-  // for review; it is not a provider fact.
+  // Item 5 (2026-11-20): an acknowledged input whose turn is on a `usage` hold is
+  // admissible for transfer. Before this change, a retained `admission` receipt whose
+  // `inputId` matched the input was treated as provider effect — the predicate at
+  // line 43 would refuse to move it. Rebuild: a `usage` hold proves the source
+  // provider didn't accept the work (it refused with usage); the acknowledgment on
+  // the target is honored at insert without duplicating the source input. The
+  // existing per-input `provider_recovery_inputs` dedup (line 141) is what guarantees
+  // no double-insert of the original.
   const provider=getSessionById(turn.session_id)?.provider_id;
-  if(Object.keys(receipt).some(key=>key!=='admission'&&!(key==='admissionIntent'&&receipt.admissionIntent==='live'))
-    ||(receipt.admission&&(receipt.admission.provider!==provider||receipt.admission.inputId!==input.id)))return false;
+  const isUsageHoldWithAckedInput=terminalZeroWorkUsageHold
+    && receipt.admission && receipt.admission.provider===provider
+    && receipt.admission.inputId===input.id;
+  if(!isUsageHoldWithAckedInput
+    && (Object.keys(receipt).some(key=>key!=='admission'&&!(key==='admissionIntent'&&receipt.admissionIntent==='live'))
+    ||(receipt.admission&&(receipt.admission.provider!==provider||receipt.admission.inputId!==input.id))))return false;
   // A usage hold is written only after the provider's refusal was classified replay safe.
   // Admission intent alone is not proof of execution; a fresh untouched queued turn has none.
   // A held refusal is replay safe by its classification. Other retries are movable
@@ -166,13 +173,112 @@ export function transferSession(sessionId:number):number {
   return transferred;
 }
 
-/** Runs on the owner after a confirmed usage hold, on fresh readings and after restart.
- * The same SQLite writer serializes this transaction with the FIFO claim. */
+/**
+ * The provider chain a session will fall back through. Reads `sessions.provider_chain`
+ * JSON; defaults to `[provider_id, otherProvider]` (today's hard-coded Claude→Codex is
+ * one case of this). See architecture doc §8.
+ */
+export function sessionProviderChain(sessionId: number): readonly ("claude-code"|"codex"|"antigravity")[] {
+  const row = db.query('SELECT provider_id, provider_chain FROM sessions WHERE id=?').get(sessionId) as
+    { provider_id: string; provider_chain: string | null } | null;
+  if (!row) return [];
+  if (row.provider_chain) {
+    try {
+      const parsed = JSON.parse(row.provider_chain);
+      if (Array.isArray(parsed) && parsed.every(v => v === 'claude-code' || v === 'codex' || v === 'antigravity')) {
+        return parsed;
+      }
+    } catch { /* fall through to default */ }
+  }
+  const origin = row.provider_id as "claude-code"|"codex"|"antigravity";
+  // Legacy default: Claude falls back to Codex only; Codex and Antigravity have no default chain.
+  if (origin === 'claude-code') return ['claude-code', 'codex'];
+  return [origin];
+}
+
+/** Can any account on this provider take any model's work right now? */
+function providerHasRoom(provider: "claude-code"|"codex"|"antigravity"): boolean {
+  const accounts = listAccounts(provider).map(home => ({ provider, label: home.label }));
+  return accounts.some(a => canTakeAnyWork(provider, a).ok);
+}
+
+/**
+ * Generic cross-provider recovery per the declared `provider_chain`. Walks the chain
+ * from the session's current provider onward, and transfers to the first downstream
+ * provider whose accounts can take work. Preserves the Mac signin-wait rule (an
+ * account with reading-room whose home is signed out is NOT a transfer target).
+ *
+ * **Current transfer target**: only `codex`. `transferSession` creates a Codex
+ * successor and reparents inputs via the `claude_usage_exhausted` recovery path;
+ * other providers (antigravity) don't have a matching successor mechanism yet.
+ * A chain entry that is not `codex` reaches `unsupported-target` and the session
+ * stays in `hold`; the operator's CLI will surface this as "chain requested
+ * antigravity but Concierge has no Claude→antigravity transfer path".
+ */
+export type ExhaustionRecoveryOutcome =
+  | "no-chain"
+  | "stay"
+  | "transferred"
+  | "hold"
+  | "unsupported-target";
+
+export function recoverExhaustedWork(sessionId: number): ExhaustionRecoveryOutcome {
+  const chain = sessionProviderChain(sessionId);
+  if (chain.length < 2) return "no-chain";
+  const session = getSessionById(sessionId);
+  if (!session) return "no-chain";
+  const startIndex = chain.indexOf(session.provider_id as "claude-code"|"codex"|"antigravity");
+  if (startIndex < 0) return "no-chain";
+  // Mac signin-wait preservation: if an account on the ORIGIN provider has reading-room
+  // but is signed out, the hold is for sign-in, not failover.
+  if (chain[0] === 'claude-code'
+    && accountsWithRoom('claude-code').some(claudeAccountAwaitingSignIn))
+    return "hold";
+  let sawUnsupported = false;
+  for (let i = startIndex + 1; i < chain.length; i++) {
+    const nextProvider = chain[i]!;
+    if (nextProvider !== 'codex') {
+      // Only Claude→Codex transfer is wired via `transferSession` today. Record the
+      // gap so the operator sees why the walker didn't transfer rather than guessing.
+      log('info', 'provider_chain_target_unsupported', { source_session_id: sessionId, requested: nextProvider });
+      sawUnsupported = true;
+      continue;
+    }
+    if (!providerHasRoom(nextProvider)) continue;
+    try { if (db.transaction(() => transferSession(sessionId)).immediate() > 0) return "transferred"; }
+    catch (error) {
+      log('error','provider_recovery_failed',{source_session_id:sessionId,
+        error:error instanceof Error?error.message:String(error)});
+    }
+  }
+  return sawUnsupported ? "unsupported-target" : "hold";
+}
+
+/**
+ * Runs on the owner after a confirmed usage hold, on fresh readings and after restart.
+ * The same SQLite writer serializes this transaction with the FIFO claim.
+ *
+ * Gate change (2026-11-19, F7): use the single authority instead of `/usage` percentages.
+ * The 2026-11-19 incident showed a Claude account at 39% weekly where every model was
+ * cached-refused by Anthropic; the old percentage gate did not trigger a transfer.
+ *
+ * Now a thin wrapper that reads each held Claude session's `provider_chain` (default
+ * `[claude-code, codex]`) and calls `recoverExhaustedWork` per session.
+ */
 export function recoverExhaustedClaudeWork():number {
   if(reconciling)return 0;
+  const claudeAccounts=listAccounts('claude-code').map(home=>({provider:'claude-code' as const,label:home.label}));
+  const codexAccounts=listAccounts('codex').map(home=>({provider:'codex' as const,label:home.label}));
+  // Every Claude account refuses AND at least one Codex account can take work.
+  const everyClaudeRefused=claudeAccounts.length>0&&claudeAccounts.every(a=>!canTakeAnyWork('claude-code',a).ok);
+  const someCodexReady=codexAccounts.some(a=>canTakeAnyWork('codex',a).ok);
+  // Keep the legacy percentage gate as a safety net for the first roll-out.
   const claude=newWorkCapacity('claude-code');
   const codex=newWorkCapacity('codex');
-  if(!claude||claude.used<100||!codex||codex.used>=100){scanAfterTurnId=0;return 0;}
+  const percentageGate=claude&&claude.used>=100&&codex&&codex.used<100;
+  if(!everyClaudeRefused||!someCodexReady){
+    if(!percentageGate){scanAfterTurnId=0;return 0;}
+  }
   // An account with room whose login here is signed out is a sign-in wait, not an allowance wall: his
   // message stays held in the session he wrote it in until the sign-in lands. On 2026-11-02 the Mac moved
   // his 7:28 PM message into a new Codex session while he was signing tejas@chann.app back in, and in

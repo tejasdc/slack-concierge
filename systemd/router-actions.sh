@@ -156,12 +156,22 @@ case "${1:-}" in
     shift
     exec bun run "$BOT_DIR/scripts/messages-read.$ROUTER_SUFFIX" "$@"
     ;;
+  accounts)
+    # Provider/account status, verdict, and scoped cache control. Single source of truth
+    # for every operator intervention the 2026-11-19 incident needed by hand.
+    #   accounts status [--provider P] [--account A] [--json]
+    #   accounts verdict <provider> <account> <model>
+    #   accounts usage-clear <provider> [--account A] [--model M] [--all]
+    #   accounts refusals <provider> <account>
+    shift
+    exec bun run "$BOT_DIR/scripts/router-accounts.$ROUTER_SUFFIX" "$@"
+    ;;
   list-add)
     echo "list-add is retired: use todo-add so notes/TODOS.md remains authoritative" >&2
     exit 2
     ;;
   *)
-    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|external|projects|requirements|react|todo-add|test-capture|report|messages|channel-id|channels-list|help} <args>" >&2
+    echo "usage: $0 {wait|post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|external|projects|requirements|react|todo-add|test-capture|report|messages|accounts|channel-id|channels-list|help} <args>" >&2
     exit 2
     ;;
 esac

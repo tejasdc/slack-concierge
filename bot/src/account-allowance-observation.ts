@@ -60,17 +60,29 @@ export function accountCanTakeWork(provider:AccountIdentityProvider,account:Acco
     || provider==='codex'&&codexCreditsCanCover(account));
 }
 
-/** A provider observation belongs to an account, not to the batch or peer transfer. */
-export function accountReadingAt(account:AccountUsage):number|null {
-  // Every reader writes readAt; old records without it remain unknown. The batch timestamp
-  // can be new even when a cached per-account reading or peer copy is old.
+/** A provider observation belongs to an account, not to the batch or peer transfer.
+ *
+ * Preference order: per-account `readAt` wins; when it is absent, the second arg
+ * `batchObservedAt` is a safe lower bound on every account's read time in that
+ * batch (fixtures, older readers, peer copies without per-account readAt). Before
+ * 2026-11-20, a reading without per-account readAt never counted as fresh and the
+ * downstream freshness gates (Step 3 of `canTakeWork`, `savedWorkAccountRooms`)
+ * silently skipped the row — which surfaced in CI's inbox-session-pin fixture as
+ * "Every available Claude account is out of room" even though every window was
+ * at 10% used. */
+export function accountReadingAt(account:AccountUsage,batchObservedAt?:string|null):number|null {
   const at=Date.parse(account.readAt??'');
-  return Number.isFinite(at)?at:null;
+  if(Number.isFinite(at))return at;
+  if(batchObservedAt){
+    const fallback=Date.parse(batchObservedAt);
+    if(Number.isFinite(fallback))return fallback;
+  }
+  return null;
 }
 
 export function accountReadingValidUntil(provider:AccountIdentityProvider,account:AccountUsage,
-  model?:string|null):number|null {
-  const source=accountReadingAt(account);
+  model?:string|null,batchObservedAt?:string|null):number|null {
+  const source=accountReadingAt(account,batchObservedAt);
   if(source===null)return null;
   const resets=includedAllowanceWindows(provider,account,model).map(window=>Date.parse(window.resetsAt??''))
     .filter(value=>Number.isFinite(value)&&value>source);
@@ -79,8 +91,11 @@ export function accountReadingValidUntil(provider:AccountIdentityProvider,accoun
 
 export function accountReadingFresh(provider:AccountIdentityProvider,usage:ProviderUsage,
   account:AccountUsage,now=Date.now(),maxAgeMs=ACCOUNT_READING_MAX_AGE_MS,model?:string|null):boolean {
-  const at=accountReadingAt(account);
-  const validUntil=accountReadingValidUntil(provider,account,model);
+  // The batch's observedAt is a safe lower bound on every row's read time: use it when
+  // per-account readAt is absent (fixtures, peer copies, older readers). See the
+  // accountReadingAt docstring above for the dated incident (2026-11-20).
+  const at=accountReadingAt(account,usage.observedAt);
+  const validUntil=accountReadingValidUntil(provider,account,model,usage.observedAt);
   return !usage.problem&&!account.problem&&at!==null&&at<=now&&validUntil!==null
     &&now<Math.min(validUntil,at+maxAgeMs);
 }
@@ -102,22 +117,56 @@ export function chooseAccountObservation(provider:AccountIdentityProvider,localU
     ?borrowed():local;
 }
 
-/** Keep historical bars visible with a source-time status, never a current room claim. */
+/**
+ * Keep historical bars visible with a source-time status, never a current room claim.
+ *
+ * As of 2026-11-19 (§10 of the rebuild), the `hasRoom` field is derived from the
+ * authority `canTakeAnyWork` rather than from the raw `/usage` percentages alone, so
+ * the UI can never show "room remains" while dispatch says "no room": the cached
+ * refusal path now feeds this badge. See `bot/src/account-authority.ts` and the
+ * architecture doc §10.
+ */
 export function markUncurrentAccountReadings(provider:AccountIdentityProvider,usage:ProviderUsage,
   now=Date.now()):ProviderUsage {
+  // Lazy-load to avoid a circular import; authority imports back into this module.
+  const { canTakeAnyWork } = require('./account-authority') as typeof import('./account-authority');
   return {...usage,accounts:usage.accounts.map(account=>{
     const at=accountReadingAt(account);
     // Accounts displays every window, so its whole row expires if any displayed window
     // resets. Dispatch instead supplies its actual model and evaluates only its windows.
     const validUntil=accountReadingValidUntil(provider,account,null);
     const fresh=accountReadingFresh(provider,usage,account,now,undefined,null);
+    // Authority answer: the model-agnostic "can this account take any work right now?".
+    // Provider boundary: `canTakeAnyWork` understands claude-code / codex / antigravity.
+    // The authority incorporates cached refusals, so when it says false the UI must not
+    // say "room remains" from a stale reading — a verdict's `ok` is the only input
+    // to `hasRoom`. On a no-signal verdict (no reading AND no cache), the authority
+    // returns ok=false with reason='unknown'; the UI reads `null` for that case.
+    // M3 (2026-11-19): if the authority itself throws (e.g. a DB read fails during
+    // a diagnostic path), surface the row as unknown AND log the throw so the
+    // silent-regression path has evidence. Fabricating a reading-only badge here
+    // was explicitly rejected by the review — one source of truth.
+    let hasRoom:boolean|null=null;
+    try {
+      const verdict=canTakeAnyWork(provider as "claude-code"|"codex"|"antigravity",{provider:provider as "claude-code"|"codex"|"antigravity",label:account.label},now);
+      hasRoom=verdict.reason==='unknown'?null:verdict.ok;
+    } catch (error) {
+      hasRoom=null;
+      try {
+        const { log } = require('./log') as typeof import('./log');
+        log('warn','authority_threw_for_account',{
+          provider, account:account.label,
+          error_name:error instanceof Error?error.name:'unknown',
+          error_message:error instanceof Error?error.message:String(error),
+        });
+      } catch { /* log module unavailable during teardown; swallow */ }
+    }
     const status:NonNullable<AccountUsage['allowance']>['status']=account.problem||usage.problem
       ?'unreadable':at===null?'unknown':fresh?'current':'old';
     const allowance:NonNullable<AccountUsage['allowance']>={observedAt:at===null?null:new Date(at).toISOString(),
       evaluatedAt:new Date(now).toISOString(),
       validUntil:validUntil===null?null:new Date(validUntil).toISOString(),status,
-      hasRoom:fresh&&includedAllowanceWindows(provider,account).length>0
-        ?includedAllowanceWindows(provider,account).every(window=>window.usedPercent<100):null};
+      hasRoom};
     return {...account,allowance};
   })};
 }

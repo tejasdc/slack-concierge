@@ -5,7 +5,8 @@ import { db, moveUsageHoldsEarlier, releaseUsageContinuationHolds } from "./stat
 import { log } from "./log";
 import { earliestRoomAt, recordUsageReading, usageReadingIsUrgent, withAgentsAccountCurrent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
-import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, retireCodexRefusalSupersededByReading, retireMisattributedClaudeRefusals, usageAttempt } from "./provider-usage";
+import { cachedUsageLimit, claudeAccountCachedReset, releaseUsageHeldWork, retireClaudeRefusalSupersededByReading, retireCodexRefusalSupersededByReading, retireMisattributedClaudeRefusals, usageAttempt } from "./provider-usage";
+import { CLAUDE_USAGE_FALLBACK_CHAIN } from "./aliases";
 import { ACCOUNT_READING_MAX_AGE_MS, currentAccount, listProfiles, setAntigravityAccountInUse, type AccountIdentityProvider, type ProviderKey } from "./provider-accounts";
 import {accountReadingAt,accountReadingFresh,chooseAccountObservation,includedAllowanceWindows,accountCanTakeWork} from './account-allowance-observation';
 import { claudeEveryAccountClearsAt, claudeHeldWorkCanRun, proveClaudeHomesAhead, requestMissingClaudeHomes, selectedClaudeHome } from "./provider-account-dispatch";
@@ -712,13 +713,25 @@ export async function refreshProviderAccountUsage(force = false): Promise<void> 
         if(!account.viaPeer&&readAt!==null&&accountReadingFresh(provider,usage,account))
           retireCodexRefusalSupersededByReading(account.label,includedAllowanceWindows(provider,account,null),readAt);
       }
+      // F2 fix (2026-11-19): a fresh Claude reading with every included window under 100%
+      // and no reset matching the cache retires that cache. Applied per allowance model
+      // so an Opus reading can retire Opus's cache without touching Sonnet's.
+      if(provider==='claude-code')for(const account of agentUsage.accounts){
+        const readAt=accountReadingAt(account);
+        if(account.viaPeer||readAt===null||!accountReadingFresh(provider,usage,account))continue;
+        for(const model of CLAUDE_USAGE_FALLBACK_CHAIN){
+          const windows=includedAllowanceWindows(provider,account,model);
+          if(!windows.length)continue;
+          retireClaudeRefusalSupersededByReading(account.label,model,windows,readAt);
+        }
+      }
       // A provider-wide release has no turn model. It needs evidence across every Claude
       // window; an Opus-only reading cannot wake a Fable hold.
       const activeWindows=current?includedAllowanceWindows(provider,current,null):[];
       const activeHasRoom=!!current && accountReadingFresh(provider,usage,current,Date.now(),undefined,null) && activeWindows.length>0
         && accountCanTakeWork(provider,current,null)
         &&(provider!=='codex'||runnerIdentityConfirmed)
-        &&(provider!=='claude-code'||!claudeAccountCachedReset(current.label,null))
+        &&(provider!=='claude-code'||!claudeAccountCachedReset(current.label,null,"any-work"))
         &&(provider!=='codex'||!cachedUsageLimit(usageAttempt('codex',undefined,current.label)));
       // A percentage drop cannot identify which window caused a model-specific refusal.
       // The exact model's success, a manual clear, or its stated reset retires that cache.
@@ -809,7 +822,7 @@ function releaseIfAccountChanged(provider: ProviderKey, usage: ProviderUsage): v
   accountInUse.set(provider, current.label);
   if (previous === undefined || previous === current.label) return;
   if (!accountCanTakeWork(provider,current,null)
-    ||provider==='claude-code'&&!!claudeAccountCachedReset(current.label,null)
+    ||provider==='claude-code'&&!!claudeAccountCachedReset(current.label,null,"any-work")
     ||provider==='codex'&&!!cachedUsageLimit(usageAttempt('codex',undefined,current.label))) {
     log("info", "provider_account_changed_still_spent", { provider });
     return;

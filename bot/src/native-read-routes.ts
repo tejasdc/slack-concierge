@@ -13,7 +13,7 @@ export type NativeReadRoute=Readonly<{
 const liveOwner=new Set([
   '/status','/focus-hold','/projects/:id/status','/canvas-projects/:id','/peers','/peers/operations/:id',
   '/peers/requests/:id','/peers/requests/:id/replies/:id','/requests/:id','/sources/refresh',
-  '/auth/claude-launch-choice','/requirements',
+  '/auth/claude-launch-choice','/auth/claude-resume-binding','/requirements',
 ]);
 const provider=new Set(['/sessions/:id/history','/sessions/:id/history/messages/:id/detail',
   '/agent-test/sessions/:id/history','/agent-test/sessions/:id/history/messages/:id/detail',

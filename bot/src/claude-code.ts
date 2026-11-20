@@ -9,6 +9,16 @@ import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
 import { launchRefusalReason } from "./claude-launch-refusal";
 import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion, isContextOverflowRefusal } from "./provider-failures";
+import {
+  clearSignals as clearRateLimitSignals,
+  detectAccountMismatch,
+  emptySignals as emptyRateLimitSignals,
+  observeRateLimitEvent,
+  observeSyntheticText,
+  terminalVerdict as rateLimitTerminalVerdict,
+} from "./rate-limit-signals";
+import { providerAccountUsage } from "./provider-account-usage";
+import { accountReadingFresh } from "./account-allowance-observation";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { WriteOutcomeUnknownError } from "./execution-host-client";
 import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-transcript-watch";
@@ -671,6 +681,19 @@ export async function runClaudeCodeTurn(input: {
   let preferredModel: string | undefined;
   let fallbackModels: string[] = [];
   let usageRejected = false;
+  // Structured-vs-synthetic rate-limit signals. On 2026-11-19 (F4) a synthetic
+  // "You've hit your weekly limit" assistant row overrode a structured
+  // `rate_limit_event { status: "allowed" }` from the same stream and cached a phantom
+  // refusal. These signals latch structured flags across the turn so an earlier
+  // rejected cannot be erased by a later allowed, and the terminal decision trusts
+  // structured over synthetic. See `bot/src/rate-limit-signals.ts`.
+  const rateLimitSignals = emptyRateLimitSignals();
+  const parseSyntheticReset = (text: string): number | null => {
+    const match = text.match(/resets?\s+(?:at|on)?\s*([^.]+)/i);
+    if (!match) return null;
+    const parsed = Date.parse(match[1]!);
+    return Number.isNaN(parsed) ? null : parsed;
+  };
   let modelSwitch: { requestId: string; attempt: UsageAttempt; deadline: ReturnType<typeof setTimeout>; settled: Promise<void>; settle: () => void } | null = null;
   let modelSwitchError: Error | null = null;
   let pendingFallbackReplay: string | null = null;
@@ -941,9 +964,14 @@ export async function runClaudeCodeTurn(input: {
   };
   const startUsageFallback = () => {
     const parsed = output.read(unstructuredOutput);
-    if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError
-        || (!usageRejected && !isClaudeUsageExhaustion(parsed.text))) return false;
-    if (currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, usageResetAt);
+    if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError) return false;
+    // F4: use the structured-aware verdict here too, so a synthetic-only text with a
+    // structured allowed event does not trigger a fallback switch.
+    const rateLimitVerdict = rateLimitTerminalVerdict(rateLimitSignals);
+    const usageExhaustedHere = rateLimitVerdict.usageExhausted
+      || (rateLimitVerdict.reason === "no-signal" && isClaudeUsageExhaustion(parsed.text));
+    if (!usageExhaustedHere) return false;
+    if (currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, rateLimitVerdict.resetAtMs ?? usageResetAt);
     const model = input.usageProbe ? undefined : selectAvailableModel(fallbackModels);
     if (!model) return false;
     fallbackModels = fallbackModels.slice(fallbackModels.indexOf(model) + 1);
@@ -1070,6 +1098,9 @@ export async function runClaudeCodeTurn(input: {
       usageResetAt = null;
       accountUsageResetAt = null;
     }
+    // A new user input replaces the prior turn's rate-limit evidence: the retry's
+    // verdict depends on what the provider says this time, not what it said before.
+    clearRateLimitSignals(rateLimitSignals);
     input.onProgress?.({ type: "steering", clientMessageId: followUp.clientMessageId });
     settleAcknowledgement(followUp);
   };
@@ -1144,9 +1175,20 @@ export async function runClaudeCodeTurn(input: {
       fallbackModels = claudeUsageFallbackModels(selectedModel ?? preferredModel);
     }
     if (event.type === "rate_limit_event") {
+      // Observe into the latching signals as well as the live flags (kept for the
+      // adjacent control-response code paths; the terminal decision uses the signals).
+      observeRateLimitEvent(rateLimitSignals, event as any);
       usageRejected = event.rate_limit_info?.status === "rejected";
       usageResetAt = usageRejected ? resetEpochMilliseconds(event.rate_limit_info?.resetsAt) : null;
       if (usageResetAt !== null) accountUsageResetAt = usageResetAt;
+    }
+    if (event.type === "assistant" && event.message?.model === "<synthetic>") {
+      const content = Array.isArray(event.message?.content) ? event.message.content : [];
+      for (const block of content) {
+        if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
+          observeSyntheticText(rateLimitSignals, block.text, isClaudeUsageExhaustion, parseSyntheticReset);
+        }
+      }
     }
     if (event.type === "assistant" && Array.isArray(event.message?.content)) {
       for (const block of event.message.content) {
@@ -1192,12 +1234,14 @@ export async function runClaudeCodeTurn(input: {
           providerProducedResult = false;
           usageRejected = false;
           usageResetAt = null;
+          clearRateLimitSignals(rateLimitSignals);
           owedFallbackReplay = [USAGE_FALLBACK_CONTINUATION, ...acceptedUserInputs].join("\n\n");
         } else if (!inputClosed && writeInput && !cancellationReason) {
           currentUsageAttempt = nextAttempt;
           providerProducedResult = false;
           usageRejected = false;
           usageResetAt = null;
+          clearRateLimitSignals(rateLimitSignals);
           pendingFallbackReplay = [USAGE_FALLBACK_CONTINUATION, ...acceptedUserInputs].join("\n\n");
           ownerSubmittedTexts.add(pendingFallbackReplay);
           void writeInput(`${claudeCodeUserMessage(pendingFallbackReplay)}\n`, { kind: "fallback-replay" }).catch(failModelSwitch);
@@ -1250,6 +1294,7 @@ export async function runClaudeCodeTurn(input: {
         usageRejected = false;
         usageResetAt = null;
         accountUsageResetAt = null;
+        clearRateLimitSignals(rateLimitSignals);
         log("info", "claude_code_unowned_result_ignored", {
           session_uuid: typeof event.session_id === "string" ? event.session_id : input.sessionUUID,
           phase: "initial_input_acknowledgement", is_error: event.is_error === true,
@@ -1546,12 +1591,58 @@ export async function runClaudeCodeTurn(input: {
   });
 
   if (parsed.isError) {
-    const usageExhausted = usageRejected || isClaudeUsageExhaustion(parsed.text);
-    if (usageExhausted && currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, usageResetAt);
+    // F4 fix (2026-11-19): structured `rate_limit_event { status: "allowed" }` beats a
+    // synthetic "weekly limit" assistant row from the same turn. The signals object
+    // latches both across the stream and the terminal rule resolves the conflict.
+    const rateLimitVerdict = rateLimitTerminalVerdict(rateLimitSignals);
+    const syntheticOnlyLegacy = isClaudeUsageExhaustion(parsed.text);
+    const usageExhausted = rateLimitVerdict.usageExhausted
+      || (rateLimitVerdict.reason === "no-signal" && syntheticOnlyLegacy);
+    const resolvedResetAt = rateLimitVerdict.resetAtMs ?? usageResetAt ?? null;
+    if (rateLimitVerdict.conflict) {
+      log("warn", "claude_synthetic_overridden_by_structured_event", {
+        session_uuid: parsed.sessionUUID,
+        conflict: rateLimitVerdict.conflict.kind,
+        detail: rateLimitVerdict.conflict.detail,
+      });
+    }
+    // 2026-11-19 Finding 3: before caching, check whether the structured reset matches
+    // any window of the labeled account. If no window within 60s matches, the refusal
+    // likely belongs to a different account (wrong-home binding, F3-deep) and we must
+    // NOT cache under this label. Log `rate_limit_event_account_mismatch` for diagnosis.
+    let suppressedByMismatch = false;
+    if (usageExhausted && rateLimitVerdict.resetAtMs !== null && input.accountLabel) {
+      const usage = providerAccountUsage("claude-code");
+      const account = usage?.accounts.find(a => a.label === input.accountLabel) ?? null;
+      if (account && accountReadingFresh("claude-code", usage!, account)) {
+        const windows = account.windows.map(w => Date.parse(w.resetsAt ?? ""))
+          .filter(v => Number.isFinite(v)) as number[];
+        if (windows.length > 0) {
+          const mismatch = detectAccountMismatch(rateLimitSignals, {
+            accountLabel: input.accountLabel, windowResetAtMs: windows,
+          });
+          if (mismatch) {
+            log("warn", "rate_limit_event_account_mismatch", {
+              session_uuid: parsed.sessionUUID,
+              account: input.accountLabel,
+              reset_at: rateLimitVerdict.resetAtMs,
+              detail: mismatch.detail,
+            });
+            suppressedByMismatch = true;
+          }
+        }
+      }
+    }
+    if (usageExhausted && !suppressedByMismatch && currentUsageAttempt) {
+      recordUsageExhaustion(currentUsageAttempt, resolvedResetAt, {
+        rateLimitType: rateLimitVerdict.rateLimitType,
+        overageReason: rateLimitVerdict.overageReason,
+      });
+    }
     // A usage rejection with a reported reset is a wait, not a death: Claude refused the
     // request outright, so the input can keep its place and be tried again then. Without a
     // reported reset there is nothing to wait for, and it stays terminal.
-    const resetAt = usageExhausted ? usageResetAt ?? accountUsageResetAt : null;
+    const resetAt = usageExhausted ? resolvedResetAt ?? accountUsageResetAt : null;
     const waitsForReset = resetAt !== null && resetAt > Date.now();
     throw new ProviderDispatchError({
       message: usageExhausted

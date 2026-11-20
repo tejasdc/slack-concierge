@@ -176,7 +176,9 @@ export async function offerOutageChoices(input: { turnId: number; status: number
     const inserted = db.query("INSERT OR IGNORE INTO provider_outage_offers(turn_id,input_id,session_id,payload_json) VALUES(?,?,?,?)")
       .run(turn.id, turn.accepted_input_id, turn.session_id, JSON.stringify(offer)).changes === 1;
     if (!inserted) return;
-    record({ eventId: `provider-outage:${turn.id}`, sessionId: turn.session_id, inputId: turn.accepted_input_id, turnId: turn.id, kind: "provider_outage",
+    // Key by (turn, dispatch_attempt) so a requeued turn's new attempt can emit its own outage event.
+    const dispatchAttempt = (db.query("SELECT dispatch_attempt FROM turns WHERE id=?").get(turn.id) as { dispatch_attempt: number } | null)?.dispatch_attempt ?? 0;
+    record({ eventId: `provider-outage:${turn.id}:${dispatchAttempt}`, sessionId: turn.session_id, inputId: turn.accepted_input_id, turnId: turn.id, kind: "provider_outage",
       payload: { inputId: turn.accepted_input_id, provider, model: turn.provider_model, modelLabel: modelLabel(turn.provider_model), status: input.status,
         incident, alternatives: alternatives.map(({ alias, label }) => ({ alias, label })) } });
     log("warn", "provider_outage_offered", { turn_id: turn.id, session_id: turn.session_id, status: input.status,

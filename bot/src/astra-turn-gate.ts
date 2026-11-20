@@ -33,8 +33,11 @@ export function astraAllowedForTurn(input:{sessionId:number;turnId:number;accept
       AND handoff.state='accepted' AND handoff.successor_session_id=recovery.successor_session_id
       AND placement.source_input_id=recovery.canonical_input_id AND placement.turn_id=recovery.placement_turn_id`)
     .get(accepted?.id??'',input.sessionId,input.turnId,input.providerSessionId) as {canonical_input_id:string;handoff_id:string}|null;
+  // Key event ids by (turn, dispatch_attempt) so a requeued turn can record its next
+  // attempt's gate verdict cleanly. See 2026-11-19 event-identity incident.
+  const dispatchAttempt=(db.query('SELECT dispatch_attempt FROM turns WHERE id=?').get(input.turnId) as {dispatch_attempt:number}|null)?.dispatch_attempt??0;
   if(custody&&metadata.reasoningEffort==='medium'){
-    recordSessionEvent({eventId:`model-preservation:${input.turnId}`,sessionId:input.sessionId,inputId:accepted!.id,turnId:input.turnId,
+    recordSessionEvent({eventId:`model-preservation:${input.turnId}:${dispatchAttempt}`,sessionId:input.sessionId,inputId:accepted!.id,turnId:input.turnId,
       kind:'model_preservation',payload:{model,effort:'medium',basis:'codex_successor_custody_v1',
         canonicalInputId:custody.canonical_input_id,handoffId:custody.handoff_id}});
     return {allowed:true,basis:'custody'};
@@ -52,7 +55,7 @@ export function astraAllowedForTurn(input:{sessionId:number;turnId:number;accept
         &&(metadata.explicitThinkingModelChoice===model||humanChoseThinkingModel(accepted.id,model));
     })();
   if(accepted&&(humanAuthored(accepted)||serviceContinuation)){
-    recordSessionEvent({eventId:`model-continuation:${input.turnId}`,sessionId:input.sessionId,inputId:accepted.id,turnId:input.turnId,
+    recordSessionEvent({eventId:`model-continuation:${input.turnId}:${dispatchAttempt}`,sessionId:input.sessionId,inputId:accepted.id,turnId:input.turnId,
       kind:'model_escalation',payload:{model,reason:'explicit human model choice',sourceInputId:accepted.id,continuation:true,
         ...(serviceContinuation?{serviceContinuation:true}:{})}});
     return {allowed:true,basis:serviceContinuation?'service-continuation':'human'};
@@ -67,7 +70,7 @@ export function astraAllowedForTurn(input:{sessionId:number;turnId:number;accept
     ??(accepted?JSON.parse(accepted.payload_json).escalationReason:undefined);
   const refusal=escalationReason(model,typeof reason==='string'?reason:undefined,reason==='explicit human model choice'&&!!creation);
   if(refusal)return {allowed:false,message:refusal.replaceAll('cx-sol',ASTRA_FALLBACK_MODEL)};
-  if(!creation&&accepted)recordSessionEvent({eventId:`model-continuation:${input.turnId}`,sessionId:input.sessionId,
+  if(!creation&&accepted)recordSessionEvent({eventId:`model-continuation:${input.turnId}:${dispatchAttempt}`,sessionId:input.sessionId,
     inputId:accepted.id,turnId:input.turnId,kind:'model_escalation',payload:{model,reason,sourceInputId:accepted.id,continuation:true}});
   return {allowed:true,basis:'escalation-reason'};
 }

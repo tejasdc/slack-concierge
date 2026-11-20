@@ -268,7 +268,9 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
     // needs_you here reaches the notifier and wakes him for something he cannot act on
     // until morning. The design says a banked run leaves a record, not a notification;
     // the row reads it from this event and the retained text above.
-    recordSessionEvent({eventId:`saved-yield:${turnId}`,sessionId:row.session_id,inputId:row.accepted_input_id,
+    // Key by (turn, reason) so the same turn can fire for a quiet boundary and a deployment
+    // boundary separately. Same class as the 2026-11-19 event-identity incident.
+    recordSessionEvent({eventId:`saved-yield:${turnId}:${reason}`,sessionId:row.session_id,inputId:row.accepted_input_id,
       turnId,kind:'saved_control',payload:{action:'stopped_at_boundary',reason,text:question}});
     // Continue with new words, never a replay: this run may already have pushed or deployed.
     // The entry point refuses a source it cannot safely continue — a deliberate human Stop, a
