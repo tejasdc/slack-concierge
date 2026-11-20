@@ -17,6 +17,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listAccounts, resolveAccountHome, liveRootOrphans, setHomeRootForTesting } from "../src/account-home-resolver";
+import { claudeKeychainService, setClaudeKeychainProbeForTesting } from "../src/claude-keychain";
 
 let scratchHome: string;
 
@@ -35,6 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setHomeRootForTesting(null);
+  setClaudeKeychainProbeForTesting(null);
   rmSync(scratchHome, { recursive: true, force: true });
 });
 
@@ -149,5 +151,39 @@ describe("resolveAccountHome — Codex", () => {
     if (result.kind !== "resolved") return;
     expect(result.record.liveRootMirror).toBe(true);
     expect(result.record.canonicalHome).toBe(join(scratchHome, ".codex-accounts", "chann"));
+  });
+});
+
+// 2026-11-20 — on the Mac Claude Code keeps each folder's login in the Keychain and writes no
+// `.credentials.json`. The resolver read only the file, found no Claude home on the Mac, and
+// every Mac Claude turn failed as "Every available Claude account is out of room".
+describe("resolveAccountHome — Mac Keychain logins", () => {
+  function keychainOnlyHome(name: string, email: string): string {
+    const home = join(scratchHome, ".claude-accounts", name);
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, ".account-email"), email);
+    return home;
+  }
+
+  test("a folder whose login is in the Keychain resolves", () => {
+    const home = keychainOnlyHome("gmail", "tejastej.dc@gmail.com");
+    setClaudeKeychainProbeForTesting(service => service === claudeKeychainService(home) ? 0 : 44);
+    const result = resolveAccountHome("claude-code", "tejastej.dc@gmail.com");
+    expect(result.kind).toBe("resolved");
+    if (result.kind !== "resolved") return;
+    expect(result.record.canonicalHome).toBe(home);
+    expect(listAccounts("claude-code").map(entry => entry.label)).toEqual(["tejastej.dc@gmail.com"]);
+  });
+
+  test("no file and no Keychain item → none", () => {
+    keychainOnlyHome("gmail", "tejastej.dc@gmail.com");
+    setClaudeKeychainProbeForTesting(() => 44);
+    expect(resolveAccountHome("claude-code", "tejastej.dc@gmail.com").kind).toBe("none");
+  });
+
+  test("an unanswered Keychain lookup is not evidence of a missing login", () => {
+    keychainOnlyHome("gmail", "tejastej.dc@gmail.com");
+    setClaudeKeychainProbeForTesting(() => 36);
+    expect(resolveAccountHome("claude-code", "tejastej.dc@gmail.com").kind).toBe("resolved");
   });
 });
