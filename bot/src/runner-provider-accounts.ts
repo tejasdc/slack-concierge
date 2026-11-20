@@ -699,9 +699,31 @@ function namedRunnerAccountHomes(key: AccountProvider, accountLabel: string) {
 export function findRunnerProviderSessionHome(key: AccountProvider, accountLabel: string | null, nativeId: string):
   { account: string | null; home: string | null; transcript: string } | null {
   if (!/^[A-Za-z0-9-]{8,128}$/.test(nativeId)) return null;
+  // Transcript resolution is READ-ONLY. It must NOT be gated on the dispatch-grade
+  // dedup rules the resolver enforces. If a label has a per-account folder, use it;
+  // if only the live root carries that label (a `codex login` into the live root
+  // without an accountRoot folder), the live root is still the transcript's home.
+  // Before 2026-11-20 the dispatch path's refusal of ambiguous homes bled into this
+  // read path and the codex-custody-successor fixture's recovery inventory refused
+  // every runner worktree lookup with "unavailable or ambiguous".
   const candidates = accountLabel === null
     ? runnerAccountHomes(key)
-    : (() => { const home = runnerAccountHome(key, accountLabel); return home ? [{ account: accountLabel, home }] : []; })();
+    : (() => {
+        const home = runnerAccountHome(key, accountLabel);
+        if (home) return [{ account: accountLabel, home }];
+        // Fall back to the live-root mirror when the resolver has not surfaced this
+        // label as a per-account folder. The transcript lives wherever the login
+        // writes to, and the live root is a signed-in home when it holds this label.
+        const mirror = runnerLiveRootMirror(key);
+        if (mirror && mirror.account === accountLabel) return [{ account: accountLabel, home: mirror.liveRoot }];
+        // Last resort: the label is only in the live root as an orphan (a first-time
+        // login not yet migrated to a per-account folder). That still owns the
+        // transcript.
+        const liveHome = liveRoot(key);
+        const rawAccount = key === "codex" ? codexAccount(liveHome) : claudeAccount(liveHome);
+        if (rawAccount?.label === accountLabel) return [{ account: accountLabel, home: liveHome }];
+        return [];
+      })();
   const matches: { account: string; home: string; transcript: string }[] = [];
   for (const candidate of candidates) {
     for (const transcript of exactProviderTranscripts(key, candidate.home, nativeId))
