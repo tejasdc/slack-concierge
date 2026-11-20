@@ -45,6 +45,7 @@ export type LiveRootNewAccount = Readonly<{
 
 export type ResolveHomeResult =
   | { kind: "none" }
+  | { kind: "ambiguous"; count: number }
   | { kind: "resolved"; record: HomeRecord }
   | { kind: "new-account-in-live-root"; record: LiveRootNewAccount };
 
@@ -101,15 +102,17 @@ export function liveRootOrphans(provider: ResolverProvider): LiveRootNewAccount[
  *   - `none`: no signed-in home holds this label on this machine.
  */
 export function resolveAccountHome(provider: ResolverProvider, label: string): ResolveHomeResult {
-  const { resolved, liveRootOrphans: orphans } = resolveAll(provider);
-  const record = resolved.find(entry => entry.label === label);
-  if (record) return { kind: "resolved", record };
+  const { resolved, liveRootOrphans: orphans, ambiguousCounts } = resolveAll(provider);
+  const records = resolved.filter(entry => entry.label === label);
+  if (records.length === 1) return { kind: "resolved", record: records[0]! };
+  const ambiguousCount = ambiguousCounts.get(label);
+  if (ambiguousCount && ambiguousCount > 1) return { kind: "ambiguous", count: ambiguousCount };
   const orphan = orphans.find(entry => entry.label === label);
   if (orphan) return { kind: "new-account-in-live-root", record: orphan };
   return { kind: "none" };
 }
 
-type Enumerated = { resolved: HomeRecord[]; liveRootOrphans: LiveRootNewAccount[] };
+type Enumerated = { resolved: HomeRecord[]; liveRootOrphans: LiveRootNewAccount[]; ambiguousCounts: Map<string, number> };
 
 function resolveAll(provider: ResolverProvider): Enumerated {
   const liveRoot = liveRootFor(provider);
@@ -127,24 +130,25 @@ function resolveAll(provider: ResolverProvider): Enumerated {
     if (!info) continue;
     perAccount.push({ home, label: info.label, accountId: info.accountId });
   }
-  // Count per-account folders per label. Two folders with the same label are a REAL
-  // ambiguity: neither is a safe launch home. The dedup here is only about the live-root
-  // mirroring a per-account folder for the same label (where "per-account folder wins"
-  // is safe because they point at the same account). It is NOT about silently picking
-  // between two different per-account folders that claim the same label.
+  // Every per-account folder remains its own candidate so `accounts.validate` can
+  // still refuse two folders claiming the same label as ambiguous. Downstream callers
+  // detect that ambiguity by `.filter(c => c.label === label).length > 1` and treat it
+  // as "no safe launch home". The dedup is only about suppressing the LIVE ROOT as a
+  // second candidate when a per-account folder already carries the same label — the
+  // F3 live-root-mirror case, where the two point at the same account.
+  const labelsInPerAccount = new Set(perAccount.map(entry => entry.label));
   const labelCounts = new Map<string, number>();
   for (const entry of perAccount) labelCounts.set(entry.label, (labelCounts.get(entry.label) ?? 0) + 1);
-  const byLabel = new Map<string, { home: string; accountId: string | null }>();
-  for (const entry of perAccount) {
-    if (labelCounts.get(entry.label) === 1) byLabel.set(entry.label, { home: entry.home, accountId: entry.accountId });
-  }
-  const resolved: HomeRecord[] = [];
+  const resolved: HomeRecord[] = perAccount.map(entry => ({
+    provider,
+    label: entry.label,
+    canonicalHome: entry.home,
+    liveRootMirror: liveRootResolved?.label === entry.label,
+    liveRoot,
+    accountId: entry.accountId,
+  }));
   const liveRootOrphans: LiveRootNewAccount[] = [];
-  for (const [label, entry] of byLabel) {
-    const liveRootMirror = liveRootResolved?.label === label;
-    resolved.push({ provider, label, canonicalHome: entry.home, liveRootMirror, liveRoot, accountId: entry.accountId });
-  }
-  if (liveRootResolved && !byLabel.has(liveRootResolved.label)) {
+  if (liveRootResolved && !labelsInPerAccount.has(liveRootResolved.label)) {
     liveRootOrphans.push({
       provider,
       label: liveRootResolved.label,
@@ -152,7 +156,7 @@ function resolveAll(provider: ResolverProvider): Enumerated {
       accountId: liveRootResolved.accountId,
     });
   }
-  return { resolved, liveRootOrphans };
+  return { resolved, liveRootOrphans, ambiguousCounts: labelCounts };
 }
 
 type RawHomeInfo = { label: string; accountId: string | null };

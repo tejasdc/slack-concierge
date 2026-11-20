@@ -351,6 +351,7 @@ function resolveHomeFor(provider: ProviderId, label: string): HomeView {
   if (provider === "antigravity") return { kind: "resolved", path: null, liveRootMirror: false };
   const result = resolveAccountHome(provider as ResolverProvider, label);
   if (result.kind === "none") return { kind: "none" };
+  if (result.kind === "ambiguous") return { kind: "none" };
   if (result.kind === "new-account-in-live-root") return { kind: "new-account-in-live-root", path: result.record.liveRoot };
   return { kind: "resolved", path: result.record.canonicalHome, liveRootMirror: result.record.liveRootMirror };
 }
