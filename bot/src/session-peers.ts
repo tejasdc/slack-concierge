@@ -1309,7 +1309,7 @@ export class SessionPeers {
     if(existingForPeerVersion)return existingForPeerVersion.event_id;
     const existing=db.query(`SELECT event_id FROM session_peer_events WHERE request_id=? AND kind='overdue'
       AND json_extract(payload_json,'$.health')=? ORDER BY rowid LIMIT 1`).get(row.request_id,PEER_ANSWER_GUARANTEE_HEALTH) as {event_id:string}|null;
-    const eventId=existing?.event_id??`peer-answer-guarantee-hold:${scopeKey}:${row.request_id}`;
+    const eventId=existing?.event_id??`peer-answer-guarantee-hold:${row.request_id}`;
     if(!existing&&!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
       this.event(row,'overdue',{text:`${row.peer} has not confirmed the answer guarantee for request ${row.request_id}. The original request stays held for exact reconciliation; it will not be sent again.`,
         health:PEER_ANSWER_GUARANTEE_HEALTH,agentReminder:true,scopeKey},eventId);
