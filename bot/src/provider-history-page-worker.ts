@@ -7,6 +7,7 @@ import {sharedCodexAppServerClient} from './codex-app-server-client';
 import {readClaudeHistory,readCodexHistory,readCodexHistoryWindow,hasSavedContext} from './provider-history';
 import {getSessionById} from './state';
 import {sessionMetadata} from './session-inputs';
+import {timedPhase,withHistoryReadPhases,type HistoryReadPhases} from './history-read-phases';
 
 type Work={id:number;operation:'page'|'delta'|'prepare';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
   want?:{dialogue:number;untilInput:boolean};thread?:string};
@@ -16,7 +17,11 @@ if(!process.send)throw new Error('HISTORY_PAGE_WORKER_PARENT_REQUIRED');
 // once warm (2026-10-30). A failed early connection is retried by the first request as before.
 void sharedCodexAppServerClient().connect().catch(()=>{});
 process.on('disconnect',()=>process.exit(0));
-process.on('message',async(input:Work)=>{
+// Each request carries its own record of where its time went back to the read worker, which logs it.
+process.on('message',(input:Work)=>{const phases:HistoryReadPhases={};const started=performance.now();
+  const finish=(reply:Record<string,unknown>)=>{phases.history_worker_ms=Math.round(performance.now()-started);parentPort!.postMessage({...reply,phases});};
+  return withHistoryReadPhases(phases,()=>handle(input,finish));});
+async function handle(input:Work,finish:(reply:Record<string,unknown>)=>void){
   try {
     // Codex activity tops up that conversation's kept window, so the next open reads it ready.
     if(input.operation==='prepare'){
@@ -28,7 +33,7 @@ process.on('message',async(input:Work)=>{
       await readCodexHistoryWindow({sessionUuid:input.thread,
         ...(typeof (metadata as any).providerRunner==='string'?{runner:(metadata as any).providerRunner}:{}),
         ...(typeof (metadata as any).providerAccount==='string'?{account:(metadata as any).providerAccount}:{})});
-      parentPort!.postMessage({id:input.id,result:{prepared:true}});
+      finish({id:input.id,result:{prepared:true}});
       return;
     }
     if(!Number.isSafeInteger(input.id)||input.id<1||!/^concierge:[1-9][0-9]*$/.test(input.sessionId)
@@ -50,15 +55,15 @@ process.on('message',async(input:Work)=>{
             ...(typeof (metadata as any).providerRunner==='string'?{runner:(metadata as any).providerRunner}:{}),
             ...(typeof (metadata as any).providerAccount==='string'?{account:(metadata as any).providerAccount}:{})});}
           catch(error){log('warn','codex_history_window_unavailable',{session_id:session.id,error:String(error).slice(0,300)});}
-        return session.provider_id==='claude-code'?readClaudeHistory(options):session.provider_id==='codex'?readCodexHistory(options):null;
+        return timedPhase('provider_page_ms',async()=>session.provider_id==='claude-code'?readClaudeHistory(options):session.provider_id==='codex'?readCodexHistory(options):null);
       }},input.cwd);
     const result=input.operation==='page'
       // A window is collected here, page after page, rather than one worker round trip per page.
       ?await owner.history(input.sessionId,input.cursor,input.limit,false,input.want)
       :await owner.historyDelta(input.sessionId,input.after??'');
-    parentPort!.postMessage({id:input.id,result});
+    finish({id:input.id,result});
   } catch(error) {
-    parentPort!.postMessage({id:input.id,error:{message:error instanceof Error?error.message:'History page failed.',
+    finish({id:input.id,error:{message:error instanceof Error?error.message:'History page failed.',
       status:typeof error==='object'&&error!==null&&'status' in error?Number(error.status):503}});
   }
-});
+}

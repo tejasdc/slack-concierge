@@ -2,6 +2,7 @@ import {fork,type ChildProcess} from 'node:child_process';
 import {releaseWorkerPath} from './release-worker';
 import {readdirSync,readFileSync} from 'node:fs';
 import {log,errorFields} from './log';
+import {historyReadPhases,type HistoryReadPhases} from './history-read-phases';
 
 function groupHasRunningProcesses(group:number):boolean {
   if(process.platform!=='linux'){
@@ -19,7 +20,7 @@ function groupHasRunningProcesses(group:number):boolean {
 
 type Work={operation:'page'|'delta'|'prepare';sessionId:string;cwd:string;cursor:string|null;limit:number;after:string|null;
   want?:{dialogue:number;untilInput:boolean};thread?:string};
-type Reply={id:number;result?:unknown;error?:{message:string;status:number}};
+type Reply={id:number;result?:unknown;error?:{message:string;status:number};phases?:HistoryReadPhases};
 
 // A window is collected inside the worker under the owner's own four-second budget.
 const HISTORY_WINDOW_WAIT_MS=6000;
@@ -31,7 +32,8 @@ export class ProviderHistoryPageClient {
   private sealed=false;
   private retirement:Promise<void>|null=null;
   private nextId=1;
-  private pending=new Map<number,{resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
+  private pending=new Map<number,{resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>;
+    phases?:HistoryReadPhases|undefined;sentAt:number}>();
   private ensure(){
     if(this.sealed)throw new Error('HISTORY_PAGE_WORKER_STOPPED');
     if(this.worker)return this.worker;
@@ -41,6 +43,13 @@ export class ProviderHistoryPageClient {
     worker.on('message',(reply:Reply)=>{
       const item=this.pending.get(reply.id);if(!item)return;
       clearTimeout(item.timer);this.pending.delete(reply.id);
+      // The caller's read learns where the history worker spent its time, and the round trip
+      // beyond that is queueing in the worker plus carrying the answer back.
+      if(item.phases){
+        Object.assign(item.phases,reply.phases??{});
+        notePhaseOn(item.phases,'history_round_trip_ms',performance.now()-item.sentAt);
+        notePhaseOn(item.phases,'history_round_trips',1);
+      }
       if(reply.error){const error=Object.assign(new Error(reply.error.message),{status:reply.error.status});item.reject(error);}
       else item.resolve(reply.result);
     });
@@ -79,7 +88,7 @@ export class ProviderHistoryPageClient {
         // would make every retry start the same expensive cold read from zero.
       },this.requestWaitMs??(work.want||work.operation==='prepare'?HISTORY_WINDOW_WAIT_MS:5000));
       timer.unref?.();
-      this.pending.set(id,{resolve,reject,timer});
+      this.pending.set(id,{resolve,reject,timer,phases:historyReadPhases(),sentAt:performance.now()});
       worker.send({id,...work},error=>{
         if(!error)return;const item=this.pending.get(id);if(!item)return;
         clearTimeout(item.timer);this.pending.delete(id);item.reject(error);
@@ -115,4 +124,8 @@ export class ProviderHistoryPageClient {
     })();
     return this.retirement;
   }
+}
+
+function notePhaseOn(phases:HistoryReadPhases,name:string,ms:number) {
+  phases[name]=Math.round(((Number(phases[name])||0)+ms)*10)/10;
 }
