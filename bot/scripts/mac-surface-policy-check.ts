@@ -377,8 +377,17 @@ for(const question of ['Please drag the screenshot thumbnail in the corner of yo
   'Can you drag the new screenshot thumbnail into the open Finder window on your Mac? I will check the saved file after it lands.',
   'Please tap Allow on your iPhone.','Can you press the side button on your Apple Watch?',
   'Please plug in the charger to your Kindle.','Can you click the menu bar clock on your Mac?',
-  'Please swipe down from the top of your iPhone screen so I can read the banner.'])
+  'Please swipe down from the top of your iPhone screen so I can read the banner.',
+  'Please turn on Tailscale on your Fire tablet.',
+  'Can you tap Connect in Tailscale on your Fire tablet so the agent can reach it?',
+  'Please press the Wi-Fi button on your Brother printer.',
+  'Can you turn off the power switch on your router? I will check the printer after it comes back.',
+  'Please plug in the charger to your Kobo Clara.'])
   assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),true,question);
+for(const question of ['Please click Save in your browser.','Can you tap Allow in your Gmail account?',
+  'Please drag the file to your Downloads folder.','Please click the link in your email.',
+  'Please turn on sync on your behalf.','Can you click Approve on your Slack app?'])
+  assert.equal(deviceQuestionNamesPhysicalPrerequisite(question),false,question);
 for(const question of ['Please drag the screenshot thumbnail onto the Desktop.',
   'Can you tap Save in the app?','Please drag the screenshot on your Mac and then send it to me.',
   'Please drag the screenshot onto the Desktop on your Mac. Can you rename it?',

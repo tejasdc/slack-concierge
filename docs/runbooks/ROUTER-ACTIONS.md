@@ -1080,6 +1080,11 @@ the agent route cannot perform this check. A server or simulator result does not
 what the Echo heard or whether a capture reached the Inbox. Keep the source request open
 until the physical attempt and its resulting capture or refusal are observed.
 
+A one-gesture ask (tap, press, click, drag, turn on or off, restart, plug in) names the
+device as his, such as `Please turn on Tailscale on your Fire tablet.` Any device of his
+counts; the check refuses only when the named thing is a software or online surface (an
+app, account, browser, website, folder or email), which stays with the agent.
+
 ### Approval required by a permanent decision
 
 An approval question uses the existing `needs_you` outcome or final `needs_decision` reply.

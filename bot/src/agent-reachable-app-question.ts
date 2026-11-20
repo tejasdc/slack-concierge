@@ -27,9 +27,11 @@ export function deviceQuestionNamesPhysicalPrerequisite(question:string):boolean
   // thumbnail or tapping a control on his iPhone, is physical work when the agent's
   // route cannot make it (Mac agents may not take Accessibility control of his apps).
   // The device must be named, so "click the button in the app" still stays with the agent.
+  // Any thing he owns counts as his device unless its name is a software or online surface:
+  // on 2026-11-20 "Please turn on Tailscale on your Fire tablet." was refused four times
+  // because the device had to come from a fixed list of product names.
   const gesture=/^(?:tap|double[- ]tap|long[- ]press|press(?:\s+and\s+hold)?|hold\s+down|click|double[- ]click|right[- ]click|drag|swipe|pinch|scroll|plug\s+in|unplug|insert|eject|turn\s+(?:on|off)|restart|reboot|charge|wake)\b/i;
-  const hisDevice=/\b(?:on|in|from|to|into|onto|of|at)\s+(?:the\s+)?(?:your|my)\s+(?:physical\s+)?(?:Mac(?:Book(?:\s+(?:Air|Pro))?)?|iMac|iPhone|iPad|phone|laptop|computer|desktop|Apple\s+Watch|watch|Kindle|Echo|TV|keyboard|trackpad|mouse)(?:['’]s\b|\b)/iu;
-  if(gesture.test(action)&&hisDevice.test(action))return true;
+  if(gesture.test(action)&&namesHisDevice(action))return true;
   // A named instrument or controller is physical when the requested connection
   // names both the host device and the cable transport. The noun itself need not
   // belong to a product allowlist.
@@ -38,6 +40,29 @@ export function deviceQuestionNamesPhysicalPrerequisite(question:string):boolean
   // Starting an app on an e-reader, watch or TV can be the physical prerequisite
   // that exposes its agent connection. Ordinary computers and phones have agent routes.
   return /^(?:open|start|launch)\s+[^?.!,;]+?\s+(?:once\s+)?on\s+(?:(?:your|the|my)\s+)?(?:Kindle|Kobo|e-?reader|smartwatch|watch|TV|television)(?:\s+[\p{L}\p{N}.'-]+)*$/iu.test(action);
+}
+
+/** Words that end the noun after "your": the next phrase of the sentence, not the device's name. */
+const PHRASE_BREAK=/^(?:on|in|from|to|into|onto|of|at|with|so|and|then|the|a|an|for|until|while|when|if|once|again|now|please)$/i;
+/** What an agent reaches without his hands: software, accounts and places inside a computer. */
+const NOT_A_DEVICE=/^(?:apps?|application|account|website|site|web|page|browser|tab|window|inbox|e-?mail|mail|chat|settings|dashboard|profile|server|service|session|repo|repository|network|terminal|folder|file|files|document|doc|calendar|cloud|drive|chrome|safari|gmail|slack|thread|thinkering|behalf|password|code|link|feed|library|downloads|finder)$/i;
+
+/**
+ * Whether the action names a thing of his ("on your Fire tablet", "of your Mac’s screen") whose
+ * name is not a software or online surface. The noun phrase is the words after "your"/"my" up to
+ * the next preposition or connective; every word in it must be a physical name.
+ */
+function namesHisDevice(action:string):boolean {
+  for(const match of action.matchAll(/\b(?:on|in|from|to|into|onto|of|at)\s+(?:the\s+)?(?:your|my)\s+(?:physical\s+)?([^?.!,;]+)/giu)){
+    const words:string[]=[];
+    for(const word of match[1]!.trim().split(/\s+/)){
+      if(PHRASE_BREAK.test(word)||words.length===3)break;
+      words.push(word.replace(/['’]s$/u,''));
+      if(/['’]s$/u.test(word))break;
+    }
+    if(words.length&&words.every(word=>/^[\p{L}\p{N}][\p{L}\p{N}+.-]*$/u.test(word)&&!NOT_A_DEVICE.test(word)))return true;
+  }
+  return false;
 }
 
 /** Context after the ask: a statement by the agent about itself or the device, never a second ask of him. */
