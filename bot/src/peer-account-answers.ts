@@ -5,8 +5,8 @@ type Answer=Readonly<{view:View;readStartedAt:number}>;
  * Another machine's accounts without making Accounts wait for it. Opening the page used to await
  * every peer (up to 8 seconds, longer for a sleeping Mac) before showing this machine's rows; GPT-6
  * Astra's review of the 2026-10-07 complaint named it. An ordinary read shows the last answer that
- * machine gave, marked `checking`, and reads it again behind; a machine never heard from gets a
- * short wait and is then shown as checking. A `fresh` read asks that machine for a new check
+ * machine gave, marked `checking`, and reads it again behind; a machine never heard from is shown
+ * as checking at once. A `fresh` read asks that machine for a new check
  * the same way and does not wait for it either; the page reads again while a row says
  * `checking` (2026-11-03, when a fresh read took 11 to 20 seconds around a sign-in).
  *
@@ -46,9 +46,12 @@ export class PeerAccountAnswers {
       this.running.set(name,started);
       running=started;
     }
-    const answered=this.answered.get(name);
-    if(answered)return Promise.resolve({...answered.view,checking:true});
-    return Promise.race([running.read,new Promise<View>(resolve=>setTimeout(()=>
-      resolve({name,self:false,reachable:true,note:null,providers:[],checking:true}),1_500))]);
+    // Never wait for the other machine. The short wait for a machine not yet heard from held a read
+    // worker's first Accounts read after every release, and every read after a failed answer, for
+    // the Mac's round trip: 400-680 ms, over the 300 ms budget two nightly reviews running (Nov 19
+    // and 20, 2026; phase logs showed peers_ms 409-410 with the rest under 30 ms). The page already
+    // reads again while a row says `checking`, so that row fills in on its next read instead.
+    const known=this.answered.get(name)??this.latest.get(name);
+    return Promise.resolve(known?{...known.view,checking:true}:{name,self:false,reachable:true,note:null,providers:[],checking:true});
   }
 }
