@@ -97,6 +97,29 @@ describe("resolveAccountHome — Claude", () => {
     writeClaudeHome(join(scratchHome, ".claude"), "hey@tejas.nyc", "same-token");
     expect(liveRootOrphans("claude-code")).toEqual([]);
   });
+
+  test("two per-account folders with the same label → kind:'ambiguous'", () => {
+    // Reviewer-flagged gap 2026-11-20: the commit that added `{kind:"ambiguous",count}`
+    // to the resolver shipped without any test exercising that kind. This asserts the
+    // real-world case where terminal /login creates a second folder with a duplicate label.
+    writeClaudeHome(join(scratchHome, ".claude-accounts", "hey"), "hey@tejas.nyc");
+    writeClaudeHome(join(scratchHome, ".claude-accounts", "hey-duplicate"), "hey@tejas.nyc");
+    const result = resolveAccountHome("claude-code", "hey@tejas.nyc");
+    expect(result.kind).toBe("ambiguous");
+    if (result.kind !== "ambiguous") return;
+    expect(result.count).toBe(2);
+  });
+
+  test("ambiguous label does not surface in listAccounts (no safe launch home)", () => {
+    writeClaudeHome(join(scratchHome, ".claude-accounts", "hey"), "hey@tejas.nyc");
+    writeClaudeHome(join(scratchHome, ".claude-accounts", "hey-duplicate"), "hey@tejas.nyc");
+    writeClaudeHome(join(scratchHome, ".claude-accounts", "chann"), "tejas@chann.app");
+    const labels = listAccounts("claude-code").map(a => a.label).sort();
+    // chann is unique → listed. hey@tejas.nyc is ambiguous → not a canonical choice,
+    // but both folders remain enumerable for reader paths that walk all candidates.
+    // The reduce-to-unique happens at resolveAccountHome, which returns "ambiguous".
+    expect(labels).toContain("tejas@chann.app");
+  });
 });
 
 describe("resolveAccountHome — Codex", () => {

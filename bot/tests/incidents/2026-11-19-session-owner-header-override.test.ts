@@ -60,6 +60,30 @@ test("same-revision writes with different accounts are refused as a race", () =>
   expect(binding!.accountLabel).toBe("tejas@chann.app");
 });
 
+test("CAS: an older revision cannot overwrite a newer one", () => {
+  // Reviewer-flagged gap 2026-11-20: the CAS is the entire defense against a stale
+  // launcher overwriting a newer dispatcher binding (the Nov 19 fault class). Guards
+  // both the JS pre-check and the SQL `WHERE excluded.revision > bound_by_dispatch_revision`.
+  const newer = writeClaudeSessionBinding({ sessionUuid: SESSION_UUID, accountLabel: "hey@tejas.nyc", accountUuid: "hey-uuid", boundByDispatchRevision: 10 });
+  const older = writeClaudeSessionBinding({ sessionUuid: SESSION_UUID, accountLabel: "tejas@chann.app", accountUuid: "chann-uuid", boundByDispatchRevision: 3 });
+  expect(newer.written).toBe(true);
+  expect(older.written).toBe(false);
+  expect(older.reason).toBe("stale-revision");
+  const binding = readClaudeSessionBinding(SESSION_UUID);
+  expect(binding!.accountLabel).toBe("hey@tejas.nyc");
+  expect(binding!.boundByDispatchRevision).toBe(10);
+});
+
+test("CAS: same-revision idempotent write for the same account label is allowed", () => {
+  // A retry of the same binding (same account, same revision) is a no-op not a conflict.
+  const first = writeClaudeSessionBinding({ sessionUuid: SESSION_UUID, accountLabel: "hey@tejas.nyc", accountUuid: "hey-uuid", boundByDispatchRevision: 7 });
+  const retry = writeClaudeSessionBinding({ sessionUuid: SESSION_UUID, accountLabel: "hey@tejas.nyc", accountUuid: "hey-uuid", boundByDispatchRevision: 7 });
+  expect(first.written).toBe(true);
+  expect(retry.written).toBe(true);
+  const binding = readClaudeSessionBinding(SESSION_UUID);
+  expect(binding!.accountLabel).toBe("hey@tejas.nyc");
+});
+
 test("recordSessionOwnerHeaderMismatch logs without throwing", () => {
   // The mismatch is INFORMATIONAL; the launcher still trusts the binding.
   expect(() => recordSessionOwnerHeaderMismatch({
