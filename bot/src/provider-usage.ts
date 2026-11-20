@@ -80,24 +80,44 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
  * their rewrite lands; they consume the correct semantics via the `semantics` arg.
  *
  * `semantics`:
- *   - `"model-specific"` (default): returns the refusal reset for exactly `<account, model>`,
- *     or null if that scope has no active refusal. `model` is required.
- *   - `"any-work"`: walks the Claude allowance chain (fable/opus/sonnet/haiku) and
- *     returns the max reset only if EVERY model in the chain is currently refused.
- *     Returns null if any model has room. Fixes 2026-11-19 F1: an Opus-only refusal
- *     no longer poisons Sonnet/Haiku/any-model dispatch decisions.
+ *   - `"model-specific"`: returns the refusal reset for exactly `<account, model>`, or
+ *     null if that scope has no active refusal. `model` is required for this semantics.
+ *   - `"any-work"` (DEFAULT when model is null/undefined): walks the Claude allowance
+ *     chain (fable/opus/sonnet/haiku) and returns the max reset only if EVERY model in
+ *     the chain is currently refused. Returns null if any model has room. Fixes
+ *     2026-11-19 F1: an Opus-only refusal no longer poisons Sonnet/Haiku/any-model
+ *     dispatch decisions.
+ *
+ * C1 regression guard (2026-11-19): a null/undefined model with default semantics
+ * no longer throws. The pre-rebuild API accepted `claudeAccountCachedReset(label)`
+ * from many surviving callers (release loop, forecast, exhaustion recovery, auth
+ * views); throwing on those would stall every tick. When model is null/undefined
+ * the function silently treats semantics as `"any-work"`, returning the max-chain
+ * reset when every allowance model is refused and null otherwise. Callers that
+ * genuinely need a per-model answer must pass a model.
  */
 export function claudeAccountCachedReset(
   account: string,
   model?: string | null,
-  semantics: "model-specific" | "any-work" = "model-specific",
+  semantics?: "model-specific" | "any-work",
 ): number | null {
-  if (!model && semantics === "model-specific")
-    throw new Error("claudeAccountCachedReset requires a model when semantics is 'model-specific'.");
+  // An explicit `semantics: "model-specific"` with no model is a contract bug and
+  // throws — callers that declare their intent must honor it. A missing semantics
+  // (undefined, which is the common default-arg case) with no model falls through
+  // to `"any-work"` — surviving null-model call sites stay usable while they migrate.
+  // See the C1 regression test file for the full matrix.
+  let effectiveSemantics: "model-specific" | "any-work";
+  if (semantics === undefined) {
+    effectiveSemantics = model ? "model-specific" : "any-work";
+  } else {
+    if (semantics === "model-specific" && !model)
+      throw new Error("claudeAccountCachedReset requires a model when semantics is 'model-specific'.");
+    effectiveSemantics = semantics;
+  }
   const prefix = `${createHash("sha256").update(account.toLowerCase()).digest("hex").slice(0, 24)}:`;
   const state = read("claude-code");
   const now = Date.now();
-  if (model) {
+  if (model && effectiveSemantics === "model-specific") {
     const exact = `${prefix}${claudeUsageAllowanceModel(model.trim())}`;
     const limit = state.limits[exact];
     return limit?.resetAt != null && limit.resetAt > now ? limit.resetAt : null;
