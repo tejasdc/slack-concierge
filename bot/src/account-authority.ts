@@ -370,9 +370,23 @@ type ReadingView = { readAtMs: number | null; fresh: boolean; problem: string | 
 
 function buildReadingView(provider: ProviderId, usage: ProviderUsage | null, accountUsage: AccountUsage | null, now: number): ReadingView {
   if (!usage || !accountUsage) return { readAtMs: null, fresh: false, problem: null, stale: false };
-  const readAtMs = accountReadingAt(accountUsage);
-  const fresh = accountReadingFresh(provider, usage, accountUsage, now);
+  // A per-account `readAt` is the preferred timestamp (the readers set it); when it is
+  // missing we fall back to the batch's `observedAt`, which is a safe lower bound on
+  // every account's read time in that batch. Without the fallback, a reading inserted
+  // without per-account readAt (fixtures, older readers) never counts as fresh and
+  // Step 3 / the retire-by-reading path never engages — exactly the CI-RED behavior
+  // the inbox-session-pin fixture surfaced.
+  const perAccountReadAt = accountReadingAt(accountUsage);
+  const observedAtMs = Date.parse(usage.observedAt ?? "");
+  const readAtMs = perAccountReadAt ?? (Number.isFinite(observedAtMs) ? observedAtMs : null);
   const problem = accountUsage.problem ?? usage.problem ?? null;
+  // Prefer the strict helper when it can decide. Only fall through to the
+  // observedAt-based freshness when the strict helper refused solely because
+  // the per-account readAt was absent.
+  const strictFresh = accountReadingFresh(provider, usage, accountUsage, now);
+  const freshViaObservedAt = perAccountReadAt === null && readAtMs !== null && problem === null
+    && readAtMs <= now && (now - readAtMs) < ACCOUNT_READING_MAX_AGE_MS;
+  const fresh = strictFresh || freshViaObservedAt;
   const stale = readAtMs !== null && (now - readAtMs) > ACCOUNT_READING_STALE_AFTER_MS;
   return { readAtMs, fresh, problem, stale };
 }
