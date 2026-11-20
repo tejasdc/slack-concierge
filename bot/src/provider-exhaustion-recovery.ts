@@ -230,10 +230,15 @@ export function recoverExhaustedWork(sessionId: number): ExhaustionRecoveryOutco
   const startIndex = chain.indexOf(session.provider_id as "claude-code"|"codex"|"antigravity");
   if (startIndex < 0) return "no-chain";
   // Mac signin-wait preservation: if an account on the ORIGIN provider has reading-room
-  // but is signed out, the hold is for sign-in, not failover.
-  if (chain[0] === 'claude-code'
-    && accountsWithRoom('claude-code').some(claudeAccountAwaitingSignIn))
-    return "hold";
+  // FOR THIS SESSION'S MODEL but is signed out, the hold is for sign-in, not failover.
+  // F2 (2026-11-20): before, the gate asked `accountsWithRoom('claude-code')` with no
+  // model, so a signed-out account with Sonnet room would hold an Opus-bound session
+  // waiting for a sign-in that would never unblock the right model.
+  if (chain[0] === 'claude-code') {
+    const sessionModel = sessionMetadata(session).model ?? null;
+    if (accountsWithRoom('claude-code', sessionModel).some(claudeAccountAwaitingSignIn))
+      return "hold";
+  }
   let sawUnsupported = false;
   for (let i = startIndex + 1; i < chain.length; i++) {
     const nextProvider = chain[i]!;
