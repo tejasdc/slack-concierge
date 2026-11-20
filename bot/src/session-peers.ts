@@ -1291,12 +1291,28 @@ export class SessionPeers {
     return current;
   }
   private answerGuaranteeHold(row:PeerRequestRow) {
+    // Item 4 (2026-11-20): key the dedup by (peer_session_id, version_hash) so a
+    // version-hold notice fires once per peer+version, not once per request. A peer
+    // upgrade (new answerGuaranteeVersion) resets the hash and the next hold can
+    // legitimately re-notify; until then any number of requests to the same peer at
+    // the same version share one notice. Before this, repeated recovery queued new
+    // requests whose version-holds each fired a separate overdue event in the Inbox.
+    const remote=row.remote_status_json?JSON.parse(row.remote_status_json):{};
+    const peerSessionId=typeof remote.sessionId==='string'&&remote.sessionId
+      ?remote.sessionId:row.remote_session_id??'';
+    const versionHash=String(remote.answerGuaranteeVersion??'none');
+    const scopeKey=`${row.peer}:${peerSessionId}:${versionHash}`;
+    const existingForPeerVersion=db.query(`SELECT event_id FROM session_peer_events
+      WHERE kind='overdue' AND json_extract(payload_json,'$.health')=?
+        AND json_extract(payload_json,'$.scopeKey')=? ORDER BY rowid LIMIT 1`)
+      .get(PEER_ANSWER_GUARANTEE_HEALTH,scopeKey) as {event_id:string}|null;
+    if(existingForPeerVersion)return existingForPeerVersion.event_id;
     const existing=db.query(`SELECT event_id FROM session_peer_events WHERE request_id=? AND kind='overdue'
       AND json_extract(payload_json,'$.health')=? ORDER BY rowid LIMIT 1`).get(row.request_id,PEER_ANSWER_GUARANTEE_HEALTH) as {event_id:string}|null;
-    const eventId=existing?.event_id??`peer-answer-guarantee-hold:${row.request_id}`;
+    const eventId=existing?.event_id??`peer-answer-guarantee-hold:${scopeKey}:${row.request_id}`;
     if(!existing&&!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(eventId))
       this.event(row,'overdue',{text:`${row.peer} has not confirmed the answer guarantee for request ${row.request_id}. The original request stays held for exact reconciliation; it will not be sent again.`,
-        health:PEER_ANSWER_GUARANTEE_HEALTH,agentReminder:true},eventId);
+        health:PEER_ANSWER_GUARANTEE_HEALTH,agentReminder:true,scopeKey},eventId);
     return eventId;
   }
   private activatePeerAttachmentCorrection(row:PeerRequestRow,accepted:any) {

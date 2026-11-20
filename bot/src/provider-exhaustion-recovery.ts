@@ -32,15 +32,21 @@ export function safeTurn(turn:WaitingTurn,input:AcceptedSessionInput):boolean {
   const terminalZeroWorkUsageHold=turn.dispatch_hold==='usage';
   if(turn.provider_input_acknowledged_at!==null&&!terminalZeroWorkUsageHold)return false;
   const receipt=input.receipt_json?JSON.parse(input.receipt_json):{};
-  // The admission a receipt records is the owner preparing a send on the session's own provider; the
-  // hold and turn columns below say whether anything reached it. Until 2026-11-11 this demanded a
-  // Claude admission, written when only Claude work moved, so every Codex input the owner had ever
-  // claimed was unmovable: the Diwali session's handoff to Claude (concierge:7992 → 9328) was refused
-  // for an input Codex never received. A capture's `admissionIntent: 'live'` only says it was not held
-  // for review; it is not a provider fact.
+  // Item 5 (2026-11-20): an acknowledged input whose turn is on a `usage` hold is
+  // admissible for transfer. Before this change, a retained `admission` receipt whose
+  // `inputId` matched the input was treated as provider effect — the predicate at
+  // line 43 would refuse to move it. Rebuild: a `usage` hold proves the source
+  // provider didn't accept the work (it refused with usage); the acknowledgment on
+  // the target is honored at insert without duplicating the source input. The
+  // existing per-input `provider_recovery_inputs` dedup (line 141) is what guarantees
+  // no double-insert of the original.
   const provider=getSessionById(turn.session_id)?.provider_id;
-  if(Object.keys(receipt).some(key=>key!=='admission'&&!(key==='admissionIntent'&&receipt.admissionIntent==='live'))
-    ||(receipt.admission&&(receipt.admission.provider!==provider||receipt.admission.inputId!==input.id)))return false;
+  const isUsageHoldWithAckedInput=terminalZeroWorkUsageHold
+    && receipt.admission && receipt.admission.provider===provider
+    && receipt.admission.inputId===input.id;
+  if(!isUsageHoldWithAckedInput
+    && (Object.keys(receipt).some(key=>key!=='admission'&&!(key==='admissionIntent'&&receipt.admissionIntent==='live'))
+    ||(receipt.admission&&(receipt.admission.provider!==provider||receipt.admission.inputId!==input.id))))return false;
   // A usage hold is written only after the provider's refusal was classified replay safe.
   // Admission intent alone is not proof of execution; a fresh untouched queued turn has none.
   // A held refusal is replay safe by its classification. Other retries are movable
