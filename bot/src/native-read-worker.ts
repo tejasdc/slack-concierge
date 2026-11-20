@@ -168,6 +168,9 @@ async function remoteProjectFiles(url:URL):Promise<Response|null>{
   return Response.json(answer);
 }
 
+// Ask each other machine for its accounts as this worker starts, so the first Accounts page after a
+// release already has its rows instead of a checking placeholder (reads never wait for it).
+for(const peer of peers.peers)void peerAccountView(peer.name,false,0);
 await removeUnboundSocket(socket);
 const server=Bun.serve({unix:socket,idleTimeout:0,async fetch(request){
   const started=performance.now();
