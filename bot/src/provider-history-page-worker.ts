@@ -25,11 +25,13 @@ process.on('disconnect',()=>process.exit(0));
 process.on('message',(input:Work)=>{
   const phases:HistoryReadPhases={};const started=performance.now();
   return withHistoryReadPhases(phases,async()=>{
-    const reply=await observeStorageOperation('history-page-worker',()=>handle(input),work=>{
+    // Reads making 300-700 small calls name their cost by which statement repeats, not the slowest one.
+    const reply=await observeStorageOperation('history-page-worker',()=>handle(input),(work,top)=>{
       phases.worker_db_calls=work.db_calls;phases.worker_db_ms=Math.round(work.db_duration_ms*10)/10;
       phases.worker_db_slowest_ms=Math.round(work.db_slowest_ms*10)/10;
       if(work.db_slowest_fingerprint)phases.worker_db_slowest=work.db_slowest_fingerprint;
-    });
+      if(top)phases.worker_db_top=top;
+    },{perStatement:true});
     phases.history_worker_ms=Math.round(performance.now()-started);
     parentPort!.postMessage({...reply,phases});
   });

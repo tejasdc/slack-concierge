@@ -215,8 +215,12 @@ export async function readCodexHistory(input: ProviderHistoryInput,
     ...(omissions.size ? { coverage: { complete: false, omissions: [...omissions] } } : {}) };
 }
 
+// Bun's SQLite 3.53 picks the plain (session_id,kind) index for both saved-context reads and
+// parses every message of the session: 120-250 ms per Codex open on 2026-11-20. The partial index
+// holds only saved notes, so name it.
 export function hasSavedContext(sessionId:number):boolean {
-  return !!ownerDb.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='message'
+  return !!ownerDb.query(`SELECT 1 FROM session_owner_events INDEXED BY session_owner_events_saved_context
+    WHERE session_id=? AND kind='message'
     AND json_extract(payload_json,'$.message.responseMode')='context' LIMIT 1`).get(sessionId);
 }
 
@@ -230,7 +234,7 @@ async function readCodexContextPage(input:ProviderHistoryInput,request:CodexHist
   if(!Number.isSafeInteger(head)||head<0||!Number.isSafeInteger(before)||before<1
     ||!Number.isSafeInteger(skip)||skip<0||position&&typeof position.providerDone!=='boolean'
     ||position&&position.providerCursor!==null&&typeof position.providerCursor!=='string')throw new Error('INVALID_HISTORY_REFERENCE');
-  const contexts=ownerDb.query(`SELECT sequence,payload_json FROM session_owner_events
+  const contexts=ownerDb.query(`SELECT sequence,payload_json FROM session_owner_events INDEXED BY session_owner_events_saved_context
     WHERE session_id=? AND kind='message' AND sequence<=? AND sequence<?
       AND json_extract(payload_json,'$.message.responseMode')='context'
     ORDER BY sequence DESC LIMIT ?`).all(input.ownerSessionId!,head,before,input.limit+1) as {sequence:number;payload_json:string}[];
