@@ -130,11 +130,33 @@ Claude account whose usage bar still reads 100%, only the exact released turns c
 admission proof into account selection. Their first dispatch uses that same proved account;
 the proof is consumed then and
 disappears on a service restart; an unrelated turn still follows the ordinary reading.
-Opening Accounts and the ordinary background usage readings never spend model tokens or override a refusal. A successful
+Opening Accounts and ordinary background usage readings do not override a Claude refusal. When a newer local reading disagrees with the refusal's reset for a held model, the owner makes one small, tool-free model check through that machine's runner for the selected account and exact allowance scope. Only its completed provider answer clears the older refusal for that account and model and wakes the original queued turns; a failed or unidentified check leaves them held. The check runs once per refusal revision and observed allowance window, so unchanged readings do not cause repeated model spend; a new reset epoch can be checked again. The explicit Refresh check uses the same provider proof on a runner; the old runner path used only the usage bars and could release a turn into the unchanged cache, where it was immediately held again. A successful
 Codex reset-credit use on the account running agents also clears its old refusal and wakes held
-work as part of that action. The operator shell remains available for recovery even when the
-app cannot open. From the Concierge repository, with
-`CONCIERGE_STATE_DIR` set to the owning runtime's existing state directory:
+work as part of that action.
+
+A Claude refusal cannot become an account-wide cached limit when its reset matches a
+different freshly read account's applicable allowance window and differs from every
+applicable window on the selected account. The refusal event carries a reset but does
+not identify whether its cause is the five-hour or weekly window, so both must be checked.
+The same rule excludes older conflicting cache entries from dispatch and from the blocking
+status read. On each fresh account reading, Concierge retires conflicting entries with a
+newer ordering marker. This keeps an old entry from blocking work when that reading later
+ages out, and prevents a refusal from an older in-flight attempt from restoring it. A later
+successful request clears the limit but keeps a newer ordering marker, so its success cannot
+erase that protection before an earlier request returns. It does
+not declare the selected account healthy: a new request may try that
+account and supply its own provider result. The refused conversation keeps its exact queued
+turn and provider reset; if that conversation cannot continue on an otherwise usable account,
+the existing handoff can carry its open requests and safe queued inputs into a fresh Claude
+conversation. The November 19 occurrence had two such contradictory cache entries, on
+hey@tejas.nyc and the personal account, both naming the exhausted chann account's Sunday
+reset while their weekly readings had room and different resets. The source of the provider's
+wrong reset remains unproved; a local account label and preflight sign-in cannot attest to
+which quota owner processed the model request.
+
+The operator shell remains available for recovery even when the app cannot open. From the
+Concierge repository, with `CONCIERGE_STATE_DIR` set to the owning runtime's existing state
+directory:
 
 ```bash
 bun bot/scripts/provider-usage.ts status

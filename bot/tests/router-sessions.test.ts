@@ -49,6 +49,20 @@ test("omits optional fields and preserves source timestamps as strings", () => {
   });
 });
 
+test("an older request ID is independent of the reply shell's current source", () => {
+  const shell = {
+    CONCIERGE_SOURCE_INPUT_ID: nativeSource.input_id,
+    CONCIERGE_SOURCE_RUN_ID: nativeSource.run_id,
+  };
+  const reply = ["reply", "older-request", "--action-id", "late-answer", "--summary", "Answer for the older request", "--", "The answer."];
+  expect(parseRouterSessionsArgs(reply, shell)).toMatchObject({
+    operation: "reply", body: { request_id: "older-request", source: nativeSource },
+  });
+  expect(() => parseRouterSessionsArgs(reply, {})).toThrow("current turn");
+  expect(() => parseRouterSessionsArgs([...reply.slice(0, 2), "--source-input", "older-input", ...reply.slice(2)], shell))
+    .toThrow("together");
+});
+
 test('parses outcome declarations and their exact text rules', () => {
   expect(parseRouterSessionsArgs(['outcome','done',...nativeSourceFlags,'--action-id','turn-done']))
     .toEqual({operation:'outcome',body:{source:nativeSource,action_id:'turn-done',outcome:'done'}});

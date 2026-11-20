@@ -19,7 +19,10 @@ export type StorageWork = {
 };
 /** `awaiting` counts the outside waits currently pending; `awaitingSince` is when the first of
  * the current overlap began, so the union of overlapping waits is added once, when the last ends. */
-type Scope = { work: StorageWork; closed: boolean; awaiting: number; awaitingSince: number };
+type Scope = { work: StorageWork; closed: boolean; awaiting: number; awaitingSince: number;
+  /** Opt-in per-statement totals for one operation: a history read that makes 700 small calls
+   * names no culprit by its slowest single statement, only by which statement repeats. */
+  statements?: Map<string, { calls: number; ms: number }> };
 const scopes = new AsyncLocalStorage<Scope>();
 export type StorageReadBudget={maxCalls:number;maxRows:number;maxResultBytes:number};
 const readBudgets=new AsyncLocalStorage<StorageReadBudget>();
@@ -80,11 +83,14 @@ export async function awaitingOutside<T>(wait: () => Promise<T>): Promise<T> {
   }
 }
 
+/** The three statements with the most total time, as `fingerprint:calls:ms` joined by commas. */
+export type StatementTotals = string;
 export function observeStorageOperation<T>(operation: string, callback: () => T,
-  finished: (work: StorageWork) => void): T {
+  finished: (work: StorageWork, topStatements?: StatementTotals) => void, options: { perStatement?: boolean } = {}): T {
   // The caller owns the bounded operation vocabulary; neither SQL nor parameters leave here.
   void operation;
-  const scope: Scope = { work: empty(), closed: false, awaiting: 0, awaitingSince: 0 };
+  const scope: Scope = { work: empty(), closed: false, awaiting: 0, awaitingSince: 0,
+    ...(options.perStatement ? { statements: new Map() } : {}) };
   const finish = () => {
     if (scope.closed) return;
     // A wait still pending when the operation ends (a pass the caller stopped waiting for) was
@@ -92,7 +98,11 @@ export function observeStorageOperation<T>(operation: string, callback: () => T,
     if (scope.awaiting > 0) scope.work.awaited_ms += Math.round(performance.now() - scope.awaitingSince);
     scope.closed = true;
     // Observation failures must never replace the product's result or exception.
-    try { finished({ ...scope.work }); } catch { observationFailures++; }
+    try {
+      const top = scope.statements && [...scope.statements].sort((a, b) => b[1].ms - a[1].ms).slice(0, 3)
+        .map(([fingerprint, total]) => `${fingerprint}:${total.calls}:${Math.round(total.ms)}`).join(',');
+      finished({ ...scope.work }, top || undefined);
+    } catch { observationFailures++; }
   };
   return scopes.run(scope, () => {
     try {
@@ -178,6 +188,11 @@ export function observedDatabase(database: Database, onUnclosedTransaction?: () 
       } else if (method === 'get' && result != null) {
         work.db_rows++;
         work.db_result_bytes += rowBytes(result);
+      }
+      if (scope.statements) {
+        const total = scope.statements.get(fingerprint);
+        if (total) { total.ms += elapsed; if (count) total.calls++; }
+        else scope.statements.set(fingerprint, { calls: count ? 1 : 0, ms: elapsed });
       }
       if (elapsed > work.db_slowest_ms) {
         work.db_slowest_ms = elapsed;

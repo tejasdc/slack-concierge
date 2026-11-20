@@ -41,7 +41,7 @@ export function readProcessStartTicks(pid: number): string {
   return fieldsAfterCommand[19]; // field 22; this array begins at field 3
 }
 
-function parentPid(pid: number): number | null {
+export function parentPid(pid: number): number | null {
   if (darwin) {
     const parent = command("/bin/ps", ["-o", "ppid=", "-p", String(pid)]);
     return parent ? Number(parent) : null;

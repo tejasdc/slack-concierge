@@ -5,6 +5,10 @@ import { ProviderDispatchError } from "./provider-failures";
 import { claudeUsageAllowanceModel, CLAUDE_USAGE_FALLBACK_CHAIN } from "./aliases";
 import { accountScope, currentAccount, codexAccountIdForLabel } from "./provider-accounts";
 import { usageCacheTable } from "./provider-usage-tables";
+import { accountUsageTable } from "./provider-usage-tables";
+import { accountReadingFresh, includedAllowanceWindows } from "./account-allowance-observation";
+import type { ProviderUsage } from "./provider-account-usage";
+import { providerRunnerTarget } from "./provider-runner-target";
 import { recordSessionEvent } from "./session-inputs";
 import { clearScoped, retireRefusalSupersededByReading as retireRefusalSupersededByReadingInner, type RefusalProvider } from "./account-refusal-cache";
 
@@ -21,7 +25,50 @@ export type UsageLimit = {
   overageReason?: UsageLimitOverageReason;
 };
 type UsageState = { generation: number; revision: number; limits: Record<string, UsageLimit> };
-export type UsageAttempt = { provider: UsageProvider; scope: string; label: string; generation: number; revision: number };
+export type UsageAttempt = { provider: UsageProvider; scope: string; label: string; accountLabel: string | null; generation: number; revision: number };
+
+// A refusal that names another account's weekly reset cannot establish a limit on the
+// selected account. Keep the provider's refusal on its particular turn, but do not let
+// that turn stop unrelated sessions from using the selected account.
+const CLAUDE_RESET_MATCH_MS = 60_000;
+function claudeRefusalAttributedToAnotherAccount(accountLabel: string | null, model: string, resetAt: number | null): string | null {
+  if (!accountLabel || resetAt === null) return null;
+  let row: { usage_json: string } | null;
+  try {
+    row = db.query(`SELECT usage_json FROM ${accountUsageTable('claude-code')} WHERE provider='claude-code'`)
+      .get() as { usage_json: string } | null;
+  } catch { return null; }
+  if (!row) return null;
+  let usage: ProviderUsage;
+  try { usage = JSON.parse(row.usage_json) as ProviderUsage; } catch { return null; }
+  const runner = providerRunnerTarget('claude-code');
+  if (runner && usage.sourceRunner !== runner) return null;
+  const account = usage.accounts.find(candidate => candidate.label.toLowerCase() === accountLabel.toLowerCase());
+  if (!account || !accountReadingFresh('claude-code', usage, account, Date.now(), undefined, model)) return null;
+  const applicableResets = (candidate: typeof account) => includedAllowanceWindows('claude-code', candidate, model)
+    .map(window => Date.parse(window.resetsAt ?? '')).filter(at => Number.isFinite(at));
+  const ownResets = applicableResets(account);
+  if (!ownResets.length || ownResets.some(at => Math.abs(at - resetAt) <= CLAUDE_RESET_MATCH_MS)) return null;
+  return usage.accounts.find(candidate => {
+    if (candidate.label === account.label
+      || !accountReadingFresh('claude-code', usage, candidate, Date.now(), undefined, model)) return false;
+    return applicableResets(candidate).some(at => Math.abs(at - resetAt) <= CLAUDE_RESET_MATCH_MS);
+  })?.label ?? null;
+}
+
+function claudeScopeModel(scope: string): string { return scope.slice(scope.indexOf(':') + 1); }
+function claudeScopeAccount(scope: string): string | null {
+  let row: { usage_json: string } | null;
+  try {
+    row = db.query(`SELECT usage_json FROM ${accountUsageTable('claude-code')} WHERE provider='claude-code'`)
+      .get() as { usage_json: string } | null;
+  } catch { return null; }
+  if (!row) return null;
+  try {
+    return (JSON.parse(row.usage_json) as ProviderUsage).accounts.find(account =>
+      scope.startsWith(`${createHash('sha256').update(account.label.toLowerCase()).digest('hex').slice(0, 24)}:`))?.label ?? null;
+  } catch { return null; }
+}
 
 function read(provider: UsageProvider): UsageState {
   const row = db.query(`SELECT generation, revision, limits_json FROM ${usageCacheTable(provider)} WHERE provider = ?`)
@@ -41,6 +88,24 @@ function prune(state: UsageState, now = Date.now()) {
   for (const [scope, limit] of Object.entries(state.limits)) {
     if (limit.resetAt !== null && limit.resetAt <= now) delete state.limits[scope];
   }
+}
+
+/** Retire a refusal once a fresh account reading proves its reset belongs elsewhere. */
+export function retireMisattributedClaudeRefusals() {
+  try {
+    db.transaction(() => {
+      const state = read('claude-code');
+      let changed = false;
+      for (const [scope, limit] of Object.entries(state.limits)) {
+        if (limit.resetAt === null || limit.resetAt <= Date.now()) continue;
+        const account = claudeScopeAccount(scope);
+        if (!claudeRefusalAttributedToAnotherAccount(account, claudeScopeModel(scope), limit.resetAt)) continue;
+        state.limits[scope] = { resetAt: null, observedAt: Date.now(), revision: ++state.revision };
+        changed = true;
+      }
+      if (changed) write('claude-code', state);
+    }).immediate();
+  } catch { log('warn', 'claude_refusal_reconciliation_failed'); }
 }
 
 // A usage limit belongs to the account that earned it. Naming that account in
@@ -69,6 +134,7 @@ export function usageAttempt(provider: UsageProvider, model?: string, selectedAc
     label: provider === "codex" ? selectedAccount??account?.label ?? "this Codex account"
       : provider === "antigravity" ? `${model!.trim()} on ${account?.label ?? "this Google account"}`
       : `${claudeUsageAllowanceModel(model!.trim())} on ${selectedAccount??account?.label ?? "this Claude account"}`,
+    accountLabel: selectedAccount ?? account?.label ?? null,
     generation: state.generation, revision: state.revision };
 }
 
@@ -76,18 +142,13 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
   const state = read(attempt.provider);
   if (state.generation !== attempt.generation) return null;
   const limit = state.limits[attempt.scope];
-  return limit?.resetAt != null && limit.resetAt > Date.now() ? limit : null;
+  return limit?.resetAt != null && limit.resetAt > Date.now()
+    && !(attempt.provider === 'claude-code' && claudeRefusalAttributedToAnotherAccount(
+      attempt.accountLabel, claudeScopeModel(attempt.scope), limit.resetAt)) ? limit : null;
 }
 
 /**
  * A refusal from this account's attempted Claude model survives a process restart.
- *
- * **Transition shim pending the §13.2 rewrite in
- * `docs/plans/2026-11-19-provider-account-rebuild-architecture.md`.** New code should
- * read the authority: `canTakeWork(provider, account, model)` for the model-specific
- * answer, or `canTakeAnyWork(provider, account)` for the model-agnostic release view.
- * This function is kept so the existing dispatch and release call sites compile while
- * their rewrite lands; they consume the correct semantics via the `semantics` arg.
  *
  * `semantics`:
  *   - `"model-specific"`: returns the refusal reset for exactly `<account, model>`, or
@@ -101,21 +162,17 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
  * C1 regression guard (2026-11-19): a null/undefined model with default semantics
  * no longer throws. The pre-rebuild API accepted `claudeAccountCachedReset(label)`
  * from many surviving callers (release loop, forecast, exhaustion recovery, auth
- * views); throwing on those would stall every tick. When model is null/undefined
- * the function silently treats semantics as `"any-work"`, returning the max-chain
- * reset when every allowance model is refused and null otherwise. Callers that
- * genuinely need a per-model answer must pass a model.
+ * views); throwing on those would stall every tick.
+ *
+ * Every candidate limit is filtered through `claudeRefusalAttributedToAnotherAccount`
+ * so a refusal whose reset actually belongs to a different account's window does not
+ * block this account's work.
  */
 export function claudeAccountCachedReset(
   account: string,
   model?: string | null,
   semantics?: "model-specific" | "any-work",
 ): number | null {
-  // An explicit `semantics: "model-specific"` with no model is a contract bug and
-  // throws — callers that declare their intent must honor it. A missing semantics
-  // (undefined, which is the common default-arg case) with no model falls through
-  // to `"any-work"` — surviving null-model call sites stay usable while they migrate.
-  // See the C1 regression test file for the full matrix.
   let effectiveSemantics: "model-specific" | "any-work";
   if (semantics === undefined) {
     effectiveSemantics = model ? "model-specific" : "any-work";
@@ -130,15 +187,18 @@ export function claudeAccountCachedReset(
   if (model && effectiveSemantics === "model-specific") {
     const exact = `${prefix}${claudeUsageAllowanceModel(model.trim())}`;
     const limit = state.limits[exact];
-    return limit?.resetAt != null && limit.resetAt > now ? limit.resetAt : null;
+    if (!limit?.resetAt || limit.resetAt <= now) return null;
+    if (claudeRefusalAttributedToAnotherAccount(account, claudeScopeModel(exact), limit.resetAt)) return null;
+    return limit.resetAt;
   }
   // Any-work: the account is "spent" only when every allowance model in the chain is
-  // currently refused with a future reset.
+  // currently refused with a future reset — and that refusal belongs to this account.
   const resets: number[] = [];
   for (const candidate of CLAUDE_USAGE_FALLBACK_CHAIN) {
     const scope = `${prefix}${claudeUsageAllowanceModel(candidate)}`;
     const limit = state.limits[scope];
     if (!limit || limit.resetAt === null || limit.resetAt <= now) return null;
+    if (claudeRefusalAttributedToAnotherAccount(account, claudeScopeModel(scope), limit.resetAt)) return null;
     resets.push(limit.resetAt);
   }
   return resets.length ? Math.max(...resets) : null;
@@ -173,6 +233,14 @@ export function recordUsageExhaustion(
   resetAt: number | null,
   details: { rateLimitType?: string | null; overageReason?: 'out_of_credits' | 'org_level_disabled' | 'hard_limit_reached' | 'other' | null } = {},
 ) {
+  if (attempt.provider === 'claude-code') {
+    const other = claudeRefusalAttributedToAnotherAccount(attempt.accountLabel, claudeScopeModel(attempt.scope), resetAt);
+    if (other) {
+      log('warn', 'claude_refusal_reset_belongs_to_another_account', {
+        selected_account: attempt.accountLabel, reset_matches_account: other, scope: attempt.scope, reset_at: resetAt });
+      return;
+    }
+  }
   persistUsageObservation(attempt, () => db.transaction(() => {
     const state = read(attempt.provider);
     if (state.generation !== attempt.generation) return false;
@@ -203,7 +271,9 @@ export function recordUsageSuccess(attempt: UsageAttempt) {
     const limit = state.limits[attempt.scope];
     // An older success cannot erase a quota failure observed after it started.
     if (state.generation !== attempt.generation || !limit || limit.revision > attempt.revision) return;
-    delete state.limits[attempt.scope];
+    // Clearing a limit still needs an ordering marker. An older request can return its
+    // refusal after this success, even after the account reading that proved room ages.
+    state.limits[attempt.scope] = { resetAt: null, observedAt: Date.now(), revision: ++state.revision };
     prune(state);
     write(attempt.provider, state);
   }).immediate());
@@ -281,6 +351,23 @@ export function clearCodexAccountUsage(accountId: string, verifiedReadStartedAtM
     return true;
   }).immediate();
   log("info", "codex_account_usage_cleared_after_reset", { account_known: true, cleared });
+  return cleared;
+}
+
+/** A completed model request on this account supersedes older refusals for that exact allowance. */
+export function clearClaudeAccountUsageAfterProof(account:string,model:string,probeStartedAtMs:number):boolean {
+  if(!account||!model||!Number.isSafeInteger(probeStartedAtMs)||probeStartedAtMs>Date.now())
+    throw new Error('An exact Claude account, model and completed check start are required.');
+  const scope=`${createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,24)}:${claudeUsageAllowanceModel(model)}`;
+  const cleared=db.transaction(()=>{
+    const state=read('claude-code');
+    const prior=state.limits[scope];
+    if(!prior||prior.observedAt>=probeStartedAtMs)return false;
+    state.limits[scope]={resetAt:null,observedAt:Date.now(),revision:++state.revision};
+    write('claude-code',state);
+    return true;
+  }).immediate();
+  log('info','claude_refusal_cleared_after_provider_success',{scope,cleared});
   return cleared;
 }
 
@@ -388,7 +475,9 @@ export function providerUsageStatus() {
     return { provider, generation: state.generation, limits: Object.entries(state.limits).map(([scope, limit]) => ({
       scope, observed_at: new Date(limit.observedAt).toISOString(),
       reset_at: limit.resetAt === null ? null : new Date(limit.resetAt).toISOString(),
-      blocking: limit.resetAt !== null && limit.resetAt > Date.now(),
+      blocking: limit.resetAt !== null && limit.resetAt > Date.now()
+        && !(provider === 'claude-code' && claudeRefusalAttributedToAnotherAccount(
+          claudeScopeAccount(scope), claudeScopeModel(scope), limit.resetAt)),
     })) };
   });
 }

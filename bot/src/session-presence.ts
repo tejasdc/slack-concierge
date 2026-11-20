@@ -1,3 +1,4 @@
+import {CLAUDE_TERMINAL_SOURCE} from './claude-terminal-process';
 import type {Database} from 'bun:sqlite';
 import {agentDisplayName} from './aliases';
 import {TURN_STATE} from './session-receipt-state';
@@ -50,13 +51,13 @@ export function sessionExecution(source:Database,session:PresenceSession,meta:Pr
   const fields='id,status,native_run_id,provider_turn_id,provider_admission_intended_at,provider_started_at,started_at,ended_at,agent_text,stop_requested_at,provider_input_acknowledged_at,provider_duration_ms';
   // A redundant service input withdrawn before provider admission did no work. Keep its turn in
   // history, but do not let it replace the real run as the session's visible latest attempt.
-  const latest=source.query(`SELECT ${fields} FROM turns WHERE session_id=? AND NOT (
+  const latest=source.query(`SELECT ${fields} FROM turns WHERE session_id=? AND turn_kind IS NOT ? AND NOT (
     status='cancelled' AND provider_admission_intended_at IS NULL
     AND provider_started_at IS NULL AND provider_turn_id IS NULL
     AND provider_input_acknowledged_at IS NULL
     AND (accepted_input_id IS NULL OR EXISTS (
       SELECT 1 FROM session_inputs input WHERE input.id=turns.accepted_input_id AND input.origin='service'))
-  ) ORDER BY id DESC LIMIT 1`).get(session.id) as TurnFacts|null;
+  ) ORDER BY id DESC LIMIT 1`).get(session.id,CLAUDE_TERMINAL_SOURCE) as TurnFacts|null;
   const active=source.query(`SELECT ${fields} FROM turns WHERE session_id=? AND status IN ('running','delivering') ORDER BY id DESC LIMIT 1`).get(session.id) as TurnFacts|null;
   const queued=(source.query("SELECT count(*) AS count FROM turns WHERE session_id=? AND status='queued'").get(session.id) as {count:number}).count;
   const observed=session.provider_id==='codex'&&meta.outside!==true

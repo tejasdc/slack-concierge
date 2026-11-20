@@ -115,6 +115,36 @@ The existing session projection subscribes to native terminal facts as well as S
 
 A confirmed nonretryable native provider refusal settles as a failed input and releases its session. It is not an uncertain send or an invitation to retry. The existing Slack remediation flow and genuinely ambiguous native effects retain their previous parking behavior.
 
+## Terminal Claude Code turns
+
+When a local interactive Claude Code process explicitly resumes an existing
+Concierge conversation by its provider UUID, the managed prompt hook registers
+the submitted prompt with the owner. The owner checks the local process and
+unique conversation binding and retains a service-authored input and run in one
+transaction. Claude Code passes the pair to the agent in that prompt's hook
+context. Router commands use the same source checks as on an app-started turn.
+Reports use the ordinary Inbox or proposal path and keep the agent attribution.
+An assigned managed runner still owns app placement. The local terminal source
+is proved by the interactive process, independently of that assignment.
+
+Registration stores the command source and keeps the prompt in Claude Code's
+transcript. Command source registration carries no execution lease, so it does
+not occupy the app queue or appear as an app run. Claude Code controls terminal
+execution. Its Stop and failure hooks close the exact prompt's source. The next
+terminal prompt retires the previous one. App work uses its own execution and
+command source, so it can start after Escape even when Claude Code skipped Stop.
+It also leaves an active terminal prompt's command source usable. An open
+terminal source requires its original live process for ordinary commands. The
+ledger retains command identity for report receipts and performs no replay.
+
+The edit hook excludes named files outside Git worktrees from the implementation
+budget. Repository writes from the terminal are admitted against the exact live
+process that registered the prompt. Managed work uses its existing edit budget.
+
+The journal records `claude_terminal_turn_admitted` and
+`claude_terminal_turn_finished` with the session and turn identity. The hook and
+local owner route carry no prompt text.
+
 ## Externally submitted Codex turns
 
 The Codex observer subscribes each uniquely bound provider thread while it runs and retains
@@ -414,7 +444,11 @@ and on November 4 one thread's answer closed two other threads with the wrong te
 ([failure record](../incidents/2026-11-04-one-reply-closed-sibling-requests.md)).
 The recipient session is one
 conversation: a run that follows an interruption may answer requests delivered to the
-earlier run. An ambiguous steering input cited by its own live run is a valid source. That is strong
+earlier run. The reply command takes the older request ID as its destination. When
+source flags are omitted on an ordinary reply, the command uses the input and run
+supplied to its shell by Concierge. The owner still checks that the pair is live
+and that the session holds the delivered request. An exact retry across turns
+uses the original reply source pair and action ID. An ambiguous steering input cited by its own live run is a valid source. That is strong
 evidence of receipt rather than proof, because its ID derives from a request ID that another
 message can quote, so the owner records no acknowledgement from it.
 Partial replies neither extend nor replace the original overdue

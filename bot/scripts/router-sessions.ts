@@ -8,6 +8,25 @@ import {REQUEST_PROTOCOL} from '../src/request-protocol';
 import {nextDailyWallClock,validDailyWallClock} from '../src/daily-wall-clock';
 import {IMPLEMENTATION_ALIASES} from '../src/implementation-models';
 
+const questionsFileHelp = `router-actions.sh sessions topics questions <topicId> --source-input <id> --source-run <id> --action-id A --json-file <file>
+
+Write a nonempty JSON array of objects. Each object needs a nonblank top-level "decision" string containing the question or reading title, including for kind "asked".
+Replace the example IDs with exact IDs from the thread. Use one of these arrays as a starting point:
+
+A question Tejas asked. Use his wording, one human message ID from this thread in "sources", and the linked communication request ID in "owner.dispatchRequestId".
+[{"kind":"asked","decision":"When does the review start?","sources":["human-message-id"],"owner":{"dispatchRequestId":"linked-dispatch-id"}}]
+
+A decision Tejas needs to make. Give the reason, what he can answer now, his exact initiating words, and why they leave a gap.
+[{"kind":"decision","decision":"Which Alex should receive the signed agreement?","sources":["human-message-id"],"why":{"text":"Two contacts match Alex."},"answerable":"Name the intended recipient.","onlyHeCan":"ambiguous","hisWords":"Send the signed agreement to Alex.","whyNotSettled":"Your message names Alex and both contacts use that name."}]
+Supported "onlyHeCan" values: sign-in, secret, device, ambiguous, approval. For approval also supply "decisionId" and "approvalAction" from the permanent decision record.
+For sign-in, secret or device steps, supply "todo" with the open to-do ID, or "none" if there is no to-do. For device steps, name the physical action in the first sentence.
+Use "context":"agent_checking" while preparing a decision. "why.text" and "answerable" are required for "context":"ready".
+
+A reading for Tejas. Give the exact messages in this thread to read.
+[{"kind":"reading","decision":"Read the review findings","why":{"text":"The review is complete."},"answerable":"Read the findings in the linked message.","reads":["thread-message-id"]}]
+
+To revise an existing question, include its "questionId" (or "id") alongside the updated declaration. To replace it, put the old ID in "replaces" on the new declaration.`;
+
 const usage = `router-actions.sh sessions journal-review --review-file <JSON-path> --source-input <id> --source-run <id> --action-id <stable-id>
 router-actions.sh sessions projects <source-flags> [--peer <instance>]
 router-actions.sh sessions agents <source-flags>
@@ -32,7 +51,7 @@ router-actions.sh sessions ask <address> --response-mode context <source-flags> 
 router-actions.sh sessions ask --role <standing-agent-role> <source-flags> --action-id A --summary "<one line>" [--session-name <title>] -- <text>
 router-actions.sh sessions ask --project <registered-project> [--provider auto|<alias>] [--small-task] [--effort <level>] [--codex-native-test-until <ISO-8601-time>] --session-name <title> --summary "<one line>" [--consult <address>] <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --purpose research|design-critique|design-review [--provider <alias> --provider-reason "<why ChatGPT Pro is not used>"] [--project <registered-project> (alternate coding provider only)] --session-name <title> --summary "<one line>" <source-flags> --action-id A -- <text>
-router-actions.sh sessions implement --project <registered-project> [--provider ${IMPLEMENTATION_ALIASES.join('|')}] --session-name <title> --summary "<fixed implementation goal>" <source-flags> --action-id A [--text-file F | -- <design and acceptance criteria>]
+router-actions.sh sessions implement --project <registered-project> [--provider ${IMPLEMENTATION_ALIASES.join('|')}] --session-name <title> --summary "<fixed implementation goal>" <source-flags> --action-id A [--after-request <request-id> ...] [--after-settled <request-id> ...] [--text-file F | -- <design and acceptance criteria>]
 router-actions.sh sessions ask <the frozen ask's exact flags, action ID and text> --resume-source-input <original input> --resume-source-run <original run> <this run's source-flags>
 Resumes an ask frozen by a run that has since ended: the same session's live run cites the original source pair; Concierge returns the one request already admitted under that pair and action, or admits it once. A changed payload is an idempotency conflict.
 router-actions.sh sessions edit-reason --reason "<why this turn still needs its thinking model>" <source-flags> --action-id A
@@ -64,7 +83,7 @@ router-actions.sh sessions codex-recover <original-request-id> [--custody-succes
 router-actions.sh sessions attention withdraw <session-address> <source-flags> --action-id A --need <exact open event ID> --reason "<why no answer is needed>"
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
 router-actions.sh sessions requirements <request-id> (--requirements <record> ... | --requirements none --requirements-why "<reason>") <source-flags> --action-id A   # the requester re-declares which requirement records an open request delivers
-router-actions.sh sessions reply <request-id> [--also <request-id> ...] <source-flags> --action-id A [--notify] [--also-main-thread] [--partial [--answers-question] [--waiting-on-watch <watch-id>] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>" | --nothing-changed "<what the answer rests on>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--before "<what earlier agents did and how this differs>" (required on the first reply to a request that came with WHAT CAME BEFORE)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions reply <request-id> [--also <request-id> ...] [<source-flags>] --action-id A [--notify] [--also-main-thread] [--partial [--answers-question] [--waiting-on-watch <watch-id>] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>" | --nothing-changed "<what the answer rests on>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--before "<what earlier agents did and how this differs>" (required on the first reply to a request that came with WHAT CAME BEFORE)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 --notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes a matching one-shot notification on that Inbox topic. On reply it is honored for a substantive --partial --answers-question answer or a completed final with new answer words, including a final informational reply. Verification evidence such as --all-done --not-checked is recorded separately. A progress-only --partial --notify is refused. For ineligible final replies the flag is dropped with a notice. A bodyless final cannot use it.
 When a ready decision question, needs_you outcome, or needs_decision reply blocks work on Tejas, the owner raises one phone notification by default. The question opens with its one-line --summary (required on needs_you as on every final reply): say what he must decide and the result it depends on, because it is the first line of his notice; background and other news go in the text after it. Name what he must do and where he can answer; --notify is for an additional explicit request on a different message, not needed for the blocked question. Routine progress and completed answers keep their existing notification rule. A question that asks him to sign in, give a secret or do something on his device names the to-do it is about with --todo <id> (find it in his to-dos: thinkering -s 'http://x/todos/tasks?limit=200', which reaches thnkr.ing from the server or a runner, or curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL where thinkering is not found; from the Mac, curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL through ssh remote-box), or --todo none when no to-do for that step exists. Concierge refuses the question when that to-do is already done or dropped (he has already done it, so continue from there), and closes the question by itself when he ticks the to-do off.
 --also-main-thread copies a nested answer into the Inbox thread's main conversation; it is refused for ordinary main-thread requests.
@@ -142,7 +161,7 @@ router-actions.sh sessions topics request link <requestId> <source-flags> --acti
 router-actions.sh sessions topics request merge <duplicateRequestId> <source-flags> --action-id A --into <keeperRequestId> -- <why they are the same request (they share a source message in two threads)>
 router-actions.sh sessions topics request close <requestId> <source-flags> --action-id A --disposition completed|declined|withdrawn|superseded|failed [--evidence <id> ...] [--human-quote "<his exact withdrawal words>"] -- <reason>
 router-actions.sh sessions topics request reopen <requestId> <source-flags> --action-id A -- <reason>
-router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>
+router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>  # file examples: sessions topics questions --help
 router-actions.sh sessions topics question settle <questionId> <source-flags> --action-id A --state answered|declined|withdrawn|superseded|deferred [--answer <inputId>] [--replacement <questionId>] -- <reason>
 router-actions.sh sessions topics question restore <questionId> <source-flags> --action-id A --dispatch <erroneous finishing dispatch> --expected-revision N -- <reason>
 router-actions.sh sessions topics answer <inputId> <source-flags> --action-id A --json-file <file>
@@ -159,10 +178,12 @@ router-actions.sh sessions areas rename|summary <areaId> <source-flags> --action
 
 A topic owns thread roots, the human requests inside them, the questions waiting on Tejas and the router's declared focus. Place a capture before routing or answering it. topics questions takes the reconciliation JSON array (--json-file); topics answer takes {"mappings":[…],"unresolved":[…],"acknowledged":[…]}. Only this Inbox may change topics; a worker session may call topics questions/read for a topic it holds a linked dispatch for. sessions post releases focus for the inputs it covers unless --keep-working.
 
+${questionsFileHelp}
+
 Every command requires one exact source pair:
   --source-input <inputId> --source-run <runId> from this concierge-session-input identity header's input.id and input.runId
   --source-channel <channelId> --source-ts <messageTs> from this input's slack-message-context
-Do not mix source pairs. No source or run is inferred from the environment.
+Do not mix source pairs. Ordinary replies can omit both flags in a Concierge-launched shell, as described below.
 Search returns {results:[{session,evidence}],coverage} for both source forms.
 Copy results[i].session.address and returned request IDs exactly. A concierge:<id> is not an address. The service chooses delivery.
 Continue the session that owns the surface when search/context establish one unambiguous, messageable live or recently completed owner. Title, project, source and dialogue must show ownership; topical similarity and consultation-only evidence are insufficient. Clarify ambiguous ownership. When no session owns the work or the surface differs, use --provider auto to create a fresh native session and first input. Each local candidate in search and context carries workload: context in use, running or idle, and the open Inbox topics it holds; with --thread (else the topic your work started from), forTopic says whether it already holds that topic. You choose. A new topic is best started fresh with --consult <address>, which gives the new session a pointer to the earlier one to ask for context informationally. The receiving session judges fit: it may hand a request back (failed with --hand-back not-my-subject|too-loaded), and its answer then opens with that and the ready-made fresh command; send it there. A human's explicit session/provider/model/effort choice takes precedence. An addressed ask requires the exact discovered address. A registered project with its own selected default keeps that selection. Codex/Claude require --project from sessions projects; the owner resolves its cwd. ChatGPT takes no development project; its --effort is a ChatGPT thinking level (light, medium, high, extra-high, pro; default pro, ChatGPT's Pro model on Tejas's own subscription) and --file attaches any file. --chatgpt-project selects an exact native ChatGPT project URL or g-p-id, with normal --effort (default pro) and --his-chat support. --gpt refuses ahead of the December 11, 2026 custom GPT retirement, without fallback. Without explicit project selection, an agent's chat goes into the Agents project in his ChatGPT and asks ChatGPT to name missing context; --his-chat marks a chat Tejas asked for himself: his normal ChatGPT chats, Extra High by default, his words only. Its answer returns to you like any reply; Pro can take minutes to an hour. From the Mac, the chat starts on the server, where his signed-in ChatGPT browser runs, and the answer comes back to you here. No provider fallback or Slack publication occurs.
@@ -179,7 +200,7 @@ Answer a request or a thread with files: repeated --file <path> sends your own b
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.
 Sessions live on several Concierge instances (sessions peers lists them; mac is Tejas's laptop). sessions search covers every instance by default, from the transcript archive on this instance first — it holds both machines' history and answers whether the peer is on or off — plus the live peer when it answers: a session on a peer carries id <peer>:<n>, address <peer>/session:… and availability {reachable,note}; coverage.peers says which peers answered. sessions ask/context take that address as they take any other, so a session is addressed the same way wherever it runs. Each peer session's availability.state is live (the running peer confirmed it) or archived-only (found in the transcript archive or the peer's last catalogue; the peer did not confirm). When the peer is offline, search still returns its sessions as archived-only, an ask is accepted with status queued_offline and delivered when the peer wakes (its receipt says so; never a hard failure), and context comes from the archived transcript. sessions ask <peer-address> --resurrect keeps the existing archive-copy behavior: it starts a distinct session here from the mirrored transcript. sessions ask <imported-address> --resurrect continues that provider UUID in its original folder on the owning machine, provided the folder and transcript are present there; an unavailable machine refuses the action. Use --peer <instance> only to restrict search/projects to one instance or to create a new session there (sessions ask --peer <instance> --provider … --project <its project>). New work runs here, on the always-on server. A session goes on the Mac for a physical Mac capability, Tejas's explicit Mac request, or a website whose server browser attempt failed. A browser fallback request names --machine-need browser-fallback:<reason>, --server-attempt-url and --server-attempt-failure; the accepting Mac retains that observation and its agent uses an isolated headless browser. No per-use approval from Tejas is needed. A text or email code for a server sign-in stays with the server browser. Only a current direct request from Tejas may use sessions open; ordinary agent browser checks run on the server. Before starting a Mac session for other agent work, search for an existing Mac session that already owns that work and ask it. The laptop sleeps, so work that merely could run there, or whose last session happened to run there, runs here. The request and result destination stay here; the peer session replies with the ordinary sessions reply on its own machine. A named Inbox thread receives that result directly. A final hand-back also returns to the requester; other results return only when you explicitly requested your own return. A peer request cannot use --after-request.
 ${REQUEST_PROTOCOL}
-A run that follows an interruption can still answer requests delivered to the earlier run.
+A live run can answer any delivered request its session still owes. For ordinary replies inside a Concierge-launched turn, omit the source flags to use the shell’s admitted input and run. If the shell has no live pair, use the current message header. For an exact retry after changing turns, supply the original reply source pair explicitly.
 --after-request waits for the named request to settle. When it settles without confirmed success (decision needed, or an older request settled unanswered or undetermined), a request you asked before that outcome reached you stays held for your decision: cancel it with sessions cancel, or ask again. A request you ask after seeing that outcome is your decision and is delivered.
 --after-settled paces a request without making it depend on the earlier one: it is delivered once each named request settles, whatever the outcome (answered, failed or canceled), or once the run that held it has ended, with or without a final reply; the earlier request stays open for its late answer. Use it to keep only a few of your requests working at once; use --after-request when the later work needs the earlier one to have succeeded.
 Use sessions cancel <request-id> to withdraw your own request, for example one you have superseded; a request not yet handed to its recipient is never delivered afterwards, and a worker already holding it is told to stop. A completed cancel of your own still-open ChatGPT request also withdraws its exact answer duty. A request already settled failed stays owed; use sessions answer with a received successor answer and a coverage reason, or repair its original receipt.`;
@@ -353,7 +374,15 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     try { parsed = JSON.parse(readFileSync(path, "utf8")); }
     catch (error) { invalid(`--json-file could not be read as JSON: ${error instanceof Error ? error.message : String(error)}`); }
     if (verb === "questions") {
-      if (!Array.isArray(parsed)) invalid("topics questions expects a JSON array of question declarations.");
+      if (!Array.isArray(parsed) || parsed.length === 0) invalid("topics questions expects a nonempty JSON array of question declarations.");
+      for (const [index, item] of parsed.entries()) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          invalid(`--json-file entry ${index + 1} must be a JSON object.`);
+        }
+        if (typeof item.decision !== "string" || !item.decision.trim()) {
+          invalid(`--json-file entry ${index + 1} needs a nonblank top-level "decision" string containing the question or reading title. See sessions topics questions --help.`);
+        }
+      }
       body.questions = parsed;
     } else {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) invalid("topics answer expects a JSON object with mappings.");
@@ -474,7 +503,7 @@ function parseBoardArgs(args: string[]): SessionCommunicationRequest {
   return {operation:'board',body} as SessionCommunicationRequest;
 }
 
-export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
+export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.ProcessEnv = {}): SessionCommunicationRequest {
   const [first, ...args] = argv;
   if(first==='reply'&&args.includes('--reconcile-notification')){
     const requestId=args.shift(),flags=new Map<string,string>();
@@ -1054,6 +1083,14 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       flags.set(flag, value);
     }
   }
+  if (operation === "reply"
+      && !["--source-input", "--source-run", "--source-channel", "--source-ts"].some(flag => flags.has(flag))) {
+    const inputId = environment.CONCIERGE_SOURCE_INPUT_ID?.trim();
+    const runId = environment.CONCIERGE_SOURCE_RUN_ID?.trim();
+    if (!inputId || !runId) invalid("Reply needs the current turn’s --source-input and --source-run when the shell has no admitted source pair.");
+    flags.set("--source-input", inputId);
+    flags.set("--source-run", runId);
+  }
   const source: Source = sourceFrom(flags);
 
   const peer=flags.get('--peer');
@@ -1268,7 +1305,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   if(implementation){
     if(!project||!title||!summary||identity||role||peer||smallTask||outside||onRunner||savedKind||resurrect||hisChat
-      ||flags.has('--thread')||flags.has('--route-message')||flags.has('--consult')||after.length||pace.length
+      ||flags.has('--thread')||flags.has('--route-message')||flags.has('--consult')
       ||flags.has('--escalation-reason')||flags.has('--machine-need')||flags.has('--for-task')
       ||requestedEffect&&requestedEffect!=='work')
       invalid('implement needs one local project, session name, summary, fixed design, and no thread or other session mode.');
@@ -1351,11 +1388,13 @@ export async function runRouterSessions(request: SessionCommunicationRequest) {
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
+  const questionsCommand = args[0] === "topics" && args[1] === "questions";
   let request: SessionCommunicationRequest | undefined;
   try {
     if (args.length === 1 && (args[0] === "help" || args[0] === "--help")) console.log(usage);
+    else if (questionsCommand && args.length === 3 && (args[2] === "help" || args[2] === "--help")) console.log(questionsFileHelp);
     else {
-      request = parseRouterSessionsArgs(args);
+      request = parseRouterSessionsArgs(args, process.env);
       const response = await runRouterSessions(request);
       if (response.ok) {
         console.log(agentJson(response.result));
@@ -1373,7 +1412,7 @@ if (import.meta.main) {
       ok: false,
       error: invalidArguments ? "invalid_session_arguments" : "session_communication_unavailable",
       detail: error instanceof Error ? error.message : String(error),
-      ...(invalidArguments ? { usage } : request ? {
+      ...(invalidArguments ? { usage: questionsCommand ? questionsFileHelp : usage } : request ? {
         operation: request.operation,
         source: request.body.source,
         ...("action_id" in request.body ? { action_id: request.body.action_id } : {}),

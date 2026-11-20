@@ -11,6 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {implementationAlias} from './implementation-models';
 import {reconcileAskedAnswerClocks} from './asked-answer';
 import {implementationEditDecision,recordImplementationEditReason} from './implementation-edit-gate';
+import {isLiveCommandTurn} from './claude-terminal-process';
 import { db, finishTurn, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, observeTurnFacts, settleTurnDependencies, SETTLED_EXECUTION_SQL, codexUnacknowledgedRecovery, type SessionRow } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
@@ -374,7 +375,7 @@ export class SessionCommunicationCoordinator {
             const input = getAcceptedSessionInput(source.input_id);
             const observed = input && readInputExecution(input);
             const live = !!input && !!observed?.turn && nativeRunId(observed.turn.id) === source.run_id && observed.turn.session_id === input.session_id
-                && observed.turn.status === 'running' && !observed.turn.stop_requested_at && !!observed.turn.provider_admission_intended_at;
+                && isLiveCommandTurn(db,observed.turn);
             // A run citing its own ambiguous steering input is strong evidence it received it, and
             // refusing left agents unable to act on requests they were answering. It is not proof:
             // the input ID derives from a request ID another message could quote, so this admits
@@ -917,7 +918,7 @@ export class SessionCommunicationCoordinator {
         }
         return {kind:null};
     }
-    editGate(input:{providerSessionId:string;sourceRunId?:string;providerTurnId?:string;providerModel?:string;providerAgentId?:string;ownerTurnId?:number;toolId:string;toolName:string;toolInput?:unknown}) {
+    editGate(input:Parameters<typeof implementationEditDecision>[0]) {
         return implementationEditDecision(input);
     }
     /** A refusal is recorded against the owner turn so the parked turn can say why, instead of ending without a word. */
@@ -986,8 +987,6 @@ export class SessionCommunicationCoordinator {
         const actor=this.fenced(this.actor(input.source));
         action(input.action_id);
         if(!actor.inputId||typeof input.reason!=='string')throw new Error('A top-model edit reason needs this run and its specific reason.');
-        const status=db.query('SELECT status FROM turns WHERE id=?').get(actor.turn) as {status:string}|null;
-        if(status?.status!=='running')throw new Error('The reason belongs to a running turn.');
         if(!db.query("SELECT 1 FROM session_owner_events WHERE turn_id=? AND kind='implementation_edit_hold' LIMIT 1").get(actor.turn))
             throw new Error('This turn has no held fifth edit; continue normally or use sessions implement for fixed work.');
         return recordImplementationEditReason(actor.turn,actor.session,actor.inputId,input.reason,input.action_id);
@@ -2411,7 +2410,7 @@ export class SessionCommunicationCoordinator {
             const sourceSession=getSessionById(actor.session)!;
             if(sender.scope!=='work'||!actor.inputId||!input.project||!input.title||!input.summary||!input.text.trim()
                 ||input.peer||input.address||input.role||input.saved||input.outside||input.onRunner||input.thread||input.routeMessageId
-                ||input.after?.length||input.pace?.length||input.consult||input.escalationReason)
+                ||input.consult||input.escalationReason)
                 throw new Error('Implementation handoff needs a fixed task, local project and live work authority.');
             if(sourceSession.provider_id!=='claude-code'&&sourceSession.provider_id!=='codex')
                 throw new Error('Implementation handoff starts from a Claude or Codex design session.');
@@ -2542,8 +2541,8 @@ export class SessionCommunicationCoordinator {
             const sourceSession=getSessionById(actor.session)!;
             if(sourceSession.provider_id==='chatgpt')throw new Error('ChatGPT sessions cannot send outbound session requests.');
             if(sessionMetadata(sourceSession).interactionPolicy==='consultation-only')throw new Error('Consultation-only sessions cannot send requests or replies.');
-            const sourceTurn=db.query('SELECT status,provider_admission_intended_at FROM turns WHERE id=?').get(live.turn) as any;
-            if(sourceTurn?.status!=='running'||!sourceTurn.provider_admission_intended_at)throw new Error('Source must identify this admitted input and its exact live run.');
+            const sourceTurn=db.query('SELECT * FROM turns WHERE id=?').get(live.turn) as any;
+            if(!isLiveCommandTurn(db,sourceTurn))throw new Error('Source must identify this admitted input and its exact live run.');
             if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         }
         if(input.summary!==undefined)input={...input,summary:oneLineSummary(input.summary)};

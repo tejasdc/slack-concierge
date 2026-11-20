@@ -18,6 +18,8 @@ import { listAccounts as listAccountsFromResolver } from './account-home-resolve
 import {observeAppliedRuntimeMaintenance,progressRuntimeMaintenance,sameRuntime,sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState,type RuntimeMaintenanceObservation} from './codex-runtime-maintenance';
 import {isProcessIdentityAlive,processIdentity,type ProcessIdentity} from './runtime-identity';
 import {LEDGER_IMAGE_PATH} from './agent-ledger-image-boundary';
+import {claudeUsageAllowanceModel} from './aliases';
+import {isClaudeUsageExhaustion} from './provider-failures';
 
 type AccountProvider = "codex" | "claude-code";
 const providers = new Set<AccountProvider>(["codex", "claude-code"]);
@@ -305,9 +307,10 @@ function fileCodexSignIn(operation: SignInOperation): string {
   return identity.label;
 }
 
-async function claudeEmail(home: string): Promise<string | null> {
+export async function runnerClaudeAccountEmail(home: string,cwd?:string,environment?:Record<string,string>): Promise<string | null> {
   const executable = process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
-  const child = Bun.spawn([executable, "auth", "status", "--json"], { env: { ...process.env, CLAUDE_CONFIG_DIR: home },
+  const child = Bun.spawn([executable, "auth", "status", "--json"], { env: { ...(environment??process.env), CLAUDE_CONFIG_DIR: home },
+    ...(cwd?{cwd}:{}),
     stdout: "pipe", stderr: "ignore", stdin: "ignore" });
   const timer = setTimeout(() => child.kill(), 15_000);
   try {
@@ -318,6 +321,7 @@ async function claudeEmail(home: string): Promise<string | null> {
   } catch { return null; }
   finally { clearTimeout(timer); }
 }
+const claudeEmail=runnerClaudeAccountEmail;
 
 async function fileClaudeSignIn(operation: SignInOperation): Promise<string> {
   const email = await claudeEmail(operation.stageHome);
@@ -876,6 +880,37 @@ async function runnerRuntimeMaintenance(params:Record<string,unknown>,botDir?:st
 }
 
 export async function serveRunnerAccountCall(method: string, params: Record<string, unknown>,context:{activeTurns:number;botDir?:string}={activeTurns:0}): Promise<unknown> {
+  if (method === 'accounts.claude.usageProbe') {
+    const account = params.account, model = params.model;
+    if (typeof account !== 'string' || !account.trim() || typeof model !== 'string'
+      || !/^[a-zA-Z0-9][a-zA-Z0-9._\-[\]]{0,100}$/.test(model))
+      throw new Error('An exact Claude account and model are required for the allowance check.');
+    const home = runnerAccountHome('claude-code', account);
+    if (!home || await claudeEmail(home,'/tmp',{...process.env,CLAUDE_CONFIG_DIR:home}) !== account)
+      return {status:'unconfirmed',detail:'The selected Claude login could not confirm its account.'};
+    const executable = process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE?.trim() || 'claude';
+    const startedAtMs=Date.now();
+    const child = Bun.spawn([executable,'-p','Reply exactly CONCIERGE_USAGE_CHECK_OK. Do not use tools.',
+      '--model',model,'--tools','','--strict-mcp-config','--no-session-persistence','--output-format','json'],{
+      cwd:'/tmp',env:{...process.env,CLAUDE_CONFIG_DIR:home},
+      stdin:'ignore',stdout:'pipe',stderr:'pipe'});
+    const deadline=setTimeout(()=>child.kill(),60_000);
+    try {
+      const [stdout,stderr,code]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);
+      let result:Record<string,unknown>|null=null;
+      try{result=JSON.parse(stdout) as Record<string,unknown>;}catch{}
+      const actualModel=typeof result?.modelUsage==='object'&&result.modelUsage!==null
+        ?Object.keys(result.modelUsage).find(key=>claudeUsageAllowanceModel(key)===claudeUsageAllowanceModel(model)):undefined;
+      if(code!==0||result?.is_error!==false||result?.result!=='CONCIERGE_USAGE_CHECK_OK'||!actualModel)
+        return {status:typeof result?.result==='string'&&isClaudeUsageExhaustion(result.result)?'still_limited':'unconfirmed',
+          detail:'Claude did not complete the exact account and model check.',
+          terminalReason:typeof result?.terminal_reason==='string'?result.terminal_reason:null,
+          error:typeof result?.result==='string'?result.result.slice(0,240):stderr.slice(0,240)};
+      if(await claudeEmail(home,'/tmp',{...process.env,CLAUDE_CONFIG_DIR:home})!==account)
+        return {status:'unconfirmed',detail:'The selected Claude login changed during the check.'};
+      return {status:'available',account,model:actualModel,startedAtMs};
+    }finally{clearTimeout(deadline);}
+  }
   if(method==='accounts.codex.runtimeMaintenance.observe')return runnerRuntimeMaintenance({...params,observeOnly:true},context.botDir);
   if(method==='accounts.codex.runtimeMaintenance.publish')return runnerRuntimeMaintenance({...params,persistOnly:true},context.botDir);
   if(method==='accounts.codex.runtimeMaintenance')return runnerRuntimeMaintenance(params,context.botDir);

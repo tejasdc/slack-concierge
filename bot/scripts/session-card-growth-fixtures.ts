@@ -10,7 +10,7 @@ function fixture(count:number){
   const source=new Database(':memory:'),prepared=observedDatabase(new Database(':memory:'));
   source.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,provider_id TEXT,status TEXT,native_metadata_json TEXT,
     agent_session_uuid TEXT,slack_channel_id TEXT,slack_thread_ts TEXT,created_at TEXT,last_turn_at TEXT);
-    CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,started_at TEXT,provider_turn_id TEXT,
+    CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,turn_kind TEXT NOT NULL DEFAULT 'native',started_at TEXT,provider_turn_id TEXT,
       native_run_id TEXT,ended_at TEXT,agent_text TEXT,stop_requested_at TEXT,accepted_input_id TEXT,
       provider_admission_intended_at TEXT,provider_started_at TEXT,
       provider_input_acknowledged_at TEXT,provider_duration_ms INTEGER,
