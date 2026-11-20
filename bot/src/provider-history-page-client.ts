@@ -83,6 +83,8 @@ export class ProviderHistoryPageClient {
       const timer=setTimeout(()=>{
         const item=this.pending.get(id);if(!item)return;
         this.pending.delete(id);
+        // A read that gives up waiting says so on its log line rather than looking like its own work.
+        if(item.phases)item.phases.history_worker_timeout_ms=Math.round(performance.now()-item.sentAt);
         item.reject(new Error('HISTORY_PAGE_STILL_PREPARING'));
         // An import already under way must finish and warm the worker. Killing it here
         // would make every retry start the same expensive cold read from zero.
