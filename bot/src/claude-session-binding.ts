@@ -55,7 +55,7 @@ export function writeClaudeSessionBinding(binding: {
   accountUuid?: string | null;
   organizationUuid?: string | null;
   boundByDispatchRevision?: number;
-}): { written: boolean; reason?: "stale-revision" | "same" } {
+}): { written: boolean; reason?: "stale-revision" | "same-revision-conflict" | "same" } {
   if (!binding.sessionUuid?.trim() || !binding.accountLabel?.trim()) return { written: false, reason: "same" };
   const now = Date.now();
   const existing = readClaudeSessionBinding(binding.sessionUuid);
@@ -81,6 +81,19 @@ export function writeClaudeSessionBinding(binding: {
       from_revision: existing.boundByDispatchRevision, to_revision: incomingRevision,
     });
   }
+  // M3 (2026-11-20): same-revision writes with a DIFFERENT account label are a race
+  // between two dispatchers that both minted the same revision number. Neither has
+  // more authority than the other, so neither should silently overwrite — fail closed
+  // and let the caller retry with a fresh revision.
+  if (existing && existing.boundByDispatchRevision === incomingRevision && existing.accountLabel !== binding.accountLabel) {
+    log("warn", "claude_session_binding_same_revision_conflict", {
+      session_uuid: binding.sessionUuid,
+      revision: incomingRevision,
+      stored_account: existing.accountLabel,
+      incoming_account: binding.accountLabel,
+    });
+    return { written: false, reason: "same-revision-conflict" };
+  }
   // The guarded UPDATE: an INSERT must still run for first-time bindings, but on CONFLICT
   // the UPDATE is conditional on the incoming revision winning. SQLite's "WHERE" in an
   // ON CONFLICT DO UPDATE clause acts as the CAS guard.
@@ -94,7 +107,8 @@ export function writeClaudeSessionBinding(binding: {
        organization_uuid = COALESCE(excluded.organization_uuid, organization_uuid),
        bound_at_ms = excluded.bound_at_ms,
        bound_by_dispatch_revision = excluded.bound_by_dispatch_revision
-     WHERE excluded.bound_by_dispatch_revision >= bound_by_dispatch_revision`,
+     WHERE excluded.bound_by_dispatch_revision > bound_by_dispatch_revision
+        OR (excluded.bound_by_dispatch_revision = bound_by_dispatch_revision AND excluded.account_label = account_label)`,
   ).run(
     binding.sessionUuid,
     binding.accountLabel,

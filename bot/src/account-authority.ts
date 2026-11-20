@@ -59,6 +59,7 @@ import {
 } from "./account-refusal-cache";
 import { claudeHomeProven, claudeHomeSignedOut } from "./provider-account-selection";
 import { codexAccountIdForLabel } from "./provider-accounts";
+import { claudeRefusalAttributedToAnotherAccount } from "./provider-usage";
 import { db } from "./state";
 import { log } from "./log";
 
@@ -364,7 +365,22 @@ function readClaudeHomeProvenAt(home: string): number | null {
 function refusalFor(provider: ProviderId, label: string, model: string, _accountUsage: AccountUsage | null, now: number): RefusalRecord | null {
   if (provider === "antigravity") return null;
   const codexAccountId = provider === "codex" ? codexAccountIdForLabel(label) : null;
-  return cachedRefusal(provider as RefusalProvider, label, provider === "codex" ? null : model, codexAccountId, now);
+  const refusal = cachedRefusal(provider as RefusalProvider, label, provider === "codex" ? null : model, codexAccountId, now);
+  // Cross-account attribution guard: a Claude refusal whose reset actually belongs to
+  // another account's window must not block this account. The pre-write guard in
+  // recordUsageExhaustion blocks these at write time when a fresh reading is available,
+  // but a refusal written before the reading arrives can still land under the wrong
+  // scope. Reading the guard here closes the window between that write and the periodic
+  // retireMisattributedClaudeRefusals reconciliation.
+  if (refusal && provider === "claude-code") {
+    const attributedElsewhere = claudeRefusalAttributedToAnotherAccount(label, model, refusal.resetAtMs);
+    if (attributedElsewhere) {
+      log("info", "authority_refusal_attributed_to_another_account", {
+        selected_account: label, reset_matches_account: attributedElsewhere, model, reset_at_ms: refusal.resetAtMs });
+      return null;
+    }
+  }
+  return refusal;
 }
 
 type ReadingView = { readAtMs: number | null; fresh: boolean; problem: string | null; stale: boolean };
