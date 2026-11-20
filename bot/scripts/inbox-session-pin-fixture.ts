@@ -19,6 +19,7 @@ process.env.CONCIERGE_TEST_AUTHORIZATION=INBOX_SESSION_PIN_TEST_AUTHORIZATION;
 process.env.CONCIERGE_PEER_NAME='mac'; // No Lab network read in disposable handoff inventory.
 process.env.THINKERING_AGENT_TEST_KEY_FILE=join(scratch,'absent-key');
 process.env.CONCIERGE_TURN_RUNNERS='marked';
+process.env.CONCIERGE_DIAG_AUTHORITY='1';
 
 const [{db,getSessionById},inputs,pin,roles,handoff,{SessionOwner},{maybeStartStandingRoleFailover},
   {transferSession},{chooseAccountForTurn},{sharedClaudeHome,chooseClaudeDispatch,markClaudeHomeVerified},

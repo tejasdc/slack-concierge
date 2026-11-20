@@ -119,7 +119,15 @@ export type CapabilityVerdict = Readonly<{
 }>;
 
 function makeVerdict(ok: boolean, reason: CapabilityReason, clearsAtMs: number | null, why: string, source: CapabilityEvidence): CapabilityVerdict {
-  return { ok, reason, clearsAtMs, why, source, badge: badgeFor(reason), explain: explainFor(reason, source, clearsAtMs) };
+  const verdict = { ok, reason, clearsAtMs, why, source, badge: badgeFor(reason), explain: explainFor(reason, source, clearsAtMs) };
+  // CI diagnostic: trace every verdict when CONCIERGE_DIAG_AUTHORITY is set.
+  if (process.env.CONCIERGE_DIAG_AUTHORITY === "1") {
+    try {
+      const { log } = require("./log") as typeof import("./log");
+      log("info", "canTakeWork_verdict", { ok, reason, why, home: source.home });
+    } catch { /* ignore */ }
+  }
+  return verdict;
 }
 
 /** Maps the authority's `reason` to a stable UI badge token. */
