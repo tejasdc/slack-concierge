@@ -971,7 +971,8 @@ export async function runClaudeCodeTurn(input: {
     const usageExhaustedHere = rateLimitVerdict.usageExhausted
       || (rateLimitVerdict.reason === "no-signal" && isClaudeUsageExhaustion(parsed.text));
     if (!usageExhaustedHere) return false;
-    if (currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, rateLimitVerdict.resetAtMs ?? usageResetAt);
+    if (currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, rateLimitVerdict.resetAtMs ?? usageResetAt,
+      { rateLimitType: rateLimitVerdict.rateLimitType ?? null, overageReason: rateLimitVerdict.overageReason ?? null });
     const model = input.usageProbe ? undefined : selectAvailableModel(fallbackModels);
     if (!model) return false;
     fallbackModels = fallbackModels.slice(fallbackModels.indexOf(model) + 1);

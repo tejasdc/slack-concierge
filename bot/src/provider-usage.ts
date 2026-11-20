@@ -31,16 +31,22 @@ export type UsageAttempt = { provider: UsageProvider; scope: string; label: stri
 // selected account. Keep the provider's refusal on its particular turn, but do not let
 // that turn stop unrelated sessions from using the selected account.
 const CLAUDE_RESET_MATCH_MS = 60_000;
-function claudeRefusalAttributedToAnotherAccount(accountLabel: string | null, model: string, resetAt: number | null): string | null {
+export function claudeRefusalAttributedToAnotherAccount(accountLabel: string | null, model: string, resetAt: number | null): string | null {
   if (!accountLabel || resetAt === null) return null;
   let row: { usage_json: string } | null;
   try {
     row = db.query(`SELECT usage_json FROM ${accountUsageTable('claude-code')} WHERE provider='claude-code'`)
       .get() as { usage_json: string } | null;
-  } catch { return null; }
+  } catch (error) {
+    log('warn', 'claude_refusal_attribution_guard_db_failed', { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
   if (!row) return null;
   let usage: ProviderUsage;
-  try { usage = JSON.parse(row.usage_json) as ProviderUsage; } catch { return null; }
+  try { usage = JSON.parse(row.usage_json) as ProviderUsage; } catch (error) {
+    log('warn', 'claude_refusal_attribution_guard_json_failed', { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
   const runner = providerRunnerTarget('claude-code');
   if (runner && usage.sourceRunner !== runner) return null;
   const account = usage.accounts.find(candidate => candidate.label.toLowerCase() === accountLabel.toLowerCase());
@@ -62,12 +68,18 @@ function claudeScopeAccount(scope: string): string | null {
   try {
     row = db.query(`SELECT usage_json FROM ${accountUsageTable('claude-code')} WHERE provider='claude-code'`)
       .get() as { usage_json: string } | null;
-  } catch { return null; }
+  } catch (error) {
+    log('warn', 'claude_scope_account_db_failed', { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
   if (!row) return null;
   try {
     return (JSON.parse(row.usage_json) as ProviderUsage).accounts.find(account =>
       scope.startsWith(`${createHash('sha256').update(account.label.toLowerCase()).digest('hex').slice(0, 24)}:`))?.label ?? null;
-  } catch { return null; }
+  } catch (error) {
+    log('warn', 'claude_scope_account_json_failed', { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
 }
 
 function read(provider: UsageProvider): UsageState {

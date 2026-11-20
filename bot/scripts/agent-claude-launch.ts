@@ -170,40 +170,78 @@ if(!passthrough){
     // `claude_resume_binding_endpoint_unavailable` to stderr so the silent-regression
     // path is visible. Fallback to JSONL header is retained for availability but
     // observability for the regression is now explicit.
+    // C3 (2026-11-20): three outcomes from this block:
+    //   1. Endpoint named a binding and we matched a home → bindingResolved=true, use it.
+    //   2. Endpoint named a binding but NO home matches → REFUSE. Silently falling
+    //      through to the JSONL header is the exact F3 regression: the dispatcher
+    //      chose one account, the header names another, and launcher silently
+    //      follows the header. Refusing surfaces the configuration problem instead.
+    //   3. Endpoint returned no binding (legacy session, predates the binding system)
+    //      OR endpoint itself failed (network, 503) → LOG + fall through to JSONL header.
+    //      Legacy sessions still work; endpoint outages stay available but visible.
+    let bindingEndpointSaidYes = false;
+    let bindingNamedAccount: string | null = null;
+    const perHomeDiagnostics: string[] = [];
     try {
       const bindingResponse=await requestApiResponse(`/sessions/v1/auth/claude-resume-binding?sessionUUID=${encodeURIComponent(exactResume)}`);
       const binding=(bindingResponse as any)?.binding;
       if(binding?.accountLabel){
+        bindingEndpointSaidYes = true;
+        bindingNamedAccount = binding.accountLabel;
         for(const home of homes){
           try{
             const configFile=home===defaultHome?join(root,'.claude.json'):join(home,'.claude.json');
             const config=JSON.parse(readFileSync(configFile,'utf8'))?.oauthAccount;
-            if(typeof config?.emailAddress!=='string'||config.emailAddress!==binding.accountLabel)continue;
+            if(typeof config?.emailAddress!=='string'||config.emailAddress!==binding.accountLabel){
+              perHomeDiagnostics.push(`${home}: config email missing or does not match`);
+              continue;
+            }
             const label=join(home,'.account-email');
-            if(existsSync(label)&&readFileSync(label,'utf8').trim()!==config.emailAddress)continue;
+            if(existsSync(label)&&readFileSync(label,'utf8').trim()!==config.emailAddress){
+              perHomeDiagnostics.push(`${home}: .account-email disagrees with config`);
+              continue;
+            }
             const env={...environment};
             if(process.platform==='darwin'&&home===defaultHome)delete env.CLAUDE_CONFIG_DIR;
             else env.CLAUDE_CONFIG_DIR=home;
             const status=spawnSync(executable,['auth','status'],{env,encoding:'utf8',timeout:15_000});
-            const identity=JSON.parse(status.stdout??'');
-            if(status.status!==0||identity.loggedIn!==true||identity.email!==config.emailAddress)continue;
+            const identity=JSON.parse(status.stdout??'{}');
+            if(status.status!==0||identity.loggedIn!==true||identity.email!==config.emailAddress){
+              perHomeDiagnostics.push(`${home}: auth status did not confirm login as ${config.emailAddress}`);
+              continue;
+            }
             if(process.platform==='darwin'&&home===defaultHome)delete environment.CLAUDE_CONFIG_DIR;
             else environment.CLAUDE_CONFIG_DIR=home;
             // Dispatcher's binding wins. Skip header validation entirely.
             useConciergeChoice=false;
             bindingResolved=true;
             break;
-          }catch{}
+          }catch(perHomeError){
+            perHomeDiagnostics.push(`${home}: ${perHomeError instanceof Error?perHomeError.message:String(perHomeError)}`);
+          }
         }
       }
     } catch (error) {
-      // I2: visible log — any silent regression is now diagnosable.
+      // Endpoint itself failed (network, 503, path typo). Log + fall through — legacy
+      // sessions without a binding record still need the JSONL header path. The log
+      // makes an endpoint outage visible. bindingEndpointSaidYes stays false so the
+      // refusal branch below does NOT fire; we fall through.
       process.stderr.write(JSON.stringify({
         level:'warn',event:'claude_resume_binding_endpoint_unavailable',
         session_uuid:exactResume,
         error_name:error instanceof Error?error.name:'unknown',
         error_message:error instanceof Error?error.message:String(error),
       })+"\n");
+    }
+    // C3: if the endpoint named a binding AND no home matched it, refuse. The silent
+    // fall-through to JSONL header was the F3 regression.
+    if (bindingEndpointSaidYes && !bindingResolved) {
+      process.stderr.write(JSON.stringify({
+        level:'error',event:'claude_resume_binding_no_matching_home',
+        session_uuid:exactResume, bound_account:bindingNamedAccount,
+        per_home:perHomeDiagnostics,
+      })+"\n");
+      throw new Error(`Claude exact resume ${exactResume}: dispatcher bound account ${bindingNamedAccount} has no matching signed-in home on this runner. Fallback to the JSONL header is refused — fix the sign-in instead of silently rebinding.`);
     }
     if(!bindingResolved){
     const paths=new Set<string>();
@@ -243,24 +281,45 @@ if(!passthrough){
     }
     if(binding){
     const matches:string[]=[];
+    const headerPerHomeDiagnostics:string[]=[];
     for(const home of homes){
       try{
         const config=JSON.parse(readFileSync(home===defaultHome?join(root,'.claude.json'):join(home,'.claude.json'),'utf8'))?.oauthAccount;
-        if(config?.accountUuid!==binding.accountUuid||config?.organizationUuid!==binding.organizationUuid||typeof config.emailAddress!=='string')continue;
+        if(config?.accountUuid!==binding.accountUuid||config?.organizationUuid!==binding.organizationUuid||typeof config.emailAddress!=='string'){
+          headerPerHomeDiagnostics.push(`${home}: config does not match header binding`);
+          continue;
+        }
         const label=join(home,'.account-email');
-        if(existsSync(label)&&readFileSync(label,'utf8').trim()!==config.emailAddress)continue;
+        if(existsSync(label)&&readFileSync(label,'utf8').trim()!==config.emailAddress){
+          headerPerHomeDiagnostics.push(`${home}: .account-email disagrees with config`);
+          continue;
+        }
         // A selected home must expose this exact transcript, not merely the same account.
-        if(![...paths].some(path=>{try{return readdirSync(join(home,'projects')).some(project=>{try{return realpathSync(join(home,'projects',project,`${exactResume}.jsonl`))===path;}catch{return false;}});}catch{return false;}}))continue;
+        if(![...paths].some(path=>{try{return readdirSync(join(home,'projects')).some(project=>{try{return realpathSync(join(home,'projects',project,`${exactResume}.jsonl`))===path;}catch{return false;}});}catch{return false;}})){
+          headerPerHomeDiagnostics.push(`${home}: does not expose this transcript`);
+          continue;
+        }
         const env={...environment};
         if(process.platform==='darwin'&&home===defaultHome)delete env.CLAUDE_CONFIG_DIR;
         else env.CLAUDE_CONFIG_DIR=home;
         const status=spawnSync(executable,['auth','status'],{env,encoding:'utf8',timeout:15_000});
-        const identity=JSON.parse(status.stdout??'');
+        const identity=JSON.parse(status.stdout??'{}');
         if(status.status===0&&identity.loggedIn===true&&identity.authMethod==='claude.ai'&&identity.apiProvider==='firstParty'
-          &&identity.email===config.emailAddress&&typeof identity.configDirectory==='string'&&realpathSync(identity.configDirectory)===realpathSync(home))matches.push(home);
-      }catch{}
+          &&identity.email===config.emailAddress&&typeof identity.configDirectory==='string'&&realpathSync(identity.configDirectory)===realpathSync(home)){
+          matches.push(home);
+        }else{
+          headerPerHomeDiagnostics.push(`${home}: auth status did not confirm login (status=${status.status}, loggedIn=${identity.loggedIn}, method=${identity.authMethod})`);
+        }
+      }catch(perHomeError){
+        headerPerHomeDiagnostics.push(`${home}: ${perHomeError instanceof Error?perHomeError.message:String(perHomeError)}`);
+      }
     }
-    if(matches.length!==1)throw new Error(`Claude exact resume ${exactResume}: original account ${binding.accountUuid} organization ${binding.organizationUuid} has ${matches.length?'ambiguous working homes':'no working home'}.`);
+    if(matches.length!==1){
+      process.stderr.write(JSON.stringify({level:'error',event:'claude_resume_header_no_matching_home',
+        session_uuid:exactResume,header_account:binding.accountUuid,header_org:binding.organizationUuid,
+        match_count:matches.length,per_home:headerPerHomeDiagnostics})+"\n");
+      throw new Error(`Claude exact resume ${exactResume}: original account ${binding.accountUuid} organization ${binding.organizationUuid} has ${matches.length?'ambiguous working homes':'no working home'}.`);
+    }
     if(process.platform==='darwin'&&matches[0]===defaultHome)delete environment.CLAUDE_CONFIG_DIR;
     else environment.CLAUDE_CONFIG_DIR=matches[0];
     }else useConciergeChoice=true;

@@ -672,7 +672,13 @@ export async function refreshProviderAccountUsage(force = false): Promise<void> 
           const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
           runnerIdentityConfirmed=!!identity&&typeof identity.id==='string'&&typeof identity.label==='string';
           setRunnerAccountInUse(provider,runnerIdentityConfirmed?identity:null);
-        } catch { runnerIdentityConfirmed=false;setRunnerAccountInUse(provider,null); }
+        } catch (error) {
+          // H3 (2026-11-20): identity confirmation failure holds every turn under this
+          // provider until the next refresh. A log breadcrumb explains why the hold is
+          // not clearing instead of leaving the operator guessing.
+          log('warn','runner_identity_confirmation_failed',{provider,runner,error:error instanceof Error?error.message:String(error)});
+          runnerIdentityConfirmed=false;setRunnerAccountInUse(provider,null);
+        }
       }else usage=await read();
       // The provider's source time chooses between two observations for the same label.
       // A fresh peer reading may replace a stale local cache; a fresh local one stays local.

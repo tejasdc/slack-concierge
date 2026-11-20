@@ -148,8 +148,12 @@ export function emptySignals(): RateLimitSignals {
  * the whole turn — once rejected, always rejected until `clearSignals`.
  */
 export function observeRateLimitEvent(signals: RateLimitSignals, event: RateLimitEventPayload): void {
-  const status = event.rate_limit_info?.status;
-  if (typeof status !== 'string') return;
+  const rawStatus = event.rate_limit_info?.status;
+  if (typeof rawStatus !== 'string') return;
+  // H1 (2026-11-20): normalize case before matching so a capitalized future status
+  // ("REJECTED", "Rejected") isn't silently swallowed as sawStructured without
+  // sawStructuredRejected — which would make terminalVerdict treat it as allowed.
+  const status = rawStatus.toLowerCase();
   // M2 (2026-11-19): record that the provider SPOKE, regardless of whether we
   // recognize the status enum. A future "throttled" or "degraded" must still
   // beat stale synthetic text.

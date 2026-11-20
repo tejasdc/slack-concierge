@@ -41,11 +41,23 @@ test("the dispatcher's binding is retrievable by session UUID", () => {
 });
 
 test("a later binding update rebinds the session to a different account", () => {
-  writeClaudeSessionBinding({ sessionUuid: SESSION_UUID, accountLabel: "tejas@chann.app", accountUuid: "chann-uuid" });
-  writeClaudeSessionBinding({ sessionUuid: SESSION_UUID, accountLabel: "hey@tejas.nyc", accountUuid: "hey-uuid" });
+  // CAS is strict: a newer revision overrides an older. Writes with the same revision
+  // and a different account label are a race and refused as "same-revision-conflict".
+  writeClaudeSessionBinding({ sessionUuid: SESSION_UUID, accountLabel: "tejas@chann.app", accountUuid: "chann-uuid", boundByDispatchRevision: 1 });
+  writeClaudeSessionBinding({ sessionUuid: SESSION_UUID, accountLabel: "hey@tejas.nyc", accountUuid: "hey-uuid", boundByDispatchRevision: 2 });
   const binding = readClaudeSessionBinding(SESSION_UUID);
   expect(binding!.accountLabel).toBe("hey@tejas.nyc");
   expect(binding!.accountUuid).toBe("hey-uuid");
+});
+
+test("same-revision writes with different accounts are refused as a race", () => {
+  const first = writeClaudeSessionBinding({ sessionUuid: SESSION_UUID, accountLabel: "tejas@chann.app", accountUuid: "chann-uuid", boundByDispatchRevision: 5 });
+  const second = writeClaudeSessionBinding({ sessionUuid: SESSION_UUID, accountLabel: "hey@tejas.nyc", accountUuid: "hey-uuid", boundByDispatchRevision: 5 });
+  expect(first.written).toBe(true);
+  expect(second.written).toBe(false);
+  expect(second.reason).toBe("same-revision-conflict");
+  const binding = readClaudeSessionBinding(SESSION_UUID);
+  expect(binding!.accountLabel).toBe("tejas@chann.app");
 });
 
 test("recordSessionOwnerHeaderMismatch logs without throwing", () => {
