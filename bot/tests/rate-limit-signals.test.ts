@@ -142,4 +142,36 @@ describe("terminal verdict — rate_limit_event vs <synthetic>", () => {
     expect(verdict.usageExhausted).toBe(true);
     expect(verdict.conflict?.kind).toBe("reset-mismatch");
   });
+
+  test("M2 (2026-11-19): unknown rate-limit status is still trusted as structured and suppresses synthetic", () => {
+    // If Anthropic ships a new status enum value ("throttled", "degraded"), we must
+    // trust the structured signal and NOT fall back to synthetic text. Regressing this
+    // path reintroduces the Nov 19 phantom refusal where synthetic text won over a
+    // structured rate_limit_event.
+    const signals = emptySignals();
+    observeRateLimitEvent(signals, { rate_limit_info: { status: "throttled", resetsAt: null } });
+    // A synthetic exhaustion message would normally trigger `synthetic-only` terminal.
+    observeSyntheticText(
+      signals,
+      "You've hit your weekly limit. Resets at 2026-11-22T22:00:00Z.",
+      matchesExhaustion,
+      parseResetFromText,
+    );
+    const verdict = terminalVerdict(signals);
+    // Synthetic cannot win: we saw a structured event, even one we don't recognize.
+    expect(verdict.usageExhausted).toBe(false);
+    expect(verdict.reason).toBe("structured-allowed");
+  });
+
+  test("H1 (2026-11-20): structured status matches case-insensitively", () => {
+    // If Anthropic ever returns "REJECTED" or "Rejected", we must still latch
+    // sawStructuredRejected — otherwise sawStructured is true but neither the
+    // rejected nor allowed branch fires, and terminalVerdict silently flips to
+    // "allowed" with no fallback.
+    const signals = emptySignals();
+    observeRateLimitEvent(signals, { rate_limit_info: { status: "Rejected", resetsAt: "2026-11-22T22:00:00Z" } });
+    const verdict = terminalVerdict(signals);
+    expect(verdict.usageExhausted).toBe(true);
+    expect(verdict.reason).toBe("structured-rejected");
+  });
 });
