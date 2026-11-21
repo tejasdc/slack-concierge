@@ -963,7 +963,8 @@ export async function runClaudeCodeTurn(input: {
     closeProviderInput(modelSwitchError);
   };
   const refusalBelongsToConversation = (resetAt: number | null) =>
-    !!input.sessionUUID && (!currentUsageAttempt || !claudeAccountCorroboratesRefusal(currentUsageAttempt, resetAt));
+    !!input.sessionUUID && (!currentUsageAttempt || !claudeAccountCorroboratesRefusal(
+      currentUsageAttempt, resetAt, input.environment?.CONCIERGE_PROVIDER_RUNNER?.trim() || null));
   const startUsageFallback = () => {
     const parsed = output.read(unstructuredOutput);
     if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError) return false;

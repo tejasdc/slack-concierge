@@ -646,9 +646,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         message:`Claude was placed on runner ${remoteClaudeRunner}, but the owner's saved Claude allowance reading is not from that runner. This unsent turn will retry after the owner reads that runner's allowance.`});
     }
     const adoptedClaudeAccount=input.boundAccount?.account??previousClaudeAccount;
-    const conversationRetry=input.providerId==='claude-code'&&!input.adopted&&!input.boundAccount&&dispatchAttempt===2
+    const conversationRetry=input.providerId==='claude-code'&&!input.adopted&&!input.boundAccount&&dispatchAttempt>1
       ?db.query(`SELECT json_extract(payload_json,'$.refusedAccount') AS refused_account
-        FROM session_owner_events WHERE event_id=?`).get(`claude-conversation-retry:${input.turnId}`) as {refused_account:string}|null
+        FROM session_owner_events WHERE event_id=? AND json_extract(payload_json,'$.nextAttempt')=?`)
+        .get(`claude-conversation-retry:${input.turnId}`,dispatchAttempt) as {refused_account:string}|null
       :null;
     const alternative=conversationRetry
       ?claudeDispatchWithRoomBesides(conversationRetry.refused_account,claudeLaunchModel,remoteClaudeRunner):null;
@@ -1328,19 +1329,22 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         &&isClaudeConversationRefusal(message);
       if(replaySafe&&input.presentation==='native'&&claudeConversationRefused
         &&input.session.agent_session_uuid&&structuredFailure?.providerSessionId===input.session.agent_session_uuid
-        &&dispatchAttempt===1&&!input.boundAccount&&runningClaudeAccount
+        &&!input.boundAccount&&runningClaudeAccount
         &&claudeDispatchWithRoomBesides(runningClaudeAccount,runningClaudeModel,
           input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null)){
         const refusedAccount=runningClaudeAccount;
+        const eventId=`claude-conversation-retry:${input.turnId}`;
         const requeued=db.transaction(()=>{
+          if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return false;
           const settled=db.query(`SELECT 1 FROM turns turn
-            JOIN session_communication_requests request ON request.target_input_id=turn.accepted_input_id
+            JOIN session_communication_requests request ON request.target_session_id=turn.session_id
+              AND request.target_input_id=turn.accepted_input_id
             WHERE turn.id=? AND request.outcome IS NOT NULL`).get(input.turnId);
           if(settled||turnStopWasRequested(input.turnId)||!retryRunningTurnAfterProviderFailure({
             turnId:input.turnId,ownerInstanceId:input.ownerInstanceId,dispatchAttempt,error:message,nextAttemptMs:Date.now(),
           }))return false;
-          recordSessionEvent({eventId:`claude-conversation-retry:${input.turnId}`,sessionId:input.session.id,
-            turnId:input.turnId,kind:'claude_conversation_retry',payload:{refusedAccount}});
+          recordSessionEvent({eventId,sessionId:input.session.id,inputId:input.inputId,turnId:input.turnId,
+            kind:'claude_conversation_retry',payload:{refusedAccount,nextAttempt:dispatchAttempt+1}});
           return true;
         }).immediate();
         if(requeued){

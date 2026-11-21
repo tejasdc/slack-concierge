@@ -148,6 +148,7 @@ try {
   inputs.bindSessionProvider(receiver.id,'claude-code','cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa');
   const exact=inputs.enqueueSessionInput(inputs.retainSessionInput({id:'claude-exact-retry',kind:'input',origin:'agent',
     sessionId:receiver.id,scope:'fixture',actionId:'claude-exact-retry',payload:{text:'One exact input'}}).input.id);
+  db.query('UPDATE turns SET dispatch_attempt=2 WHERE id=?').run(exact.turn_id);
   const launches:(string|undefined)[]=[];
   const runExact=async()=>{
     const claim=claimNextQueuedTurn('claude-refusal-fixture');

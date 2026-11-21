@@ -33,14 +33,13 @@ export type UsageAttempt = { provider: UsageProvider; scope: string; label: stri
 const CLAUDE_RESET_MATCH_MS = 60_000;
 /** A resumed conversation's rejection can affect other conversations only with
  * corroboration from the attempted account's applicable allowance window. */
-export function claudeAccountCorroboratesRefusal(attempt: UsageAttempt, resetAt: number | null): boolean {
+export function claudeAccountCorroboratesRefusal(attempt: UsageAttempt, resetAt: number | null, runner: string | null): boolean {
   if (!attempt.accountLabel || resetAt === null || resetAt <= Date.now()) return false;
   const row = db.query(`SELECT usage_json FROM ${accountUsageTable('claude-code')} WHERE provider='claude-code'`)
     .get() as { usage_json: string } | null;
   if (!row) return false;
   let usage: ProviderUsage;
   try { usage = JSON.parse(row.usage_json) as ProviderUsage; } catch { return false; }
-  const runner = providerRunnerTarget('claude-code');
   if ((usage.sourceRunner ?? null) !== runner) return false;
   const account = usage.accounts.find(candidate => candidate.label.toLowerCase() === attempt.accountLabel!.toLowerCase());
   const model = claudeScopeModel(attempt.scope);
