@@ -19,12 +19,19 @@ KillMode=mixed
 Environment=HOME=/var/lib/concierge-capture
 Environment=CONCIERGE_CAPTURE_STATE_DIR=/var/lib/concierge-capture
 Environment=CONCIERGE_CAPTURE_CONFIG=%d/routes
+# Pebble notes are corrected by thnkr.ing before delivery (bot/src/pebble-correction.ts). This
+# unit cannot read thnkr.ing's root-only local socket, so it takes the network entrance with the
+# owner's service token as a credential. The credential is copied at start: after remote-box
+# rotates the token, restart this unit; until then correction fails open (notes arrive unchanged).
+Environment=CONCIERGE_THINKERING_CAPABILITY_URL=http://100.118.245.110:8790
+Environment=CONCIERGE_THINKERING_TOKEN_FILE=%d/thinkering_owner
 StateDirectory=concierge-capture
 StateDirectoryMode=0700
 LoadCredential=watch_audio:/etc/agent-inbox.token
 LoadCredential=pebble_index:/etc/concierge/pebble-index.token
 LoadCredential=thinkering:/etc/concierge/thinkering.token
 LoadCredential=capture_queue:/etc/concierge/capture-queue.token
+LoadCredential=thinkering_owner:/etc/thinkering/network-callers/concierge-owner.token
 LoadCredential=routes:/etc/concierge/capture-routes.toml
 UMask=0077
 NoNewPrivileges=true
