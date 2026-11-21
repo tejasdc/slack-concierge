@@ -316,7 +316,7 @@ sqlite3 /var/lib/concierge-capture/state.db \
 `agent-inbox.service` runs as `concierge-capture`, hides `/root`, makes the
 filesystem read-only, drops capabilities, bounds memory/tasks, and writes only
 its private state and legacy audio directories. It receives route secrets, the
-queue secret, and route config—but no Slack/provider credential. The Concierge
+queue secret, and route config—but no Slack/provider credential. It also receives thnkr.ing's network-entrance token (the owner's service token, copied at start) so Pebble notes can be corrected before delivery; rotate by restarting the unit. The Concierge
 service receives the queue secret through its own systemd credential directory.
 Capture ingress validates systemd's delivered credential shape exactly: the
 private directory must be `0500` or ACL-presented `0550`, and credential files
