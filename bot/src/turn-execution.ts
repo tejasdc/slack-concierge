@@ -399,6 +399,20 @@ function claudeRetryWithdrawn(inputId:string,sessionId:number):boolean {
   LIMIT 1`).get(inputId,sessionId,sessionId,sessionId);
 }
 
+function claudeConversationRetry(inputId:string,sessionId:number,turnId:number,dispatchAttempt:number) {
+  return db.query(`SELECT json_extract(payload_json,'$.refusedAccount') AS refused_account
+    FROM session_owner_events WHERE event_id=? AND session_id=? AND input_id=?
+      AND json_extract(payload_json,'$.nextAttempt')=?`)
+    .get(`claude-conversation-retry:${turnId}`,sessionId,inputId,dispatchAttempt) as {refused_account:string}|null;
+}
+
+export function assertClaudeConversationRetryStillOwned(inputId:string,sessionId:number,turnId:number,dispatchAttempt:number):void {
+  if(dispatchAttempt>1&&claudeConversationRetry(inputId,sessionId,turnId,dispatchAttempt)
+    &&(turnStopWasRequested(turnId)||claudeRetryWithdrawn(inputId,sessionId))){
+    throw new ProviderTurnCancelledError('The exact Claude retry was withdrawn before provider submission.');
+  }
+}
+
 export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnExecutionOutcome> {
   const turnStart = Date.now();
   const dispatchAttempt = input.dispatchAttempt
@@ -663,10 +677,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
     const adoptedClaudeAccount=input.boundAccount?.account??previousClaudeAccount;
     const conversationRetry=input.presentation==='native'&&input.providerId==='claude-code'&&!input.adopted&&!input.boundAccount&&dispatchAttempt>1
-      ?db.query(`SELECT json_extract(payload_json,'$.refusedAccount') AS refused_account
-        FROM session_owner_events WHERE event_id=? AND session_id=? AND input_id=?
-          AND json_extract(payload_json,'$.nextAttempt')=?`)
-        .get(`claude-conversation-retry:${input.turnId}`,input.session.id,input.inputId,dispatchAttempt) as {refused_account:string}|null
+      ?claudeConversationRetry(input.inputId,input.session.id,input.turnId,dispatchAttempt)
       :null;
     const alternative=conversationRetry
       ?claudeDispatchWithRoomBesides(conversationRetry.refused_account,claudeLaunchModel,remoteClaudeRunner):null;
@@ -747,10 +758,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       const prerequisite = input.beforeProviderAdmission();
       if (prerequisite) await prerequisite;
     }
-    if(conversationRetry&&input.presentation==='native'&&(turnStopWasRequested(input.turnId)
-      ||claudeRetryWithdrawn(input.inputId,input.session.id))){
-      throw new ProviderTurnCancelledError('The exact Claude retry was withdrawn before provider submission.');
-    }
+    if(conversationRetry&&input.presentation==='native')
+      assertClaudeConversationRetryStillOwned(input.inputId,input.session.id,input.turnId,dispatchAttempt);
     if (!input.beforeProviderAdmission&&!markTurnProviderAdmissionIntended(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
       throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
     }
