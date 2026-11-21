@@ -2,6 +2,7 @@ import { providerDisplayName } from "./aliases";
 import { isModelCapacityRefusal } from "./model-capacity-refusal";
 import { holdIsStartPace, startPaceStatus } from "./start-pace";
 import { snoozeReason } from "./snooze";
+import { CLAUDE_CONVERSATION_REFUSAL, isClaudeConversationRefusal } from "./provider-failures";
 /** One explanation policy for the live owner and the read-only presentation worker.
  * All changing facts are supplied by the caller; this module never opens the ledger. */
 export type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
@@ -80,6 +81,8 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const reset=message?.match(/\b(?:until|resets? at)\s+(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)\b/i)?.[1]??null;
     const clearsAt=reset&&!Number.isNaN(Date.parse(reset))?new Date(reset).toISOString():null;
     if(state==='uncertain'||turn?.status==='parked'||turn?.status==='interrupted')return {code:'OUTCOME_UNCONFIRMED',message:message??'The provider outcome is unconfirmed. This input needs reconciliation before any retry.',clearsAt:null,automaticRetry:false};
+    if(message&&isClaudeConversationRefusal(message))return {code:'PROVIDER_REJECTED',message:CLAUDE_CONVERSATION_REFUSAL,
+      clearsAt:null,automaticRetry:false};
     if(message&&/usage (?:is |was )?(?:cached as )?exhausted|you(?:'|’)ve hit your (?:session |usage )?limit|usage limit/i.test(message))return {code:'PROVIDER_USAGE_EXHAUSTED',message:clearsAt?`Provider usage exhausted this input. Reported reset: ${clearsAt}. This input will not be retried automatically.`:'Provider usage exhausted this input. The reset time was not retained; this input will not be retried automatically.',clearsAt,automaticRetry:false};
     if(message==='CHATGPT_SEND_FAILED'||message==='CHATGPT_NOT_SENT')return {
       code:message,
@@ -118,7 +121,8 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     const status=Number(reason.match(/\bAPI Error:\s*(\d{3})\b/)?.[1])||null;
     const next=turn.dispatch_next_attempt_ms>context.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
     const when=next?context.formatTime(turn.dispatch_next_attempt_ms):null;
-    const product=providerDisplayName(context.session(input.session_id).providerId)??String(context.session(input.session_id).providerId);
+    const providerId=context.session(input.session_id).providerId;
+    const product=providerDisplayName(providerId)??String(providerId);
     if(holdIsStartPace(turn.dispatch_hold))return {code:'START_PACED',message:startPaceStatus(turn.dispatch_hold,when,waitingWork)!,clearsAt:next,automaticRetry:true};
     if(turn.dispatch_hold==='release_pace')return {code:'RETRY_SCHEDULED',message:when
       ?`${product} can take work again. Held work restarts a few sessions at a time so the server is not swamped; ${waitingWork.toLowerCase()} starts at ${when}.`
@@ -126,9 +130,14 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
     if(/\bCHATGPT_PRO_LIMIT_REACHED\b/.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
       ?`ChatGPT Pro’s usage limit is reached, so nothing was sent. ChatGPT reports it resets at ${when}; ${waitingWork.toLowerCase()} is kept and is sent then by itself.`
       :`ChatGPT Pro’s usage limit is reached, so nothing was sent. ${waitingWork} is kept and is sent when the limit resets.`,clearsAt:next,automaticRetry:true};
-    if(turn.dispatch_hold==='usage'||context.continuationRefusal(turn.id)==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason))return {code:'PROVIDER_USAGE_HELD',message:when
+    if(turn.dispatch_hold==='usage'||context.continuationRefusal(turn.id)==='usage'||/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason)){
+      if(providerId==='claude-code')return {code:'PROVIDER_USAGE_HELD',message:when
+        ?`This work is waiting for Claude allowance. ${waitingWork} is kept. Concierge will check again at ${when} or sooner if another account can run it.`
+        :`This work is waiting for Claude allowance. ${waitingWork} is kept and will run when an account can take it.`,clearsAt:next,automaticRetry:true};
+      return {code:'PROVIDER_USAGE_HELD',message:when
       ?`No ${product} account available on this machine has room now. The earliest reported reset is ${when}; Concierge will check again then. ${waitingWork} is kept here and will run when an account on this machine is ready.`
       :`No ${product} account available on this machine has room now, and none has reported a reset time. ${waitingWork} is kept here and will run when an account on this machine is ready.`,clearsAt:next,automaticRetry:true};
+    }
     const again=when?`at ${when}`:'now';
     if(isModelCapacityRefusal(reason))return {code:'RETRY_SCHEDULED',message:`${product} says its model is at capacity right now. ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
     const chatGpt=chatGptHoldReason(reason);
@@ -137,7 +146,9 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
       :`${product} is not answering right now. ${waitingWork} is kept and goes again ${again}; nothing is needed from you.`,clearsAt:next,automaticRetry:true};
   }
   if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',message:`This account could not sign in. ${waitingWork} is kept and will start automatically after this machine can use its credentials again.`,clearsAt:null,automaticRetry:true};
-  if(turn.dispatch_failure_class==='usage_wait')return {code:'PROVIDER_USAGE_HELD',message:'The agent stopped partway because every account ran out of usage. It picks up where it left off by itself as soon as an account has room; what it already did is kept.',clearsAt:null,automaticRetry:true};
+  if(turn.dispatch_failure_class==='usage_wait')return {code:'PROVIDER_USAGE_HELD',message:context.session(input.session_id).providerId==='claude-code'
+    ? `This work is waiting for Claude allowance. ${waitingWork} is kept and will run when an account can take it.`
+    : 'The agent stopped partway because every account ran out of usage. It picks up where it left off by itself as soon as an account has room; what it already did is kept.',clearsAt:null,automaticRetry:true};
   if(turn.dispatch_failure_class==='chosen_time')return turn.dispatch_next_attempt_ms?{code:'CHOSEN_TIME_HELD',message:`The agent picks this work up again at ${context.formatTime(turn.dispatch_next_attempt_ms)}.`,clearsAt:new Date(turn.dispatch_next_attempt_ms).toISOString(),automaticRetry:true}:null;
   const focusUntil=context.focusHold(input.session_id);
   if(focusUntil!==null)return {code:'FOCUS_HOLD',message:'Waiting for your focus session to end',clearsAt:new Date(focusUntil).toISOString(),automaticRetry:true};
@@ -164,6 +175,10 @@ export function receiptStatusFromFacts(input:StatusInput,observed:{turn:StatusTu
   if(older?.status==='queued'&&(older.dispatch_hold==='usage'||older.dispatch_failure_class==='usage_wait'||older.continuation_refusal==='usage')){
     const reset=older.dispatch_next_attempt_ms!==null&&older.dispatch_next_attempt_ms>context.now()?older.dispatch_next_attempt_ms:null;
     const product=providerDisplayName(session.providerId)??String(session.providerId);
+    if(session.providerId==='claude-code')return {code:'PROVIDER_USAGE_HELD',message:reset
+      ?`This message is queued behind earlier work waiting for Claude allowance. Concierge will check that work again at ${context.formatTime(reset)} or sooner if another account can run it.`
+      : 'This message is queued behind earlier work waiting for Claude allowance.',
+      clearsAt:reset===null?null:new Date(reset).toISOString(),automaticRetry:true};
     return {code:'PROVIDER_USAGE_HELD',message:reset
       ?`No ${product} account has room until ${context.formatTime(reset)}, when the first one frees up. This message waits behind earlier work and is read after that work resumes; an account with room can resume it sooner.`
       :`No ${product} account has room. This message waits behind earlier work and is read after that work resumes when an account has room.`,

@@ -8,7 +8,7 @@ import { claudeHistoryMessages, claudeToolNames, providerMessageObserver, type P
 import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
 import { launchRefusalReason } from "./claude-launch-refusal";
-import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion, isContextOverflowRefusal } from "./provider-failures";
+import { CLAUDE_CONVERSATION_REFUSAL, ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion, isContextOverflowRefusal } from "./provider-failures";
 import {
   clearSignals as clearRateLimitSignals,
   detectAccountMismatch,
@@ -27,7 +27,7 @@ import { webActivityDetails } from "./agent-progress";
 import { macSurfaceActivity } from "./mac-surface-activity";
 import {isCodeEditTool} from './implementation-models';
 import { claudeUsageFallbackModels, DEFAULT_CLAUDE_SUBAGENT_MODEL } from "./aliases";
-import { assertUsageAvailable, cachedUsageLimit, recordUsageExhaustion, recordUsageSuccess,
+import { assertUsageAvailable, cachedUsageLimit, claudeAccountCorroboratesRefusal, recordUsageExhaustion, recordUsageSuccess,
   resetEpochMilliseconds, usageAttempt, usageLimitMessage, type UsageAttempt } from "./provider-usage";
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, claudeConsultationArgs,
   type ProviderInteractionPolicy } from "./provider-policy";
@@ -962,6 +962,8 @@ export async function runClaudeCodeTurn(input: {
     modelSwitchError = error instanceof Error ? error : new Error(String(error));
     closeProviderInput(modelSwitchError);
   };
+  const refusalBelongsToConversation = (resetAt: number | null) =>
+    !!input.sessionUUID && (!currentUsageAttempt || !claudeAccountCorroboratesRefusal(currentUsageAttempt, resetAt));
   const startUsageFallback = () => {
     const parsed = output.read(unstructuredOutput);
     if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError) return false;
@@ -971,7 +973,9 @@ export async function runClaudeCodeTurn(input: {
     const usageExhaustedHere = rateLimitVerdict.usageExhausted
       || (rateLimitVerdict.reason === "no-signal" && isClaudeUsageExhaustion(parsed.text));
     if (!usageExhaustedHere) return false;
-    if (currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, rateLimitVerdict.resetAtMs ?? usageResetAt,
+    const resetAt = rateLimitVerdict.resetAtMs ?? usageResetAt;
+    if (resetAt !== null && refusalBelongsToConversation(resetAt)) return false;
+    if (!input.sessionUUID && currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, resetAt,
       { rateLimitType: rateLimitVerdict.rateLimitType ?? null, overageReason: rateLimitVerdict.overageReason ?? null });
     const model = input.usageProbe ? undefined : selectAvailableModel(fallbackModels);
     if (!model) return false;
@@ -1542,12 +1546,14 @@ export async function runClaudeCodeTurn(input: {
     // room. Reported as a plain error ("429 … model not changed"), it failed on the full account
     // while the other had room (2026-10-07, 9:02 PM).
     const resetAt = usageResetAt ?? accountUsageResetAt;
+    const conversationRefusal = refusalBelongsToConversation(resetAt);
     const waitsForReset = resetAt !== null && resetAt > Date.now();
     throw new ProviderDispatchError({
-      message: claudeUsageExhaustedMessage(input.accountLabel, resetAt, modelSwitchError.message),
-      failureClass: "parked_terminal", terminalConfirmed: true,
+      message: conversationRefusal ? `${CLAUDE_CONVERSATION_REFUSAL} ${modelSwitchError.message}`
+        : claudeUsageExhaustedMessage(input.accountLabel, resetAt, modelSwitchError.message),
+      failureClass: "parked_terminal", terminalConfirmed: !conversationRefusal,
       toolsUsed: failed.toolsUsed, assistantOutput: failed.assistantOutput, providerSessionId: failed.sessionUUID,
-      ...(waitsForReset ? { clearsAtMs: resetAt } : {}),
+      ...(conversationRefusal ? { threadScoped: true } : waitsForReset ? { clearsAtMs: resetAt } : {}),
     });
   }
   if (!initialPromptAcknowledged) {
@@ -1634,7 +1640,7 @@ export async function runClaudeCodeTurn(input: {
         }
       }
     }
-    if (usageExhausted && !suppressedByMismatch && currentUsageAttempt) {
+    if (usageExhausted && !input.sessionUUID && !suppressedByMismatch && currentUsageAttempt) {
       recordUsageExhaustion(currentUsageAttempt, resolvedResetAt, {
         rateLimitType: rateLimitVerdict.rateLimitType,
         overageReason: rateLimitVerdict.overageReason,
@@ -1644,9 +1650,13 @@ export async function runClaudeCodeTurn(input: {
     // request outright, so the input can keep its place and be tried again then. Without a
     // reported reset there is nothing to wait for, and it stays terminal.
     const resetAt = usageExhausted ? resolvedResetAt ?? accountUsageResetAt : null;
+    const conversationRefusal = usageExhausted && refusalBelongsToConversation(resolvedResetAt);
+    if (conversationRefusal) log('warn', 'claude_conversation_quota_refused', {
+      session_uuid: parsed.sessionUUID, scope: currentUsageAttempt?.scope, reported_reset_at: resetAt,
+    });
     const waitsForReset = resetAt !== null && resetAt > Date.now();
     throw new ProviderDispatchError({
-      message: usageExhausted
+      message: conversationRefusal ? `${CLAUDE_CONVERSATION_REFUSAL} ${parsed.text}` : usageExhausted
         ? claudeUsageExhaustedMessage(input.accountLabel, resetAt, parsed.text)
         : parsed.text || stderr.slice(0, 800) || "claude-code returned an error",
       ...(usageExhausted ? { failureClass: "parked_terminal" as const } : {}),
@@ -1654,7 +1664,7 @@ export async function runClaudeCodeTurn(input: {
       toolsUsed: parsed.toolsUsed,
       assistantOutput: parsed.assistantOutput,
       providerSessionId: parsed.sessionUUID,
-      ...(waitsForReset ? { clearsAtMs: resetAt } : {}),
+      ...(conversationRefusal ? { threadScoped: true } : waitsForReset ? { clearsAtMs: resetAt } : {}),
     });
   }
   if (currentUsageAttempt) recordUsageSuccess(currentUsageAttempt);

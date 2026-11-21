@@ -7,6 +7,12 @@ export function isClaudeUsageExhaustion(message: string) {
   return /^(?:you(?:'|’)re out of usage credits\b|you(?:'|’)ve hit your (?:(?:weekly|daily|monthly|session|usage|extra usage) )?limit\b)/i.test(message);
 }
 
+export const CLAUDE_CONVERSATION_REFUSAL = "Claude refused to continue this conversation.";
+
+export function isClaudeConversationRefusal(message: string): boolean {
+  return message.replace(/^ProviderDispatchError:\s*/, "").startsWith(CLAUDE_CONVERSATION_REFUSAL);
+}
+
 /**
  * Claude refusing a turn because the conversation no longer fits its window. Compaction
  * fixes exactly this, so it is the one refusal worth recovering from in place rather than
@@ -143,7 +149,7 @@ export function isGoogleQuotaRefusal(message:string):boolean {
   return /RESOURCE_EXHAUSTED|individual quota reached|quota exhausted/i.test(message);
 }
 
-export type ProviderRefusalContinuationReason={kind:'provider_refused';refusal:'usage'|'rate_limit'|'sign_in';
+export type ProviderRefusalContinuationReason={kind:'provider_refused';refusal:'usage'|'rate_limit'|'sign_in'|'conversation';
   /** Another account of the same provider had room when this one refused, so nothing waits. */
   elsewhere?:boolean;
   detail:string;waitUntilMs?:number|null};
@@ -152,6 +158,7 @@ export type ProviderRefusalContinuationReason={kind:'provider_refused';refusal:'
 export function providerRefusalContinuationReason(message:string,clearsAtMs:number|null,
   failedAtMs:number,attempt:number):ProviderRefusalContinuationReason|null {
   const detail=message.slice(0,500);
+  if(isClaudeConversationRefusal(message))return {kind:'provider_refused',refusal:'conversation',detail};
   if(isRefreshableAuthFailure(message))return {kind:'provider_refused',refusal:'sign_in',detail};
   if(isClaudeUsageExhaustion(message)||/usage.*exhaust|out of usage|you(?:'|’)ve hit your .*limit|usage credits/i.test(message)||isGoogleQuotaRefusal(message))
     return {kind:'provider_refused',refusal:'usage',detail,waitUntilMs:clearsAtMs};
@@ -169,6 +176,8 @@ export function providerRefusalContinuationReason(message:string,clearsAtMs:numb
  */
 export function endedWorkInPlainWords(error:string|null|undefined,where=''):string {
   const message=String(error??'');
+  if(isClaudeConversationRefusal(message))
+    return 'Claude refused to continue this conversation. The request and its earlier work are preserved for follow-up.';
   const refusal=providerRefusalContinuationReason(message,null,0,0)?.refusal
     ??(isGoogleQuotaRefusal(message)?'usage':null);
   const why=refusal==='usage'?'its AI account ran out of allowance'

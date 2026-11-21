@@ -266,13 +266,21 @@ export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:Pro
  * unreadable selected login one provider attempt, but that permission cannot support a room claim.
  */
 export function claudeAccountWithRoomBesides(refused:string|null,model?:string|null):boolean{
+  return claudeDispatchWithRoomBesides(refused,model)!==null;
+}
+
+export function claudeDispatchWithRoomBesides(refused:string|null,model?:string|null,
+  runnerTarget:string|null|undefined=undefined):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null{
   const usage=providerAccountUsage('claude-code');
-  if(!usage)return false;
+  const runner=runnerTarget===undefined?providerRunnerTarget('claude-code'):runnerTarget;
+  if(!usage||(usage.sourceRunner??null)!==runner)return null;
   const available=new Set(accountAvailability('claude-code',model)
     .filter(account=>account.hasRoom&&account.account!==refused).map(account=>account.account));
-  if(!available.size)return false;
-  return savedWorkAccountRooms('claude-code',usage,Date.now(),model)
-    .some(room=>available.has(room.account)&&(room.isDefault||!!room.home));
+  if(!available.size)return null;
+  const room=savedWorkAccountRooms('claude-code',usage,Date.now(),model,runner)
+    .find(room=>available.has(room.account)&&(room.isDefault||!!room.home));
+  return room?{account:room.account,home:room.home,because:'moved-for-room',expected:refused,
+    selectionRevision:claudeAccountSelection()?.revision??0}:null;
 }
 
 /**
