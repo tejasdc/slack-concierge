@@ -26,6 +26,7 @@ import {
   GITHUB_DEPLOYMENT_WEBHOOK_PATH,
   type GitHubDeploymentPush,
 } from "./github-deployment-webhook";
+import { correctPebbleText } from "./pebble-correction";
 
 const DEFAULT_CONFIG_PATH = "/etc/concierge/capture-routes.toml";
 const MAX_SLACK_MESSAGE_CHARACTERS = 40_000;
@@ -927,7 +928,11 @@ export class ProductionCaptureServices implements CaptureServices {
   async accept(route: CaptureRouteConfig, capture: Capture): Promise<CaptureAcceptance> {
     if (capture.kind === "binary") return storeBinaryCapture(route, capture);
     const ensureSameSnapshot = (event: CaptureEventRow) => {
-      if ((route.adapter === "thinkering" || event.delivery_kind === "session") && (event.message_text !== (event.delivery_kind === "session" ? capture.text : slackText(capture))
+      // A Pebble session capture's stored words may be the corrected ones; its event id is a hash of
+      // the original words, so an equal id already means equal text.
+      const textDiffers = route.adapter !== "pebble-index"
+        && event.message_text !== (event.delivery_kind === "session" ? capture.text : slackText(capture));
+      if ((route.adapter === "thinkering" || event.delivery_kind === "session") && (textDiffers
           || captureAttachmentSnapshot(retainedCaptureAttachments(event.attachment_snapshot_json))
             !== captureAttachmentSnapshot(capture.attachments)
           || (JSON.parse(event.source_snapshot_json || 'null') as CaptureSource|null)?.metadata?.urgency !== capture.urgency
@@ -943,7 +948,12 @@ export class ProductionCaptureServices implements CaptureServices {
     const destination = route.adapter === "thinkering"
       ? route.destination as CaptureDeliveryDestinationConfig
       : resolvePebbleDestination(route, capture);
-    const messageText = destination.type === "session" ? capture.text
+    // Pebble's own app already transcribed these words; thnkr.ing's learned names are applied before the
+    // Inbox reads them. The event id above stays that of the original words, so retries stay idempotent.
+    const sessionText = destination.type === "session" && route.adapter === "pebble-index"
+      ? await correctPebbleText(capture.text, capture.eventId, capture.agentSource)
+      : capture.text;
+    const messageText = destination.type === "session" ? sessionText
       : destination.type === "slack" ? slackText(capture) : journalMarkdown(capture);
     if (route.adapter !== "thinkering" && destination.type === "slack" && messageText.length > MAX_SLACK_MESSAGE_CHARACTERS) {
       throw new CaptureRequestError(422, `rendered transcript exceeds Slack's ${MAX_SLACK_MESSAGE_CHARACTERS.toLocaleString("en-US")}-character limit`);
