@@ -57,7 +57,7 @@ import {withBefore} from './reply-before';
 import { isHisChatGpt,parseProviderSelector,resolveProviderSelector,chatgptProjectThinking } from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
-import {astraAllowedForTurn} from './astra-turn-gate';
+import {astraAllowedForTurn,recordModelStartDenial} from './astra-turn-gate';
 import {CURRENT_SOL_MODEL,isAstraModel,modelDisplayName} from './aliases';
 
 const SOL_LABEL=modelDisplayName(CURRENT_SOL_MODEL);
@@ -930,12 +930,8 @@ export class SessionCommunicationCoordinator {
             const running=session?db.query(`SELECT id,accepted_input_id,dispatch_attempt FROM turns WHERE session_id=?
                 AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2`).all(session.id) as {id:number;accepted_input_id:string|null;dispatch_attempt:number}[]:[];
             const turn=running.length===1?running[0]!:null;
-            if(session&&turn){
-                const payload={turnId:turn.id,model:input.model,message:answer.message};
-                const digest=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-                recordSessionEvent({eventId:`model-start-denied:${turn.id}:${turn.dispatch_attempt}:${digest}`,sessionId:session.id,inputId:turn.accepted_input_id,
-                    turnId:turn.id,kind:'model_start_denied',payload});
-            }
+            if(session&&turn)recordModelStartDenial({sessionId:session.id,turnId:turn.id,inputId:turn.accepted_input_id,
+                dispatchAttempt:turn.dispatch_attempt,model:input.model,message:answer.message});
         }
         return answer;
     }

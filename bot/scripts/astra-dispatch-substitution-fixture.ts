@@ -155,5 +155,36 @@ try{
   assert.equal(otherLab.session_id,labVoice);
   assert.throws(()=>labDispatch(otherLab),/no matching Astra authority/,'another Lab cannot borrow this session’s choice');
   assert.equal(events(otherLab.turn_id,'model_substitution').length,0);
+  assert.equal(events(otherLab.turn_id,'model_start_denied').length,1,'the pre-dispatch refusal is retained');
+  finish({turn:otherLab.turn_id});
+
+  const dispatchNewVoice=(claim:typeof labClaim)=>dispatchModelForTurn({sessionId:claim.session_id,turnId:claim.turn_id,
+    inputId:claim.accepted_input_id,model:ASTRA,providerSessionId:'',dispatchAttempt:claim.dispatch_attempt});
+  const escalationReason='Three reports of the same issue and ChatGPT Pro was unavailable.';
+  await lab.create({clientActionId:'reasoned-lab',thread:'reasoned-lab',questionEntryId:opening.id,
+    participants:[{key:'astra',label:'Astra',provider:'codex',model:ASTRA,reasoningEffort:'medium',escalationReason}]},actor);
+  await lab.reconcile();
+  const reasonedLab=claimNextQueuedTurn('fixture')!;
+  assert.equal(dispatchNewVoice(reasonedLab),ASTRA);
+  assert.equal(events(reasonedLab.turn_id,'model_escalation')[0].reason,escalationReason);
+  finish({turn:reasonedLab.turn_id});
+
+  await lab.create({clientActionId:'legacy-lab',thread:'legacy-lab',questionEntryId:opening.id,
+    participants:[{key:'astra',label:'Astra',provider:'codex',model:ASTRA,reasoningEffort:'medium'}]});
+  // Reproduce the original retained format with no separate revision pointer.
+  db.query(`UPDATE session_inputs SET payload_json=json_remove(payload_json,'$.binding.membershipRevision'),
+    receipt_json=json_remove(receipt_json,'$.membershipRevision','$.membershipInputId')
+    WHERE scope='lab:conversation' AND action_id='legacy-lab'`).run();
+  db.query(`UPDATE session_inputs SET payload_json=json_remove(payload_json,'$.membershipRevision','$.membershipInputId')
+    WHERE scope='lab:activation:legacy-lab'`).run();
+  db.query("DELETE FROM session_inputs WHERE scope='lab:membership:legacy-lab'").run();
+  await lab.reconcile();
+  const legacyLab=claimNextQueuedTurn('fixture')!;
+  assert.equal(dispatchNewVoice(legacyLab),ASTRA,'a pending opening can use its original pre-roster selection');
+  finish({turn:legacyLab.turn_id});
+  lab.respond('legacy-lab',{clientActionId:'legacy-followup',entryId:'followup',targets:[`concierge:${legacyLab.session_id}`]},actor);
+  await lab.reconcile();
+  const legacyFollowup=claimNextQueuedTurn('fixture')!;
+  assert.equal(dispatchNewVoice(legacyFollowup),ASTRA,'the same legacy selection remains usable for a follow-up');
   console.log('Astra dispatch: ordinary fallback remains available, and Lab authorization stays with its selected participant and group');
 }finally{rmSync(scratch,{recursive:true,force:true});}

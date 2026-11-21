@@ -3,7 +3,7 @@ import {db,getSessionById,executionChanged,type ProviderId} from './state';
 import {createNativeSession,getAcceptedSessionInput,retainSessionInput,recordSessionEvent,sessionMetadata,stablePayload,withdrawUnstartedServiceInput,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import {agentIdentity} from './session-presence';
 import {topModel} from './model-escalation';
-import {activationBinding,labInvocationBindingMatches} from './lab-invocation-facts';
+import {activationBinding,labInvocationBindingMatches,retainedLabMembership} from './lab-invocation-facts';
 export {boundLabInvocation,labInvocationBindingMatches} from './lab-invocation-facts';
 import {restrictedLabThread} from './lab-content-disclosure';
 
@@ -88,13 +88,16 @@ export class LabConversations {
     const head=JSON.parse(input.receipt_json??'{}');
     const membership=head.membershipInputId?getAcceptedSessionInput(head.membershipInputId):input;
     if(!membership)throw new LabConversationError('The retained Lab membership head is unavailable.',409,'LAB_MEMBERSHIP_UNCONFIRMED');
-    return {input,membership,binding:JSON.parse(membership.payload_json).binding as Conversation};
+    return {input,membership,binding:retainedLabMembership(membership) as Conversation};
   }
   private membershipRecord(thread:string,revision:number){
     const pointer=readAction(`lab:membership:${thread}`,String(revision));
-    const record=pointer?.source_input_id?getAcceptedSessionInput(pointer.source_input_id):null;
+    const original=!pointer&&revision===1?readAction('lab:conversation',thread):null;
+    const originalBinding=original?JSON.parse(original.payload_json).binding:null;
+    const legacy=original?.kind==='lab-conversation'&&originalBinding?.thread===thread&&originalBinding.membershipRevision===undefined;
+    const record=pointer?.source_input_id?getAcceptedSessionInput(pointer.source_input_id):legacy?original:null;
     if(!record)throw new LabConversationError('This exact Lab membership revision is unavailable.',404,'LAB_MEMBERSHIP_NOT_FOUND');
-    return {record,binding:JSON.parse(record.payload_json).binding as Conversation};
+    return {record,binding:retainedLabMembership(record) as Conversation};
   }
   membership(thread:string,revision:number){
     if(!Number.isSafeInteger(revision)||revision<1)throw new LabConversationError('Choose an exact membership revision.');

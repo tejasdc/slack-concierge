@@ -3,9 +3,14 @@ import {getAcceptedSessionInput,nativeRunId,sessionMetadata,type AcceptedSession
 
 const action=(scope:string,id:string)=>db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,id) as AcceptedSessionInput|null;
 const labBindingFields=['sessionId','provider','model','reasoningEffort','project','projectPath','generation'] as const;
+export function retainedLabMembership(input:AcceptedSessionInput):any {
+ const {binding}=JSON.parse(input.payload_json);
+ if(input.kind==='lab-conversation'&&binding&&binding.membershipRevision===undefined)return {...binding,membershipRevision:1};
+ return binding;
+}
 export function activationBinding(input:AcceptedSessionInput):any {
  const payload=JSON.parse(input.payload_json);
- return payload.binding??JSON.parse(getAcceptedSessionInput(payload.membershipInputId??payload.conversationInputId)!.payload_json).binding;
+ return payload.binding??retainedLabMembership(getAcceptedSessionInput(payload.membershipInputId??payload.conversationInputId)!);
 }
 export function boundLabInvocation(input:AcceptedSessionInput):boolean {
  if(input.origin!=='service'||input.kind!=='input'||input.scope!=='lab:invocation'||!input.request_id||!input.source_input_id)return false;
@@ -27,9 +32,9 @@ export function labInvocationSelection(input:AcceptedSessionInput,model:string):
  const selected=JSON.parse(input.payload_json).labInvocation;
  const binding=activationBinding(activation);
  const member=binding.participants.find((value:any)=>value.key===selected.key);
- const legacy=binding.membershipRevision===undefined&&source.membershipInputId===undefined
-   &&source.membershipRevision===undefined&&selected.membershipRevision===undefined;
- const revisionAtActivation=legacy?1:binding.membershipRevision;
+ const legacy=binding.membershipRevision===1&&source.membershipInputId===undefined
+   &&source.membershipRevision===undefined&&(selected.membershipRevision===undefined||selected.membershipRevision===1);
+ const revisionAtActivation=binding.membershipRevision;
  if(!member||member.sessionId!==`concierge:${input.session_id}`||member.provider!=='codex'||member.model!==model
    ||!Array.isArray(source.targets)||!source.targets.includes(member.key)
    ||!legacy&&(selected.membershipRevision!==revisionAtActivation||source.membershipRevision!==revisionAtActivation))return null;
@@ -37,9 +42,9 @@ export function labInvocationSelection(input:AcceptedSessionInput,model:string):
  for(let revision=revisionAtActivation;revision>=1&&typeof membershipId==='string';revision--){
    const membership=getAcceptedSessionInput(membershipId);
    if(!membership)return null;
-   const retained=JSON.parse(membership.payload_json);
-   if(retained.binding?.thread!==source.thread||(retained.binding.membershipRevision??(legacy?1:null))!==revision)return null;
-   const prior=retained.binding.participants.find((value:any)=>value.key===member.key);
+   const retained=JSON.parse(membership.payload_json),roster=retainedLabMembership(membership);
+   if(roster?.thread!==source.thread||roster.membershipRevision!==revision)return null;
+   const prior=roster.participants.find((value:any)=>value.key===member.key);
    if(!prior||labBindingFields.some(key=>prior[key]!==member[key]))return null;
    if(revision===1)return membership.kind==='lab-conversation'&&membership.id===source.conversationInputId?{membership,key:member.key}:null;
    if(membership.kind!=='lab-roster'||retained.conversationInputId!==source.conversationInputId)return null;

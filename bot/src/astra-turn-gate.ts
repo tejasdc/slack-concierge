@@ -1,4 +1,5 @@
 import {db,getSessionById} from './state';
+import {createHash} from 'node:crypto';
 import {getAcceptedSessionInput,humanAuthored,recordSessionEvent,sessionMetadata} from './session-inputs';
 import {humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
@@ -14,6 +15,13 @@ const LAB_HUMAN_CHOICE_REASONS=new Set(['explicit human model choice','retained 
 export type AstraTurnDecision=
   |{allowed:true;basis:'custody'|'human'|'service-continuation'|'escalation-reason'}
   |{allowed:false;message:string};
+
+export function recordModelStartDenial(input:{sessionId:number;turnId:number;inputId:string|null;dispatchAttempt:number;model:string;message?:string}) {
+  const payload={turnId:input.turnId,model:input.model,message:input.message};
+  const digest=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  recordSessionEvent({eventId:`model-start-denied:${input.turnId}:${input.dispatchAttempt}:${digest}`,sessionId:input.sessionId,inputId:input.inputId,
+    turnId:input.turnId,kind:'model_start_denied',payload});
+}
 
 /**
  * The one decision on whether a turn may run on GPT-6 Astra: explicit human choice, a service
@@ -47,11 +55,14 @@ export function astraAllowedForTurn(input:{sessionId:number;turnId:number;accept
       WHERE event_id=? AND session_id=? AND input_id=? AND kind='model_escalation'`)
       .get(`model-escalation:${selection.membership.id}:${selection.key}`,input.sessionId,selection.membership.id) as {payload_json:string}|null;
     const authority=choice?JSON.parse(choice.payload_json):null;
-    if(!selection||authority?.model!==model||authority.sourceInputId!==selection.membership.id||!LAB_HUMAN_CHOICE_REASONS.has(authority.reason))
+    if(!selection||authority?.model!==model||authority.sourceInputId!==selection.membership.id||typeof authority.reason!=='string')
       return {allowed:false,message:'The selected Lab participant has no matching Astra authority for this execution; no replacement was sent.'};
+    const humanChoice=LAB_HUMAN_CHOICE_REASONS.has(authority.reason);
+    const refusal=escalationReason(model,authority.reason,humanChoice);
+    if(refusal)return {allowed:false,message:refusal};
     recordSessionEvent({eventId:`model-continuation:${input.turnId}:${dispatchAttempt}`,sessionId:input.sessionId,inputId:accepted.id,turnId:input.turnId,
-      kind:'model_escalation',payload:{model,reason:'explicit human model choice',sourceInputId:selection.membership.id,continuation:true,labMembership:true}});
-    return {allowed:true,basis:'human'};
+      kind:'model_escalation',payload:{model,reason:authority.reason,sourceInputId:selection.membership.id,continuation:true,labMembership:true}});
+    return {allowed:true,basis:humanChoice?'human':'escalation-reason'};
   }
   if(custody&&metadata.reasoningEffort==='medium'){
     recordSessionEvent({eventId:`model-preservation:${input.turnId}:${dispatchAttempt}`,sessionId:input.sessionId,inputId:accepted!.id,turnId:input.turnId,
@@ -105,7 +116,10 @@ export function dispatchModelForTurn(input:{sessionId:number;turnId:number;input
   if(!lab&&db.query('SELECT 1 FROM codex_custody_successors WHERE successor_session_id=? LIMIT 1').get(input.sessionId))return input.model;
   const decision=astraAllowedForTurn({sessionId:input.sessionId,turnId:input.turnId,acceptedInputId:input.inputId,providerSessionId:input.providerSessionId,model:input.model});
   if(decision.allowed)return input.model;
-  if(lab)throw new ProviderCapabilityUnavailableError('send',decision.message);
+  if(lab){
+    recordModelStartDenial({...input,model:input.model!,message:decision.message});
+    throw new ProviderCapabilityUnavailableError('send',decision.message);
+  }
   recordSessionEvent({eventId:`model-substitution:${input.turnId}:${input.dispatchAttempt}`,sessionId:input.sessionId,inputId:input.inputId,
     turnId:input.turnId,kind:'model_substitution',
     payload:{turnId:input.turnId,inputId:input.inputId,from:input.model,to:ASTRA_FALLBACK_MODEL,reason:decision.message}});
