@@ -22,6 +22,11 @@ Transport does not classify intent or create another router/session ledger.
   app, and multipart/form-data transcription, recordedAt (Unix milliseconds), and optional
   client. Every gesture and headerless request has the same destination. Trigger
   and version headers remain provenance, never intent or destination.
+  Before the Inbox session reads a Pebble transcript, it goes through thnkr.ing's vocabulary
+  correction route (2 s bound) [decision: fix-transcripts-before-forwarding]; the event ID stays
+  that of the original words, corrections are noted as "(heard: A → B)" under the text, and
+  any failure delivers the original words unchanged (`pebble_capture_corrected` /
+  `pebble_capture_correction_unavailable` log counts only).
 - The /audio binary receiver retains its directory-backed transport.
 
 Thinkering request:
