@@ -267,22 +267,35 @@ export function canTakeWork(
     }
   }
 
-  // Step 5 — Last-good stale reading: a stale reading that showed room still is better
-  // signal than no signal when nothing contradicts.
-  if (!reading.fresh && reading.problem === null && accountUsage && !cache) {
+  // Step 5 — Last-good windows: stored allowance numbers that show room are better
+  // signal than no signal when nothing contradicts. 2026-11-21: the `reading.problem`
+  // flag means "the latest probe attempt failed" — it does NOT invalidate windows
+  // preserved from the prior successful read. Previously this step required
+  // `reading.problem === null`, so a stuck probe silently discarded stale-but-
+  // positive stored windows (chann.app at 75% used, tejastej.dc at 43%) and the
+  // dispatcher threw "Every available Claude account is out of room" with headroom
+  // visible to the operator in the Accounts tray. If the attempt itself hits a wall,
+  // the API's refusal caches and blocks the next pass — the correct failure mode is
+  // "try and let the server speak," not "refuse while the only signal we have says go."
+  if (!reading.fresh && accountUsage && !cache) {
     const windows = includedAllowanceWindows(providerKey, accountUsage, canonicalModel);
     if (windows.length > 0 && windows.every(w => Number.isFinite(w.usedPercent) && w.usedPercent < 100)) {
       const lowestUsed = Math.min(...windows.map(w => w.usedPercent));
       return makeVerdict(true, "last-showed-room", null,
-        `stale reading showed ${lowestUsed}% used; no refusal cached`,
+        reading.problem
+          ? `latest probe failed; prior reading showed ${lowestUsed}% used`
+          : `stale reading showed ${lowestUsed}% used; no refusal cached`,
         { home: homePath, liveRootMirror, readingReadAtMs: reading.readAtMs ?? undefined, readingFresh: false, readingUsedPercent: lowestUsed });
     }
   }
 
-  // Step 6 — Fallthrough.
+  // Step 6 — Fallthrough. `reading-stale` only when stored windows give no signal;
+  // if windows existed and showed room, Step 5 already admitted. If every window
+  // was already at 100% used, falling here is correct: a failed probe doesn't
+  // revive a spent account.
   if (accountUsage?.problem || usage?.problem) {
     return makeVerdict(false, "reading-stale", null,
-      "latest reading unreadable; cannot confirm room",
+      "latest reading unreadable and prior windows show no room; cannot confirm room",
       { home: homePath, liveRootMirror, readingReadAtMs: reading.readAtMs ?? undefined, readingFresh: false });
   }
   return makeVerdict(false, "unknown", null, "no signal available",
