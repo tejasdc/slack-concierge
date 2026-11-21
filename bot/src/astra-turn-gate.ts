@@ -3,9 +3,12 @@ import {getAcceptedSessionInput,humanAuthored,recordSessionEvent,sessionMetadata
 import {humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
 import {CURRENT_ASTRA_MODEL,CURRENT_SOL_MODEL,isAstraModel} from './aliases';
+import {boundLabInvocation} from './lab-invocation-facts';
 
 export const ASTRA_MODEL=CURRENT_ASTRA_MODEL;
 export const ASTRA_FALLBACK_MODEL=CURRENT_SOL_MODEL;
+/** The reasons the Lab records when he, or an agent carrying his choice, puts a group member on a model. */
+const LAB_HUMAN_CHOICE_REASONS=new Set(['explicit human model choice','retained explicit human model choice']);
 
 export type AstraTurnDecision=
   |{allowed:true;basis:'custody'|'human'|'service-continuation'|'escalation-reason'}
@@ -59,6 +62,19 @@ export function astraAllowedForTurn(input:{sessionId:number;turnId:number;accept
       kind:'model_escalation',payload:{model,reason:'explicit human model choice',sourceInputId:accepted.id,continuation:true,
         ...(serviceContinuation?{serviceContinuation:true}:{})}});
     return {allowed:true,basis:serviceContinuation?'service-continuation':'human'};
+  }
+  // A group member's model is chosen when the group adds it, so the Lab records that choice against
+  // the group's membership input, not against each invocation the member later answers. Without
+  // reading it here every Astra member was moved to Sol, which the Lab binding then refused, so the
+  // member never answered (Nov 21, his storytelling group).
+  const membership=accepted&&boundLabInvocation(accepted)?db.query(`SELECT payload_json FROM session_owner_events
+    WHERE session_id=? AND kind='model_escalation' AND event_id LIKE 'model-escalation:%'
+      AND json_extract(payload_json,'$.model')=? ORDER BY sequence DESC LIMIT 1`)
+    .get(input.sessionId,model) as {payload_json:string}|null:null;
+  if(membership&&LAB_HUMAN_CHOICE_REASONS.has(JSON.parse(membership.payload_json).reason)){
+    recordSessionEvent({eventId:`model-continuation:${input.turnId}`,sessionId:input.sessionId,inputId:accepted!.id,turnId:input.turnId,
+      kind:'model_escalation',payload:{model,reason:'explicit human model choice',sourceInputId:accepted!.id,continuation:true,labMembership:true}});
+    return {allowed:true,basis:'human'};
   }
   const creation=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND input_id=?
     AND kind='model_escalation' AND json_extract(payload_json,'$.model')=? ORDER BY sequence DESC LIMIT 1`)
