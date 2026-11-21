@@ -144,41 +144,63 @@ try {
   db.query("UPDATE turns SET status='error', ended_at=CURRENT_TIMESTAMP WHERE id=?").run(carrying.turn_id);
   assert.equal(inputs.queueTurnContinuation(carrying.turn_id,scoped),null,'a failed continuation cannot spawn another one');
   assert.equal(inputs.carryingTurn(ended.turn_id!)?.id,carrying.turn_id);
-  const receiver=inputs.createNativeSession('claude-code',{title:'Claude refusal fixture',cwd:scratch});
-  inputs.bindSessionProvider(receiver.id,'claude-code','cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa');
-  const exact=inputs.enqueueSessionInput(inputs.retainSessionInput({id:'claude-exact-retry',kind:'input',origin:'agent',
-    sessionId:receiver.id,scope:'fixture',actionId:'claude-exact-retry',payload:{text:'One exact input'}}).input.id);
-  db.query('UPDATE turns SET dispatch_attempt=2 WHERE id=?').run(exact.turn_id);
-  const launches:(string|undefined)[]=[];
-  const runExact=async()=>{
-    const claim=claimNextQueuedTurn('claude-refusal-fixture');
-    assert.equal(claim?.turn_id,exact.turn_id,'the same exact turn remains next');
-    const steering=new TurnSteeringController();
-    return executeAgentTurn({
-      presentation:'native',turnKind:'native',inputId:exact.id,turnId:exact.turn_id!,
-      session:getSessionById(receiver.id)!,ownerInstanceId:'claude-refusal-fixture',
-      providerId:'claude-code',providerLabel:'Claude Code',model:'opus[1m]',
-      cwd:scratch,additionalDirs:[],text:'One exact input',prompt:'One exact input',exactProviderInput:true,
-      steeringController:steering,closeSteering:()=>steering.close(),
-      services:{bindProviderSession(){},async deliverResult(){throw new Error('No answer expected');}},
-      provider:{id:'claude-code',async fork(){throw new Error('No fork expected');},async run(run){
-        assert.equal(run.sessionUUID,'cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa');
-        assert.equal(run.prompt,'One exact input');
-        launches.push(run.accountLabel);
-        run.onProgress?.({type:'started'});
-        run.onInputAcknowledged?.();
-        throw new ProviderDispatchError({message:scoped.detail,terminalConfirmed:true,threadScoped:true,
-          providerSessionId:run.sessionUUID});
-      }},
-    });
+  const exerciseExactRetry=async(scenario:'second-refusal'|'alternative-disappears'|'stop-after-claim')=>{
+    const receiver=inputs.createNativeSession('claude-code',{title:'Claude refusal fixture',cwd:scratch});
+    const nativeId=`cccccccc-dddd-eeee-ffff-${String(receiver.id).padStart(12,'a')}`;
+    inputs.bindSessionProvider(receiver.id,'claude-code',nativeId);
+    const inputId=`claude-exact-retry:${scenario}`;
+    const exact=inputs.enqueueSessionInput(inputs.retainSessionInput({id:inputId,kind:'input',origin:'agent',
+      sessionId:receiver.id,scope:'fixture',actionId:inputId,payload:{text:'One exact input'}}).input.id);
+    db.query('UPDATE turns SET dispatch_attempt=2 WHERE id=?').run(exact.turn_id);
+    const launches:(string|undefined)[]=[];
+    const runExact=async(beforeProviderAdmission?:()=>void)=>{
+      const claim=claimNextQueuedTurn('claude-refusal-fixture');
+      assert.equal(claim?.turn_id,exact.turn_id,'the same exact turn remains next');
+      const steering=new TurnSteeringController();
+      return executeAgentTurn({
+        presentation:'native',turnKind:'native',inputId:exact.id,turnId:exact.turn_id!,
+        session:getSessionById(receiver.id)!,ownerInstanceId:'claude-refusal-fixture',
+        providerId:'claude-code',providerLabel:'Claude Code',model:'opus[1m]',
+        cwd:scratch,additionalDirs:[],text:'One exact input',prompt:'One exact input',exactProviderInput:true,
+        beforeProviderAdmission,
+        steeringController:steering,closeSteering:()=>steering.close(),
+        services:{bindProviderSession(){},async deliverResult(){throw new Error('No answer expected');}},
+        provider:{id:'claude-code',async fork(){throw new Error('No fork expected');},async run(run){
+          assert.equal(run.sessionUUID,nativeId);
+          assert.equal(run.prompt,'One exact input');
+          launches.push(run.accountLabel);
+          run.onProgress?.({type:'started'});
+          run.onInputAcknowledged?.();
+          throw new ProviderDispatchError({message:scoped.detail,terminalConfirmed:true,threadScoped:true,
+            providerSessionId:run.sessionUUID});
+        }},
+      });
+    };
+    assert.equal((await runExact()).status,'retry_queued');
+    assert.deepEqual(db.query('SELECT dispatch_hold FROM turns WHERE id=?').get(exact.turn_id),{dispatch_hold:null});
+    if(scenario==='alternative-disappears'){
+      const noAlternative={...usage,accounts:usage.accounts.map(account=>account.label===launches[0]?account:
+        {...account,windows:[{name:'Weekly',usedPercent:100,resetsAt:reset}]})};
+      db.query('UPDATE provider_account_usage SET usage_json=? WHERE provider=?').run(JSON.stringify(noAlternative),'claude-code');
+    }
+    const stop=scenario==='stop-after-claim'?()=>{
+      db.query('UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?').run(exact.turn_id);
+    }:undefined;
+    const result=await runExact(stop);
+    db.query('UPDATE provider_account_usage SET usage_json=? WHERE provider=?').run(JSON.stringify(usage),'claude-code');
+    if(scenario==='second-refusal'){
+      assert.equal(result.status,'error');
+      assert.equal(launches.length,2);
+      assert.notEqual(launches[0],launches[1],'the bounded retry reaches a different account');
+    }else{
+      assert.equal(launches.length,1,'a lost alternative or intervening Stop never submits again');
+    }
+    assert.equal(inputs.getAcceptedSessionInput(exact.id)?.turn_id,exact.turn_id);
+    assert.equal(claimNextQueuedTurn('claude-refusal-fixture'),null,'the exact turn no longer blocks the queue');
   };
-  assert.equal((await runExact()).status,'retry_queued');
-  assert.deepEqual(db.query('SELECT dispatch_hold FROM turns WHERE id=?').get(exact.turn_id),{dispatch_hold:null});
-  assert.equal((await runExact()).status,'error');
-  assert.equal(launches.length,2);
-  assert.notEqual(launches[0],launches[1],'the bounded retry reaches a different account');
-  assert.equal(inputs.getAcceptedSessionInput(exact.id)?.turn_id,exact.turn_id);
-  assert.equal(claimNextQueuedTurn('claude-refusal-fixture'),null,'the second refusal does not strand the queue');
+  for(const scenario of ['second-refusal','alternative-disappears','stop-after-claim'] as const)
+    await exerciseExactRetry(scenario);
+  const beforeExhaustion=count();
   for(let index=0;index<rooms.length;index++){
     const selected=chooseClaudeDispatch(index===0?'one':rooms[index-1]!.account,1,undefined,'opus[1m]');
     assert.ok(selected,'the real dispatcher selects a home with room');
@@ -187,7 +209,7 @@ try {
   assert.throws(()=>chooseClaudeDispatch('one',1,undefined,'opus[1m]'),/Every available Claude account is out of room/);
   maybeStartStandingRoleFailover(getSessionById(router.id));
   assert.equal((owner.inbox() as any).session.id,`concierge:${router.id}`);
-  assert.equal(count(),before+1,'three real dispatcher exhaustion records do not replace Inbox');
+  assert.equal(count(),beforeExhaustion,'three real dispatcher exhaustion records do not replace Inbox');
   assert.equal(getSessionById(router.id)!.agent_session_uuid,'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
 
   // An explicit human override can bind a named destination, once, with old lineage retained.

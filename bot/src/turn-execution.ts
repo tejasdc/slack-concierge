@@ -383,6 +383,22 @@ export function astraDenialStatus(turnId:number):string|null {
   return typeof message==='string'&&message?`Blocked by the Astra escalation check: ${message}`:null;
 }
 
+/** An exact retry can carry the original request through one service continuation. */
+function claudeRetryWithdrawn(inputId:string,sessionId:number):boolean {
+  return !!db.query(`WITH RECURSIVE work(id) AS (
+    SELECT ?
+    UNION
+    SELECT input.source_input_id FROM work JOIN session_inputs input ON input.id=work.id
+    WHERE input.scope='turn-continuation' AND input.source_input_id IS NOT NULL
+  )
+  SELECT 1 FROM work JOIN session_communication_requests request
+    ON request.target_session_id=? AND request.target_input_id=work.id WHERE request.outcome IS NOT NULL
+  UNION ALL
+  SELECT 1 FROM session_handoffs WHERE
+    (predecessor_session_id=? AND state='accepted') OR (successor_session_id=? AND state='withdrawn')
+  LIMIT 1`).get(inputId,sessionId,sessionId,sessionId);
+}
+
 export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnExecutionOutcome> {
   const turnStart = Date.now();
   const dispatchAttempt = input.dispatchAttempt
@@ -646,15 +662,16 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         message:`Claude was placed on runner ${remoteClaudeRunner}, but the owner's saved Claude allowance reading is not from that runner. This unsent turn will retry after the owner reads that runner's allowance.`});
     }
     const adoptedClaudeAccount=input.boundAccount?.account??previousClaudeAccount;
-    const conversationRetry=input.providerId==='claude-code'&&!input.adopted&&!input.boundAccount&&dispatchAttempt>1
+    const conversationRetry=input.presentation==='native'&&input.providerId==='claude-code'&&!input.adopted&&!input.boundAccount&&dispatchAttempt>1
       ?db.query(`SELECT json_extract(payload_json,'$.refusedAccount') AS refused_account
-        FROM session_owner_events WHERE event_id=? AND json_extract(payload_json,'$.nextAttempt')=?`)
-        .get(`claude-conversation-retry:${input.turnId}`,dispatchAttempt) as {refused_account:string}|null
+        FROM session_owner_events WHERE event_id=? AND session_id=? AND input_id=?
+          AND json_extract(payload_json,'$.nextAttempt')=?`)
+        .get(`claude-conversation-retry:${input.turnId}`,input.session.id,input.inputId,dispatchAttempt) as {refused_account:string}|null
       :null;
     const alternative=conversationRetry
       ?claudeDispatchWithRoomBesides(conversationRetry.refused_account,claudeLaunchModel,remoteClaudeRunner):null;
     if(conversationRetry&&!alternative)throw new ProviderDispatchError({
-      message:CLAUDE_CONVERSATION_REFUSAL,terminalConfirmed:true,threadScoped:true,
+      message:CLAUDE_CONVERSATION_REFUSAL,failureClass:'parked_terminal',terminalConfirmed:true,threadScoped:true,
     });
     const claudeChoice=alternative??(input.providerId==='claude-code'
       ?input.adopted?(adoptedClaudeAccount?{account:adoptedClaudeAccount,home:input.boundAccount?.home??null,because:'spending-this-window' as const,expected:adoptedClaudeAccount,
@@ -729,7 +746,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     if (input.beforeProviderAdmission) {
       const prerequisite = input.beforeProviderAdmission();
       if (prerequisite) await prerequisite;
-    } else if (!markTurnProviderAdmissionIntended(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
+    }
+    if(conversationRetry&&input.presentation==='native'&&(turnStopWasRequested(input.turnId)
+      ||claudeRetryWithdrawn(input.inputId,input.session.id))){
+      throw new ProviderTurnCancelledError('The exact Claude retry was withdrawn before provider submission.');
+    }
+    if (!input.beforeProviderAdmission&&!markTurnProviderAdmissionIntended(input.turnId,input.ownerInstanceId,dispatchAttempt)) {
       throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
     }
     const providerPrompt=[preparedTurn.prompt,actualClaudeBrief].filter(Boolean).join('\n\n');
@@ -1336,11 +1358,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         const eventId=`claude-conversation-retry:${input.turnId}`;
         const requeued=db.transaction(()=>{
           if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return false;
-          const settled=db.query(`SELECT 1 FROM turns turn
-            JOIN session_communication_requests request ON request.target_session_id=turn.session_id
-              AND request.target_input_id=turn.accepted_input_id
-            WHERE turn.id=? AND request.outcome IS NOT NULL`).get(input.turnId);
-          if(settled||turnStopWasRequested(input.turnId)||!retryRunningTurnAfterProviderFailure({
+          if(claudeRetryWithdrawn(input.inputId,input.session.id)||turnStopWasRequested(input.turnId)||!retryRunningTurnAfterProviderFailure({
             turnId:input.turnId,ownerInstanceId:input.ownerInstanceId,dispatchAttempt,error:message,nextAttemptMs:Date.now(),
           }))return false;
           recordSessionEvent({eventId,sessionId:input.session.id,inputId:input.inputId,turnId:input.turnId,
