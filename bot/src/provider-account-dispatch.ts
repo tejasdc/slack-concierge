@@ -266,11 +266,13 @@ export function savedWorkAccountRooms(provider:AccountIdentityProvider,usage:Pro
  * unreadable selected login one provider attempt, but that permission cannot support a room claim.
  */
 export function claudeAccountWithRoomBesides(refused:string|null,model?:string|null):boolean{
-  try {
-    const next=chooseClaudeDispatch(refused,0,undefined,model);
-    return !!next&&next.account!==refused
-      &&accountAvailability('claude-code',model).some(account=>account.account===next.account&&account.hasRoom);
-  } catch { return false; }
+  const usage=providerAccountUsage('claude-code');
+  if(!usage)return false;
+  const available=new Set(accountAvailability('claude-code',model)
+    .filter(account=>account.hasRoom&&account.account!==refused).map(account=>account.account));
+  if(!available.size)return false;
+  return savedWorkAccountRooms('claude-code',usage,Date.now(),model)
+    .some(room=>available.has(room.account)&&(room.isDefault||!!room.home));
 }
 
 /**

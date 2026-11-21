@@ -21,7 +21,7 @@ process.env.THINKERING_AGENT_TEST_KEY_FILE=join(scratch,'absent-key');
 process.env.CONCIERGE_TURN_RUNNERS='marked';
 
 const [{db,getSessionById},inputs,pin,roles,handoff,{SessionOwner},{maybeStartStandingRoleFailover},
-  {transferSession},{chooseAccountForTurn},{sharedClaudeHome,chooseClaudeDispatch,markClaudeHomeVerified},
+  {transferSession},{chooseAccountForTurn},{sharedClaudeHome,chooseClaudeDispatch,claudeAccountWithRoomBesides,markClaudeHomeVerified},
   {selectClaudeAccount},{usageAttempt,recordUsageExhaustion},{forgetAccountFiles}]=await Promise.all([
   import('../src/state'),import('../src/session-inputs'),import('../src/inbox-session-pin'),import('../src/standing-agents'),
   import('../src/session-handoff'),import('../src/session-owner'),import('../src/standing-role-provider-failover'),
@@ -83,6 +83,17 @@ try {
     windows:[{name:'Weekly',usedPercent:10,resetsAt:reset}]}))};
   db.query('INSERT INTO provider_account_usage(provider,observed_at,usage_json) VALUES(?,?,?)').run('claude-code',now,JSON.stringify(usage));
   selectClaudeAccount('one','one');forgetAccountFiles();
+  const selectedUnreadable={...usage,accounts:usage.accounts.map(account=>account.label==='one'
+    ?{...account,problem:'The selected account could not be read.',windows:[]}:account)};
+  db.query('UPDATE provider_account_usage SET usage_json=? WHERE provider=?').run(JSON.stringify(selectedUnreadable),'claude-code');
+  assert.equal(claudeAccountWithRoomBesides('one','opus[1m]'),true,
+    'a preferred unreadable account cannot hide another launchable account with confirmed room');
+  const onlyRefusedHasRoom={...usage,accounts:usage.accounts.map(account=>account.label==='one'?account:
+    {...account,windows:[{name:'Weekly',usedPercent:100,resetsAt:reset}]})};
+  db.query('UPDATE provider_account_usage SET usage_json=? WHERE provider=?').run(JSON.stringify(onlyRefusedHasRoom),'claude-code');
+  assert.equal(claudeAccountWithRoomBesides('one','opus[1m]'),false,
+    'the refusing account alone cannot support an alternative-room claim');
+  db.query('UPDATE provider_account_usage SET usage_json=? WHERE provider=?').run(JSON.stringify(usage),'claude-code');
   for(let index=0;index<rooms.length;index++){
     const selected=chooseClaudeDispatch(index===0?'one':rooms[index-1]!.account,1,undefined,'opus[1m]');
     assert.ok(selected,'the real dispatcher selects a home with room');
