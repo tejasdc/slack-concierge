@@ -533,6 +533,7 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
     // A request may be withdrawn after its first turn ended but before a boundary creates
     // another one. Service inputs can name themselves as their source, so visit each
     // ancestry row once; UNION ALL would recurse forever on those valid inputs.
+    const scopedRefusal=reason.kind==='provider_refused'&&reason.refusal==='conversation';
     if(source.accepted_input_id&&db.query(`WITH RECURSIVE ancestry(id,source_input_id) AS (
         SELECT id,source_input_id FROM session_inputs WHERE id=?
         UNION
@@ -540,8 +541,8 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
           JOIN ancestry child ON parent.id=child.source_input_id
       ) SELECT 1 FROM ancestry JOIN session_communication_requests request
         ON request.target_input_id=ancestry.id WHERE request.outcome='canceled'
-          OR (?='interrupted' AND request.target_input_id=? AND request.outcome IS NOT NULL) LIMIT 1`)
-      .get(source.accepted_input_id,reason.kind,source.accepted_input_id))return null;
+          OR (? AND request.target_input_id=? AND request.outcome IS NOT NULL) LIMIT 1`)
+      .get(source.accepted_input_id,reason.kind==='interrupted'||scopedRefusal,source.accepted_input_id))return null;
     const session=getSessionById(source.session_id);
     if(!session || session.status==='archived' || sessionMetadata(session).suspended)return null;
     // A provider refusal stopped one account, not the work: the request that turn served is still
@@ -556,7 +557,8 @@ export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuatio
     const prior=getAcceptedSessionInput(id);
     if(prior)return prior;
     const when=source.ended_at.endsWith('Z')?source.ended_at:`${source.ended_at} UTC`;
-    if(reason.kind==='interrupted'&&source.accepted_input_id?.startsWith('turn-continuation:'))return null;
+    if((reason.kind==='interrupted'||scopedRefusal)
+      &&source.accepted_input_id?.startsWith('turn-continuation:'))return null;
     const cause=reason.kind==='boundary'?`work stopped on purpose at a boundary: ${reason.detail}`
       :reason.kind==='interrupted'?`the run was cut off from outside: ${reason.detail}`
       :`the provider refused further work (${reason.refusal}): ${reason.detail}`;
@@ -632,7 +634,7 @@ export function recoverProviderRefusalContinuations():Array<{turnId:number;provi
     const ended=Date.parse(row.ended_at.replace(' ','T')+'Z');
     const reason=providerRefusalContinuationReason(message,Number.isFinite(reset)?reset:null,
       Number.isFinite(ended)?ended:Date.now(),row.dispatch_attempt);
-    if(!reason)continue;
+    if(!reason||reason.refusal==='conversation')continue;
     const input=queueTurnContinuation(row.id,reason);
     if(input?.turn_id!==null && input?.turn_id!==undefined)created.push({turnId:input.turn_id,provider:row.provider,reason});
   }

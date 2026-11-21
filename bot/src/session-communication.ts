@@ -3930,9 +3930,12 @@ export class SessionCommunicationCoordinator {
         // Plain words say why, so the requester can tell a refused account from an interrupted run
         // (a bare "ended with error" was read as the release cutting two runs off, September 23,
         // 2026); the provider's own text stays with the request for diagnosis.
-        if(this.holdFailedChatGptRequest(request,endedWorkInPlainWords(turn.agent_text)))return;
-        this.settle(request, 'failed', endedWorkInPlainWords(turn.agent_text),
-            { ...output, ...(turn.agent_text ? { providerError: String(turn.agent_text).slice(0, 2000) } : {}) });
+        const terminalError = ended.id === turn.id ? turn.agent_text
+            : (db.query('SELECT agent_text FROM turns WHERE id=?').get(ended.id) as {agent_text:string|null}|null)?.agent_text;
+        const explanation = endedWorkInPlainWords(terminalError);
+        if(this.holdFailedChatGptRequest(request,explanation))return;
+        this.settle(request, 'failed', explanation,
+            { ...output, ...(terminalError ? { providerError: String(terminalError).slice(0, 2000) } : {}) });
     }
     private async deliver(event: EventRow) {
         if (this.stopped)

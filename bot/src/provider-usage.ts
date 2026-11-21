@@ -31,6 +31,24 @@ export type UsageAttempt = { provider: UsageProvider; scope: string; label: stri
 // selected account. Keep the provider's refusal on its particular turn, but do not let
 // that turn stop unrelated sessions from using the selected account.
 const CLAUDE_RESET_MATCH_MS = 60_000;
+/** A resumed conversation's rejection can affect other conversations only with
+ * corroboration from the attempted account's applicable allowance window. */
+export function claudeAccountCorroboratesRefusal(attempt: UsageAttempt, resetAt: number | null, runner: string | null): boolean {
+  if (!attempt.accountLabel || resetAt === null || resetAt <= Date.now()) return false;
+  const row = db.query(`SELECT usage_json FROM ${accountUsageTable('claude-code')} WHERE provider='claude-code'`)
+    .get() as { usage_json: string } | null;
+  if (!row) return false;
+  let usage: ProviderUsage;
+  try { usage = JSON.parse(row.usage_json) as ProviderUsage; } catch { return false; }
+  if ((usage.sourceRunner ?? null) !== runner) return false;
+  const account = usage.accounts.find(candidate => candidate.label.toLowerCase() === attempt.accountLabel!.toLowerCase());
+  const model = claudeScopeModel(attempt.scope);
+  if (!account || account.viaPeer || account.signedOut
+    || !accountReadingFresh('claude-code', usage, account, Date.now(), undefined, model)) return false;
+  return includedAllowanceWindows('claude-code', account, model).some(window =>
+    window.usedPercent >= 100 && Math.abs(Date.parse(window.resetsAt ?? '') - resetAt) <= CLAUDE_RESET_MATCH_MS);
+}
+
 export function claudeRefusalAttributedToAnotherAccount(accountLabel: string | null, model: string, resetAt: number | null): string | null {
   if (!accountLabel || resetAt === null) return null;
   let row: { usage_json: string } | null;

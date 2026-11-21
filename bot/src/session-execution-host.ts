@@ -13,7 +13,7 @@ import {tmpdir,homedir} from 'node:os';
 import {db,getClaudePreferredModel,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,requeueProvenUnsentNativeChatGptTurn,requeueOrphanedPreAdmissionTurn,reserveCodexUnacknowledgedRecovery,codexUnacknowledgedRecovery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {acceptedInputForTurn,adoptProviderConversationTitle,attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,providerRunnerForSession,recordRecoveredResultAttention,recordSessionEvent,recordSessionInputAttention,recoverUnsentAntigravityInputs,recoverUnsentSteeredInput,releaseEarlierWaitingInputs,releaseWaitingInputs,sessionMetadata,steeringAttemptEventId,steeringMayHaveReachedProvider,withdrawUnstartedServiceInput,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {lastLaunchedConversationHome,nativeConversationHome} from './session-runner-home';
-import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
+import {assertClaudeConversationRetryStillOwned,executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {flushPendingProviderProgressEvents} from './session-projection';
 import {recordResultTurnOutcome,recordUnsaidTurnOutcome} from './session-turn-outcome';
 import {ActiveTurnDispatchRegistry,type TurnCancellationController} from './turn-dispatch-seams';
@@ -1774,6 +1774,8 @@ export class SessionExecutionHost {
           // (Claude, Codex or ChatGPT) is started or told anything.
           await ledgerDurable({kind:'provider_input',id:input.id});
           if(!adoption&&this.draining)throw new OwnerDrainBeforeProviderAdmissionError();
+          if(!adoption&&session.provider_id==='claude-code')
+            assertClaudeConversationRetryStillOwned(input.id,session.id,claim.turn_id,claim.dispatch_attempt);
           if(boundLabInvocation(input)&&!labInvocationBindingMatches(input))throw new ProviderCapabilityUnavailableError('send','The Lab participant’s provider, model or effort changed; no replacement execution was submitted.');
           // A run taken back after a restart takes messages again only once its history is rebuilt;
           // what the restart returned to the queue meanwhile goes into it then.
