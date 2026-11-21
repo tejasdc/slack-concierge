@@ -143,6 +143,10 @@ existing NotebookLM skill when its explicit instructions request that approach.
   the stale precondition. The current view exposes `membershipRevision` and its roster;
   `GET .../:thread/memberships/:revision` resolves an exact immutable past revision.
   The coordinator is stable, and membership updates do not cancel accepted work.
+- An Astra selection belongs to the particular Lab membership that chose the voice.
+  Later roster revisions retain that choice for unchanged members. A provider subagent
+  or a different Lab that reuses the session cannot inherit it. Refusal keeps the exact
+  invocation and makes no provider substitution.
 - `GET .../:thread/requests/:requestId` proves an exact retained invocation even before
   context loading. `GET .../:thread/responses/:requestId/:eventId` proves one original
   acknowledged terminal answer, its immutable provider admission and binding event.

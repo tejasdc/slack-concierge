@@ -1,9 +1,11 @@
 import {db,getSessionById} from './state';
+import {createHash} from 'node:crypto';
 import {getAcceptedSessionInput,humanAuthored,recordSessionEvent,sessionMetadata} from './session-inputs';
 import {humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
 import {CURRENT_ASTRA_MODEL,CURRENT_SOL_MODEL,isAstraModel} from './aliases';
-import {boundLabInvocation} from './lab-invocation-facts';
+import {labInvocationSelection} from './lab-invocation-facts';
+import {ProviderCapabilityUnavailableError} from './provider-policy';
 
 export const ASTRA_MODEL=CURRENT_ASTRA_MODEL;
 export const ASTRA_FALLBACK_MODEL=CURRENT_SOL_MODEL;
@@ -13,6 +15,13 @@ const LAB_HUMAN_CHOICE_REASONS=new Set(['explicit human model choice','retained 
 export type AstraTurnDecision=
   |{allowed:true;basis:'custody'|'human'|'service-continuation'|'escalation-reason'}
   |{allowed:false;message:string};
+
+export function recordModelStartDenial(input:{sessionId:number;turnId:number;inputId:string|null;dispatchAttempt:number;model:string;message?:string}) {
+  const payload={turnId:input.turnId,model:input.model,message:input.message};
+  const digest=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  recordSessionEvent({eventId:`model-start-denied:${input.turnId}:${input.dispatchAttempt}:${digest}`,sessionId:input.sessionId,inputId:input.inputId,
+    turnId:input.turnId,kind:'model_start_denied',payload});
+}
 
 /**
  * The one decision on whether a turn may run on GPT-6 Astra: explicit human choice, a service
@@ -39,6 +48,22 @@ export function astraAllowedForTurn(input:{sessionId:number;turnId:number;accept
   // Key event ids by (turn, dispatch_attempt) so a requeued turn can record its next
   // attempt's gate verdict cleanly. See 2026-11-19 event-identity incident.
   const dispatchAttempt=(db.query('SELECT dispatch_attempt FROM turns WHERE id=?').get(input.turnId) as {dispatch_attempt:number}|null)?.dispatch_attempt??0;
+  if(accepted?.scope==='lab:invocation'){
+    const selection=!input.providerAgentId&&accepted.turn_id===input.turnId&&accepted.session_id===input.sessionId
+      ?labInvocationSelection(accepted,model):null;
+    const choice=selection&&db.query(`SELECT payload_json FROM session_owner_events
+      WHERE event_id=? AND session_id=? AND input_id=? AND kind='model_escalation'`)
+      .get(`model-escalation:${selection.membership.id}:${selection.key}`,input.sessionId,selection.membership.id) as {payload_json:string}|null;
+    const authority=choice?JSON.parse(choice.payload_json):null;
+    if(!selection||authority?.model!==model||authority.sourceInputId!==selection.membership.id||typeof authority.reason!=='string')
+      return {allowed:false,message:'The selected Lab participant has no matching Astra authority for this execution; no replacement was sent.'};
+    const humanChoice=LAB_HUMAN_CHOICE_REASONS.has(authority.reason);
+    const refusal=escalationReason(model,authority.reason,humanChoice);
+    if(refusal)return {allowed:false,message:refusal};
+    recordSessionEvent({eventId:`model-continuation:${input.turnId}:${dispatchAttempt}`,sessionId:input.sessionId,inputId:accepted.id,turnId:input.turnId,
+      kind:'model_escalation',payload:{model,reason:authority.reason,sourceInputId:selection.membership.id,continuation:true,labMembership:true}});
+    return {allowed:true,basis:humanChoice?'human':'escalation-reason'};
+  }
   if(custody&&metadata.reasoningEffort==='medium'){
     recordSessionEvent({eventId:`model-preservation:${input.turnId}:${dispatchAttempt}`,sessionId:input.sessionId,inputId:accepted!.id,turnId:input.turnId,
       kind:'model_preservation',payload:{model,effort:'medium',basis:'codex_successor_custody_v1',
@@ -63,19 +88,6 @@ export function astraAllowedForTurn(input:{sessionId:number;turnId:number;accept
         ...(serviceContinuation?{serviceContinuation:true}:{})}});
     return {allowed:true,basis:serviceContinuation?'service-continuation':'human'};
   }
-  // A group member's model is chosen when the group adds it, so the Lab records that choice against
-  // the group's membership input, not against each invocation the member later answers. Without
-  // reading it here every Astra member was moved to Sol, which the Lab binding then refused, so the
-  // member never answered (Nov 21, his storytelling group).
-  const membership=accepted&&boundLabInvocation(accepted)?db.query(`SELECT payload_json FROM session_owner_events
-    WHERE session_id=? AND kind='model_escalation' AND event_id LIKE 'model-escalation:%'
-      AND json_extract(payload_json,'$.model')=? ORDER BY sequence DESC LIMIT 1`)
-    .get(input.sessionId,model) as {payload_json:string}|null:null;
-  if(membership&&LAB_HUMAN_CHOICE_REASONS.has(JSON.parse(membership.payload_json).reason)){
-    recordSessionEvent({eventId:`model-continuation:${input.turnId}`,sessionId:input.sessionId,inputId:accepted!.id,turnId:input.turnId,
-      kind:'model_escalation',payload:{model,reason:'explicit human model choice',sourceInputId:accepted!.id,continuation:true,labMembership:true}});
-    return {allowed:true,basis:'human'};
-  }
   const creation=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND input_id=?
     AND kind='model_escalation' AND json_extract(payload_json,'$.model')=? ORDER BY sequence DESC LIMIT 1`)
     .get(input.sessionId,input.acceptedInputId,model) as {payload_json:string}|null;
@@ -99,10 +111,15 @@ export function astraAllowedForTurn(input:{sessionId:number;turnId:number;accept
  */
 export function dispatchModelForTurn(input:{sessionId:number;turnId:number;inputId:string;model:string|undefined;providerSessionId:string;dispatchAttempt:number}):string|undefined {
   if(!isAstraModel(input.model))return input.model;
+  const lab=getAcceptedSessionInput(input.inputId)?.scope==='lab:invocation';
   // A custody successor's own plan fixes its model and effort; the hook still guards it.
-  if(db.query('SELECT 1 FROM codex_custody_successors WHERE successor_session_id=? LIMIT 1').get(input.sessionId))return input.model;
+  if(!lab&&db.query('SELECT 1 FROM codex_custody_successors WHERE successor_session_id=? LIMIT 1').get(input.sessionId))return input.model;
   const decision=astraAllowedForTurn({sessionId:input.sessionId,turnId:input.turnId,acceptedInputId:input.inputId,providerSessionId:input.providerSessionId,model:input.model});
   if(decision.allowed)return input.model;
+  if(lab){
+    recordModelStartDenial({...input,model:input.model!,message:decision.message});
+    throw new ProviderCapabilityUnavailableError('send',decision.message);
+  }
   recordSessionEvent({eventId:`model-substitution:${input.turnId}:${input.dispatchAttempt}`,sessionId:input.sessionId,inputId:input.inputId,
     turnId:input.turnId,kind:'model_substitution',
     payload:{turnId:input.turnId,inputId:input.inputId,from:input.model,to:ASTRA_FALLBACK_MODEL,reason:decision.message}});

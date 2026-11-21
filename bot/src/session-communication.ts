@@ -57,7 +57,7 @@ import {withBefore} from './reply-before';
 import { isHisChatGpt,parseProviderSelector,resolveProviderSelector,chatgptProjectThinking } from './aliases';
 import {humanChoseChatGptEffort,humanChoseProvider,humanChoseThinkingModel} from './model-escalation-custody';
 import {escalationReason} from './model-escalation';
-import {astraAllowedForTurn} from './astra-turn-gate';
+import {astraAllowedForTurn,recordModelStartDenial} from './astra-turn-gate';
 import {CURRENT_SOL_MODEL,isAstraModel,modelDisplayName} from './aliases';
 
 const SOL_LABEL=modelDisplayName(CURRENT_SOL_MODEL);
@@ -927,11 +927,11 @@ export class SessionCommunicationCoordinator {
         if(answer.known&&answer.allowed===false&&typeof input.providerSessionId==='string'){
             const session=db.query("SELECT id FROM sessions WHERE provider_id='codex' AND agent_session_uuid=? LIMIT 1")
                 .get(input.providerSessionId) as {id:number}|null;
-            const running=session?db.query(`SELECT id,accepted_input_id FROM turns WHERE session_id=?
-                AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2`).all(session.id) as {id:number;accepted_input_id:string|null}[]:[];
+            const running=session?db.query(`SELECT id,accepted_input_id,dispatch_attempt FROM turns WHERE session_id=?
+                AND status IN ('running','delivering') ORDER BY id DESC LIMIT 2`).all(session.id) as {id:number;accepted_input_id:string|null;dispatch_attempt:number}[]:[];
             const turn=running.length===1?running[0]!:null;
-            if(session&&turn)recordSessionEvent({eventId:`model-start-denied:${turn.id}`,sessionId:session.id,inputId:turn.accepted_input_id,
-                turnId:turn.id,kind:'model_start_denied',payload:{turnId:turn.id,model:input.model,message:answer.message}});
+            if(session&&turn)recordModelStartDenial({sessionId:session.id,turnId:turn.id,inputId:turn.accepted_input_id,
+                dispatchAttempt:turn.dispatch_attempt,model:input.model,message:answer.message});
         }
         return answer;
     }
