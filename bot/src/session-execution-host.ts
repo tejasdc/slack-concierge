@@ -960,6 +960,15 @@ export class SessionExecutionHost {
       try{
         const activation=await activateRunnerCodexAccount(runner,source,`switch:${randomUUID()}`) as any;
         if(activation?.status!=='applied')return {status:'failed',detail:activation?.detail??'Codex account switching on the runner could not be confirmed.'};
+        // 2026-11-21: a switch explicitly says "use this account now", so every queued Codex turn
+        // held for the old account's reset is released without waiting for the next probe cycle to
+        // see the new login. On this date Tejas switched Codex from an exhausted account to a clean
+        // one; the runner's identity call kept returning the old account for minutes afterwards, so
+        // `activeHasRoom` stayed false and the probe never fired `releaseUsageHeldWork`. Canvas 13
+        // stayed stuck on "No Codex account available on this machine has room now" until the cache
+        // was cleared by hand. Releasing on the switch itself makes the switch load-bearing again
+        // and does not depend on the probe seeing the new identity in time.
+        releaseUsageHeldWork('codex','owner_switch');
         void scheduleProviderAccountUsageRefresh().catch(()=>{});
         return {status:'completed',activation:{status:'applied',detail:`Codex on runner ${runner} now uses ${source}.`},
           resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh('codex')};
@@ -980,6 +989,10 @@ export class SessionExecutionHost {
     try { activation=await activateCredentials('codex'); }
     catch(error){ log('warn','auth_activation_failed',{provider:'codex',...errorFields(error)}); activation={status:'failed',detail:''}; }
     if(activation.status==='applied'){
+      // See putCodexAccountInUse's runner branch: releasing on the switch itself keeps
+      // held Codex work from waiting on a probe cycle that may still be reporting the
+      // old login.
+      releaseUsageHeldWork('codex','owner_switch');
       void scheduleProviderAccountUsageRefresh().catch(()=>{});
       return {status:'completed',activation:{status:'applied',detail:`Codex on this machine now runs on ${move.incoming.label}.`},
         resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh('codex')};
