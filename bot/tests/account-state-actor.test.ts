@@ -186,10 +186,28 @@ describe("account state actor", () => {
       await accountStateActor.probeObserved("codex", { id: "acct-old", label: "tejastej.dc@gmail.com" });
       expect(currentAccount("codex")?.label).toBe("tejas@chann.app");
     }
-    // Probe finally catches up.
+    // Probe finally catches up (agrees with the operator). Inside the precedence window,
+    // agreement is a no-op: the selection stays source='operator' with its original switchId.
+    // The probe's write-through still reinforces the runner-identity map; no revision bump.
+    const beforeAgree = accountStateActor.snapshot("codex")!;
     await accountStateActor.probeObserved("codex", { id: "acct-new", label: "tejas@chann.app" });
-    const final = accountStateActor.snapshot("codex");
-    expect(final?.account?.label).toBe("tejas@chann.app");
-    expect(final?.source).toBe("probe");
+    const afterAgree = accountStateActor.snapshot("codex")!;
+    expect(afterAgree.account?.label).toBe("tejas@chann.app");
+    expect(afterAgree.source).toBe("operator");
+    expect(afterAgree.revision).toBe(beforeAgree.revision);
+    expect(afterAgree.switchId).toBe(beforeAgree.switchId);
+    expect(currentAccount("codex")?.label).toBe("tejas@chann.app");
+  });
+
+  test("probe_suppressed does NOT write the runner-identity map (regression fence on the suppression branch)", async () => {
+    // Seed: operator selects the new account; runner-identity map reflects it.
+    await accountStateActor.operatorSwitched("codex", { id: "acct-new", label: "new@example.com" });
+    expect(currentAccount("codex")?.label).toBe("new@example.com");
+    // A disagreeing probe arrives within the precedence window.
+    await accountStateActor.probeObserved("codex", { id: "acct-old", label: "old@example.com" });
+    // The suppression branch must NOT have called setRunnerAccountInUse with the probe's
+    // value. If it had, currentAccount would now return "old@example.com".
+    expect(currentAccount("codex")?.label).toBe("new@example.com");
+    expect(currentAccount("codex")?.id).toBe("acct-new");
   });
 });

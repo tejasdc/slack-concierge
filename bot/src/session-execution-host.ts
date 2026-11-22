@@ -1099,11 +1099,11 @@ export class SessionExecutionHost {
       const account=providerAccountUsage('codex')?.accounts.find(item=>
         `runner-${createHash('sha256').update(item.label).digest('hex').slice(0,16)}`===profileId);
       if(!account)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on the configured runner.');
-      const activation=await activateRunnerCodexAccount(runner,account.label,`switch:${randomUUID()}`) as any;
-      if(activation?.status!=='applied')return {status:'failed',detail:activation?.detail??'Codex account switching on the runner could not be confirmed.'};
-      void scheduleProviderAccountUsageRefresh().catch(()=>{});
-      return {status:'completed',activation:{status:'applied',detail:`Codex on runner ${runner} now uses ${account.label}.`},
-        resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh('codex')};
+      // 2026-11-22 goal verification: this generic profiles/switch capability is the primary
+      // Codex switch entrance from the Accounts UI. Delegate to putCodexAccountInUse so the
+      // actor records the authoritative selection and held work is released — otherwise this
+      // path reproduces the exact 2026-11-21 class of failure the actor was built to fix.
+      return this.putCodexAccountInUse(account.label);
     }
     const source=codexProfileSource(profileId);
     if(!source)throw new ProviderCapabilityUnavailableError('auth','That Codex account is not available on this machine.');
