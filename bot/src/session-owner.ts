@@ -4565,8 +4565,8 @@ ${input.text}`;
           for(const evidence of candidate.matches)passages.add(evidence.textHash);shown.set(conversation,passages);
           return fresh;
         });
-        // The archive gets its own share of the result size; fusion below decides the final order.
-        const examined=distinct.slice(0,limit);
+        // The archive gets its own share of the result size (at most 20 imports per search); fusion below decides the final order.
+        const examined=distinct.slice(0,Math.min(limit,20));
         if(distinct.length>examined.length){
           const omission=`Archive candidates not examined or retained because the response limit was reached: ${distinct.length-examined.length}.`;
           coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);

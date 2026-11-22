@@ -203,10 +203,10 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
   const related:{id:number;at:number|null;last:RequestRow|null}[]=[];
   for(const {id} of sessions?.found??[]){
     if(excluded.has(id)||inThread.has(id))continue;
-    const row=created.get(id) as {ms:number|null;imported:number;conversationAt:string|null}|null;
+    const made=created.get(id) as {ms:number|null;imported:number;conversationAt:string|null}|null;
     // An imported transcript's session row is made when it is first found; date it by its conversation.
-    const at=row?.imported?(row.conversationAt?Date.parse(row.conversationAt)||null:null):row?.ms??null;
-    if(!row?.imported&&at!==null&&at>=input.nowMs)continue;
+    const at=made?.imported?(made.conversationAt?Date.parse(made.conversationAt)||null:null):made?.ms??null;
+    if(at!==null&&at>=input.nowMs)continue;
     const newest=(times.all(id,input.nowMs) as {request_id:string;created_at_ms:number}[]).sort((a,b)=>b.created_at_ms-a.created_at_ms)[0];
     const last=newest?row.get(newest.request_id) as RequestRow:null;
     related.push({id,at,last});
