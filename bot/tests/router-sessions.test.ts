@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseRouterSessionsArgs } from "../scripts/router-sessions";
+import { parseRouterSessionsArgs, usageFor } from "../scripts/router-sessions";
 import { BoardError } from "../src/commons-board-service";
 import { requestApiHandler } from "../src/routed-request-api";
 import type { SessionCommunicationCoordinator } from "../src/session-communication";
@@ -366,4 +366,13 @@ test('a Lab blind read refusal keeps its status and reaches the command without 
   expect(result.exitCode).toBe(1);
   expect(JSON.parse(result.stderr)).toEqual({error:'LAB_BLIND_PRIVATE: This discussion is private until the group closes.'});
   expect(fixture.calls).toHaveLength(1);
+});
+
+test("a refusal's usage names only the command that was run", () => {
+  const reply = usageFor(["reply", "request-1", "--summary", "done"]);
+  expect(reply.split("\n").every((line) => line.startsWith("router-actions.sh sessions reply ") || line.includes("--help"))).toBe(true);
+  expect(reply.length).toBeLessThan(4000);
+  expect(usageFor(["handoff", "accept", "h1"])).toStartWith("router-actions.sh sessions handoff accept ");
+  expect(usageFor(["handoff", "accept", "h1"])).not.toContain("handoff withdraw");
+  expect(usageFor(["frobnicate"])).toStartWith("Commands: ");
 });

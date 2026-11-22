@@ -256,6 +256,40 @@ export type SessionCommunicationRequest =
 
 class SessionUsageError extends Error {}
 
+const fullUsagePointer = "router-actions.sh sessions --help prints the full reference.";
+
+/** The command words of one synopsis line: what follows "router-actions.sh" up to its first placeholder or flag. */
+function synopsisWords(line: string): string[] {
+  const words: string[] = [];
+  for (const word of line.split(/\s+/).slice(1)) {
+    if (!/^[a-z][a-z0-9-]*$/.test(word)) break;
+    words.push(word);
+  }
+  return words;
+}
+
+/**
+ * Usage scoped to the command the agent actually ran, so a refusal shows its own synopsis
+ * instead of the whole reference: the synopsis lines sharing the longest command-word prefix
+ * with the arguments, or the list of command names when the first word matches nothing.
+ */
+export function usageFor(args: string[], reference = usage): string {
+  const synopses = reference.split("\n").filter((line) => line.startsWith("router-actions.sh sessions "))
+    .map((line) => ({ line, words: synopsisWords(line).slice(1) }));
+  let matched: typeof synopses = [];
+  for (let depth = 1; depth <= args.length; depth += 1) {
+    const prefix = args.slice(0, depth);
+    const next = synopses.filter(({ words }) => words.length >= depth && prefix.every((word, index) => words[index] === word));
+    if (!next.length) break;
+    matched = next;
+  }
+  if (!matched.length) {
+    const commands = [...new Set(synopses.map(({ words }) => words[0]).filter(Boolean))];
+    return `Commands: ${commands.join(", ")}\n${fullUsagePointer}`;
+  }
+  return `${matched.map(({ line }) => line).join("\n")}\n${fullUsagePointer}`;
+}
+
 function invalid(detail: string): never {
   throw new SessionUsageError(detail);
 }
@@ -1393,6 +1427,7 @@ if (import.meta.main) {
   try {
     if (args.length === 1 && (args[0] === "help" || args[0] === "--help")) console.log(usage);
     else if (questionsCommand && args.length === 3 && (args[2] === "help" || args[2] === "--help")) console.log(questionsFileHelp);
+    else if (args.length > 1 && args.at(-1) === "--help" && !args.includes("--")) console.log(usageFor(args.slice(0, -1)));
     else {
       request = parseRouterSessionsArgs(args, process.env);
       const response = await runRouterSessions(request);
@@ -1412,7 +1447,7 @@ if (import.meta.main) {
       ok: false,
       error: invalidArguments ? "invalid_session_arguments" : "session_communication_unavailable",
       detail: error instanceof Error ? error.message : String(error),
-      ...(invalidArguments ? { usage: questionsCommand ? questionsFileHelp : usage } : request ? {
+      ...(invalidArguments ? { usage: questionsCommand ? questionsFileHelp : usageFor(args) } : request ? {
         operation: request.operation,
         source: request.body.source,
         ...("action_id" in request.body ? { action_id: request.body.action_id } : {}),

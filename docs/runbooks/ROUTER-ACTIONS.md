@@ -1330,7 +1330,10 @@ Inspect the exact request with `get` on demand, including one overdue inspection
 when needed. Do not build a polling loop or create a new action to bypass an
 unresolved outcome. If an action must be submitted again, retain the original
 source, action ID, and payload. `sessions --help` prints the command syntax
-without opening the service socket. The existing deployment installs the
+without opening the service socket. `sessions <command> [<subcommand>] --help`
+prints only that command's synopsis lines, and an argument refusal's `usage`
+carries the same scoped lines (or the command names when the first word matches
+none) instead of the whole reference. The existing deployment installs the
 updated wrapper; the backing client ships with the normal application artifact.
 
 Targeted native communication coverage lives in
