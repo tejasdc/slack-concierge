@@ -427,7 +427,7 @@ export function inspectSavedWork(now=Date.now(),lateMs=5*60_000):number {
         :'This scheduled work is past its time and remains queued. Check the deployment hold or an earlier parked turn.';
       const eventId=`saved-work-alert:${row.id}`,inputId=row.accepted_input_id??`saved:${row.id}`;
       updateSessionMetadata(session.id,{generation,needs:[...(meta.needs??[]),{outcome:'needs_you',generation,inputId,question,at:new Date(now).toISOString(),runId:nativeRunId(row.id),eventId}]});
-      recordSessionEvent({eventId,sessionId:session.id,inputId:row.accepted_input_id,turnId:row.id,kind:'needs_you',payload:{outcome:'needs_you',question,inputId,generation,savedKind:row.saved_kind}});
+      recordSessionEvent({eventId,sessionId:session.id,inputId:row.accepted_input_id,turnId:row.id,kind:'needs_you',payload:{outcome:'needs_you',question,inputId,generation,savedKind:row.saved_kind,needEventId:eventId}});
       return true;
     })();
     if(didAlert)alerts++;

@@ -149,7 +149,8 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   // the router files it (docs/plans/2026-09-23-attention-that-ends.md).
   const declared=!!question&&!!meta.inbox&&!!runId&&questionsDeclaredByRun(input.sessionId,runId);
   const returnedDecision=needs.some(need=>need.requesterDecision&&need.inputId===inputId);
-  if(question&&!declared&&!returnedDecision)needs.push({inputId,outcome:outcome as 'needs_you'|'response',question,generation,at,runId,eventId:input.eventId,
+  const opensNeed=!!question&&!declared&&!returnedDecision;
+  if(opensNeed)needs.push({inputId,outcome:outcome as 'needs_you'|'response',question,generation,at,runId,eventId:input.eventId,
     ...(outcome==='needs_you'&&input.todoId?{todoId:input.todoId}:{})});
   const quiet=outcome==='done'?input.quiet?.trim().slice(0,2000)||null:null;
   const payload={outcome:outcome,question,summary:asks?null:input.text?.trim()||null,inputId,runId,generation,
@@ -186,6 +187,10 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
         ...(outcome==='needs_you'&&input.todoId?{todoId:input.todoId}:{}),
         ...(author?.agentName?{agentName:author.agentName}:{}),...(author?.title?{taskTitle:author.title}:{}),
         ...(answer?{postId:answer.messageId}:{}),
+        // The open question this notice is about, by its own identity. Outside the Inbox it has no
+        // post, and the provider writes its closing prose seconds after this declaration, so a link
+        // to "the answer at this time" landed on an earlier progress line (capture 767dc260).
+        ...(opensNeed?{needEventId:input.eventId}:{}),
         ...(notificationInputId?{notificationInputId,requestedNotification:true}:{})}));
   }
   updateSessionMetadata(session.id,{...(question?{generation}:{}),needs,turnOutcome:{outcome:outcome,question,inputId,at,...(quiet?{quiet}:{})}});
