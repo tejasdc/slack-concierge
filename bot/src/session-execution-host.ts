@@ -181,7 +181,8 @@ import {MANAGED_CODEX,activateCredentials,claudeAccountWorks,claudeCredentialsAn
 import {resumeBlockedParkedHeadTurns,releaseAuthHeldWork,observeExecutionChanges,executionChanged} from './state';
 import {activateRunnerCodexAccount} from './runner-provider-account-owner';
 import {noticeTime,publishProviderFreeNotice} from './provider-free-notice';
-import {accountHome,setRunnerAccountInUse} from './provider-accounts';
+import {accountHome,setRunnerAccountInUse,codexAccountIdForLabel} from './provider-accounts';
+import {accountStateActor} from './account-state-actor';
 import {providerRunnerTarget} from './provider-runner-target';
 import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
 import {claudeAccountCachedReset,clearClaudeAccountUsageAfterProof,clearCodexAccountUsage,releaseCodexUnboundUsageHeldWork,releaseUsageHeldWork,releaseProvenUsageHolds,usageAttempt,cachedUsageLimit} from './provider-usage';
@@ -960,14 +961,17 @@ export class SessionExecutionHost {
       try{
         const activation=await activateRunnerCodexAccount(runner,source,`switch:${randomUUID()}`) as any;
         if(activation?.status!=='applied')return {status:'failed',detail:activation?.detail??'Codex account switching on the runner could not be confirmed.'};
-        // 2026-11-21: a switch explicitly says "use this account now", so every queued Codex turn
-        // held for the old account's reset is released without waiting for the next probe cycle to
-        // see the new login. On this date Tejas switched Codex from an exhausted account to a clean
-        // one; the runner's identity call kept returning the old account for minutes afterwards, so
-        // `activeHasRoom` stayed false and the probe never fired `releaseUsageHeldWork`. Canvas 13
-        // stayed stuck on "No Codex account available on this machine has room now" until the cache
-        // was cleared by hand. Releasing on the switch itself makes the switch load-bearing again
-        // and does not depend on the probe seeing the new identity in time.
+        // 2026-11-22: the account state actor is the single writer for the operator's chosen
+        // identity. `operatorSwitched` records the authoritative selection, pushes it to the
+        // runner-identity map immediately (so `currentAccount('codex')` reflects the new login
+        // on the very next read), and suppresses any stale probe observation for OPERATOR_PRECEDENCE_MS
+        // so the runner's lagging identity call cannot overwrite it. Previously on 2026-11-21
+        // the probe kept re-writing the old login into the runner-identity map; the actor is
+        // the fix for that write-side race.
+        await accountStateActor.operatorSwitched('codex',{id:codexAccountIdForLabel(source)??source,label:source});
+        // Release every queued Codex turn held for the old account's reset. The actor's
+        // event stream now carries this signal too; held-work release stays inline so a
+        // credential activation failure cannot release work on an identity we did not confirm.
         releaseUsageHeldWork('codex','owner_switch');
         void scheduleProviderAccountUsageRefresh().catch(()=>{});
         return {status:'completed',activation:{status:'applied',detail:`Codex on runner ${runner} now uses ${source}.`},
@@ -989,9 +993,10 @@ export class SessionExecutionHost {
     try { activation=await activateCredentials('codex'); }
     catch(error){ log('warn','auth_activation_failed',{provider:'codex',...errorFields(error)}); activation={status:'failed',detail:''}; }
     if(activation.status==='applied'){
-      // See putCodexAccountInUse's runner branch: releasing on the switch itself keeps
-      // held Codex work from waiting on a probe cycle that may still be reporting the
-      // old login.
+      // See putCodexAccountInUse's runner branch for the full rationale. The actor
+      // owns the authoritative identity write; `move.incoming` is the Codex account
+      // whose credential was just moved into use on this machine.
+      await accountStateActor.operatorSwitched('codex',{id:move.incoming.id,label:move.incoming.label});
       releaseUsageHeldWork('codex','owner_switch');
       void scheduleProviderAccountUsageRefresh().catch(()=>{});
       return {status:'completed',activation:{status:'applied',detail:`Codex on this machine now runs on ${move.incoming.label}.`},
@@ -1015,6 +1020,8 @@ export class SessionExecutionHost {
       const check=await runnerMachineCall<{available:boolean;resolution:string}>(runner,'accounts.validate',{provider:key,account:profile.label});
       if(!check?.available)return {status:'failed',detail:`${profile.label} is not uniquely available on runner ${runner}. Nothing was switched.`};
       selectClaudeAccount(profile.id,profile.label);
+      // 2026-11-22: see other Claude switch branch. Same actor contract.
+      await accountStateActor.operatorSwitched('claude-code',{id:profile.id,label:profile.label});
       void scheduleProviderAccountUsageRefresh().catch(()=>{});
       return {status:'completed',detail:`New Claude turns will use ${profile.label} on runner ${runner}.`,
         resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh(key)};
@@ -1044,6 +1051,10 @@ export class SessionExecutionHost {
     }
     if(!full)markClaudeHomeVerified(home);
     selectClaudeAccount(profile.id,profile.label);
+    // 2026-11-22: record the operator's chosen Claude identity on the actor so the probe's
+    // lagging identity call cannot overwrite it for OPERATOR_PRECEDENCE_MS. See
+    // account-state-actor.ts.
+    await accountStateActor.operatorSwitched('claude-code',{id:profile.id,label:profile.label});
     const observed=providerAccountUsage(key);
     const reading=observed?.accounts.find(item=>item.label===profile.label);
     const hasRoom=!!observed&&!!reading&&accountReadingFresh(key,observed,reading)
