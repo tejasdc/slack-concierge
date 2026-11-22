@@ -20,7 +20,7 @@ import { resolveProviderAlias } from "./aliases";
 import { renewSavedCodexLogin } from './codex-saved-login-renewal';
 import { providerRunnerTarget } from './provider-runner-target';
 import { runnerMachineCall } from './runner-machine-calls';
-import { setRunnerAccountInUse } from './provider-accounts';
+import { accountStateActor } from './account-state-actor';
 
 /**
  * Usage limits for every account of a provider, not only the one agents use.
@@ -671,13 +671,18 @@ export async function refreshProviderAccountUsage(force = false): Promise<void> 
           const selected=provider==='claude-code'?selectedClaudeHome()?.label:null;
           const identity=await runnerMachineCall<{id:string;label:string}|null>(runner,'accounts.identity',{provider,...(selected?{account:selected}:{})});
           runnerIdentityConfirmed=!!identity&&typeof identity.id==='string'&&typeof identity.label==='string';
-          setRunnerAccountInUse(provider,runnerIdentityConfirmed?identity:null);
+          // The actor is the gatekeeper on probe-driven identity writes. When an operator
+          // switched this provider recently, the actor suppresses a disagreeing probe
+          // observation as identity-lag; otherwise it writes through to the runner-identity
+          // map via setRunnerAccountInUse. See account-state-actor.ts.
+          await accountStateActor.probeObserved(provider,runnerIdentityConfirmed?identity!:null);
         } catch (error) {
           // H3 (2026-11-20): identity confirmation failure holds every turn under this
           // provider until the next refresh. A log breadcrumb explains why the hold is
           // not clearing instead of leaving the operator guessing.
           log('warn','runner_identity_confirmation_failed',{provider,runner,error:error instanceof Error?error.message:String(error)});
-          runnerIdentityConfirmed=false;setRunnerAccountInUse(provider,null);
+          runnerIdentityConfirmed=false;
+          await accountStateActor.probeObserved(provider,null);
         }
       }else usage=await read();
       // The provider's source time chooses between two observations for the same label.
