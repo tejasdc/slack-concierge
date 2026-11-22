@@ -52,16 +52,19 @@ describe("account state actor", () => {
     expect(currentAccount("codex")?.id).toBe("acct-x");
   });
 
-  test("I3: probe observation agreeing with operator is written as a probe revision but does not change the identity", async () => {
+  test("I3: probe observation agreeing with operator is a no-op — revision stays, source stays 'operator'", async () => {
     await accountStateActor.operatorSwitched("codex", { id: "acct-x", label: "x@example.com" });
-    const beforeRev = accountStateActor.snapshot("codex")!.revision;
+    const before = accountStateActor.snapshot("codex")!;
     // Probe happens to see the same account.
     await accountStateActor.probeObserved("codex", { id: "acct-x", label: "x@example.com" });
     const after = accountStateActor.snapshot("codex")!;
-    // The actor writes a new revision because the probe did confirm; the identity is stable.
+    // The actor does NOT demote operator → probe on agreement: the first agreeing probe would
+    // otherwise collapse the 10-minute precedence window. The reinforcing observation leaves
+    // the selection, source, switchId, atMs, and revision unchanged.
     expect(after.account?.label).toBe("x@example.com");
-    expect(after.revision).toBe(beforeRev + 1);
-    expect(after.source).toBe("probe");
+    expect(after.revision).toBe(before.revision);
+    expect(after.source).toBe("operator");
+    expect(after.switchId).toBe(before.switchId);
   });
 
   test("I4: probe observation is accepted freely when no recent operator switch exists", async () => {
@@ -97,14 +100,14 @@ describe("account state actor", () => {
     expect(final?.revision).toBe(b.revision);
   });
 
-  test("I7: subscribers receive every revision in order", async () => {
+  test("I7: subscribers receive every event in order with monotonic revisions", async () => {
     const events: ActorEvent[] = [];
     const unsubscribe = accountStateActor.subscribe((e) => {
       events.push(e);
     });
     try {
       await accountStateActor.operatorSwitched("codex", { id: "a", label: "a@example.com" });
-      await accountStateActor.probeObserved("codex", { id: "a", label: "a@example.com" });
+      await accountStateActor.probeObserved("codex", { id: "a", label: "a@example.com" }); // agrees — no-op write
       await accountStateActor.operatorSwitched("codex", { id: "b", label: "b@example.com" });
       await accountStateActor.probeObserved("codex", { id: "c", label: "c@example.com" }); // suppressed
     } finally {
@@ -113,13 +116,19 @@ describe("account state actor", () => {
     expect(events).toHaveLength(4);
     expect(events[0]!.kind).toBe("operator_switched");
     expect(events[1]!.kind).toBe("probe_observed");
+    expect((events[1] as Extract<ActorEvent, { kind: "probe_observed" }>).changed).toBe(false);
     expect(events[2]!.kind).toBe("operator_switched");
     expect(events[3]!.kind).toBe("probe_suppressed");
-    // Revisions on the 3 writes that touched state are strictly monotonic.
-    const touchingState = events.filter((e) => e.kind !== "probe_suppressed") as Array<Extract<ActorEvent, { revision: number }>>;
-    for (let i = 1; i < touchingState.length; i++) {
-      expect(touchingState[i]!.revision).toBe(touchingState[i - 1]!.revision + 1);
+    // Every event carries a revision, and revisions are monotonic. The agreeing probe and the
+    // suppressed probe both carry the current operator revision without bumping it — so
+    // revisions form a non-decreasing sequence, with a bump only on operator switches.
+    const revisions = events.map((e) => (e as any).revision as number);
+    for (let i = 1; i < revisions.length; i++) {
+      expect(revisions[i]!).toBeGreaterThanOrEqual(revisions[i - 1]!);
     }
+    // Exactly two bumps (the two operator_switched events).
+    const bumps = events.filter((e) => e.kind === "operator_switched").length;
+    expect(bumps).toBe(2);
   });
 
   test("I8: after the precedence window, probe observations take over again", async () => {
@@ -138,6 +147,31 @@ describe("account state actor", () => {
     const snap = accountStateActor.snapshot("codex");
     expect(snap?.account?.label).toBe("b@example.com");
     expect(snap?.source).toBe("probe");
+  });
+
+  test("C1: a restart within the precedence window seeds the runner-identity map from the stored operator row", async () => {
+    // Pre-restart: operator switches Codex to a clean account; actor stores the authoritative row.
+    await accountStateActor.operatorSwitched("codex", { id: "acct-new", label: "tejas@chann.app" });
+    expect(currentAccount("codex")?.label).toBe("tejas@chann.app");
+
+    // Simulate the SessionExecutionHost constructor's startup behavior: it nulls the
+    // runner-identity map for every runner-bound provider. On a real restart, the in-memory
+    // actor state is empty; we clear both to mimic the restart condition.
+    setRunnerAccountInUse("codex", null);
+    (accountStateActor as any).selections.clear();
+    (accountStateActor as any).initialized = false;
+    expect(currentAccount("codex")).toBeNull();
+
+    // init() reloads from SQLite AND seeds the runner-identity map from any operator row that
+    // is still within OPERATOR_PRECEDENCE_MS. Without that seed, the actor would suppress every
+    // incoming probe observation (operator still "recent") and the runner-identity map would
+    // stay empty until the probe gave up, re-incurring the 2026-11-21 failure.
+    accountStateActor.init();
+    expect(currentAccount("codex")?.label).toBe("tejas@chann.app");
+
+    // And the actor still suppresses a stale probe observation.
+    await accountStateActor.probeObserved("codex", { id: "acct-old", label: "tejastej.dc@gmail.com" });
+    expect(currentAccount("codex")?.label).toBe("tejas@chann.app");
   });
 
   test("replay of 2026-11-21 Codex switch: switch wins over stale runner identity for the full probe lag", async () => {

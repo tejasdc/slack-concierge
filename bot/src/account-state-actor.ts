@@ -71,7 +71,7 @@ export type AccountSelection = Readonly<{
 export type ActorEvent =
   | Readonly<{ kind: "operator_switched"; provider: ActorProvider; account: SelectedAccount; switchId: string; revision: number }>
   | Readonly<{ kind: "probe_observed"; provider: ActorProvider; account: SelectedAccount | null; revision: number; changed: boolean }>
-  | Readonly<{ kind: "probe_suppressed"; provider: ActorProvider; probeLabel: string | null; operatorLabel: string; operatorSwitchId: string; ageMs: number }>;
+  | Readonly<{ kind: "probe_suppressed"; provider: ActorProvider; probeLabel: string | null; operatorLabel: string; operatorSwitchId: string; ageMs: number; revision: number }>;
 
 /**
  * How long an operator's chosen account wins over a disagreeing probe observation.
@@ -106,18 +106,31 @@ class AccountStateActor {
     const rows = db
       .query(`SELECT provider, account_id, account_label, source, switch_id, revision, at_ms FROM account_selection_actor`)
       .all() as Array<{ provider: string; account_id: string | null; account_label: string | null; source: string; switch_id: string | null; revision: number; at_ms: number }>;
+    const now = Date.now();
     for (const row of rows) {
       if (row.provider !== "codex" && row.provider !== "claude-code") continue;
       if (row.source !== "operator" && row.source !== "probe") continue;
       const account = row.account_label && row.account_id ? { id: row.account_id, label: row.account_label } : null;
-      this.selections.set(row.provider, {
+      const selection: AccountSelection = {
         provider: row.provider,
         account,
         source: row.source,
         switchId: row.switch_id,
         revision: row.revision,
         atMs: row.at_ms,
-      });
+      };
+      this.selections.set(row.provider, selection);
+      // C1 (2026-11-22 review): On process restart within OPERATOR_PRECEDENCE_MS of an operator
+      // switch, the SessionExecutionHost constructor nulls the runner-identity map for every
+      // runner-bound provider. Without this seed, the reloaded operator selection would
+      // suppress every incoming probe observation (because the operator is still "recent"),
+      // and the runner-identity map would stay empty — currentAccount(provider) would return
+      // null, held work would stay parked, and the exact 2026-11-21 failure the actor fixes
+      // would recur across a restart. Seed the runner-identity map from the operator row so
+      // currentAccount reflects the authoritative selection immediately.
+      if (selection.source === "operator" && selection.account && now - selection.atMs < OPERATOR_PRECEDENCE_MS) {
+        setRunnerAccountInUse(selection.provider, selection.account);
+      }
     }
     this.initialized = true;
   }
@@ -232,6 +245,7 @@ class AccountStateActor {
           operator_label: operatorLabel,
           operator_switch_id: prev!.switchId,
           age_ms: now - prev!.atMs,
+          revision: prev!.revision,
         });
         this.publish({
           kind: "probe_suppressed",
@@ -240,7 +254,18 @@ class AccountStateActor {
           operatorLabel: operatorLabel!,
           operatorSwitchId: prev!.switchId!,
           ageMs: now - prev!.atMs,
+          revision: prev!.revision,
         });
+        return prev ?? null;
+      }
+      // I1 (2026-11-22 review): When a probe observation AGREES with the operator's recent
+      // choice, do not overwrite source/switchId/atMs — otherwise the first agreeing probe
+      // collapses the 10-minute precedence window and a later flaky probe could overwrite
+      // the operator's identity. The agreeing probe reinforces the selection but does not
+      // demote it; no revision bump.
+      if (operatorRecent && probeLabel === operatorLabel) {
+        setRunnerAccountInUse(provider, account);
+        this.publish({ kind: "probe_observed", provider, account, revision: prev!.revision, changed: false });
         return prev ?? null;
       }
       const revision = (prev?.revision ?? 0) + 1;

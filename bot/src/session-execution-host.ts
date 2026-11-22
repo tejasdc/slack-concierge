@@ -411,7 +411,15 @@ export class SessionExecutionHost {
       }catch(error){activation={status:'failed',detail:'The runner account was saved, but Codex could not be switched on the runner.'};log('warn','runner_codex_activation_failed',{error_name:(error as Error)?.name??'Error'});}
       const activated=activation.status==='applied';
       this.lastSignIn.set(provider,{ok:activated,detail:activated?null:activation.detail||'The runner saved the account, but could not confirm that Codex switched to it.'});
-      if(activated){void scheduleProviderAccountUsageRefresh().catch(()=>{});this.resumeParkedWorkAfterAuthRefresh(provider);}
+      if(activated){
+        // I2 (2026-11-22 review): a runner-side sign-in completion is also an operator switch.
+        // Route through the actor so the stale runner-identity lag cannot overwrite it and so
+        // held work releases on the newly signed-in login, not on the next probe cycle.
+        await accountStateActor.operatorSwitched('codex',{id:codexAccountIdForLabel(account)??account,label:account});
+        releaseUsageHeldWork(provider,'owner_switch');
+        void scheduleProviderAccountUsageRefresh().catch(()=>{});
+        this.resumeParkedWorkAfterAuthRefresh(provider);
+      }
       this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
       return {status:activated?'completed':'failed',detail:activated?`Codex on runner ${operation.runner} now uses ${account}.`:activation.detail,
         activation,resumedTurnIds:activated?[]:undefined};
@@ -424,6 +432,10 @@ export class SessionExecutionHost {
     }
     const profileId=`runner-${createHash('sha256').update(account).digest('hex').slice(0,16)}`;
     selectClaudeAccount(profileId,account);
+    // I2 (2026-11-22 review): see the Codex branch above — a Claude sign-in completion is an
+    // operator switch and needs the same actor contract and held-work release.
+    await accountStateActor.operatorSwitched('claude-code',{id:profileId,label:account});
+    releaseUsageHeldWork(provider,'owner_switch');
     this.lastSignIn.set(provider,{ok:true,detail:`${account} is saved on runner ${operation.runner}.`});
     this.runnerSignIns.delete(provider);clearPendingSignIn(provider);
     void scheduleProviderAccountUsageRefresh().catch(()=>{});
