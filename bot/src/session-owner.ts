@@ -4144,6 +4144,21 @@ ${input.text}`;
   }
   private async rawHistoryPage(id:string,cursor:string|null,limit:number,activity=false,want?:{dialogue:number;untilInput:boolean}) {
     const session=this.session(id);
+    // A newly created conversation has no provider transcript until its first input. Only the
+    // retained creation, with no first input or turns, proves that its history is empty. An
+    // accepted input without a provider binding must still use incomplete coverage so the
+    // reader never mistakes an unacknowledged send for an empty conversation.
+    if(cursor===null&&!session.agent_session_uuid&&(sessionMetadata(session).origin??'native')==='native'
+      &&['claude-code','codex'].includes(session.provider_id)){
+      const empty=db.transaction(()=>{
+        const inputs=db.query('SELECT kind,payload_json FROM session_inputs WHERE session_id=?').all(session.id) as {kind:string;payload_json:string}[];
+        if(inputs.length!==1||inputs[0]!.kind!=='create'||JSON.parse(inputs[0]!.payload_json).firstInput
+          ||db.query('SELECT 1 FROM turns WHERE session_id=? LIMIT 1').get(session.id))return null;
+        return {messages:[],nextCursor:null,coverage:{complete:true},
+          asOf:encodePosition(pagePosition('none',ledgerHead(),session.binding_generation??1,[]))};
+      })();
+      if(empty)return empty;
+    }
     // Continuation pages of a window may be larger than a client page, but only where the page
     // comes from the provider; ledger-backed positions stay bounded by the client window.
     const providerPage=['claude-code','codex'].includes(session.provider_id)&&!sessionMetadata(session).inbox;
