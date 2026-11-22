@@ -3238,7 +3238,10 @@ export class SessionCommunicationCoordinator {
                 throw new Error('--to-inbox is a final reply on its own: no --partial, --work-disposition, --hand-back or --mine.');
             if(!saysSomething(input.text))throw new Error('--to-inbox needs one line after -- saying what the message is about and why it is not your work.');
             input={...input,workDisposition:'completed',hand_back:TO_INBOX,summary:input.summary??'Passed to the Inbox: not about this thread\'s work'};
-        } else if(forwardedThread&&(input.final||input.answers_question)&&!saysSomething(input.mine??'')&&!this.answeredBefore(input.request_id)){
+        } else if(forwardedThread&&(input.final||input.answers_question)&&!saysSomething(input.mine??'')
+            // A failure or a question to him is not an answer claimed as this session's own.
+            &&!(input.final&&(input.workDisposition==='failed'||input.workDisposition==='needs_decision'))
+            &&!this.answeredBefore(input.request_id)){
             throw new Error(`This message is a reply Tejas wrote in the thread you work in. Say whether it is your work before answering it. If it is about your work there, add --mine "<what of your work it is about>" to this reply. If it is not (a bug or question about Concierge, thnkr.ing or the system itself, or another subject), do not answer it: sessions reply ${input.request_id} --to-inbox -- "<what it is about and why it is not your work>" passes it to the Inbox router to route.`);
         }
         // What the requester, and through it Tejas, reads: a decision carries his words and why
@@ -4184,7 +4187,7 @@ export class SessionCommunicationCoordinator {
                         // makes a restart or reconciliation harmless.
                         this.dependencies.owner!.admit({sessionId:current.target_session_id,inputId:`question-reminder:${current.request_id}`,
                             origin:'service',threadReplyNotRequired:true,sourceInputId:current.source_input_id!,sourceRunId:nativeRunId(current.source_turn_id),requestId:current.request_id,
-                            text:`${asker} is still waiting for an answer to the question in request ${current.request_id}. Answer in the Inbox thread now with sessions reply ${current.request_id} --partial --answers-question, even if the rest of the work continues. A progress-only reply does not answer it.`});
+                            text:`${asker} is still waiting for an answer to the question in request ${current.request_id}. Answer in the Inbox thread now with sessions reply ${current.request_id} --partial --answers-question --mine "<what of your work it is about>" (or, when it is not your work, pass it on with --to-inbox -- "<why>"), even if the rest of the work continues. A progress-only reply does not answer it.`});
                         db.query('UPDATE session_communication_requests SET prompt_reminded_at_ms=?,due_at_ms=? WHERE request_id=?')
                             .run(now,current.created_at_ms+PROMPT_ANSWER_OVERDUE_MS,current.request_id);
                     } else {

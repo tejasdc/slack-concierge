@@ -2239,7 +2239,7 @@ export class SessionPeers {
     const target=getAcceptedSessionInput(row.target_input_id);
     this.dependencies.owner.admit({sessionId:row.target_session_id,inputId:`question-reminder:${row.request_id}`,
       origin:'service',sourceInputId:row.target_input_id,sourceRunId:target?.turn_id?nativeRunId(target.turn_id):row.origin_run_id,requestId:row.request_id,
-      text:`${JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.forwardedReply?.authorKind==='agent'?'The marked agent test':'Tejas'} is still waiting for an answer to the question in request ${row.request_id}. Answer in the Inbox thread now with sessions reply ${row.request_id} --partial --answers-question, even if the rest of the work continues. A progress-only reply does not answer it.`});
+      text:`${JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.forwardedReply?.authorKind==='agent'?'The marked agent test':'Tejas'} is still waiting for an answer to the question in request ${row.request_id}. Answer in the Inbox thread now with sessions reply ${row.request_id} --partial --answers-question --mine "<what of your work it is about>" (or, when it is not your work, pass it on with --to-inbox -- "<why>"), even if the rest of the work continues. A progress-only reply does not answer it.`});
     db.query('UPDATE session_peer_deliveries SET prompt_reminded_at_ms=? WHERE request_id=? AND prompt_reminded_at_ms IS NULL').run(this.now(),row.request_id);
   }
   /** Adds a clock to an already accepted exact request; it never admits the task again. */
