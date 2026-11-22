@@ -41,6 +41,7 @@ import {parseMachineNeed,type MachineNeed} from './machine-need';
 import {AUTHORIZED_PAGE,AUTHORIZED_WEB_APP,AUTHORIZING_HUMAN_INPUT,CANVAS_AUTHORIZING_HUMAN_INPUT} from './mac-surface-policy';
 import {MAC_FOCUS_PHRASE,MAC_FOCUS_REQUEST} from './mac-focus-source';
 import {endedWorkInPlainWords} from './provider-failures';
+import {conceptQuery} from './search-response-boundary';
 
 /** Follow owner-recorded continuations back to the work request that forwarded a human reply. */
 export function forwardedHumanWorkInput(actor:PeerActor,sourceInput:ReturnType<typeof getAcceptedSessionInput>) {
@@ -540,7 +541,7 @@ export class SessionPeers {
   async authProviders(peer:string,fresh=false){return this.client(peer).request('GET','/sessions/v1/auth/providers?'+new URLSearchParams({machine:peer,...(fresh?{fresh:'1'}:{})}),undefined,fresh?30_000:8_000);}
   async authAction(peer:string,path:string,body:Record<string,unknown>,timeoutMs:number){return this.client(peer).request('POST',`/sessions/v1/auth/${path}`,body,timeoutMs);}
   async projects(peer:string){return this.client(peer).request('GET','/sessions/v1/projects');}
-  async search(peer:string,concepts:string[],limit?:number):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})},8_000));}
+  async search(peer:string,concepts:string[],limit?:number):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/search',{query:conceptQuery(concepts),...(limit===undefined?{}:{limit})},8_000));}
   /**
    * The peer to search through when this machine has no meaning index of its own (the Mac): the
    * machine that keeps the archive, which is any peer whose archive is not kept here. A peer known
@@ -566,7 +567,7 @@ export class SessionPeers {
    */
   async searchThrough(peer:string,concepts:string[],limit?:number):Promise<any> {
     let value:any;
-    try{value=await this.client(peer).request<any>('POST','/sessions/v1/search',{query:concepts.join(' '),everywhere:true,...(limit===undefined?{}:{limit})},20_000);this.unreachable.delete(peer);}
+    try{value=await this.client(peer).request<any>('POST','/sessions/v1/search',{query:conceptQuery(concepts),everywhere:true,...(limit===undefined?{}:{limit})},20_000);this.unreachable.delete(peer);}
     catch(error){this.note(peer,error);throw error;}
     const self=this.self;
     const own=(item:string)=>self&&item.startsWith(`${self}:`)&&/^\d+$/.test(item.slice(self.length+1))?`concierge:${item.slice(self.length+1)}`

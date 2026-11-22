@@ -195,3 +195,17 @@ root and both identities without contacting production Slack.
   searches alone only when the server cannot be reached, and says so. Decision history, starting
   with the September QMD evaluation, and the working-text measurement are in
   [session search by meaning](../plans/2026-10-07-session-search-by-meaning.md). Archive search joins indexed identity to exact prepared event proof; its consumer check runs in the build.
+- **Each concept is its own search.** `sessions search` concepts travel to the owner and to peers
+  as one query with one concept per line (a release without concepts reads the line breaks as
+  spaces). The owner runs the prepared word search (one worker, one pass per concept), the
+  archive search (one call per concept) and routing evidence with the concepts kept apart, then
+  fuses every ranked list with reciprocal-rank fusion, so a session that matches several concepts
+  rises. The archive examines up to the result limit on its own rather than the room native
+  sessions leave, so an archived transcript that built a thing competes with newer sessions that
+  only talk about it. Before 2026-11-22 the concepts were joined with spaces, which required every
+  word of every concept in one message; only the incident's own retelling matched, and the Mac
+  Codex sessions that built tejas.nyc's visualization never surfaced.
+- **Earlier work imports what it matches.** The request brief's earlier-work lookup
+  (`bot/src/request-history.ts`) imports a closely matching archived transcript that is not yet a
+  session through the owner's search import path, instead of dropping it, and dates it by its
+  conversation.

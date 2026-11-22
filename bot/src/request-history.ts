@@ -1,7 +1,9 @@
 import {DECISIONS_DIR,FAILURE_CASES_DIR,TASTE_PROFILE,decisions,failureCases,oneLine,tastePassages,type Decision,type FailureCase,type TastePassage} from './earlier-records';
 import {db} from './state';
 import {log} from './log';
-import {meaningIndex,type MeaningIndex} from './meaning-index';
+import {meaningIndex,type MeaningHit,type MeaningIndex} from './meaning-index';
+/** Imports one matched archived transcript as a session, returning its id (the owner's import path). */
+export type ArchiveImporter=(target:Extract<MeaningHit['target'],{kind:'archive'}>)=>Promise<number|null>;
 
 /**
  * What came before: the earlier work on the problem a work request is about, put into the request
@@ -73,7 +75,7 @@ function threadRequests(topicRoot:string,beforeMs:number,recipient:number|null,s
 }
 
 /** Earlier sessions close in meaning, from the index alone: imported transcripts count only when Concierge already holds them. */
-async function closestSessions(index:MeaningIndex,vector:Float32Array):Promise<{found:{id:number;score:number}[];omission:string|null}> {
+async function closestSessions(index:MeaningIndex,vector:Float32Array,importArchive?:ArchiveImporter):Promise<{found:{id:number;score:number}[];omission:string|null}> {
   const answer=await index.searchVector(vector,30);
   if(!answer.available)return {found:[],omission:`Earlier sessions were not compared: ${answer.reason??'the meaning index is unavailable'}.`};
   const best=new Map<number,number>();
@@ -87,6 +89,14 @@ async function closestSessions(index:MeaningIndex,vector:Float32Array):Promise<{
       WHERE json_extract(native_metadata_json,'$.origin')='imported' AND json_extract(native_metadata_json,'$.source.id') IN (${sources.map(()=>'?').join(',')})`).all(...sources) as {id:number;source:string}[];
     const bySource=new Map(rows.map(row=>[row.source,row.id]));
     for(const hit of strong)if(hit.target.kind==='archive'){const id=bySource.get(hit.target.sourceId);if(id!==undefined)keep(id,hit.score);}
+    // A transcript not imported yet (a Mac Codex session, say) is imported now, the closest few
+    // together, as session search would: dropping it hid the sessions that built tejas.nyc's
+    // visualization from the album request on 2026-11-22.
+    const unheld=[...new Map(strong.flatMap(hit=>hit.target.kind==='archive'&&!bySource.has(hit.target.sourceId)?[[hit.target.sourceId,hit] as const]:[])).values()].slice(0,MAX_SESSIONS);
+    if(importArchive&&unheld.length){
+      const imported=await Promise.allSettled(unheld.map(hit=>importArchive(hit.target as Extract<MeaningHit['target'],{kind:'archive'}>)));
+      for(const [at,outcome] of imported.entries())if(outcome.status==='fulfilled'&&outcome.value!==null)keep(outcome.value,unheld[at]!.score);
+    }
   }
   return {found:[...best.entries()].map(([id,score])=>({id,score})).sort((a,b)=>b.score-a.score),omission:null};
 }
@@ -145,6 +155,7 @@ export async function earlierWorkFor(input:{
   nowMs:number;
   titleOf:(sessionId:number)=>string;
   answerability:Answerability;
+  importArchive?:ArchiveImporter;
 }):Promise<EarlierWork> {
   const started=performance.now();
   try {
@@ -173,7 +184,7 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
     const vector=await index.questionVector(query);
     // One index for the question and every comparison, so they always share an embedding model.
     const [cases,decisions,taste]=await Promise.all([closestCases(index,vector!),closestDecisions(index,vector!),closestTaste(index,vector!)]);
-    return {sessions:await closestSessions(index,vector!),cases,decisions,taste};
+    return {sessions:await closestSessions(index,vector!,input.importArchive),cases,decisions,taste};
   };
   const compared=await within(compare(),MEANING_WAIT_MS).catch(error=>{omissions.push(`Earlier sessions, failure cases, his decisions and his taste profile could not be compared: ${error instanceof Error?error.message:String(error)}.`);return null;});
   if(compared==='late')omissions.push(`Earlier sessions, failure cases, his decisions and his taste profile were not compared within ${MEANING_WAIT_MS/1000} s; search yourself with router-actions.sh sessions search, node scripts/failure-case.mjs search in thnkr.ing, decision search, and his taste profile in the interface-decisions skill.`);
@@ -185,15 +196,17 @@ async function lookUp(input:Parameters<typeof earlierWorkFor>[0]):Promise<Earlie
   if(cases?.omission)omissions.push(cases.omission);
   if(decided?.omission)omissions.push(decided.omission);
   if(tasted?.omission)omissions.push(tasted.omission);
-  const created=db.query("SELECT CAST(strftime('%s',created_at) AS INTEGER)*1000 AS ms FROM sessions WHERE id=?");
+  const created=db.query("SELECT CAST(strftime('%s',created_at) AS INTEGER)*1000 AS ms,json_extract(native_metadata_json,'$.origin')='imported' AS imported,json_extract(native_metadata_json,'$.source.createdAt') AS conversationAt FROM sessions WHERE id=?");
   // Through the recipient index, newest by time; only the chosen row's words are read.
   const times=db.query('SELECT request_id,created_at_ms FROM session_communication_requests WHERE target_session_id=? AND created_at_ms<?');
   const row=db.query(`SELECT ${COLUMNS} FROM session_communication_requests WHERE request_id=?`);
   const related:{id:number;at:number|null;last:RequestRow|null}[]=[];
   for(const {id} of sessions?.found??[]){
     if(excluded.has(id)||inThread.has(id))continue;
-    const at=(created.get(id) as {ms:number|null}|null)?.ms??null;
-    if(at!==null&&at>=input.nowMs)continue;
+    const row=created.get(id) as {ms:number|null;imported:number;conversationAt:string|null}|null;
+    // An imported transcript's session row is made when it is first found; date it by its conversation.
+    const at=row?.imported?(row.conversationAt?Date.parse(row.conversationAt)||null:null):row?.ms??null;
+    if(!row?.imported&&at!==null&&at>=input.nowMs)continue;
     const newest=(times.all(id,input.nowMs) as {request_id:string;created_at_ms:number}[]).sort((a,b)=>b.created_at_ms-a.created_at_ms)[0];
     const last=newest?row.get(newest.request_id) as RequestRow:null;
     related.push({id,at,last});

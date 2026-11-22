@@ -30,8 +30,8 @@ import {finishedSpeechJobIds,readSpeechJobResult,removeFinishedSpeechJob,speechJ
 import {ensureSpeechWorker} from './speech-job-supervisor';
 import {log} from './log';
 import {lastBlockTask,taskClockMs,withTaskLabel} from './owner-task-labels';
-import {searchPrepared,searchRouterThreadsRead} from './presentation-search-client';
-import {boundSearchResponse} from './search-response-boundary';
+import {searchPreparedConcepts,searchRouterThreadsRead} from './presentation-search-client';
+import {boundSearchResponse,queryConcepts} from './search-response-boundary';
 import {isTransientDatabaseError} from './database-retry';
 import {SessionCapabilityError} from './session-capability-client';
 import {validateJournalReview,existingJournalRequestEvidence,type JournalReview} from './journal-processing';
@@ -48,7 +48,7 @@ import {preparedIncoming,preparedTopicOverview,preparedTopicItems,preparedQuesti
 import {createAreaByHuman,areaHumanAction,AreaError} from './session-areas';
 import {presentationChangesForSession,presentationEpoch,presentationHead} from './presentation-changes';
 import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from './owner-responsiveness';
-import {meaningIndex,type MeaningSearch} from './meaning-index';
+import {meaningIndex,type MeaningHit,type MeaningSearch} from './meaning-index';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {retainedArchiveSearchSource} from './archive-search-source';
 import {presentSessionForPeer} from './peer-identity';
@@ -4331,6 +4331,18 @@ ${input.text}`;
     if(sources.history)return sources.history({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,cursor:null,limit:1,eventId:pin.eventId});
     return sources.context({sourceId:pin.sourceId,sourceVersion:pin.sourceVersion,branch:pin.branch,eventId:pin.eventId,limit:1});
   }
+  /**
+   * The session for one archived transcript a meaning comparison matched, importing it exactly as
+   * session search does. The earlier-work lookup uses it so a Mac transcript Concierge has not
+   * imported yet is named as earlier work rather than silently dropped (2026-11-22).
+   */
+  async sessionForArchiveMatch(target:Extract<MeaningHit['target'],{kind:'archive'}>):Promise<number|null> {
+    if(target.nativeId){const native=db.query('SELECT id FROM sessions WHERE agent_session_uuid=? ORDER BY id LIMIT 1').get(target.nativeId) as {id:number}|null;if(native)return native.id;}
+    if(!this.runtime.sources)return null;
+    const pin={sourceId:target.sourceId,sourceVersion:target.sourceVersion,branch:target.branch,eventId:target.eventId};
+    const source=retainedArchiveSearchSource(target.source,pin,await this.retainArchiveSource(pin));
+    return source?this.sourceSession(source).id:null;
+  }
   private resolveSourceSession(source:any) {
     if(!source||!['codex','claude-code','chatgpt'].includes(source.provider)||typeof source.id!=='string'||typeof source.branch!=='string'||!/^[a-f0-9]{64}$/.test(source.version))throw new SessionOwnerError('Source adapter returned incomplete identity.',502);
     const existing=db.query("SELECT * FROM sessions WHERE json_extract(native_metadata_json,'$.origin')='imported' AND json_extract(native_metadata_json,'$.source.id')=? AND json_extract(native_metadata_json,'$.source.branch')=?").get(source.id,source.branch) as SessionRow|null;
@@ -4458,16 +4470,18 @@ ${input.text}`;
     };
     const limit=Math.min(100,Math.max(1,Number(input.limit)||20));
     // Prepared word and historical routing searches keep their sealed subprocess entrance.
-    const terms:string[]=input.query.trim().split(/\s+/).filter(Boolean);
+    // Each concept is searched on its own; a session matching several concepts ranks higher.
+    const concepts=queryConcepts(input.query);
+    const terms:string[]=concepts.join(' ').split(/\s+/).filter(Boolean);
     const wordStarted=performance.now();
-    const wordSearch=searchPrepared(input.query.trim(),limit,input.includeTools===true)
+    const wordSearch=searchPreparedConcepts(concepts,limit,input.includeTools===true)
       .then(value=>{timing.word_ms=Math.round(performance.now()-wordStarted);return value;})
       .catch(()=>{timing.word_ms=Math.round(performance.now()-wordStarted);return null;});
     const routingStarted=performance.now();
     const routingSearch=searchRouterThreadsRead({beforeTs:(Date.now()/1000).toFixed(6),...routingSource,
-      concepts:terms.slice(0,8),limit:Math.min(limit,10)}).finally(()=>{timing.routing_ms=Math.round(performance.now()-routingStarted);});
+      concepts,limit:Math.min(limit,10)}).finally(()=>{timing.routing_ms=Math.round(performance.now()-routingStarted);});
     const archiveStarted=performance.now();
-    const archiveSearch=this.runtime.sources?.search({query:input.query,includeTools:input.includeTools===true,limit})
+    const archiveSearch=this.runtime.sources&&Promise.all(concepts.map(concept=>this.runtime.sources!.search({query:concept,includeTools:input.includeTools===true,limit})))
       .then(found=>{timing.archive_search_ms=Math.round(performance.now()-archiveStarted);return {found,error:null};},
         error=>{timing.archive_search_ms=Math.round(performance.now()-archiveStarted);return {found:null,error};});
     // A full view reads the session's whole run history, so it is built once per returned candidate, not per scanned row.
@@ -4487,17 +4501,31 @@ ${input.text}`;
       // Retired Slack bindings are historical evidence, not a prerequisite for native discovery.
       routingFailure=`Historical Slack routing evidence unavailable: ${error instanceof Error?error.message:String(error)}`;
     }
-    const words=await wordSearch;
-    for(const hit of words?.hits??[]) {
-      const session=getSessionById(hit.sessionId);
-      if(!session)continue;
-      if(hit.kind==='session'){add(session,[]);continue;}
-      const {kind,...evidence}=hit;
-      add(session,[{...evidence,sessionId:`concierge:${session.id}`,locator:hit.eventId,at:ledgerTime(hit.at)}]);
+    // Word evidence arrives as ranked lists: one per concept from this machine's sessions, one
+    // from historical routing, and one per concept from the archive below. Each list ranks on its
+    // own and they are fused, so an archived transcript that built the thing competes with a
+    // newer session that only talks about it instead of getting whatever room is left over.
+    const wordLists:number[][]=[];
+    const listed=(list:number[],id:number)=>{if(!list.includes(id))list.push(id);};
+    const wordsAnswer=await wordSearch;
+    const words=wordsAnswer?{coverage:wordsAnswer.coverage,hasMore:wordsAnswer.results.some(result=>result.hasMore),
+      omissions:[...new Set(wordsAnswer.results.flatMap(result=>result.omissions))]}:null;
+    for(const result of wordsAnswer?.results??[]) {
+      const list:number[]=[];wordLists.push(list);
+      for(const hit of result.hits) {
+        const session=getSessionById(hit.sessionId);
+        if(!session)continue;
+        listed(list,session.id);
+        if(hit.kind==='session'){add(session,[]);continue;}
+        const {kind,...evidence}=hit;
+        add(session,[{...evidence,sessionId:`concierge:${session.id}`,locator:hit.eventId,at:ledgerTime(hit.at)}]);
+      }
     }
+    const routingList:number[]=[];wordLists.push(routingList);
     for(const match of routing?.results??[]) {
       const channel=getChannel(match.channel_id);
       const session=channel?resolveReplySession(db,channel,match.root_ts).session:null;
+      if(session)listed(routingList,session.id);
       if(session)add(session,[{sourceId:`routing:${match.channel_id}:${match.root_ts}`,sourceVersion:null,eventId:match.root_ts,role:match.matched_source==='delivered_tldr'?'assistant':'user',locator:match.root_ts,textHash:null,text:match.snippet??'',snippet:searchSnippet(match.snippet??'',terms),at:new Date(Number(match.root_ts)*1000).toISOString(),corpus:'routing_evidence'}]);
     }
     let coverage:any={complete:routing?.complete??false,indexedAt:new Date().toISOString(),sources:results.size,reason:routingFailure??(routing?.complete?null:routing?.omissions.join(' ')||'Routing evidence is incomplete.'),refresh:[],omissions:['Native discovery covers retained inputs and provider messages; older provider history outside this ledger is available through context/history but is not indexed here.',...(routing?.omissions??[]),...(routingFailure?[routingFailure]:[])]};
@@ -4513,10 +4541,22 @@ ${input.text}`;
       try {
         const archived=await archiveSearch!;
         if(archived.error)throw archived.error;
-        const found=archived.found!;
-        const candidates=(found.sources??[]).map((source:any)=>({source,matches:(found.matches??[]).filter((evidence:any)=>evidence.sourceId===source.id&&evidence.sourceVersion===source.version
+        const answers=archived.found!;
+        const found={complete:answers.every((answer:any)=>answer.complete),indexedAt:answers[0]?.indexedAt??null,refresh:answers[0]?.refresh??[],
+          reason:[...new Set(answers.map((answer:any)=>answer.reason).filter(Boolean))].join(' ')||null};
+        // Per concept, best match first; then taken in turn from each concept so every concept is examined.
+        const perConcept=answers.map((answer:any)=>(answer.sources??[]).map((source:any)=>({source,matches:(answer.matches??[]).filter((evidence:any)=>evidence.sourceId===source.id&&evidence.sourceVersion===source.version
           &&(evidence.branch?evidence.branch===source.branch:(source.messages??[]).some((message:any)=>message.eventId===evidence.eventId&&message.textHash===evidence.textHash)))}))
-          .filter((candidate:any)=>candidate.matches.length);
+          .filter((candidate:any)=>candidate.matches.length));
+        const byKey=new Map<string,{source:any;matches:any[];ranks:[number,number][]}>();
+        for(let rank=0;perConcept.some((list:any[])=>rank<list.length);rank++)for(const [concept,list] of perConcept.entries()){
+          const candidate=list[rank];if(!candidate)continue;
+          const key=JSON.stringify([candidate.source.id,candidate.source.version,candidate.source.branch??null]);
+          const merged=byKey.get(key)??{source:candidate.source,matches:[],ranks:[]};byKey.set(key,merged);
+          merged.ranks.push([concept,rank]);
+          for(const evidence of candidate.matches)if(!merged.matches.some((item:any)=>item.eventId===evidence.eventId&&item.textHash===evidence.textHash))merged.matches.push(evidence);
+        }
+        const candidates=[...byKey.values()];
         // Branches of one archived conversation share their earlier messages; a branch that adds no new matching passage is the same result again.
         const shown=new Map<string,Set<string>>();
         const distinct=candidates.filter((candidate:any)=>{
@@ -4525,7 +4565,8 @@ ${input.text}`;
           for(const evidence of candidate.matches)passages.add(evidence.textHash);shown.set(conversation,passages);
           return fresh;
         });
-        const room=Math.max(0,limit-results.size),examined=distinct.slice(0,room);
+        // The archive gets its own share of the result size; fusion below decides the final order.
+        const examined=distinct.slice(0,limit);
         if(distinct.length>examined.length){
           const omission=`Archive candidates not examined or retained because the response limit was reached: ${distinct.length-examined.length}.`;
           coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);
@@ -4535,6 +4576,7 @@ ${input.text}`;
         const retained=await Promise.allSettled(examined.map((candidate:any)=>this.retainArchiveSource({sourceId:candidate.source.id,sourceVersion:candidate.source.version,branch:candidate.source.branch,eventId:candidate.matches[0].eventId})));
         timing.archive_retention_ms=Math.round(performance.now()-retentionStarted);
         let unavailable=0;
+        const archiveRanks:[number,number,number][]=[];
         for(const [index,candidate] of examined.entries()) {
           if(retained[index]!.status==='rejected'){unavailable++;continue;}
           const proof=(retained[index] as PromiseFulfilledResult<any>).value;
@@ -4543,11 +4585,14 @@ ${input.text}`;
           if(!source){unavailable++;continue;}
           const session=sourceSession(source);
           if(!session)continue; // Pending imports are projected only by the second, fresh read.
+          for(const [concept,rank] of candidate.ranks)archiveRanks.push([concept,rank,session.id]);
           // An archived transcript dates the conversation, not each message in it. Half the
           // results showed no date at all; the conversation's own date answers "when was this"
           // without claiming a precision the archive does not have, so it stays a separate field.
           add(session,candidate.matches.map((evidence:any)=>({...evidence,branch:candidate.source.branch,sessionId:`concierge:${session.id}`,snippet:searchSnippet(evidence.text??'',terms),at:null,conversationAt:candidate.source.createdAt??null})));
         }
+        for(let concept=0;concept<concepts.length;concept++){const list:number[]=[];wordLists.push(list);
+          for(const [,,id] of archiveRanks.filter(entry=>entry[0]===concept).sort((a,b)=>a[1]-b[1]))listed(list,id);}
         if(unavailable){const omission=`${unavailable} matched archive source versions could not be retained and were omitted.`;coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);}
         coverage={...coverage,complete:coverage.complete&&found.complete,indexedAt:found.indexedAt??coverage.indexedAt,sources:results.size,reason:[coverage.reason,found.reason].filter(Boolean).join(' ')||null,refresh:found.refresh??[],omissions:coverage.omissions};
       } catch(error) {coverage.complete=false;coverage.reason=[coverage.reason,`Archive source coverage unavailable: ${error instanceof Error?error.message:String(error)}`].filter(Boolean).join(' ');}
@@ -4555,7 +4600,9 @@ ${input.text}`;
     // Word matches keep the order they were found in; meaning matches are ranked by closeness.
     // Reciprocal-rank fusion of the two, as measured in the September evaluation
     // (docs/brainstorms/2026-09-03-router-session-search-and-routing.md): a session both find rises.
-    const lexicalRank=new Map([...results.keys()].map((id,rank)=>[id,rank] as const)),meaningRank=new Map<number,number>(),meaningScore=new Map<number,number>();
+    const lexical=new Map<number,number>();
+    for(const list of wordLists)for(const [rank,id] of list.entries())lexical.set(id,(lexical.get(id)??0)+1/(60+rank));
+    const meaningRank=new Map<number,number>(),meaningScore=new Map<number,number>();
     const peerHits:{rank:number;view:any;evidence:any[];score:number}[]=[];
     const meaning=await meaningResult();
     if(meaning?.available) {
@@ -4601,10 +4648,10 @@ ${input.text}`;
     if(!meaning)coverage.omissions.push('Meaning search is not running on this machine; results match words only.');
     coverage.meaning=meaning?{available:meaning.available,indexed:meaning.indexed,catchingUp:meaning.pending}:{available:false,indexed:0,catchingUp:false};
     if(pending.length)return {response:null,pending,sources,timing};
-    const fused=(id:number)=>(lexicalRank.has(id)?1/(60+lexicalRank.get(id)!):0)+(meaningRank.has(id)?1/(60+meaningRank.get(id)!):0);
+    const fused=(id:number)=>(lexical.get(id)??0)+(meaningRank.has(id)?1/(60+meaningRank.get(id)!):0);
     const anchors=[...results.keys()].sort((a,b)=>fused(b)-fused(a)).slice(0,3);
     const mutuals=sessionMutuals([...results.keys()]);
-    const ranked=[...[...results.values()].map(entry=>({score:fused(entry.session.id)+mutualLift(entry.session.id,anchors,mutuals),result:()=>({session:this.view(entry.session),evidence:entry.evidence,match:{words:lexicalRank.has(entry.session.id),meaning:meaningScore.get(entry.session.id)??null},mutuals:(mutuals.get(entry.session.id)??[]).slice(0,8)})})),
+    const ranked=[...[...results.values()].map(entry=>({score:fused(entry.session.id)+mutualLift(entry.session.id,anchors,mutuals),result:()=>({session:this.view(entry.session),evidence:entry.evidence,match:{words:lexical.has(entry.session.id),meaning:meaningScore.get(entry.session.id)??null},mutuals:(mutuals.get(entry.session.id)??[]).slice(0,8)})})),
       ...peerHits.map(hit=>({score:1/(60+hit.rank),result:()=>({session:hit.view,evidence:hit.evidence,match:{words:false,meaning:hit.score}})}))].sort((a,b)=>b.score-a.score);
     const response=boundSearchResponse({results:ranked.slice(0,limit).map(entry=>entry.result()),coverage});
     return {response,pending,sources:[],timing};

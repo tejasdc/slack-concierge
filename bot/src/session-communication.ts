@@ -40,7 +40,7 @@ import { deliverRequestReminder } from './request-reminder-carrier';
 import { QUIET_WAKE_MS, QUIET_WAKES_BEFORE_STALL, QUIET_WAKES_PER_WINDOW, QUIET_WAKE_WINDOW_MS, dependencySettledSince, dependencyStuck, liveWatchOf, quietWakeText, requestLastWordMs, requestStanding } from './request-standing';
 import { heldPrerequisite } from './request-prerequisite-hold';
 import { STEP_ASKS, finishedTodoRefusal, type TodoState } from './question-todos';
-import {boundSearchResponse} from './search-response-boundary';
+import {boundSearchResponse,conceptQuery} from './search-response-boundary';
 import {saveQueuedTurn,savedTurn,savedWorkSettings} from './saved-work';
 import {crowdingConfig} from './crowding';
 import {checkSnooze,continuationText,recordSnooze} from './snooze';
@@ -496,7 +496,8 @@ export class SessionCommunicationCoordinator {
         return earlierWorkFor({summary: input.summary, text: input.text, topicRoot, recipient: targetSessionId, sendingTurn: actor.turn, nowMs: this.now(),
             exclude: [actor.session, ...(targetSessionId ? [targetSessionId] : []), ...(inbox ? [inbox.id] : [])],
             titleOf: id => { const session = getSessionById(id); return session ? (owner?.catalogueLabels(session).title ?? `Session ${id}`) : `Session ${id}`; },
-            answerability: id => { try { return this.answerability(id); } catch { return 'how it can be asked is unknown'; } }});
+            answerability: id => { try { return this.answerability(id); } catch { return 'how it can be asked is unknown'; } },
+            ...(owner ? {importArchive: target => owner.sessionForArchiveMatch(target)} : {})});
     }
     /** How an earlier session can be asked now, in the words a receiving agent acts on. */
     private answerability(sessionId: number): string {
@@ -742,7 +743,7 @@ export class SessionCommunicationCoordinator {
             throw new Error('Use one to eight nonempty search concepts.');
         if (input.peer !== undefined) return boundSearchResponse(await this.peers().search(input.peer, input.concepts, input.limit));
         if (!this.dependencies.owner) throw new Error('Common session discovery is unavailable.');
-        const local = () => actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit})):this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, {
+        const local = () => actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.search({query:conceptQuery(input.concepts),limit:input.limit})):this.dependencies.owner.search({query:conceptQuery(input.concepts),limit:input.limit}, {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
         });
         // One search for every machine: where this machine has no meaning index (the Mac), the

@@ -15,7 +15,10 @@ if(body.kind==='routing') {
     process.stdout.write(JSON.stringify(searchRouterThreads(source,body.request)));
   } finally {source.close();}
 } else {
-  if(typeof body.query!=='string'||body.query.length>2000||!Number.isInteger(body.limit)||body.limit<1||body.limit>100)
+  // One search per concept, so each quoted phrase is matched on its own (see queryConcepts).
+  const queries:unknown[]=Array.isArray(body.queries)?body.queries:[body.query];
+  if(!queries.length||queries.length>8||queries.some(query=>typeof query!=='string'||!query.trim()||query.length>2000)
+    ||!Number.isInteger(body.limit)||body.limit<1||body.limit>100)
     throw new Error('INVALID_SEARCH_QUERY');
   const path=join(realpathSync(directory),'presentation.db');
   const prepared=new Database(path,{readonly:true});
@@ -25,8 +28,10 @@ if(body.kind==='routing') {
   // The search store has its own readiness: it is rebuilt beside a ready Inbox projection.
   const searchReady=!!prepared.query("SELECT 1 FROM sqlite_master WHERE name='search_meta'").get()
     &&!!(prepared.query('SELECT ready FROM search_meta WHERE singleton=1').get() as {ready:number}|null)?.ready;
-  const result=meta?.ready&&searchReady?new PreparedSearchIndex(prepared,false).search(body.query,body.limit,body.includeTools===true)
-    :{hits:[],examined:0,hasMore:false,omissions:['Search is being prepared.']};
+  const index=meta?.ready&&searchReady?new PreparedSearchIndex(prepared,false):null;
+  const each=queries.map(query=>index?index.search(query as string,body.limit,body.includeTools===true)
+    :{hits:[],examined:0,hasMore:false,omissions:['Search is being prepared.']});
+  const result=Array.isArray(body.queries)?{results:each}:each[0]!;
   const source=new Database(statePath,{readonly:true});
   const sourceHead=(source.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_change_log').get() as {n:number}).n;
   source.close();prepared.close();

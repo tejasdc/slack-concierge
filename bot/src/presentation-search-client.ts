@@ -18,6 +18,11 @@ export async function searchPrepared(query:string,limit:number,includeTools:bool
   return readSearchWorker({query,limit,includeTools}) as Promise<{hits:any[];examined:number;hasMore:boolean;omissions:string[];
       coverage:{complete:boolean;appliedSequence:number;sourceHead:number}}>;
 }
+/** One word search per concept, in one worker; each concept's words must all appear in one message. */
+export async function searchPreparedConcepts(queries:string[],limit:number,includeTools:boolean) {
+  return readSearchWorker({queries,limit,includeTools}) as Promise<{results:{hits:any[];examined:number;hasMore:boolean;omissions:string[]}[];
+      coverage:{complete:boolean;appliedSequence:number;sourceHead:number}}>;
+}
 
 /** Historical routing evidence is read with a separate read-only connection, off the owner loop. */
 export async function searchRouterThreadsRead(request:RouterSearchRequest) {
