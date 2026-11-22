@@ -66,7 +66,7 @@ import { AWAITING_INSPECTION, PROMPT_ANSWER_REMINDER_MS, PROMPT_ANSWER_OVERDUE_M
 import { KEEP_WORKING_STUCK_REASON, KEEP_WORKING_WAKE_PREFIX, OWNER_ACTOR, keepWorkingState, recordKeepWorking, stopReminderText, wakeText } from './keep-working';
 import { PROGRESS_NOTIFICATION_REFUSAL, REQUEST_PROTOCOL_POINTER } from './request-protocol';
 import { completionWithCheck, finalClosingLine, leadFirst, NEEDS_YOU_SUMMARY_REQUIRED, questionForTejas, saysSomething } from './answers-to-tejas';
-import { answerNotice, requestLabel, sessionLabel, unresolvedRequestReminder } from './session-notices';
+import { answerNotice, inboxHandoffNotice, requestLabel, sessionLabel, unresolvedRequestReminder } from './session-notices';
 import { cancelledWithoutHisStopText, stoppedByTejas, stoppedByTejasText } from './stopped-by-tejas';
 import { noticeTime } from './provider-free-notice';
 import { endedWorkInPlainWords } from './provider-failures';
@@ -77,7 +77,7 @@ import {signInWorkerActionId} from './signin-renewal';
 import {MAC_UPDATE_SOURCE_INPUT,MAC_UPDATE_SOURCE_RUN,macUpdateSourceProven} from './mac-update-source';
 import {MAC_FOCUS_PHRASE,MAC_FOCUS_REQUEST,MAC_FOCUS_SOURCE_INPUT,MAC_FOCUS_SOURCE_RUN,macFocusSourceProven} from './mac-focus-source';
 import {AUTHORIZED_WEB_APP} from './mac-surface-policy';
-import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, topicOf, topicRootFor } from './session-fit';
+import { backfillRequestTopics, consultPointer, forTopic, handBackText, newTopicNote, sessionWorkload, TO_INBOX, TO_INBOX_CLOSING, toInboxThreadLine, topicOf, topicRootFor } from './session-fit';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -3151,6 +3151,20 @@ export class SessionCommunicationCoordinator {
         updateReceipt('completed',null);
         return answers;
     }
+    /** A reply he wrote in a thread (or a marked agent test of one), held here or delivered from the server. */
+    private forwardedThreadReply(requestId:string):boolean {
+        const local=db.query('SELECT payload_json FROM session_communication_requests WHERE request_id=?').get(requestId) as {payload_json:string}|null;
+        if(local)return !!JSON.parse(local.payload_json).forwardedReply;
+        const peer=db.query('SELECT origin_provenance_json FROM session_peer_deliveries WHERE request_id=?').get(requestId) as {origin_provenance_json:string|null}|null;
+        return !!peer&&!!JSON.parse(peer.origin_provenance_json??'{}').forwardedIntent?.forwardedReply;
+    }
+    /** Whether this session already answered the request, so a closing final needs no new fit declaration. */
+    private answeredBefore(requestId:string):boolean {
+        return !!db.query(`SELECT 1 FROM session_communication_events WHERE request_id=?
+              AND (kind='final' OR kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1)
+            UNION ALL SELECT 1 FROM session_peer_replies WHERE request_id=?
+              AND (kind='final' OR kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1)`).get(requestId,requestId);
+    }
     reply(input: {
         source: CommunicationSource;
         action_id: string;
@@ -3178,6 +3192,10 @@ export class SessionCommunicationCoordinator {
         all_done?:boolean;
         /** The receiving session's push-back: not-my-subject or too-loaded, with a failed disposition. */
         hand_back?:string;
+        /** His thread reply is not this session's work: pass it to the Inbox router to route. */
+        to_inbox?:boolean;
+        /** What of this session's own work his thread reply is about; required on the answer to one. */
+        mine?:string;
         /** One line saying what the reply says, shown before its body to the asker and on the Lab page. */
         summary?:string;
         /** Original final body, separate from the mandatory completion evidence. */
@@ -3209,6 +3227,20 @@ export class SessionCommunicationCoordinator {
             throw new Error('Session communication is not accepting replies.');
         if(input.summary!==undefined)input={...input,summary:oneLineSummary(input.summary)};
         if(input.summary?.trim()&&!saysSomething(input.summary))throw new Error('--summary needs words: one line saying what this reply is.');
+        // His thread reply reaches whichever session works in that thread, so the session first says
+        // whether it is its own work: it answers with --mine, or passes it to the Inbox router with
+        // --to-inbox. The owner holds that choice; an instruction alone was forgotten (2026-11-22).
+        const forwardedThread=this.forwardedThreadReply(input.request_id);
+        const toInbox=input.to_inbox===true;
+        if(toInbox){
+            if(!forwardedThread)throw new Error('--to-inbox passes a reply Tejas wrote in a thread to the Inbox router; this request is not one. For other work that is not yours, reply --work-disposition failed --hand-back not-my-subject.');
+            if(!input.final||input.hand_back!==undefined||input.mine!==undefined||(input.workDisposition!==undefined&&input.workDisposition!=='completed'))
+                throw new Error('--to-inbox is a final reply on its own: no --partial, --work-disposition, --hand-back or --mine.');
+            if(!saysSomething(input.text))throw new Error('--to-inbox needs one line after -- saying what the message is about and why it is not your work.');
+            input={...input,workDisposition:'completed',hand_back:TO_INBOX,summary:input.summary??'Passed to the Inbox: not about this thread\'s work'};
+        } else if(forwardedThread&&(input.final||input.answers_question)&&!saysSomething(input.mine??'')&&!this.answeredBefore(input.request_id)){
+            throw new Error(`This message is a reply Tejas wrote in the thread you work in. Say whether it is your work before answering it. If it is about your work there, add --mine "<what of your work it is about>" to this reply. If it is not (a bug or question about Concierge, thnkr.ing or the system itself, or another subject), do not answer it: sessions reply ${input.request_id} --to-inbox -- "<what it is about and why it is not your work>" passes it to the Inbox router to route.`);
+        }
         // What the requester, and through it Tejas, reads: a decision carries his words and why
         // they leave it open; completed work carries what was checked live. Folded into the words
         // so every path that carries a reply (a return, a peer, a digest) carries them too.
@@ -3246,14 +3278,15 @@ export class SessionCommunicationCoordinator {
         // Closing is the record's verdict, not the builder's: a completed reply on work that carries
         // requirement records is refused until thnkr.ing says every record is closable (Tejas,
         // 2026-11-16). Unreadable records refuse too: a closed task must never rest on a guess.
-        if(input.final&&input.workDisposition==='completed'&&input.requirements_state){
+        if(input.final&&input.workDisposition==='completed'&&input.requirements_state&&!toInbox){
             const refusal=closingRefusal(input.requirements_state);
             if(refusal)throw new Error(refusal);
             const lines=outcomeLines(input.requirements_state);
             if(lines)input={...input,text:`${input.text.trim()?`${input.text.trim()}\n\n`:''}${lines}`};
         }
         if(before)input={...input,before,text:withBefore(before,input.text)};
-        if(input.final)input={...input,reply_body:input.text};
+        // A pass to the Inbox shows him one line in his thread; the router reads the reason itself.
+        if(input.final)input={...input,reply_body:toInbox?toInboxThreadLine(input.text):input.text};
         // An answer is never refused for how it was marked: a flag that does not fit is dropped,
         // the reply is recorded as written, and the worker is told why in its receipt. Refusing
         // it left an urgent answer to his question unmarked for hours (2026-10-21, request 39914136).
@@ -3297,7 +3330,7 @@ export class SessionCommunicationCoordinator {
         const quiet=typeof input.quiet_because==='string'?input.quiet_because.trim().slice(0,2000):'';
         if(input.quiet_because!==undefined&&(!saysSomething(quiet)||input.workDisposition!=='completed'))
             throw new Error('--quiet-because goes with --work-disposition completed and says why he need not read it; a failed or needs_decision reply is always his to read.');
-        if(input.hand_back!==undefined) {
+        if(input.hand_back!==undefined&&!toInbox) {
             if(input.workDisposition!=='failed')throw new Error('--hand-back goes with --work-disposition failed: the request returns to the requester to start fresh.');
             const replier=getAcceptedSessionInput(input.source.input_id??''),session=replier?getSessionById(replier.session_id):null;
             if(!session)throw new Error('--hand-back needs this session\'s exact native source.');
@@ -3311,7 +3344,7 @@ export class SessionCommunicationCoordinator {
             throw new Error('A needs_decision reply leads with --summary "<one line: what he must decide and the result it depends on>"; it opens his phone notice.');
         if(input.workDisposition==='needs_decision'&&!outsideRequest)
             input={...input,text:questionForTejas({actorInputId:input.source.input_id??'',question:input.text,lead:input.summary,hisWords:input.his_words,whyNotAnswered:input.why_not_answered,onlyHeCan:input.only_he_can,decisionId:input.decision_id,approvalAction:input.approval_action})};
-        else if(input.workDisposition==='completed')
+        else if(input.workDisposition==='completed'&&!toInbox)
             input={...input,reply_body:input.text,text:completionWithCheck({text:input.text,checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed,allDone:input.all_done})};
         if(input.final&&['failed','needs_decision'].includes(input.workDisposition??'')&&input.openChatGptIds?.length)
             input={...input,text:`${input.text}\n\nChatGPT answers still owed: ${input.openChatGptIds.join(', ')}. The exact questions remain open for recovery; this report does not close them.`};
@@ -3334,7 +3367,7 @@ export class SessionCommunicationCoordinator {
             const peer=this.peerActor(actor);
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
             return noted(this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
-                closingLine:input.final&&input.workDisposition?finalClosingLine(input.workDisposition,{checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed}):undefined,
+                closingLine:input.final&&input.workDisposition?(toInbox?TO_INBOX_CLOSING:finalClosingLine(input.workDisposition,{checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed})):undefined,
                 final:input.final,answersQuestion:input.answers_question,waitingOnWatch:input.waiting_on_watch,workDisposition:input.workDisposition,openChatGptIds:input.openChatGptIds,evidence:input.evidence,...(todoId?{todoId}:{}),...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
         }
         // Any request whose replies post into an Inbox thread can carry the answer to his question
@@ -3443,7 +3476,7 @@ export class SessionCommunicationCoordinator {
             ...(input.final&&Object.hasOwn(input,'requirements_state')?{requirementsState:input.requirements_state}:{}),
             ...(input.before?{before:input.before}:{}),
             ...(input.answer_group?{answerGroup:input.answer_group}:{}),
-            ...(input.final&&input.workDisposition?{closingLine:finalClosingLine(input.workDisposition,{checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed})}:{}),
+            ...(input.final&&input.workDisposition?{closingLine:toInbox?TO_INBOX_CLOSING:finalClosingLine(input.workDisposition,{checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed})}:{}),
             ...(input.summary?{summary:input.summary}:{}),
             ...(input.notify?{notify:true}:{}),
             ...(input.also_main_thread?{alsoMainThread:true}:{}),
@@ -4032,9 +4065,14 @@ export class SessionCommunicationCoordinator {
                 && typeof declared.responding_session_id==='string'
                 && /^concierge:\d+$/.test(declared.responding_session_id)
                 ? Number(declared.responding_session_id.slice('concierge:'.length)):request.target_session_id;
+            // His message passed on as not this session's work is the router's to route, not a copy
+            // to file: it reads the routing notice and owes the thread a post saying where it went.
+            const passedOn=event.kind==='final'&&payload.handBack===TO_INBOX;
+            const asked=JSON.parse(request.payload_json),forwardedReply=asked.forwardedReply;
             const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',...(event.kind==='overdue'?{threadReplyNotRequired:true}:{}),sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
-                text:answerNotice({responder:sessionLabel(coveredResponder),labels:[request,...group.joining.map(joined=>this.row(joined.request_id))].map(row=>requestLabel(row.payload_json)),
+                text:passedOn?inboxHandoffNotice({responder:sessionLabel(coveredResponder),messageId:forwardedReply?.inboxInputId??null,topicId:forwardedReply?.topicId??null,
+                    reason:String(payload.text??''),hisWords:String(asked.text??''),files:Array.isArray(asked.attachments)?asked.attachments.length:0}):answerNotice({responder:sessionLabel(coveredResponder),labels:[request,...group.joining.map(joined=>this.row(joined.request_id))].map(row=>requestLabel(row.payload_json)),
                     kind:event.kind,stalled:!!declared.stalled,body:answerView(request,payload),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
                     deliveryNote:alreadyPostedInThread?'Already posted in the named Inbox thread. This is your copy; do not relay it.':payload.output?.delivery_note??null,
                     files:Array.isArray(payload.attachments)?payload.attachments.length:0,
@@ -4045,7 +4083,7 @@ export class SessionCommunicationCoordinator {
                     }).join(''),
                 // The answer's files travel with it: the requester opens them from its own turn.
                 ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{}),
-                ...(alreadyPostedInThread?{alreadyPostedInThread:true}:{})});
+                ...(alreadyPostedInThread&&!passedOn?{alreadyPostedInThread:true}:{})});
             if(event.kind==='final'&&payload.workDisposition==='needs_decision'&&!sessionMetadata(source).inbox){
                 const author=sessionAuthor(`concierge:${coveredResponder}`);
                 recordRequesterDecisionReturn({sessionId:source.id,returnInputId:accepted.id,requestId:request.request_id,

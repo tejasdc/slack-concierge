@@ -83,7 +83,8 @@ router-actions.sh sessions codex-recover <original-request-id> [--custody-succes
 router-actions.sh sessions attention withdraw <session-address> <source-flags> --action-id A --need <exact open event ID> --reason "<why no answer is needed>"
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
 router-actions.sh sessions requirements <request-id> (--requirements <record> ... | --requirements none --requirements-why "<reason>") <source-flags> --action-id A   # the requester re-declares which requirement records an open request delivers
-router-actions.sh sessions reply <request-id> [--also <request-id> ...] [<source-flags>] --action-id A [--notify] [--also-main-thread] [--partial [--answers-question] [--waiting-on-watch <watch-id>] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>" | --nothing-changed "<what the answer rests on>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--quiet-because "<why he need not read this>" (with completed)] [--before "<what earlier agents did and how this differs>" (required on the first reply to a request that came with WHAT CAME BEFORE)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions reply <request-id> [--also <request-id> ...] [<source-flags>] --action-id A [--notify] [--also-main-thread] [--partial [--answers-question] [--waiting-on-watch <watch-id>] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>" | --nothing-changed "<what the answer rests on>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--mine "<what of your work his thread reply is about>" (required on the answer to his thread reply)] [--quiet-because "<why he need not read this>" (with completed)] [--before "<what earlier agents did and how this differs>" (required on the first reply to a request that came with WHAT CAME BEFORE)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions reply <request-id> [<source-flags>] --action-id A --to-inbox -- "<what his thread reply is about and why it is not your work>"  (his message reached you because you work in its thread but it is not your work, e.g. a bug or question about Concierge or thnkr.ing: posts one line in the thread, settles the request and passes his exact message to the Inbox router to route)
 --notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes a matching one-shot notification on that Inbox topic. On reply it is honored for a substantive --partial --answers-question answer or a completed final with new answer words, including a final informational reply. Verification evidence such as --all-done --not-checked is recorded separately. A progress-only --partial --notify is refused. For ineligible final replies the flag is dropped with a notice. A bodyless final cannot use it.
 When a ready decision question, needs_you outcome, or needs_decision reply blocks work on Tejas, the owner raises one phone notification by default. The question opens with its one-line --summary (required on needs_you as on every final reply): say what he must decide and the result it depends on, because it is the first line of his notice; background and other news go in the text after it. Name what he must do and where he can answer; --notify is for an additional explicit request on a different message, not needed for the blocked question. Routine progress and completed answers keep their existing notification rule. A question that asks him to sign in, give a secret or do something on his device names the to-do it is about with --todo <id> (find it in his to-dos: thinkering -s 'http://x/todos/tasks?limit=200', which reaches thnkr.ing from the server or a runner, or curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL where thinkering is not found; from the Mac, curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL through ssh remote-box), or --todo none when no to-do for that step exists. Concierge refuses the question when that to-do is already done or dropped (he has already done it, so continue from there), and closes the question by itself when he ticks the to-do off.
 --also-main-thread copies a nested answer into the Inbox thread's main conversation; it is refused for ordinary main-thread requests.
@@ -235,7 +236,7 @@ export type SessionCommunicationRequest =
   | { operation: "attention-withdraw"; body: { source: Source; action_id:string; address:string; need_event_id:string; reason:string } }
   | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
-  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; notify?:boolean; also_main_thread?:boolean; also?: string[]; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; todo?:string; decision_id?:string; approval_action?:string; checked?:string; not_checked?:string; nothing_changed?:string; all_done?:boolean; hand_back?:string; quiet_because?:string; before?:string } }
+  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; notify?:boolean; also_main_thread?:boolean; also?: string[]; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; todo?:string; decision_id?:string; approval_action?:string; checked?:string; not_checked?:string; nothing_changed?:string; all_done?:boolean; hand_back?:string; quiet_because?:string; before?:string; to_inbox?:boolean; mine?:string } }
   | { operation: "get"; body: { source: Source; request_id: string } }
   | { operation: "request-requirements"; body: { source: Source; action_id: string; request_id: string; requirements: string[]; requirements_why?: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
@@ -954,6 +955,7 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
   let partial = false;
   let answersQuestion = false;
   let allDone = false;
+  let toInbox = false;
   let detach = false;
   let resurrect = false;
   let hisChat = false;
@@ -993,6 +995,11 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
     if (flag === "--all-done" && operation === "reply") {
       if (allDone) invalid("Repeated --all-done option.");
       allDone = true;
+      continue;
+    }
+    if (flag === "--to-inbox" && operation === "reply") {
+      if (toInbox) invalid("Repeated --to-inbox option.");
+      toInbox = true;
       continue;
     }
     if (flag === "--partial" && operation === "reply") {
@@ -1080,6 +1087,7 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
       || ((flag === '--his-words' || flag === '--why-not-answered' || flag === '--only-he-can' || flag === '--todo' || flag === '--decision-id' || flag === '--approval-action') && (operation === 'outcome' || operation === 'reply'))
       || ((flag === '--checked' || flag === '--not-checked' || flag === '--nothing-changed' || flag === '--hand-back' || flag === '--before') && operation === 'reply')
       || (flag === '--quiet-because' && operation === 'reply')
+      || (flag === '--mine' && operation === 'reply')
       || (flag === '--waiting-on-watch' && operation === 'reply')
       || (flag === '--machine-need' && operation === 'ask')
       || ((flag === '--server-attempt-url' || flag === '--server-attempt-failure') && operation === 'ask')
@@ -1330,7 +1338,9 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
       :'Note: --answers-question was ignored because the reply has no words. Sending it as ordinary progress.');
     answersQuestion=false;
   }
-  if(operation==='reply'&&!partial&&!summary)invalid('A final reply needs --summary "<one line saying what your answer is>"; the asker sees it first and may see only it.');
+  if(toInbox&&(partial||workDisposition||flags.has('--hand-back')||flags.has('--mine')||also.length||!message.trim()))
+    invalid('--to-inbox is a final reply on its own, with one line after -- saying what the message is about and why it is not your work; no --partial, --work-disposition, --hand-back, --mine or --also.');
+  if(operation==='reply'&&!partial&&!summary&&!toInbox)invalid('A final reply needs --summary "<one line saying what your answer is>"; the asker sees it first and may see only it.');
   if(operation==='reply'&&notify&&!message.trim())invalid('--notify requires a new reply message with words.');
   const answerView=flags.get('--answer-view');
   if(answerView&&!['summary','full'].includes(answerView))invalid('--answer-view is summary or full.');
@@ -1394,8 +1404,8 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
         ...(flags.has('--waiting-on-watch')?{waiting_on_watch:flags.get('--waiting-on-watch')!}:{}),
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached,
         ...(openChatGptIds.length?{openChatGptIds}:{}),
-        ...Object.fromEntries([['--his-words','his_words'],['--why-not-answered','why_not_answered'],['--only-he-can','only_he_can'],['--todo','todo'],['--decision-id','decision_id'],['--approval-action','approval_action'],['--checked','checked'],['--not-checked','not_checked'],['--nothing-changed','nothing_changed'],['--hand-back','hand_back'],['--quiet-because','quiet_because'],['--before','before']]
-          .filter(([flag])=>flags.has(flag)).map(([flag,key])=>[key,flags.get(flag)!])),...(allDone?{all_done:true}:{}),...(also.length?{also}:{}) } };
+        ...Object.fromEntries([['--his-words','his_words'],['--why-not-answered','why_not_answered'],['--only-he-can','only_he_can'],['--todo','todo'],['--decision-id','decision_id'],['--approval-action','approval_action'],['--checked','checked'],['--not-checked','not_checked'],['--nothing-changed','nothing_changed'],['--hand-back','hand_back'],['--quiet-because','quiet_because'],['--before','before'],['--mine','mine']]
+          .filter(([flag])=>flags.has(flag)).map(([flag,key])=>[key,flags.get(flag)!])),...(allDone?{all_done:true}:{}),...(toInbox?{to_inbox:true}:{}),...(also.length?{also}:{}) } };
 }
 
 export async function runRouterSessions(request: SessionCommunicationRequest) {

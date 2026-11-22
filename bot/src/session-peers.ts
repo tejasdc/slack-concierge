@@ -25,12 +25,12 @@ import {expireQuestionsForFinalReply,filePeerWorkerNeedInThread,linkForwardedRep
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 import {followForwardedReply,messageRouteForSource} from './session-inbox';
 import {inboxRequestRoot,returnsToRequester} from './inbox-request-root';
-import {topicRootFor} from './session-fit';
+import {TO_INBOX,topicRootFor} from './session-fit';
 import {clearRetryBreaker,recordRetryFailure} from './retry-breaker';
 import {withRetry,RetryBudgetExhaustedError,retryDelayMs} from './retry';
 import {cancelledWithoutHisStopText,stoppedByTejas,stoppedByTejasText} from './stopped-by-tejas';
 import {noticeTime} from './provider-free-notice';
-import {answerNotice,requestLabel,unresolvedRequestReminder} from './session-notices';
+import {answerNotice,inboxHandoffNotice,requestLabel,unresolvedRequestReminder} from './session-notices';
 import {recordRequesterDecisionReturn} from './session-turn-outcome';
 import {sessionAuthor} from './session-message-author';
 import {admitChatGptAttachmentCorrection,admitChatGptContextFollowUp,admitChatGptObligation,bindChatGptPeerTarget,bindDirectChatGptTaskSource,chatGptAttachmentCorrectionPending,chatGptObligationForAttempt,holdChatGptPeerVersion,openChatGptObligations,recordChatGptAttemptResult,withdrawCanceledChatGptAttempt,
@@ -1732,16 +1732,21 @@ export class SessionPeers {
     }
     recoverUnsentSteeredInput(`return:${event.event_id}`);
     const existing=getAcceptedSessionInput(`return:${event.event_id}`);
+    const responder=(()=>{const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,recipient.sessionId) as {view_json:string}|null;
+          const title=catalogue?JSON.parse(catalogue.view_json)?.title:null;return title?`“${title}” on the ${row.peer}`:`the session on the ${row.peer}`;})();
+    // His thread reply passed on as not that session's work is the router's to route (session-fit.ts TO_INBOX).
+    const passedOn=event.kind==='final'&&payload.handBack===TO_INBOX;
+    const asked=JSON.parse(row.payload_json);
     const accepted=existing?this.dependencies.owner.dispatch(existing):this.dependencies.owner.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',...(event.kind==='overdue'?{threadReplyNotRequired:true}:{}),sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
-      text:answerNotice({responder:(()=>{const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,recipient.sessionId) as {view_json:string}|null;
-          const title=catalogue?JSON.parse(catalogue.view_json)?.title:null;return title?`“${title}” on the ${row.peer}`:`the session on the ${row.peer}`;})(),
+      text:passedOn?inboxHandoffNotice({responder,messageId:asked.forwardedReply?.inboxInputId??null,topicId:asked.forwardedReply?.topicId??null,reason:String(payload.text??''),
+          hisWords:String(asked.message??asked.text??''),files:Array.isArray(asked.attachments)?asked.attachments.length:0}):answerNotice({responder,
         labels:[row,...group.joining.map(joined=>this.row(joined.request_id))].map(item=>requestLabel(item.payload_json)),kind:event.kind,stalled:!!declared.stalled,
         body:String(payload.text??''),outcome:payload.outcome??null,workDisposition:payload.workDisposition??null,
         deliveryNote:directPost?'Already posted in the named Inbox thread. This is your copy; do not relay it.':payload.output?.delivery_note??null,
         files:Array.isArray(payload.attachments)?payload.attachments.length:0,followUp:null}),
       // The peer's files are already in this instance's custody; the return carries them.
       ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{}),
-      ...(directPost?{alreadyPostedInThread:true}:{})});
+      ...(directPost&&!passedOn?{alreadyPostedInThread:true}:{})});
     if(event.kind==='final'&&payload.workDisposition==='needs_decision'&&!sessionMetadata(source).inbox){
       const author=sessionAuthor(receiveSessionFromPeer(recipient.sessionId,row.peer,this.self));
       recordRequesterDecisionReturn({sessionId:source.id,returnInputId:accepted.id,requestId:row.request_id,

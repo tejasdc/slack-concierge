@@ -6,6 +6,35 @@ obligation. This deliberately includes messages without a question mark: punctua
 classification cannot be the enforcement boundary. The recipient can keep working on the original
 task while answering the new message.
 
+## Messages that are not the working agent's work
+
+A thread reply reaches the session working in that thread because it is there, not because the
+message is about its work. Since 2026-11-22 the session must say which before it answers, and the
+request owner holds that choice rather than the session's memory:
+
+- **Its own work:** the answer (a `--partial --answers-question` reply, or a final without an
+  earlier answer) carries `--mine "<what of its work the message is about>"`. An answer to a
+  forwarded thread reply with neither `--mine` nor `--to-inbox` is refused with both commands in
+  the refusal. A later bodyless final after that answer needs nothing more.
+- **Not its work** (a bug or question about Concierge, thnkr.ing or the system itself, or another
+  subject): `sessions reply <id> --to-inbox -- "<what it is about and why it is not mine>"`. It is one
+  final reply. It posts a single line in his thread ("This isn't about my work in this thread, so
+  I've passed your message to the Inbox …"), closes as completed with the closing line "Passed to
+  the Inbox to route", and settles the answer clock. It is recorded as a hand-back
+  (`handBack:'to-inbox'`), so it takes the same return road as `not-my-subject` on this server and
+  from the Mac: the Inbox router receives a routing notice naming his exact message and thread, his
+  words, the session's reason and the `topics route` / `topics create` commands. That return does
+  not carry the already-posted mark, so the router owes the thread a post saying where the message
+  went (the owed-post rule in the native Inbox contract). `topics route` moves that one message to its owning thread
+  and leaves a pointer, never the whole conversation.
+
+The forwarded-reply framing every session receives puts this choice first, and the per-run request
+protocol repeats it. The Vipassana form session answered his keyboard-shortcut complaint because
+its framing said only "Answer the question now" and offered no way to pass the message on; its own
+attempts to route it were refused as router-only commands. Tejas, 2026-11-22: "Do the right action
+... is routing it to a inbox agent ... especially bugs and things like that, like about the system
+itself, then like routed to the inbox agent."
+
 The main thread and a message reply thread are separate durable scopes. `replyToMessage` keeps
 the immediate parent link that the main thread already used; `messageThreadRootId` names the
 agent message whose nested conversation is open. Its absence means the main thread. The owner

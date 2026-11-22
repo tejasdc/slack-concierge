@@ -64,6 +64,26 @@ export function answerNotice(input: {
     return `${opening}\n\n${input.body.trim()}\n\n${notes}`;
 }
 
+/**
+ * What the Inbox router reads when the session working in a thread passes his message on because
+ * it is not about that work. Unlike an answer's copy, this is work for the router: it routes his
+ * exact message (moving that one message, not the conversation) and says in the thread where it
+ * went, which the owed-post rule holds it to.
+ */
+export function inboxHandoffNotice(input: { responder: string; messageId: string | null; topicId: string | null; reason: string; hisWords: string; files: number }): string {
+    const message = input.messageId ?? '<his message id>';
+    return [
+        `${input.responder} passed you a message Tejas wrote in its thread: it says the message is not about its work there, so it did not answer or act on it. Route it now as you would a new capture.`,
+        `- If another thread owns it, move this one message there: sessions topics route <that thread's topic id> --message ${message} --reason "<why>" --action-id <new id>, then send it to that thread's agent if it needs work.`,
+        `- If no thread owns it (a new bug or question about Concierge or thnkr.ing, say), create one with sessions topics create --title "<title>" --action-id <new id>${input.topicId ? ` --from ${input.topicId}` : ''}, route the message there the same way, and send it to the session that owns that surface.`,
+        `- If it is a question you can answer yourself, answer it in the thread it ends up in.`,
+        `Then post one line in this thread saying where his message went.`,
+        `Its reason: ${input.reason.trim()}`,
+        input.files ? `${input.files === 1 ? 'A file comes' : `${input.files} files come`} with it.` : '',
+        `His words:\n${input.hisWords.trim()}`,
+    ].filter(Boolean).join('\n');
+}
+
 /** What a worker reads when the session that asked withdraws its request. */
 export function canceledNotice(label: string, requester: string): string {
     const withdrawn = label.replace(/^your request/, 'the request');
