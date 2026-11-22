@@ -4,6 +4,19 @@ const MAX_SEARCH_RESPONSE_BYTES=512*1024;
 const MAX_EVIDENCE_PER_SESSION=3;
 const MAX_PREVIEW_CHARS=320;
 
+/**
+ * An agent searches with up to eight concepts, each a quoted phrase ("Unknown Pleasures",
+ * "signal register"). They travel as one query string, one concept per line: a release that
+ * predates concepts reads the line breaks as spaces, so a peer on either release still answers.
+ * Joining them with spaces made every word of every concept a required word of one message,
+ * so only messages retelling the search itself matched (2026-11-22, tejas.nyc's visualization).
+ */
+export const conceptQuery=(concepts:string[])=>concepts.map(concept=>concept.replace(/\s+/g,' ').trim()).filter(Boolean).join('\n');
+export const queryConcepts=(query:string)=>{
+  const concepts=query.split('\n').map(concept=>concept.replace(/\s+/g,' ').trim()).filter(Boolean);
+  return [...new Set(concepts)].slice(0,8);
+};
+
 function preview(text:string) {
   return text.length<=MAX_PREVIEW_CHARS?text:`${text.slice(0,MAX_PREVIEW_CHARS-1)}…`;
 }
