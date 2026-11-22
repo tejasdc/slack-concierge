@@ -214,6 +214,24 @@ export function newTopicNote(fit: ForTopic): string {
 }
 
 export const HAND_BACK_KINDS = { 'not-my-subject': 'not my subject', 'too-loaded': 'too loaded to do this well' } as const;
+
+/**
+ * A reply of his that reached the session working in his thread but is not about that work (a
+ * bug in Concierge or thnkr.ing, a question about the system, another subject) goes to the Inbox
+ * router, which owns routing; the session neither answers it nor does it. Recorded as a hand-back
+ * so every return path that carries a hand-back to the router carries this one, and as completed
+ * so his thread does not show "Failed" for a message that was handled by passing it on. Tejas,
+ * 2026-11-22, after the Vipassana form session answered his keyboard-shortcut complaint: "Do the
+ * right action ... is routing it to a inbox agent ... if like a random ... question gets routed to
+ * you, you know, especially bugs and things like that, like about the system itself, then like
+ * routed to the inbox agent."
+ */
+export const TO_INBOX = 'to-inbox';
+export const TO_INBOX_CLOSING = 'Passed to the Inbox to route';
+/** The one line he reads in his thread when a session passes his message to the Inbox. */
+export function toInboxThreadLine(reason: string): string {
+  return `This isn't about my work in this thread, so I've passed your message to the Inbox to route to whoever owns it: ${reason.trim()}`;
+}
 export type HandBack = keyof typeof HAND_BACK_KINDS;
 
 /**

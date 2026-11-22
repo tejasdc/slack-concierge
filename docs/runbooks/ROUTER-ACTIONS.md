@@ -1047,6 +1047,10 @@ router-actions.sh sessions ask --provider cc-opus --project slack-concierge --se
 # A receiving session pushing back; the requester's answer opens with "Handed back (…)" and the fresh command.
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A --work-disposition failed \
   --hand-back not-my-subject -- "<what context I can give>"
+# A reply Tejas wrote in your thread that is not your work (a system bug, another subject): pass it to
+# the Inbox router, which routes his exact message. Answering one as your own needs --mine "<…>".
+# See prompt thread answers: messages that are not the working agent's work.
+router-actions.sh sessions reply <request-id> --action-id A --to-inbox -- "<what it is about and why it is not mine>"
 # One answer to several requests from the same asker: one command, the same words to each.
 # The owner gives byte-identical answers one return and one post in a thread (one notification).
 # Each later request gets a bounded, owner-valid action identity derived from the command and request;

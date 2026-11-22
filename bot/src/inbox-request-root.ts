@@ -54,7 +54,7 @@ export function returnsToRequester(request:{thread_root_input_id:string|null;pay
     ||payload.requestedEffect==='work'&&result.workDisposition===undefined
     ||result.stalled===true
     ||typeof result.outcome==='string'&&result.outcome!=='answered');
-  return payload.returnToRequester===true||handBack==='not-my-subject'||handBack==='too-loaded'
+  return payload.returnToRequester===true||handBack==='not-my-subject'||handBack==='too-loaded'||handBack==='to-inbox'
     ||unresolved||(!request.thread_root_input_id&&!payload.forwardedReply);
 }
 
@@ -71,7 +71,7 @@ export function threadOnlyReturnInputSql(input:string):string {
       WHERE ${input}.id='return:'||event.event_id AND event.request_id=request.request_id AND (
         event.kind='overdue' OR event.kind='final'
           AND coalesce(json_extract(event.payload_json,'$.output.stoppedBy'),'')<>'tejas'
-          AND (json_extract(event.payload_json,'$.handBack') IN ('not-my-subject','too-loaded')
+          AND (json_extract(event.payload_json,'$.handBack') IN ('not-my-subject','too-loaded','to-inbox')
             OR json_extract(event.payload_json,'$.workDisposition') IN ('failed','needs_decision')
             OR json_extract(request.payload_json,'$.requestedEffect')='work'
               AND json_extract(event.payload_json,'$.workDisposition') IS NULL
