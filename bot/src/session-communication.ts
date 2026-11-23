@@ -24,7 +24,7 @@ import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { holdsRequesterPlace } from './requester-place';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
 import { requestIdFor as peerRequestId } from './session-peers';
-import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, resolveInboxPostPromise, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, notifyFiledAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
+import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, inboxPostTopicRoot, placeFirstInboxPost, resolveInboxPostPromise, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, notifyFiledAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
 import type {unfiledReceivedInputs} from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { answersHisOwnMessage, QUIET_REASON_REQUIRED, recordRequesterDecisionReturn, recordTurnOutcome, turnDeclaredByAction, withdrawOpenNeed, type DeclaredTurnOutcome } from './session-turn-outcome';
@@ -1352,7 +1352,7 @@ export class SessionCommunicationCoordinator {
         // A post carrying files is a message even without words: the mockups are the answer.
         const text=message(typeof input.text==='string'&&!publication?input.text.trim():input.text,!!(carried.length||input.attachments?.length));
         if(input.notify&&!text.trim())throw new Error('--notify requires words in the message being posted.');
-        if(typeof input.thread!=='string'||!input.thread.trim())throw new Error('A post needs the exact --thread message ID.');
+        if(typeof input.thread!=='string'||!input.thread.trim())throw new Error('A post needs an exact --thread topic or message ID.');
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
         return db.transaction(()=>{
             this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
@@ -1360,23 +1360,7 @@ export class SessionCommunicationCoordinator {
             // ledger-backed history [decision: agents-are-never-handcuffed].
             const own=getSessionById(actor.session)!,session=sessionMetadata(own).inbox?own:inboxSession();
             if(!session)throw new Error('No Inbox session exists yet.');
-            if(input.targetSessionId!==undefined&&input.targetSessionId!==`concierge:${session.id}`)
-                throw new Error('The Inbox destination changed; nothing was posted.');
             const router=session.id===own.id;
-            // The owner, not the caller, decides which thread this belongs to. A reply to any
-            // message in a thread carries that thread's root forward.
-            const rootInputId=inboxThreadRoot(session.id,input.thread);
-            if(!rootInputId)throw new Error('That --thread is not a message in this Inbox.');
-            const topicId=topicOfRoot(rootInputId);
-            const promisesAnswer=postPromisesAnswer(text);
-            // A named topic must be the one the thread is in; a post cannot be filed under another.
-            if(input.topic){const placed=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(rootInputId) as {topic_id:string}|null;
-                if(placed&&placed.topic_id!==input.topic)throw new Error(`That message is in thread ${placed.topic_id}, not ${input.topic}. Nothing was posted.`);}
-            if(router){
-                const opening=getAcceptedSessionInput(sourceInputId);
-                if(opening?.origin==='service'&&JSON.parse(opening.payload_json).alreadyPostedInThread===true)
-                    throw new Error('The agent already posted this return in its named thread. Do not relay it from the Inbox; nothing was posted.');
-            }
             // Custody is retained before the post is recorded, so an accepted post always
             // names files the owner already holds.
             const attachments=carried.length||input.attachments?.length
@@ -1386,9 +1370,24 @@ export class SessionCommunicationCoordinator {
                 kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,...(input.targetSessionId?{targetSessionId:input.targetSessionId}:{}),...(publication?{publication}:{}),
                     ...(input.topic?{topic:input.topic}:{}),...(input.promise_request?{promiseRequest:input.promise_request}:{}),
                     ...(input.keep_working?{keepWorking:true}:{}),...(input.notify?{notify:true}:{}),...(attachments.length?{attachments}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+            if(saved.duplicate)return {post:JSON.parse(saved.input.receipt_json!).post,duplicate:true};
+            if(input.targetSessionId!==undefined&&input.targetSessionId!==`concierge:${session.id}`)
+                throw new Error('The Inbox destination changed; nothing was posted.');
+            const namedTopic=!publication&&input.thread.startsWith('topic:')?input.thread:null;
+            const root=namedTopic?inboxPostTopicRoot(namedTopic):inboxThreadRoot(session.id,input.thread);
+            if(!root&&!namedTopic)throw new Error('That --thread is not a filed root or message in this Inbox.');
+            const rootInputId=root??saved.input.id;
+            const topicId=namedTopic??topicOfRoot(rootInputId);
+            if(input.topic&&input.topic!==topicId)
+                throw new Error(`That destination does not belong to thread ${input.topic}. Nothing was posted.`);
+            if(router){
+                const opening=getAcceptedSessionInput(sourceInputId);
+                if(opening?.origin==='service'&&JSON.parse(opening.payload_json).alreadyPostedInThread===true)
+                    throw new Error('The agent already posted this return in its named thread. Do not relay it from the Inbox; nothing was posted.');
+            }
             const messageId=`post:${saved.input.id}`;
-            const receipt={messageId,thread:input.thread,inputId:rootInputId,...(attachments.length?{attachments}:{})};
-            if(saved.duplicate)return {post:receipt,duplicate:true};
+            const receipt={messageId,thread:input.thread,inputId:rootInputId,...(attachments.length?{attachments}:{}),...(topicId?{topicId}:{})};
+            const promisesAnswer=postPromisesAnswer(text);
             if((promisesAnswer||input.promise_request)&&!topicId)throw new Error('Place this thread in the Inbox before promising an answer. Nothing was posted.');
             if(topicId&&(promisesAnswer||input.promise_request)){
                 const promise=resolveInboxPostPromise(topicId,sourceInputId,input.promise_request,actor.session);
@@ -1399,14 +1398,17 @@ export class SessionCommunicationCoordinator {
                     throw new Error(`This post promises an answer without a matching open Inbox request. ${guidance} Nothing was posted.`);
                 }
             }
+            if(namedTopic&&!root)placeFirstInboxPost(session,namedTopic,saved.input.id,
+                {kind:'agent',sessionId:`concierge:${own.id}`,inputId:sourceInputId,runId:nativeRunId(actor.turn)},router?actor.turn:null);
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,...(router?{turnId:actor.turn}:{}),kind:'post',
-                payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),postSource:{inputId:sourceInputId,runId:nativeRunId(actor.turn)},...(attachments.length?{attachments}:{})}});
+                payload:{text,...(!namedTopic?{replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread}}:{}),
+                    postedBy:saved.input.id,...(router?{}:{postedBySession:`concierge:${own.id}`}),postSource:{inputId:sourceInputId,runId:nativeRunId(actor.turn)},...(attachments.length?{attachments}:{})}});
             if(input.notify||router&&!input.keep_working&&!dispatchedFromInput(sourceInputId))notifyAgentPost(session.id,rootInputId,messageId,text,input.notify===true,nativeRunId(actor.turn));
             // Post and release: a deliberate reply ends the router's declared work on the
             // inputs it covers, unless it said it keeps working.
-            const topic=input.keep_working||!router?null:releaseFocusForPost(session,rootInputId,input.topic??null);
+            if(!input.keep_working&&router)releaseFocusForPost(session,rootInputId,topicId);
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',post:receipt}),saved.input.id);
-            return {post:{...receipt,...(topic?{topicId:topic.topicId}:{})},duplicate:false};
+            return {post:receipt,duplicate:false};
         })();
     }
     /** The source owner retains the whole send intent, never just a caller's actor number.

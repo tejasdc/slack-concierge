@@ -1114,11 +1114,11 @@ router-actions.sh sessions post \
   --thread '<message-id>' --text-file '<reply-path>'
 ```
 
-`--thread` is the exact message ID the thread is rooted at or continues. That is the same
-identity a human reply carries in `replyToMessage.messageId`, so both sides address a
-thread the same way. The post is the thread's reply; your other working output is not.
-Only the Inbox accepts posts. A post starts no turn and owes no reply. The native Inbox
-contract describes how it is recorded and threaded.
+`--thread` takes an exact message ID or an exact topic ID. Use the message ID to reply
+to a particular message or filed root, including one brought in from another session.
+Use the topic ID returned by `sessions topics create` to post directly into a thread.
+The first post supplies the root when the thread starts empty. The Inbox records the
+posting agent and returns the exact post ID. A post starts no turn and owes no reply.
 
 `post` and `reply` both carry files: repeated `--file <path>` sends your own bytes, and
 repeated `--attachment <custody-id>` places a file already in custody — a worker's returned

@@ -63,6 +63,15 @@ ledger event, and the Inbox page and its `history?after=` delta both include it,
 they share one query. It appears as an assistant message with `author.communication:
 "post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
 
+Any admitted agent can create an Inbox topic and address a direct post to its exact topic
+ID. If it has no roots, the owner records the first post's retained input as its root in
+the same transaction as the post and receipt. Otherwise an existing root carries the
+post's membership forward. Direct posts carry the posting agent's identity. A reply
+addressed to an exact message can also name a root already filed into the Inbox from
+another session. That placement admits the destination without changing what the other
+session's dialogue shows or filing its coordination as a visible message. An exact
+post retry returns the original receipt even if the topic has since been merged.
+
 Lab publications use `POST /sessions/v1/inbox/posts`, a version-1 trusted-service command.
 Network run/runner principals are refused; the root-only service socket and authenticated peer
 listener carry it. Fields are `version:1`, `source:{input_id,run_id}`, `action_id`, `sourceOwner`,
