@@ -5,7 +5,7 @@ import {retainedReplyTarget} from './inbox-reply-lineage';
 import {routedTurnResultSql} from './inbox-routing-result';
 import {answeredByPostResultSql} from './inbox-posted-result';
 import {unrequestedProgressPostSql} from './inbox-progress-post';
-import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
+import {INBOX_LINEAGE_SQL,filedInboxRoot} from './inbox-lineage-sql';
 import {readInboxThreadLink} from './inbox-thread-link-read';
 import {postIsCollapsed} from './inbox-collapse-visibility';
 
@@ -53,6 +53,10 @@ export function inboxRootResolver(db:Database) {
         OR (${savedContextMessageSql})) ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)
       ??db.query(`SELECT event.session_id,event.input_id,event.event_id,event.kind,event.payload_json FROM session_owner_events event
       WHERE event.session_id IN (${INBOX_LINEAGE_SQL}) AND event.input_id=? AND event.kind NOT IN ('result','post','request','topic_route') ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId)) as {session_id:number;input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
+    if(!row){
+      const root=filedInboxRoot(db,sessionId,messageId);
+      memo.set(cacheKey,root);return root;
+    }
     if(row?.kind==='request'){
       const requestId=JSON.parse(row.payload_json).requestId;
       // Found among the Inbox's sessions: a router handoff moves an open request's custody, not its thread.

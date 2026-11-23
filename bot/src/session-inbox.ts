@@ -6,7 +6,7 @@ import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {inboxRequestRoot,inboxSentRequest,requestPromptInputId,routeTitle,topicRouteAnchor} from './inbox-request-root';
 import {firstInboxAcceptanceSql,savedContextMessageSql} from './inbox-message-identity';
 import {inboxContextMessage} from './inbox-context-message';
-import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
+import {CURRENT_INBOX_ID_SQL,INBOX_LINEAGE_SQL,filedInboxRoot} from './inbox-lineage-sql';
 import type {ProviderHistoryMessage} from './provider-history';
 import {retainedReplyTarget} from './inbox-reply-lineage';
 import {messageDeliveryReceipts,messageRouteReceipts} from './message-route-receipts';
@@ -259,6 +259,7 @@ export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|
 }
 export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<string>()):string|null {
   const row=inboxRowByMessageId(sessionId,messageId) as {session_id:number;input_id:string|null;event_id:string;kind:string;payload_json:string}|null;
+  if(!row)return filedInboxRoot(db,sessionId,messageId);
   if(row?.kind==='request'){
     const requestId=JSON.parse(row.payload_json).requestId;
     if(typeof requestId==='string'){
