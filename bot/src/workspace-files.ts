@@ -3,9 +3,13 @@ import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { sessionProjects } from './session-projects';
 
-/** Refusals carry the status and code the owner surfaces; this module stays independent of it. */
+/**
+ * Refusals carry the status and code the owner surfaces; this module stays independent of it.
+ * `tried` names every place a reference could have meant, so a surface can say where it looked
+ * instead of echoing back the one path a browser happened to compose.
+ */
 export class WorkspaceFileError extends Error {
-  constructor(message: string, readonly status: number, readonly code: string) { super(message); }
+  constructor(message: string, readonly status: number, readonly code: string, readonly tried: readonly string[] = []) { super(message); }
 }
 
 /**
@@ -77,7 +81,68 @@ export function expandHome(path: string): string {
 
 const within = (root: string, path: string) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
 
-export function readWorkspaceFile(input: { machine: string; workspaceRoot: string; path: string }): WorkspaceFile {
+/** The registered project a path sits in, else the workspace root: what a path "from the project" means. */
+function projectRootFor(path: string, workspaceRoot: string): string {
+  const project = sessionProjects(workspaceRoot).filter(candidate => within(candidate.cwd, path))
+    .sort((left, right) => right.cwd.length - left.cwd.length)[0];
+  return project?.cwd ?? workspaceRoot;
+}
+
+/**
+ * The places a relative reference inside `from` could mean, in order.
+ *
+ * Markdown says a relative link is relative to the document holding it, and that is tried first.
+ * Agents write paths from the project root instead — `docs/research/x.md` for a file in the
+ * project, written inside a document that already lives in `docs/` — so that is tried next. The
+ * file system decides between them; neither is guessed at (Tejas, 2026-11-22, after five such
+ * links in one document all resolved one folder too deep and none of them opened).
+ *
+ * `../` is left alone: it means the document's own folder and nothing else.
+ */
+export function referenceCandidates(reference: string, from: string, workspaceRoot: string): string[] {
+  const rest = reference.replace(/^\.\//, '');
+  const folder = from.slice(0, from.lastIndexOf(sep)) || sep;
+  const candidates = [resolve(folder, rest)];
+  if (!rest.startsWith('../')) candidates.push(resolve(projectRootFor(from, workspaceRoot), rest));
+  return [...new Set(candidates)];
+}
+
+/**
+ * Reads the file a reference names. A reference written relative to `from` — the document it
+ * appears in — is resolved against that document's folder and its project root; the first that
+ * exists is the answer, and a name that exists in both is a question rather than a silent pick.
+ */
+export function readWorkspaceFile(input: { machine: string; workspaceRoot: string; path: string; from?: string }): WorkspaceFile {
+  const requested = typeof input.path === 'string' ? input.path.trim() : '';
+  if (!requested || requested.includes('\0')) throw new WorkspaceFileError('A file path is required.', 400, 'FILE_PATH_INVALID');
+  const from = typeof input.from === 'string' ? input.from.trim() : '';
+  if (from && !requested.startsWith('/') && !requested.startsWith('~')) {
+    let root: string;
+    try { root = realpathSync(input.workspaceRoot); } catch { throw new WorkspaceFileError('This machine has no readable workspace root.', 503, 'WORKSPACE_ROOT_UNAVAILABLE'); }
+    const candidates = referenceCandidates(requested, resolve(expandHome(from)), root);
+    const found: WorkspaceFile[] = [];
+    let refusal: WorkspaceFileError | undefined;
+    for (const candidate of candidates) {
+      try { found.push(readAbsoluteWorkspaceFile({ ...input, path: candidate })); }
+      catch (error) { if (error instanceof WorkspaceFileError && !refusal) refusal = error; }
+    }
+    if (found.length === 1) return found[0]!;
+    if (found.length > 1) throw new WorkspaceFileError(
+      `${requested} exists in more than one of these places, so which one was meant is not decided here.`,
+      409, 'FILE_AMBIGUOUS', found.map(file => file.path));
+    // Where it looked belongs in what he reads. Before this, the refusal named the one path a
+    // browser had composed, so a wrong guess came back as confirmation of itself.
+    if (!refusal || refusal.code === 'FILE_UNAVAILABLE') throw new WorkspaceFileError(
+      candidates.length > 1
+        ? `There is no file at either place this could mean: ${candidates.join(' or ')}.`
+        : `There is no file at ${candidates[0]}.`,
+      404, 'FILE_UNAVAILABLE', candidates);
+    throw new WorkspaceFileError(refusal.message, refusal.status, refusal.code, candidates);
+  }
+  return readAbsoluteWorkspaceFile(input);
+}
+
+function readAbsoluteWorkspaceFile(input: { machine: string; workspaceRoot: string; path: string }): WorkspaceFile {
   const requested = typeof input.path === 'string' ? input.path.trim() : '';
   if (!requested || requested.includes('\0')) throw new WorkspaceFileError('A file path is required.', 400, 'FILE_PATH_INVALID');
   const path = resolve(expandHome(requested));
@@ -98,10 +163,10 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
   let real: string;
   let stats: ReturnType<typeof statSync>;
   try { real = realpathSync(path); stats = statSync(real); }
-  catch { throw new WorkspaceFileError('That file is not on this machine.', 404, 'FILE_UNAVAILABLE'); }
+  catch { throw new WorkspaceFileError('That file is not on this machine.', 404, 'FILE_UNAVAILABLE', [path]); }
   // A symlink out of the workspace is still a read outside it.
   if (!within(root, real)) throw new WorkspaceFileError(`Only files under ${root} can be opened here.`, 403, 'FILE_OUTSIDE_WORKSPACE');
-  if (!stats.isFile()) throw new WorkspaceFileError('That path is not a file.', 404, 'FILE_UNAVAILABLE');
+  if (!stats.isFile()) throw new WorkspaceFileError('That path is not a file.', 404, 'FILE_UNAVAILABLE', [path]);
   if (stats.size > MAX_BYTES) throw new WorkspaceFileError(`That file is ${Math.round(stats.size / 1024)} KB; this viewer opens files up to ${MAX_BYTES / 1024 / 1024} MB.`, 413, 'FILE_TOO_LARGE');
   const project = sessionProjects(root).filter(candidate => within(candidate.cwd, path))
     .sort((left,right)=>right.cwd.length-left.cwd.length)[0] ?? null;
@@ -121,6 +186,8 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
 // An absolute or home path that ends in a file kind. Web addresses are blanked out before the
 // search, so no part of one (`/+/refs/…/AndroidManifest.xml` in a Git web page) reads as a file.
 const LINKED_PATH = /(?<![\w:/.~-])(?:~\/|\/)[^\s`'"<>()[\]{}|*]+\.[A-Za-z0-9]+/g;
+// A relative reference that carries a folder and ends in a file kind, as agents write them from the project root.
+const RELATIVE_PATH = /(?<![\w:/.~-])(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+\.[A-Za-z0-9]+/g;
 const WEB_ADDRESS = /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>()[\]{}`'"]+/gi;
 
 export type UnopenableLink = { path: string; code: string; reason: string };
@@ -148,14 +215,22 @@ export function unopenableLinks(text: string, workspaceRoot: string): Unopenable
   return refused;
 }
 
-/** The same link vocabulary judged by a machine supplied reader, such as the runner's project file call. */
-export async function unopenableLinksWithReader(text:string,read:(path:string)=>Promise<unknown>):Promise<UnopenableLink[]> {
+/**
+ * The same link vocabulary judged by a machine supplied reader, such as the runner's project file call.
+ * `relativeFrom` is a folder the posting agent works in: relative references with a folder are
+ * judged as they would be read from a document there, so the two places the reader looks are the
+ * two places this looks.
+ */
+export async function unopenableLinksWithReader(text:string,read:(path:string,from?:string)=>Promise<unknown>,relativeFrom?:string):Promise<UnopenableLink[]> {
   const seen=new Set<string>(),refused:UnopenableLink[]=[];
-  for(const match of text.replace(WEB_ADDRESS,' ').matchAll(LINKED_PATH)) {
-    const path=match[0].replace(/[.,;:!?]+$/,'');
+  const blanked=text.replace(WEB_ADDRESS,' ');
+  const found=[...blanked.matchAll(LINKED_PATH)].map(match=>({path:match[0],relative:false}));
+  if(relativeFrom)found.push(...[...blanked.matchAll(RELATIVE_PATH)].map(match=>({path:match[0],relative:true})));
+  for(const {path:raw,relative} of found) {
+    const path=raw.replace(/[.,;:!?]+$/,'');
     if(seen.has(path)||!VIEWABLE_EXTENSIONS[path.slice(path.lastIndexOf('.')).toLowerCase()])continue;
     seen.add(path);
-    try{await read(path);}catch(error){
+    try{await read(path,relative&&relativeFrom?relativeFrom.replace(/\/+$/,'')+'/_':undefined);}catch(error){
       if(error instanceof WorkspaceFileError)refused.push({path,code:error.code,reason:error.message});
       else refused.push({path,code:'FILE_UNAVAILABLE',reason:error instanceof Error?error.message:'This file is unavailable.'});
     }

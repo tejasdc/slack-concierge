@@ -2176,13 +2176,16 @@ export class SessionOwner {
    * somewhere. Without it an absolute path under a peer's home routes there, and anything
    * else (including `~`) is resolved here.
    */
-  async file(path:unknown,machine:string|null):Promise<{file:WorkspaceFile}> {
+  async file(path:unknown,machine:string|null,fromDocument?:unknown):Promise<{file:WorkspaceFile}> {
     if(typeof path!=='string'||!path.trim())throw new SessionOwnerError('A file path is required.',400,'FILE_PATH_INVALID');
     const peers=this.peers,self=this.selfMachine;
-    const remote=machine!==null?this.remoteMachine(machine):peers?.instanceForPath(expandHome(path))??null;
+    // A relative reference is routed by the document it was written in: the reference alone
+    // names no machine, and a reference inside a Mac document is read on the Mac.
+    const from=typeof fromDocument==='string'&&fromDocument.trim()&&!path.trim().startsWith('/')&&!path.trim().startsWith('~')?fromDocument.trim():undefined;
+    const remote=machine!==null?this.remoteMachine(machine):peers?.instanceForPath(expandHome(from??path))??null;
     if(remote){
       if(!peers)throw new SessionOwnerError(`This machine does not know ${remote}.`,404,'MACHINE_UNKNOWN');
-      try {return await peers.readFile(remote,path) as {file:WorkspaceFile};}
+      try {return await peers.readFile(remote,path,from) as {file:WorkspaceFile};}
       catch(error) {
         // This instance answered; only the peer did not. A gateway status would read to the
         // caller as this owner being unreachable.
@@ -2191,7 +2194,7 @@ export class SessionOwner {
         throw error;
       }
     }
-    if(machine===null&&this.configuredProjectRunner()) {
+    if(machine===null&&!from&&this.configuredProjectRunner()) {
       const remote=await this.runnerProjectCall<{workspaceRoot:string;matched:boolean;file?:WorkspaceFile}>('projects.fileAt',{path:expandHome(path)});
       if(remote?.matched&&remote.file)return {file:remote.file};
       if(remote&&remote.workspaceRoot!==''&&isAbsolute(remote.workspaceRoot)) {
@@ -2199,7 +2202,7 @@ export class SessionOwner {
         if(requested===root||requested.startsWith(root+sep))throw new SessionOwnerError('That file is not available on the configured project runner.',404,'FILE_UNAVAILABLE');
       }
     }
-    try {return {file:readWorkspaceFile({machine:self,workspaceRoot:this.defaultCwd,path})};}
+    try {return {file:readWorkspaceFile({machine:self,workspaceRoot:this.defaultCwd,path,from})};}
     catch(error) {throw error instanceof WorkspaceFileError?new SessionOwnerError(error.message,error.status,error.code):error;}
   }
   /**
@@ -5588,7 +5591,7 @@ ${input.text}`;
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='status'&&parts.length===3&&this.projectSetup)result=this.projectSetup.status(parts[1]!,url.searchParams.get('peer')??undefined);
       else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result={...await this.status(),operations:[...(this.projectSetup?['project.setup',PROJECT_FOLDERS_OPERATION,PROJECT_NESTED_EXPERTISE_OPERATION]:[]),...(this.peerLinks?['link.open']:[])]};
       else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=await releaseHistory();
-      else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
+      else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'),url.searchParams.get('from'));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=await this.projectInstructions(parts[1]!);
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=await this.projectTodos(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=await this.projectDefault(parts[1]!,body);

@@ -21,6 +21,7 @@ import {protectedDurability} from './protected-durability-observation';
 import {isTransientDatabaseError} from './database-retry';
 import {BoardError} from './commons-board-service';
 import {getAcceptedSessionInput} from './session-inputs';
+import {getSessionById} from './state';
 import {supersededBy,supersededAddress,withdrawnSuccessor} from './session-handoff';
 import {recordDeploymentReleasePrepared,recordDeploymentReleaseActivationIntent,
   recordDeploymentReleaseActivated,registerDeploymentTurnReactionTargets,
@@ -62,9 +63,14 @@ const release=(()=>{
  * A post or reply that names files he cannot open tells its author at once, beside the receipt,
  * so the agent sends a path that opens; nothing is refused (agents are never handcuffed).
  */
-async function withLinkCheck<T>(result:T,input:{text?:unknown},owner?:SessionOwner):Promise<T|(T&{unopenable_links:unknown[];warning:string})>{
+async function withLinkCheck<T>(result:T,input:{text?:unknown;source?:{input_id?:unknown}},owner?:SessionOwner):Promise<T|(T&{unopenable_links:unknown[];warning:string})>{
   if(!owner||typeof input?.text!=='string'||!result||typeof result!=='object')return result;
-  const refused=await unopenableLinksWithReader(input.text,path=>owner.file(path,null));
+  // Relative references are judged from the folder the posting agent works in, where an agent
+  // writes them from; the reader looks in the same two places.
+  const posting=typeof input.source?.input_id==='string'?getAcceptedSessionInput(input.source.input_id):null;
+  let cwd:string|undefined;
+  try{const meta=posting?JSON.parse(getSessionById(posting.session_id)?.native_metadata_json??'{}'):null;cwd=typeof meta?.cwd==='string'&&meta.cwd.startsWith('/')?meta.cwd:undefined;}catch{cwd=undefined;}
+  const refused=await unopenableLinksWithReader(input.text,(path,from)=>owner.file(path,null,from),cwd);
   if(!refused.length)return result;
   return {...result,unopenable_links:refused,
     warning:`Posted, but ${refused.length===1?'this file link':'these file links'} will not open for Tejas: ${refused.map(link=>`${link.path} (${link.reason})`).join('; ')}. Move the file somewhere it opens or send a corrected path.`};
