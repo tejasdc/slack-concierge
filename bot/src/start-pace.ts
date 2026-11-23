@@ -105,14 +105,20 @@ export function jitter(config: StartPaceConfig, random: () => number = Math.rand
 }
 
 /**
- * Decide one start. Critical memory pressure holds every start, the human's too; warning holds
- * paced ones by one slot (a fifth of nothing is still a wait, so the slot is the window split by the
- * budget) and the next claim re-checks. Otherwise the start is admitted while the window has room.
+ * Decide one start. Critical memory pressure holds every start, the human's too, by one slot (the
+ * window split by the budget) and the next claim re-checks. Otherwise the start is admitted while the
+ * window has room.
+ *
+ * Warning does not hold a start. On 2026-11-23 this Mac reported warning continuously for over 15
+ * minutes with a load average of 4-5 and no agent running, and the earlier warning hold kept two marked
+ * test turns queued the whole time: warning is this machine's resting state, so holding on it meant
+ * agent work, including requests carried for Tejas, never started. Warning still marks the machine
+ * crowded (crowding.ts), which invites agents to snooze themselves; the start budget still spaces starts.
  */
 export function decideStart(db: Database, candidate: StartCandidate, nowMs: number, config: StartPaceConfig,
   level: number = memoryPressureLevel(), random: () => number = Math.random): StartDecision {
   const slotMs = Math.ceil(config.windowMs / config.budget);
-  if (level >= MEMORY_CRITICAL || (level >= MEMORY_WARNING && !candidate.exempt))
+  if (level >= MEMORY_CRITICAL)
     return { admit: false, hold: START_MEMORY_HOLD, nextMs: nowMs + slotMs + jitter(config, random) };
   if (candidate.exempt) return { admit: true };
   const freeAt = budgetFreeAtMs(db, nowMs, config);
