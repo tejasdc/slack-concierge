@@ -775,8 +775,14 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   explicitly settled with a proven replacement question. A question only he can answer
   remains open in its thread. A question still being prepared by an agent is recovery work,
   not a reason to leave the task waiting on Tejas. When Tejas has replied to a question but
-  the router has not reconciled that answer, the question no longer counts as waiting on him;
-  the task returns to the router with his pending reply as the next thing to process. Recovery
+  the router has not reconciled that answer, the question no longer counts as waiting on him.
+  A checked final on the linked work that carried his exact reply can close the request
+  and record that decision answered in the same event. His reply must address the current
+  question by its question post or explicit review identity and revision. A decision
+  revised since it was posted needs an explicit review of that revision. A reply to the thread itself
+  cannot settle a worker's question, and unrelated or shared decisions keep their own closure
+  requirements. Otherwise the task returns to the router with the pending reply or the exact
+  decision still blocking closure. Recovery
   reads all explicit replies to open questions, including older replies beyond the bounded
   thread-list read. A thread he set aside holds recovery until he resumes it.
 - When the router itself completes a human request without dispatching another agent, it

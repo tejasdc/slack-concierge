@@ -219,7 +219,7 @@ const NOT_ALL_DONE =
 export type CompletionCheck = { checked?: string; notChecked?: string; nothingChanged?: string };
 
 function onlyCheck(input: CompletionCheck): string {
-  const given = ([['Checked on the real system: ', input.checked], [NOT_CHECKED_LIVE, input.notChecked], [NOTHING_CHANGED, input.nothingChanged]] as const)
+  const given = ([[CHECKED_LIVE, input.checked], [NOT_CHECKED_LIVE, input.notChecked], [NOTHING_CHANGED, input.nothingChanged]] as const)
     .map(([label, value]) => [label, value?.trim() ?? ''] as const).filter(([, value]) => value);
   if (given.length > 1) throw new Error('Give one of --checked, --not-checked or --nothing-changed, not several.');
   if (!given.length || !saysSomething(given[0][1])) throw new Error(CHECK_REQUIRED);
@@ -233,6 +233,7 @@ export function completionWithCheck(input: CompletionCheck & { text: string; all
   return `${input.text.trim()}\n\n${onlyCheck(input)}`;
 }
 
+const CHECKED_LIVE = 'Checked on the real system: ';
 const NOT_CHECKED_LIVE = 'Not checked live: ';
 const NOTHING_CHANGED = 'Answered; nothing was changed: ';
 const COMPLETED_CLOSING = 'Completed · ';
@@ -249,4 +250,9 @@ export function finalClosingLine(disposition: string, check: CompletionCheck = {
 export function notSeenWorking(closingLine: unknown): string | null {
   const prefix = `${COMPLETED_CLOSING}${NOT_CHECKED_LIVE}`;
   return typeof closingLine === 'string' && closingLine.startsWith(prefix) ? closingLine.slice(prefix.length).trim() || null : null;
+}
+
+export function seenWorking(closingLine: unknown): boolean {
+  const prefix = `${COMPLETED_CLOSING}${CHECKED_LIVE}`;
+  return typeof closingLine === 'string' && closingLine.startsWith(prefix) && !!closingLine.slice(prefix.length).trim();
 }

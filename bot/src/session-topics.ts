@@ -14,7 +14,7 @@ import {INBOX_LINEAGE_SQL} from './inbox-lineage-sql';
 import {askedAnswerPostIds,askedAnswerStatus,requireAskedAnswer} from './asked-answer';
 import {BUG_REPORT_OWN_THREAD,isBugReportInput,capturePresentation,inboxMessage,inboxMessageById,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot,postForwardedThreadAnswer} from './session-inbox';
 import {answerClosingLine} from './answer-closing-line';
-import {notSeenWorking} from './answers-to-tejas';
+import {notSeenWorking,seenWorking} from './answers-to-tejas';
 import {inboxRequestRoot,inboxSentRequest} from './inbox-request-root';
 import type {OpenNeed} from './session-turn-outcome';
 import {SERVICE_NOTICE_SCOPE} from './provider-free-notice';
@@ -1914,7 +1914,8 @@ function humanRequest(topic:StoredTopic,request:StoredRequest):boolean {
       return input?.origin==='human'&&new Date(iso(input.created_at)!).getTime()<=new Date(iso(request.createdAt)!).getTime();
     });
 }
-type CompletionRow={outcome:string|null;result_json:string|null;requested_effect:string|null;created_at_ms:number;stalled_at_ms:number|null};
+type CompletionRow={outcome:string|null;result_json:string|null;requested_effect:string|null;created_at_ms:number;stalled_at_ms:number|null;
+  source_session_id:number;source_input_id:string|null;forwarded_input_id:string|null};
 /**
  * A shared dispatch can have a retained final but no answer post in a topic created later by
  * migration. Naming the exact final proves custody and attribution without posting its words
@@ -1922,7 +1923,8 @@ type CompletionRow={outcome:string|null;result_json:string|null;requested_effect
  * a typed final must already say completed without a not-checked reason. The router still
  * judges whether the retained answer actually covers this human request.
  */
-function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence:readonly string[],allowFailedCheck=false):boolean {
+function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence:readonly string[],
+  {allowFailedCheck=false,requireLiveCheck=false}={}):boolean {
   if((row?.outcome!=='answered'&&!(allowFailedCheck&&row?.outcome==='failed'))||!row.result_json)return false;
   let result:any;
   try{result=JSON.parse(row.result_json);}catch{return false;}
@@ -1930,6 +1932,7 @@ function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence
     ||result.workDisposition!==undefined
       &&(allowFailedCheck?result.workDisposition!=='failed':result.workDisposition!=='completed'||notSeenWorking(result.closingLine)))return false;
   if(allowFailedCheck&&result.workDisposition!=='failed')return false;
+  if(requireLiveCheck&&(result.workDisposition!=='completed'||!seenWorking(result.closingLine)))return false;
   const local=db.query(`SELECT payload_json FROM session_communication_events
     WHERE event_id=? AND request_id=? AND kind='final' AND superseded_by_event_id IS NULL`).get(result.event_id,dispatchId) as {payload_json:string}|null;
   const peer=local?null:db.query(`SELECT payload_json FROM session_peer_events
@@ -1945,7 +1948,8 @@ function verifiedFinalEvidence(dispatchId:string,row:CompletionRow|null,evidence
       &&typeof payload.source?.run_id==='string'&&!!payload.source.run_id
       &&payload.text===result.text
       &&payload.responding_session_id===result.responding_session_id
-      &&payload.workDisposition===result.workDisposition;
+      &&payload.workDisposition===result.workDisposition
+      &&(!requireLiveCheck||payload.closingLine===result.closingLine);
   } catch{return false;}
 }
 /** A direct answer addresses this obligation's source; a shared thread is not coverage. */
@@ -1980,10 +1984,47 @@ function reopenedLinkedFinal(topic:StoredTopic,dispatchId:string,row:CompletionR
       &&topicOfRoot(inboxThreadRoot(topic.sessionId,id)??'')===topic.topicId;
   });
 }
+/** A checked final can consume a decision on an earlier dispatch through its exact human reply. */
+function checkedDecisionAnswer(topic:StoredTopic,request:StoredRequest,dispatchId:string,row:CompletionRow|null,questions:StoredQuestion[]) {
+  if(!questions.length||!row?.result_json||!row.forwarded_input_id||row.source_input_id!==row.forwarded_input_id
+    ||row.requested_effect!=='work')return null;
+  const eventId=JSON.parse(row.result_json).event_id;
+  if(typeof eventId!=='string'||!verifiedFinalEvidence(dispatchId,row,[eventId],{requireLiveCheck:true}))return null;
+  const human=getAcceptedSessionInput(row.forwarded_input_id);
+  if(!human||!humanAuthored(human)||human.session_id!==row.source_session_id||!['input','create','inbox-capture'].includes(human.kind)
+    ||topicOfRoot(rootOf(human.session_id,human.id)??'')!==topic.topicId)return null;
+  const {replyToMessage,review}=JSON.parse(human.payload_json);
+  const messageId=replyToMessage?.messageId;
+  // Worker questions store both the conversation root and the question post as sources.
+  // A reply to the common root does not identify a question.
+  const post=typeof messageId==='string'&&messageId.startsWith('post:forward:')
+    ?db.query("SELECT json_extract(payload_json,'$.requestId') AS dispatch FROM session_owner_events WHERE event_id=? AND kind='post'")
+      .get(messageId) as {dispatch:string|null}|null
+    :null;
+  const reviewed=Array.isArray(review?.questions)?review.questions:[];
+  const at=iso(human.created_at)!;
+  const matches=questions.filter(question=>{
+    if(question.replacedBy||at<=question.updatedAt
+      ||(question.owner?.requestId&&question.owner.requestId!==request.requestId))return false;
+    const revisions=reviewed.filter((item:any)=>item?.id===question.questionId);
+    // A revision can retain its old question post. Only an explicit current review identifies the revision.
+    if(revisions.length)return revisions.every((item:any)=>Number(item.revision)===question.revision);
+    return question.revision===1&&!!post?.dispatch&&post.dispatch===question.owner?.dispatchRequestId
+      &&messageId!==question.sources[0]&&question.sources.includes(messageId);
+  });
+  if(matches.length!==1)return null;
+  const question=matches[0];
+  if(!question.owner?.requestId&&topicRequests(topic.topicId).some(other=>other.requestId!==request.requestId&&other.state==='open'
+    &&other.dispatches.some(dispatch=>dispatch.requestId===question.owner?.dispatchRequestId)))return null;
+  return {question,inputId:human.id,eventId,dispatchId};
+}
 function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evidence:string[]=[]){
   const settled=(id:string)=>{
-    const local=db.query("SELECT outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_communication_requests WHERE request_id=?").get(id) as CompletionRow|null;
-    return local??db.query("SELECT outcome,result_json,created_at_ms,stalled_at_ms,json_extract(payload_json,'$.requestedEffect') AS requested_effect FROM session_peer_requests WHERE request_id=?").get(id) as CompletionRow|null;
+    const columns=`outcome,result_json,created_at_ms,stalled_at_ms,source_session_id,source_input_id,
+      json_extract(payload_json,'$.requestedEffect') AS requested_effect,
+      json_extract(payload_json,'$.forwardedReply.inboxInputId') AS forwarded_input_id`;
+    const local=db.query(`SELECT ${columns} FROM session_communication_requests WHERE request_id=?`).get(id) as CompletionRow|null;
+    return local??db.query(`SELECT ${columns} FROM session_peer_requests WHERE request_id=?`).get(id) as CompletionRow|null;
   };
   const done=(row:{outcome:string|null;result_json:string|null;requested_effect:string|null})=>{
     if(row.outcome!=='answered')return false;
@@ -2004,7 +2045,7 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
   const latestShared=latest?db.query(`SELECT count(*) AS count FROM inbox_requests request,json_each(request.dispatches_json) dispatch
     WHERE json_extract(dispatch.value,'$.requestId')=?`).get(latest.id) as {count:number}:null;
   const completedBeforeSharedFailure=!!latest&&!!latestShared&&latestShared.count>1
-    &&verifiedFinalEvidence(latest.id,latest.row,evidence,true)
+    &&verifiedFinalEvidence(latest.id,latest.row,evidence,{allowFailedCheck:true})
     &&dispatches.slice(0,-1).some(dispatch=>verifiedFinalEvidence(dispatch.id,dispatch.row,evidence));
   if(!latest){
     if(humanRequest(topic,request)&&!evidence.some(id=>directRequestAnswer(topic,request,id)))
@@ -2027,8 +2068,21 @@ function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evid
       return post&&JSON.parse(post.payload_json).requestId===latest.id;
     }))throw new TopicError('This agent answer is linked to several human requests. Check this request separately and name the agent answer as evidence before closing it.',409,'REQUEST_SHARED_COMPLETION_EVIDENCE_REQUIRED');
   }
-  if(questionsOfRequest(topic.topicId,request).some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)))
-    throw new TopicError('A question for this request is still open: settle it before closing the request as completed.',409,'REQUEST_QUESTION_OPEN');
+  const decisions=questionsOfRequest(topic.topicId,request).filter(question=>question.kind==='decision');
+  const answered=latest?checkedDecisionAnswer(topic,request,latest.id,latest.row,decisions):null;
+  const blockers=decisions.filter(question=>question.questionId!==answered?.question.questionId);
+  if(blockers.length)
+    throw new TopicError(`A question for this request is still open: settle ${blockers.map(question=>question.questionId).join(', ')} before closing the request as completed.`,409,'REQUEST_QUESTION_OPEN');
+  return answered;
+}
+function closingRequestQuestions(topicId:string,request:StoredRequest,reason:string,at:string,
+  answered:ReturnType<typeof refuseUnfinishedCompletion>=null):StoredQuestion[] {
+  const questions=expireOpen(questionsOfRequest(topicId,request)
+    .filter(question=>question.questionId!==answered?.question.questionId),reason,at);
+  if(answered)questions.push({...answered.question,state:'answered',updatedAt:at,
+    answer:{inputId:answered.inputId,at,passage:null,interpretation:null,answeredRevision:answered.question.revision,
+      dispatchRequestId:answered.dispatchId,finalEventId:answered.eventId}});
+  return questions;
 }
 function parseSources(values:unknown):{inputId:string;passage?:string}[] {
   return idList(values,'--source').map(value=>{
@@ -2795,13 +2849,13 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
         if(disposition==='superseded'&&questionsOfRequest(topic.topicId,request)
           .some(question=>question.kind==='decision'&&OPEN_QUESTION_STATES.includes(question.state)))
           throw new TopicError('This request still has a live question for Tejas. Explicitly carry that question into the replacement or settle it with a proven replacement question before closing.',409,'REQUEST_QUESTION_OPEN');
-        if(disposition==='completed')refuseUnfinishedCompletion(topic,request,evidence);
+        const answered=disposition==='completed'?refuseUnfinishedCompletion(topic,request,evidence):null;
         const at=nowIso();
         const next={...request,state:'closed' as const,disposition,closure:{by,at,reason:why,evidence,...(['withdrawn','declined'].includes(disposition)&&humanQuote?{humanQuote}:{})},revision:request.revision+1,updatedAt:at};
         // Only the questions linked to this exact request end with it.
-        const questions=expireOpen(questionsOfRequest(topic.topicId,request),`The request it was for closed (${disposition}): ${why}`,at);
+        const questions=closingRequestQuestions(topic.topicId,request,`The request it was for closed (${disposition}): ${why}`,at,answered);
         const topicNext=bumped(topic);
-        return {change:{kind:'topic_request',payload:{change:'request_closed',topicId:topic.topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision,questions}},result:{request:next,expired:questions.length}};
+        return {change:{kind:'topic_request',payload:{change:'request_closed',topicId:topic.topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision,questions}},result:{request:next,expired:questions.length-Number(!!answered)}};
       });
     }
     case 'request.reopen':{
@@ -3743,10 +3797,11 @@ function fileAgentAnswer(answer:{resolutionInputId?:string;inboxSessionId:number
         const eventId=`topic-close:answer:${answer.eventId}:${request.requestId}`;
         if(seen(eventId))continue;
         const topic=topicRow(topicId);
-        try{refuseUnfinishedCompletion(topic,request);}catch(error){if(error instanceof TopicError)continue;throw error;}
+        let answered:ReturnType<typeof refuseUnfinishedCompletion>;
+        try{answered=refuseUnfinishedCompletion(topic,request);}catch(error){if(error instanceof TopicError)continue;throw error;}
         const at=nowIso(),why=`${agent} answered it as done.`;
         const next={...request,state:'closed' as const,disposition:'completed',closure:{by,at,reason:why,evidence:[answer.postId]},revision:request.revision+1,updatedAt:at};
-        const questions=expireOpen(questionsOfRequest(topicId,request),`The request it was for closed (completed): ${why}`,at);
+        const questions=closingRequestQuestions(topicId,request,`The request it was for closed (completed): ${why}`,at,answered);
         const topicNext=bumped(topic);
         const payload={change:'request_closed',topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision,questions};
         recordSessionEvent({eventId,sessionId:session.id,kind:'topic_request',payload});
@@ -4362,17 +4417,19 @@ function settleEndedRequests(topicId:string,read:ReadIndex,superseded:{requestId
     const waitingOnHim=sharedDecisionWaiting||(!!latest&&latest.outcome===null&&!!agentWaitingOnHim(latest,read,`concierge:${topic.sessionId}`))||decisionViews.some(awaitingHim)||legacyViews.some(awaitingHim)||topicQuestions(topicId).some(question=>question.kind==='decision'&&question.state==='deferred'
       &&(question.owner?.requestId===request.requestId||dispatchIds.has(String(question.owner?.dispatchRequestId??''))||unlinkedQuestionImplies(question,request,openRequests)));
     let disposition:string|null=null,why='';
-    let completionChecked=false;
+    let answered:ReturnType<typeof refuseUnfinishedCompletion>=null;
+    let completionBlocker:string|null=null;
     if(works.length>(request.completionFloor??0)&&latest
       &&(!request.reopenedAt||latest.createdAtMs>=new Date(request.reopenedAt).getTime())
       &&latest.outcome==='answered'
       &&((latest.disposition==='completed'&&!latest.notCheckedReason)||latest.requestedEffect==='informational')) {
-      try{refuseUnfinishedCompletion(topic,request);completionChecked=true;}
-      catch(error){if(!(error instanceof TopicError))throw error;}
-      // The explicit completed reply accepts either a live check or an honest reason no live
-      // check was possible. Its not-checked reason remains visible in the answer; the owner
-      // cannot infer unfinished work from that reason alone.
-      if(completionChecked&&sharedAnswerPostId(latest.id)===null){disposition='completed';why=latest.requestedEffect==='informational'?'The information requested was answered.':'The work sent for it answered as done.';}
+      try{
+        answered=refuseUnfinishedCompletion(topic,request);
+        if(sharedAnswerPostId(latest.id)===null){disposition='completed';why=latest.requestedEffect==='informational'?'The information requested was answered.':'The work sent for it answered as done.';}
+      }catch(error){
+        if(!(error instanceof TopicError))throw error;
+        if(error.code==='REQUEST_QUESTION_OPEN')completionBlocker=error.message;
+      }
     }
     if(!disposition&&waitingOnHim) {
       continue;
@@ -4386,6 +4443,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex,superseded:{requestId
         :latestHeld?`is still waiting to run: its agent (${latest.target}) has been held for ${latestHeld.hold==='usage'?'provider allowance':latestHeld.hold} since ${new Date(latestHeld.sinceMs).toISOString()} and nothing has started on it. Wait only if that hold lifts soon; otherwise send the work to an agent that can run now and link it, and Concierge withdraws this waiting attempt so the work is not done twice`
         :sharedPost!==null?`answered as done in a dispatch shared by several requests; verify this request against ${sharedPost||'its retained answer post'} separately`
         :latest.outcome==='answered'&&latest.disposition==='completed'&&latest.notCheckedReason?`reported completion without a live check (${latest.notCheckedReason}); verify the result without repeating an acknowledged effect`
+        :completionBlocker?`answered as done, but closure is blocked. ${completionBlocker}`
         :latest.outcome==='answered'&&latest.disposition==='completed'?'claimed completion without a verified result'
         :latest.stalled?'stalled without a final reply'
         :latest.disposition==='failed'?'failed without finishing the task'
@@ -4395,7 +4453,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex,superseded:{requestId
         :latest.outcome==='decision_needed'?'asked for a decision that nobody is waiting on any more'
         :latest.outcome==='unanswered'?'never answered':latest.outcome==='undetermined'?'ended without saying whether it was done'
         :latest.outcome==='dependency_failed'?'was held behind work that did not succeed':`ended as ${latest.outcome}`;
-      if(pendingAnswer)how+=`; Tejas's answer ${pendingAnswer.inputId} is waiting to be processed`;
+      if(pendingAnswer&&!completionBlocker)how+=`; Tejas's answer ${pendingAnswer.inputId} is waiting to be processed`;
       // A linked question still being prepared is not shown to him, so nothing waits on him yet;
       // the router's job is to finish it, not to send the work again (2026-11-04: five only-he-can
       // questions sat as agent_checking for want of why/answerable, invisible to him).
@@ -4413,7 +4471,7 @@ function settleEndedRequests(topicId:string,read:ReadIndex,superseded:{requestId
     }
     const at=nowIso();
     const next={...request,state:'closed' as const,disposition,closure:{by:OWNER_BY,at,reason:why,evidence:[latest.id]},revision:request.revision+1,updatedAt:at};
-    const questions=expireOpen(questionsOfRequest(topicId,request),`The request it was for closed (${disposition}): ${why}`,at);
+    const questions=closingRequestQuestions(topicId,request,`The request it was for closed (${disposition}): ${why}`,at,answered);
     const topicNext=bumped(topic);
     if(recordOwnerTopicChange(topic.sessionId,`topic-settle:${request.requestId}:${request.revision}:${latest.id}`,'topic_request',
       {change:'request_closed',topicId,topic:topicNext,request:next,by:OWNER_BY,reason:why,revision:topicNext.revision,questions}))settled++;
