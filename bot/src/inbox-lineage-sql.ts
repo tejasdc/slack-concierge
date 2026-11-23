@@ -1,6 +1,6 @@
 /**
  * Which sessions are the Inbox, as SQL both the owner and the prepared-read worker share.
- * This module imports nothing, so the worker can use it without loading the owner's state.
+ * The worker can use these reads without loading the owner's state.
  *
  * There is one Inbox. Every session ever marked as the Inbox (`$.inbox`) is part of its one
  * dialogue, its threads and its topics; the history page has always read it that way. The
@@ -11,6 +11,7 @@
  * session and an accepted-handoff chain, so the stand-in received nothing and could name no
  * thread (the overnight Codex usage-limit incident).
  */
+import type {Database} from 'bun:sqlite';
 
 /** The current Inbox router: the live role holder among Inbox sessions, else the newest one. */
 export const CURRENT_INBOX_ID_SQL=`SELECT id FROM sessions
@@ -28,3 +29,11 @@ export const INBOX_LINEAGE_SQL=`WITH RECURSIVE lineage(id) AS (SELECT ? UNION
   UNION SELECT inbox.id FROM sessions inbox WHERE json_extract(inbox.native_metadata_json,'$.inbox')=1
     AND EXISTS (SELECT 1 FROM lineage JOIN sessions member ON member.id=lineage.id
       WHERE json_extract(member.native_metadata_json,'$.inbox')=1)`;
+
+/** Filing admits the exact root as a destination even if its dialogue lives elsewhere. */
+export function filedInboxRoot(db:Database,sessionId:number,messageId:string):string|null {
+  const row=db.query(`SELECT root.root_input_id FROM inbox_topic_roots root
+    JOIN sessions inbox ON inbox.id=? AND json_extract(inbox.native_metadata_json,'$.inbox')=1
+    WHERE root.root_input_id=?`).get(sessionId,messageId) as {root_input_id:string}|null;
+  return row?.root_input_id??null;
+}

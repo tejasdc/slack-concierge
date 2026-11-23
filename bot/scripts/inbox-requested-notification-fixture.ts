@@ -160,6 +160,43 @@ try{
  communication.reply({...quietUnarmed,text:'The send went as requested.',workDisposition:'completed',all_done:true,
    checked:'The stored send receipt matches the request.',quiet_because:'The send went as requested.'});await communication.idle();
  assert.equal(rings().length,informationRings+3,'An unrequested quiet completion stays quiet');
+
+ const crossSessionRoot=randomUUID();
+ retainSessionInput({id:crossSessionRoot,sessionId:worker.actor.sessionId,scope:'surface:thinkering',
+   actionId:crossSessionRoot,kind:'input',origin:'human',payload:{text:'A discussion started in another session.'}});
+ recordSessionEvent({eventId:`admitted:${crossSessionRoot}`,sessionId:worker.actor.sessionId,inputId:crossSessionRoot,kind:'accepted',payload:{}});
+ const filedPost={source:router.source,action_id:'filed-root-post',thread:crossSessionRoot,text:'Reply to the filed discussion.',keep_working:true};
+ assert.throws(()=>communication.post(filedPost),/not a filed root or message/);
+ const filedTopic=topicsCommand(router.actor,{verb:'create',action_id:'filed-topic',title:'Filed discussion',
+   roots:[crossSessionRoot],area_ids:[area.id]}).topic.topicId;
+ const filed=communication.post(filedPost).post;
+ assert.equal(filed.topicId,filedTopic);
+ assert.equal(filed.inputId,crossSessionRoot);
+
+ const created=topicsCommand(worker.actor,{verb:'create',action_id:'worker-topic',title:'Worker discussion',area_ids:[area.id]}).topic.topicId;
+ const opening={source:worker.source,action_id:'worker-topic-first-post',thread:created,text:'First post from the worker.'};
+ assert.throws(()=>communication.post({...opening,topic:filedTopic}),/does not belong/);
+ const first=communication.post(opening).post;
+ const follow=communication.post({source:router.source,action_id:'worker-topic-followup',thread:first.messageId,text:'A reply to the first post.'}).post;
+ assert.equal(follow.inputId,first.inputId);
+ assert.equal(follow.topicId,created);
+ topicsCommand(router.actor,{verb:'merge',action_id:'merge-worker-topic',topic_id:created,into:filedTopic,reason:'Consolidate the same discussion.'});
+ assert.deepEqual(communication.post(opening),{post:first,duplicate:true});
+ assert.throws(()=>communication.post({...opening,text:'Changed words.'}),/Idempotency conflict/);
+ const {inboxRootResolver}=await import('../src/presentation-message-source');
+ const {preparedInboxDisplay}=await import('../src/presentation-inbox-display');
+ for(const post of [filed,first,follow]){
+   const event=db.query('SELECT sequence FROM session_owner_events WHERE event_id=?').get(post.messageId) as {sequence:number};
+   assert.equal(inboxRootResolver(db)(inboxId,post.messageId),post.inputId);
+   assert.equal(db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(post.inputId).topic_id,filedTopic);
+   const display=preparedInboxDisplay(db,inboxId,event.sequence,post.messageId)?.preview;
+   assert.equal(display?.id,post.messageId);
+   assert.equal(display?.author?.kind,'agent');
+   if(post===first){
+     assert.equal(display?.replyToMessage,undefined);
+     assert.equal((display?.author as {inputId?:string}|undefined)?.inputId,worker.source.input_id);
+   }
+ }
  assert.deepEqual(errors,[]);
  const results=rings();
  const receipt=(ring:any)=>({eventId:ring.eventId,postId:ring.postId,createdAtUtc:ring.createdAtUtc,

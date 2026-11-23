@@ -2134,6 +2134,20 @@ function placeChange(session:SessionRow,topic:StoredTopic,roots:string[],by:Topi
     roots:rootRecords(topic.topicId,roots,by,reason),by,reason,revision:next.revision}} as Change};
 }
 
+/** A topic address can take a first post. The caller commits the placement and post together. */
+export function inboxPostTopicRoot(topicId:string):string|null {
+  const topic=topicRow(topicId);
+  if(topic.closure?.kind==='merged')throw new TopicError(`That thread was merged into ${topic.closure.into}.`,409,'TOPIC_MERGED');
+  const root=db.query('SELECT root_input_id FROM inbox_topic_roots WHERE topic_id=? ORDER BY placed_at,root_input_id LIMIT 1')
+    .get(topicId) as {root_input_id:string}|null;
+  return root?.root_input_id??null;
+}
+
+export function placeFirstInboxPost(session:SessionRow,topicId:string,actionInputId:string,by:TopicBy,turnId:number|null) {
+  const placed=placeChange(session,topicRow(topicId),[actionInputId],by,null);
+  record(session.id,actionInputId,turnId,placed.change);
+}
+
 function mergeChange(from:StoredTopic,into:StoredTopic,by:TopicBy,reason:string|null) {
   const at=nowIso();
   const destination=bumped(into,{aliases:[...new Set([...into.aliases,from.title,...from.aliases])]});

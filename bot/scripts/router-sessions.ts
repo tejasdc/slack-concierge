@@ -74,7 +74,7 @@ router-actions.sh sessions title [--session <session-address>] <source-flags> --
 router-actions.sh sessions move <session-address> --project <project or project/folder, e.g. agent-ecology/expertise/alan-kay> <source-flags> --action-id A
 router-actions.sh sessions repair-home <session-address> (--local | --runner <runner>) --project <registered-project> <source-flags> --action-id A
 Moves an idle session to another folder; its next turn resumes the same conversation there. --project on ask and create also accepts a folder inside a registered project.
-router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--promise-request <open-request-id>] [--keep-working] [--notify] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions post <source-flags> --action-id A --thread <topicId|message-id> [--topic <topicId>] [--promise-request <open-request-id>] [--keep-working] [--notify] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions outcome <done|response|needs_you|failed> <source-flags> --action-id A [--quiet-because "<why he need not read this>"] [--summary "<one line: what he must decide and the result it depends on>" (needs_you) --only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--text-file F | -- <text>]
 router-actions.sh sessions answer <original-chatgpt-request-id> <source-flags> --action-id A --answer-event <exact-event-id> --handling used|context_supplied|scoped|superseded [--read-receipt <receipt-id> (after sessions get)] [--follow-up-request <exact-request-id> (context_supplied)] [--successor-request <answered-request-id> --reason "<how it covers the original>" (superseded)] [--reason "<narrowed claim and missing context>" (scoped)]
 router-actions.sh sessions legacy-link <historical-chatgpt-request-id> <source-flags> --action-id A --for-task <kind>:<exact-id> --provider chatgpt|other --reason "<inspected target and task evidence>"
@@ -1291,7 +1291,7 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
   }
   if(operation==='post') {
     const thread=flags.get('--thread');
-    if(!thread)invalid('post requires --thread with the exact message ID the thread is rooted at or continues.');
+    if(!thread)invalid('post requires --thread with an exact topic ID or message ID.');
     if(notify&&!message.trim())invalid('--notify requires words in the post.');
     return {operation,body:{source,action_id:actionId,thread,text:message,...attached,...(notify?{notify:true}:{}),
       ...(flags.has('--topic')?{topic:flags.get('--topic')!}:{}),...(flags.has('--promise-request')?{promise_request:flags.get('--promise-request')!}:{}),...(keepWorking?{keep_working:true}:{})}};
