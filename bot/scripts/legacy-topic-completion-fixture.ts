@@ -16,9 +16,9 @@ process.env.CONCIERGE_CAPTURE_STATE_DIR=join(scratch,'capture');
 process.env.CONCIERGE_TEST_MODE='1';
 process.env.CONCIERGE_TEST_AUTHORIZATION=LEGACY_TOPIC_COMPLETION_TEST_AUTHORIZATION;
 
-const [{db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
+const [{db,getSessionById,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput},
   {SessionOwner},{SessionCommunicationCoordinator},{nativeRunId,updateSessionMetadata,recordSessionEvent,retainSessionInput},
-  {topicsCommand,topicPromptContext,invalidateTopicRoots,readTopic,openInboxObligations}]=await Promise.all([
+  {topicsCommand,topicPromptContext,invalidateTopicRoots,readTopic,openInboxObligations,postAgentAnswer,keepThreadsCurrent}]=await Promise.all([
   import('../src/state'),import('../src/session-owner'),import('../src/session-communication'),
   import('../src/session-inputs'),import('../src/session-topics')]);
 
@@ -280,7 +280,78 @@ try {
     action_id:'reopened-late-exact-final',disposition:'completed',evidence:[latePost],reason:'Checked the new exact final from the already accepted dispatch.'});
   assert.equal(lateClosed.request.state,'closed');
   assert.deepEqual(errors,[]);
-  console.log('Legacy topic completion fixture passed: uncertain and unrelated evidence stayed open; exact finals and successor thread answer closed without duplicate posts.');
+  async function continueDecision(label:string,answerQuestion:boolean,check:{checked:string}|{not_checked:string}) {
+    const message=(text:string,replyTo?:string)=>{
+      const input=retainSessionInput({sessionId:successorId,scope:'surface:thinkering',actionId:`${label}:${text}`,kind:'input',
+        origin:'human',payload:{text,...(replyTo?{replyToMessage:{messageId:replyTo,sessionId:successor.session.id}}:{})}}).input;
+      recordSessionEvent({eventId:`accepted:${input.id}`,sessionId:successorId,inputId:input.id,kind:'accepted',payload:{}});
+      return input.id;
+    };
+    const command=(verb:string,fields:object)=>topicsCommand(successorTurn.actor,{verb,action_id:`${label}-${verb.replace('.', '-')}`,...fields});
+    const root=message('Please finish the fixture work.');
+    const topic=command('create',{title:`Decision continuation ${label}`,roots:[root],area_ids:[area.id]}).topic.topicId;
+    const request=command('request.add',{topic_id:topic,title:`Finish ${label}`,sources:[root],brief:'Finish and verify the fixture work.'}).request.requestId;
+    const firstWorker=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
+    const original=await communication.ask({source:successorTurn.source,action_id:`dispatch-${label}`,address:firstWorker.session.address,
+      thread:root,summary:'Work awaiting a decision',text:'Finish the fixture work.',requestedEffect:'work'});
+    await communication.idle();
+    run();
+    command('request.link',{request_id:request,dispatch:original.request_id});
+    db.query("UPDATE session_communication_requests SET outcome='decision_needed',status='settled' WHERE request_id=?").run(original.request_id);
+    const questionPost=postAgentAnswer({inboxSessionId:successorId,eventId:`fixture-decision:${label}`,requestId:original.request_id,
+      root,inboxInputId:root,respondingSessionId:firstWorker.session.id,text:'Which copy is yours?',
+      attachments:[],stalled:false,final:true,workDisposition:'needs_decision'});
+    assert.ok(questionPost);
+    const {question_id:questionId}=db.query("SELECT question_id FROM inbox_questions WHERE topic_id=? AND kind='decision'").get(topic) as {question_id:string};
+    // Model a retained decision older than the second-resolution timestamp of the accepted reply.
+    db.query("UPDATE inbox_questions SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute') WHERE question_id=?").run(questionId);
+    const reply=message('Use the newer copy.',answerQuestion?questionPost:root);
+    const nextWorker=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
+    const continuation=communication.forwardReply({inbox:getSessionById(successorId)!,inputId:reply,text:'Use the newer copy.',
+      target:{sessionId:nextWorker.session.id,local:Number(nextWorker.session.id.slice(10)),peer:null,title:null,topicId:topic,root}});
+    if(!answerQuestion)command('request.link',{action_id:`${label}-link-continuation`,request_id:request,dispatch:continuation});
+    await communication.idle();
+    const resumed=run();
+    const completed=communication.reply({source:resumed.source,action_id:`final-${label}`,request_id:continuation,
+      text:'The work on the newer copy is complete.',final:true,workDisposition:'completed',summary:'The copy is ready',
+      mine:'Which copy this fixture work uses.',all_done:true,...check});
+    const final=completed.result!.event_id;
+    const close=()=>command('request.close',{request_id:request,disposition:'completed',evidence:[final],reason:'The checked continuation finished the work.'});
+    const state=()=>db.query('SELECT state,answer_json FROM inbox_questions WHERE question_id=?').get(questionId) as
+      {state:string;answer_json:string|null};
+    return {request,reply,final,continuation,questionId,close,state};
+  }
+
+  const checked={checked:'I opened the newer copy and confirmed the result.'};
+  const manual=await continueDecision('manual',true,checked);
+  manual.close();
+  assert.equal(manual.state().state,'answered');
+  assert.equal(JSON.parse(manual.state().answer_json!).inputId,manual.reply);
+  assert.equal(JSON.parse(manual.state().answer_json!).finalEventId,manual.final);
+  await communication.idle();
+
+  const automatic=await continueDecision('upkeep',true,checked);
+  const recoveries:{requestId:string;text:string}[]=[];
+  for(let pass=0;pass<2;pass++)await keepThreadsCurrent(input=>recoveries.push(input));
+  await communication.idle();
+  assert.equal(automatic.state().state,'answered');
+  assert.equal((db.query('SELECT disposition FROM inbox_requests WHERE request_id=?').get(automatic.request) as {disposition:string}).disposition,'completed');
+  assert.equal(recoveries.some(input=>input.requestId===automatic.request),false);
+  assert.equal((db.query("SELECT count(*) AS n FROM session_owner_events WHERE kind='post' AND json_extract(payload_json,'$.requestId')=?")
+    .get(automatic.continuation) as {n:number}).n,1);
+
+  const unrelated=await continueDecision('unrelated',false,checked);
+  assert.throws(unrelated.close,new RegExp(unrelated.questionId));
+  assert.equal(unrelated.state().state,'open');
+  await communication.idle();
+  const unchecked=await continueDecision('unchecked',true,{not_checked:'The fixture result could not be opened.'});
+  assert.throws(unchecked.close,/has not finished/);
+  await communication.idle();
+  await keepThreadsCurrent(input=>recoveries.push(input));
+  assert.equal(unchecked.state().state,'open');
+  assert.ok(recoveries.some(input=>input.requestId===unchecked.request&&input.text.includes('without a live check')));
+  assert.deepEqual(errors,[]);
+  console.log('Legacy topic completion fixture passed, including checked continuations and exact decisions.');
 } finally {
   await communication.stop();
   rmSync(scratch,{recursive:true,force:true});
