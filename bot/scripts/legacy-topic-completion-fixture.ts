@@ -280,10 +280,11 @@ try {
     action_id:'reopened-late-exact-final',disposition:'completed',evidence:[latePost],reason:'Checked the new exact final from the already accepted dispatch.'});
   assert.equal(lateClosed.request.state,'closed');
   assert.deepEqual(errors,[]);
-  async function continueDecision(label:string,answerQuestion:boolean,check:{checked:string}|{not_checked:string}) {
-    const message=(text:string,replyTo?:string)=>{
+  async function continueDecision(label:string,answerQuestion:boolean,check:{checked:string}|{not_checked:string},staleReview=false) {
+    const message=(text:string,replyTo?:string,review?:{id:string;revision:number})=>{
       const input=retainSessionInput({sessionId:successorId,scope:'surface:thinkering',actionId:`${label}:${text}`,kind:'input',
-        origin:'human',payload:{text,...(replyTo?{replyToMessage:{messageId:replyTo,sessionId:successor.session.id}}:{})}}).input;
+        origin:'human',payload:{text,...(replyTo?{replyToMessage:{messageId:replyTo,sessionId:successor.session.id}}:{}),
+          ...(review?{review:{questions:[review]}}:{})}}).input;
       recordSessionEvent({eventId:`accepted:${input.id}`,sessionId:successorId,inputId:input.id,kind:'accepted',payload:{}});
       return input.id;
     };
@@ -305,7 +306,8 @@ try {
     const {question_id:questionId}=db.query("SELECT question_id FROM inbox_questions WHERE topic_id=? AND kind='decision'").get(topic) as {question_id:string};
     // Model a retained decision older than the second-resolution timestamp of the accepted reply.
     db.query("UPDATE inbox_questions SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute') WHERE question_id=?").run(questionId);
-    const reply=message('Use the newer copy.',answerQuestion?questionPost:root);
+    if(staleReview)db.query('UPDATE inbox_questions SET revision=2 WHERE question_id=?').run(questionId);
+    const reply=message('Use the newer copy.',answerQuestion?questionPost:root,staleReview?{id:questionId,revision:1}:undefined);
     const nextWorker=await owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
     const continuation=communication.forwardReply({inbox:getSessionById(successorId)!,inputId:reply,text:'Use the newer copy.',
       target:{sessionId:nextWorker.session.id,local:Number(nextWorker.session.id.slice(10)),peer:null,title:null,topicId:topic,root}});
@@ -343,6 +345,10 @@ try {
   const unrelated=await continueDecision('unrelated',false,checked);
   assert.throws(unrelated.close,new RegExp(unrelated.questionId));
   assert.equal(unrelated.state().state,'open');
+  await communication.idle();
+  const stale=await continueDecision('stale-review',true,checked,true);
+  assert.throws(stale.close,new RegExp(stale.questionId));
+  assert.equal(stale.state().state,'open');
   await communication.idle();
   const unchecked=await continueDecision('unchecked',true,{not_checked:'The fixture result could not be opened.'});
   assert.throws(unchecked.close,/has not finished/);

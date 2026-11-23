@@ -778,7 +778,8 @@ answer posted into the thread closed nothing, and no thread ever closed itself. 
   the router has not reconciled that answer, the question no longer counts as waiting on him.
   A checked final on the linked work that carried his exact reply can close the request
   and record that decision answered in the same event. His reply must address the current
-  question by its question post or explicit review identity. A reply to the thread itself
+  question by its question post or explicit review identity and revision. A decision
+  revised since it was posted needs an explicit review of that revision. A reply to the thread itself
   cannot settle a worker's question, and unrelated or shared decisions keep their own closure
   requirements. Otherwise the task returns to the router with the pending reply or the exact
   decision still blocking closure. Recovery

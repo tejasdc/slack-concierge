@@ -1915,7 +1915,7 @@ function humanRequest(topic:StoredTopic,request:StoredRequest):boolean {
     });
 }
 type CompletionRow={outcome:string|null;result_json:string|null;requested_effect:string|null;created_at_ms:number;stalled_at_ms:number|null;
-  source_input_id:string|null;forwarded_input_id:string|null};
+  source_session_id:number;source_input_id:string|null;forwarded_input_id:string|null};
 /**
  * A shared dispatch can have a retained final but no answer post in a topic created later by
  * migration. Naming the exact final proves custody and attribution without posting its words
@@ -1991,8 +1991,7 @@ function checkedDecisionAnswer(topic:StoredTopic,request:StoredRequest,dispatchI
   const eventId=JSON.parse(row.result_json).event_id;
   if(typeof eventId!=='string'||!verifiedFinalEvidence(dispatchId,row,[eventId],{requireLiveCheck:true}))return null;
   const human=getAcceptedSessionInput(row.forwarded_input_id);
-  if(!human||human.origin!=='human'||!['input','create','inbox-capture'].includes(human.kind)
-    ||db.query('SELECT 1 FROM session_input_author_corrections WHERE input_id=?').get(human.id)
+  if(!human||!humanAuthored(human)||human.session_id!==row.source_session_id||!['input','create','inbox-capture'].includes(human.kind)
     ||topicOfRoot(rootOf(human.session_id,human.id)??'')!==topic.topicId)return null;
   const {replyToMessage,review}=JSON.parse(human.payload_json);
   const messageId=replyToMessage?.messageId;
@@ -2004,11 +2003,15 @@ function checkedDecisionAnswer(topic:StoredTopic,request:StoredRequest,dispatchI
     :null;
   const reviewed=Array.isArray(review?.questions)?review.questions:[];
   const at=iso(human.created_at)!;
-  const matches=questions.filter(question=>!question.replacedBy&&at>question.updatedAt
-    &&(!question.owner?.requestId||question.owner.requestId===request.requestId)
-    &&(reviewed.some((item:any)=>item?.id===question.questionId&&(item.revision===undefined||item.revision===question.revision))
-      ||(post?.dispatch&&post.dispatch===question.owner?.dispatchRequestId&&messageId!==question.sources[0]
-        &&question.sources.includes(messageId))));
+  const matches=questions.filter(question=>{
+    if(question.replacedBy||at<=question.updatedAt
+      ||(question.owner?.requestId&&question.owner.requestId!==request.requestId))return false;
+    const revisions=reviewed.filter((item:any)=>item?.id===question.questionId);
+    // A revision can retain its old question post. Only an explicit current review identifies the revision.
+    if(revisions.length)return revisions.every((item:any)=>Number(item.revision)===question.revision);
+    return question.revision===1&&!!post?.dispatch&&post.dispatch===question.owner?.dispatchRequestId
+      &&messageId!==question.sources[0]&&question.sources.includes(messageId);
+  });
   if(matches.length!==1)return null;
   const question=matches[0];
   if(!question.owner?.requestId&&topicRequests(topic.topicId).some(other=>other.requestId!==request.requestId&&other.state==='open'
@@ -2017,7 +2020,7 @@ function checkedDecisionAnswer(topic:StoredTopic,request:StoredRequest,dispatchI
 }
 function refuseUnfinishedCompletion(topic:StoredTopic,request:StoredRequest,evidence:string[]=[]){
   const settled=(id:string)=>{
-    const columns=`outcome,result_json,created_at_ms,stalled_at_ms,source_input_id,
+    const columns=`outcome,result_json,created_at_ms,stalled_at_ms,source_session_id,source_input_id,
       json_extract(payload_json,'$.requestedEffect') AS requested_effect,
       json_extract(payload_json,'$.forwardedReply.inboxInputId') AS forwarded_input_id`;
     const local=db.query(`SELECT ${columns} FROM session_communication_requests WHERE request_id=?`).get(id) as CompletionRow|null;
