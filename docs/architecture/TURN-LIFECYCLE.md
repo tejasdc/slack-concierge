@@ -213,8 +213,10 @@ provider-process starts at a bounded rate, whatever released the work, because t
   hold `start_pace:<place>`, and `dispatch_next_attempt_ms` at its slot; groups of `budget` share one instant and
   follow each other by a window plus jitter, so the agent's order is the start order. The existing wake clock
   (`nextQueuedTurnAttemptMs`) drives it. Starts are recorded in `start_pace_starts`.
-- Exempt: a direct human input, the Inbox router, ChatGPT. At macOS memory-pressure warning a paced start is
-  held one slot (hold `start_memory`); at critical every start is.
+- Exempt: a direct human input, the Inbox router, ChatGPT. At macOS memory-pressure critical every start is
+  held one slot and re-checked (hold `start_memory`). Warning holds nothing: on 2026-11-23 the Mac sat at warning
+  for over 15 minutes at a load of 4-5 with no agent running, so a warning hold meant agent work never started;
+  warning still counts as crowded for the snooze offer.
 - The order is fixed: input from Tejas, then agent requests an open Inbox thread waits on, then oldest. There is no
   ordering agent; agents decide for themselves (next bullet).
 - Where `CONCIERGE_CROWD_SESSIONS` is set, a start while the machine is crowded (over that many running sessions, macOS

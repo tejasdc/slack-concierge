@@ -68,11 +68,12 @@ try{
   const human=queued('human-message','human');
   assert.equal(claimNextQueuedTurn(OWNER,at+2)?.turn_id,human,'he is waiting; his message starts at once');
 
-  // Memory pressure: warning holds paced starts a slot, critical holds everyone.
+  // Memory pressure: warning holds nobody (it is the Mac's resting state), critical holds everyone.
   const sample={turnId:1,exempt:false};
   assert.deepEqual(pace.decideStart(db,sample,at+10_000,config,1).admit,pace.decideStart(db,sample,at+10_000,config,1).admit);
-  const warn=pace.decideStart(db,sample,Date.now()+10*60_000,config,2);
-  assert.ok(!warn.admit&&warn.hold===pace.START_MEMORY_HOLD&&warn.nextMs>Date.now()+10*60_000);
+  assert.equal(pace.decideStart(db,sample,Date.now()+10*60_000,config,2).admit,true,'warning does not hold agent work');
+  const critical=pace.decideStart(db,sample,Date.now()+10*60_000,config,4);
+  assert.ok(!critical.admit&&critical.hold===pace.START_MEMORY_HOLD&&critical.nextMs>Date.now()+10*60_000);
   assert.equal(pace.decideStart(db,{turnId:1,exempt:true},Date.now()+10*60_000,config,2).admit,true,'warning does not hold his own message');
   assert.equal(pace.decideStart(db,{turnId:1,exempt:true},Date.now()+10*60_000,config,4).admit,false,'critical holds even his message');
 

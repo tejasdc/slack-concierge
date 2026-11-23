@@ -47,8 +47,10 @@ changing any agent's processor or memory priority (nice, QoS, taskpolicy); nothi
    numbers: 25 held sessions at ~0.5 GB each start over ~17 minutes instead of 11, never putting more than
    ~1.5 GB of new demand in one window. A turn not admitted stays queued with its next attempt at its slot,
    so the existing wake clock drives it. Exempt: a direct human message, the Inbox router, ChatGPT (no
-   process). Memory gate: macOS's own pressure level (1 normal, 2 warning, 4 critical); warning holds paced
-   starts one slot and re-checks, critical holds every start. Swap fullness is not a signal (the Mac sits at
+   process). Memory gate: macOS's own pressure level (1 normal, 2 warning, 4 critical); critical holds every
+   start one slot and re-checks. (Changed 2026-11-23: warning used to hold paced starts, but the Mac turned out
+   to sit at warning for long stretches with little load, so the hold kept agent work, including requests
+   carried for Tejas, from ever starting; warning now only marks the machine crowded.) Swap fullness is not a signal (the Mac sits at
    ~92 % with no agents).
 3. **Fixed order (changed the same day: no ordering agent).** The line's order is fixed: input from Tejas first,
    then agent requests whose Inbox thread is waiting, then oldest. Tejas's redesign, 2026-11-12: "instead of
