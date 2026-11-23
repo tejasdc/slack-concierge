@@ -128,7 +128,7 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
     }
     if (found.length === 1) return found[0]!;
     if (found.length > 1) throw new WorkspaceFileError(
-      `${requested} exists in more than one of these places, so which one was meant is not decided here.`,
+      `${requested} exists in more than one place. Which one was meant is not decided here:\n${found.map(file => file.path).join('\n')}`,
       409, 'FILE_AMBIGUOUS', found.map(file => file.path));
     // Where it looked belongs in what he reads. Before this, the refusal named the one path a
     // browser had composed, so a wrong guess came back as confirmation of itself.
