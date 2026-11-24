@@ -1,4 +1,5 @@
 import type {Database} from 'bun:sqlite';
+import {isThreadHouse,THREAD_HOUSE_NAMES} from './thread-houses';
 
 /** Read only the named display facts, never materialize a declaration's question array. */
 export function topicEventDisplay(source:Database,sequence:number){
@@ -7,7 +8,7 @@ export function topicEventDisplay(source:Database,sequence:number){
   json_extract(payload_json,'$.revision') AS revision,json_extract(payload_json,'$.topic.title') AS topic_title,
   json_extract(payload_json,'$.title') AS title,json_extract(payload_json,'$.previousTitle') AS previous_title,
   json_extract(payload_json,'$.topic.summary') AS summary,json_extract(payload_json,'$.mergedTopic.title') AS merged_title,
-  json_extract(payload_json,'$.scope') AS scope,json_extract(payload_json,'$.to.title') AS to_title,
+  json_extract(payload_json,'$.scope') AS scope,json_extract(payload_json,'$.house') AS house,json_extract(payload_json,'$.to.title') AS to_title,
   json_extract(payload_json,'$.topic.setAside.reason') AS aside_reason,json_extract(payload_json,'$.request.title') AS request_title,
   json_extract(payload_json,'$.request.disposition') AS disposition,json_array_length(payload_json,'$.roots') AS roots_count,
   json_array_length(payload_json,'$.questions') AS questions_count,json_extract(payload_json,'$.questions[0].state') AS question_state,
@@ -16,7 +17,7 @@ export function topicEventDisplay(source:Database,sequence:number){
  if(!row)return null;
  const payload={change:row.change,by:row.by_json?JSON.parse(row.by_json):null,reason:row.reason,revision:row.revision,
   topic:{title:row.topic_title,summary:row.summary,setAside:{reason:row.aside_reason}},title:row.title,previousTitle:row.previous_title,
-  mergedTopic:{title:row.merged_title},scope:row.scope,to:{title:row.to_title},request:{title:row.request_title,disposition:row.disposition},
+  mergedTopic:{title:row.merged_title},scope:row.scope,house:row.house,to:{title:row.to_title},request:{title:row.request_title,disposition:row.disposition},
   roots:{length:row.roots_count??0},questions:{length:row.questions_count??0,0:{state:row.question_state,brief:{decision:row.decision}}},
   mappings:{length:row.mappings_count??0}};
  return {id:`topic-event:${row.event_id}`,role:'system',content:topicEventSentence(payload),
@@ -39,7 +40,7 @@ export function topicEventSentence(payload:any):string {
     case 'resumed':return 'Picked back up.';
     case 'pinned':return 'Pinned to the top of Open.';
     case 'unpinned':return 'Unpinned.';
-    case 'housed':return `Moved to ${payload.houseName??payload.house??'another house'}.`;
+    case 'housed':return `Moved to ${isThreadHouse(payload.house)?THREAD_HOUSE_NAMES[payload.house]:'another house'}.`;
     case 'added':return `Request added: ${payload.request?.title??''}`;
     case 'amended':return `Request changed: ${payload.reason??payload.request?.title??''}`;
     case 'linked':return `Work linked to ${payload.request?.title??'this request'}.`;
