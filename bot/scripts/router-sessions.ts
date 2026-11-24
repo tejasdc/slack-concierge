@@ -145,7 +145,7 @@ router-actions.sh sessions topics detail <topicId> <source-flags> --digest HASH 
 router-actions.sh sessions topics questions-read <source-flags> [--state open|reading|history|deferred|checking] [--cursor C] [--limit N]
 router-actions.sh sessions topics resolve <messageId> <source-flags>
 router-actions.sh sessions topics message <messageId> <source-flags>  # the words, author, time and attachments of one Inbox message or topic-named request
-router-actions.sh sessions topics create <source-flags> --action-id A --title T [--area <areaId> ...] [--from <source-topicId>] [--summary S] [--root <inputId> ...] [--reason R]
+router-actions.sh sessions topics create <source-flags> --action-id A --title T [--area <areaId> ...] [--from <source-topicId>] [--house discussions|building|everyday|notices] [--summary S] [--root <inputId> ...] [--reason R]
 router-actions.sh sessions topics place <topicId> <source-flags> --action-id A --root <conversation-root> [--root ...] [--reason R]
 router-actions.sh sessions topics route <topicId> <source-flags> --action-id A --message <exact-human-input-id> [--reason R] [--side-scope "<only the source portion to project>"]
 router-actions.sh sessions topics link <relatedTopicId> <source-flags> --action-id A --into <sourceTopicId> --reason R
