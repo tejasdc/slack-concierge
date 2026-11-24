@@ -1705,6 +1705,47 @@ function humanInboxMembers(roots:string[],sourceId:string,directSessionId:number
   return members;
 }
 
+type RepliedTo={version:1;messageId:string}&({state:'available';role:'human'|'agent'|'service'|'unknown';
+  author:{kind:string;sessionId:string|null;requestId:string|null;inputId:string|null;runId:string|null;communication:string|null};
+  text:string;textSha256:string;createdAt:string|null;threadRootInputId:string|null;topicId:string|null;sameConversation:boolean}
+  |{state:'unavailable';reason:'not-in-inbox'|'not-found'|'content-withheld'});
+/**
+ * The exact message his message names as the one it replies to (`replyToMessage` on his
+ * accepted input), as he can see it now: who wrote it, its words and their hash, and its thread.
+ * It is context for reading his words, never permission: "Why can't you send it?" under an
+ * agent's "saved a test draft" can only be understood with that draft message beside it
+ * (2026-11-23), but authority still comes only from his own message. Read from the owner's
+ * retained Inbox rows by exact id, never from the display copy or the nearest earlier post.
+ * A message withdrawn or collapsed since reads as unavailable, and any change to it changes
+ * the human-conversation `contextDigest`, so a check holding an earlier read sees it moved.
+ * The author carries identities only, not session titles, so a rename never moves the digest.
+ */
+function repliedToMessage(source:AcceptedSessionInput,roots:string[]):RepliedTo|null {
+  const messageId=retainedReplyTarget(source)?.messageId;
+  if(typeof messageId!=='string')return null;
+  const inbox=inboxSession(),own=getSessionById(source.session_id);
+  if(!inbox||!own||!sessionMetadata(own).inbox)return {version:1,messageId,state:'unavailable',reason:'not-in-inbox'};
+  const entry=inboxMessageById(inbox.id,messageId) as any;
+  if(!entry)return {version:1,messageId,state:'unavailable',reason:'not-found'};
+  const input=getAcceptedSessionInput(messageId);
+  if(input){try{assertInputContent(input);}catch{return {version:1,messageId,state:'unavailable',reason:'content-withheld'};}}
+  const author=(input?acceptedInputAuthor(input).author:entry.author??{kind:entry.role==='user'?'unknown':'agent'}) as Record<string,any>&{kind:string};
+  // A request shows in its thread as "Sent to <agent>"; its words are the input it delivered.
+  const sent=messageId.startsWith('request:')&&input?(JSON.parse(input.payload_json).firstInput??JSON.parse(input.payload_json)).text:null;
+  const text=typeof sent==='string'?sent:typeof entry.content==='string'?entry.content:'';
+  const routerPost=author.communication==='post'&&author.kind==='agent'&&typeof author.fromSession!=='string';
+  const sessionId=typeof author.session?.id==='string'?author.session.id:typeof author.fromSession==='string'?author.fromSession
+    :routerPost?`concierge:${entry.sourceSessionId}`:null;
+  const root=inboxThreadRoot(inbox.id,messageId);
+  const role=['human','agent','service'].includes(author.kind)?author.kind as 'human'|'agent'|'service':'unknown';
+  return {version:1,messageId,state:'available',role,
+    author:{kind:author.kind,sessionId,requestId:typeof author.requestId==='string'?author.requestId:null,
+      inputId:typeof author.inputId==='string'?author.inputId:null,runId:typeof author.runId==='string'?author.runId:null,
+      communication:typeof author.communication==='string'?author.communication:null},
+    text,textSha256:createHash('sha256').update(text).digest('hex'),createdAt:typeof entry.createdAt==='string'?entry.createdAt:null,
+    threadRootInputId:root,topicId:root?topicOfRoot(root):null,sameConversation:!!root&&roots.includes(root)};
+}
+
 /**
  * His own words around one exact message of his, for checks that act in his name: every
  * message he authored in that message's thread and, when the thread is placed in a topic, in
@@ -1761,7 +1802,10 @@ export const verifiedHumanConversation=db.transaction((operationId:string,cursor
       ...(typeof replyTo?.messageId==='string'?{replyToMessageId:replyTo.messageId}:{})};
   });
   const threadContext=root?{version:1 as const,rootInputId:root,topicId}:null;
-  const contextDigest=createHash('sha256').update(JSON.stringify({operationId:source.id,scope,threadContext,roots,messages:all})).digest('hex');
+  const repliedTo=repliedToMessage(source,roots);
+  // repliedTo joins the digest only when present, so a read of a message that names no reply
+  // target keeps the digest it had before this field existed.
+  const contextDigest=createHash('sha256').update(JSON.stringify({operationId:source.id,scope,threadContext,roots,messages:all,...(repliedTo?{repliedTo}:{})})).digest('hex');
   if(after&&after.d!==contextDigest)
     throw new TopicError('His conversation changed since this read began; read it again from the start.',409,'CONVERSATION_CHANGED');
   const start=after?all.findIndex(message=>message.sequence>after!.s||(message.sequence===after!.s&&message.inputId>after!.i)):0;
@@ -1770,7 +1814,7 @@ export const verifiedHumanConversation=db.transaction((operationId:string,cursor
   const last=messages[messages.length-1];
   return {version:1 as const,operationId:source.id,scope,threadContext,roots,contextDigest,
     // The owner ledger position this answer reflects, for audit; compare contextDigest for consistency.
-    revision:(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events').get() as {sequence:number}).sequence,messages,
+    revision:(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events').get() as {sequence:number}).sequence,messages,repliedTo,
     nextCursor:page.length>size&&last?Buffer.from(JSON.stringify({d:contextDigest,s:last.sequence,i:last.inputId})).toString('base64url'):null,
     complete:true as const};
 });

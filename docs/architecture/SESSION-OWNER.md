@@ -26,6 +26,16 @@ around one exact message of his: every message he authored, now, in its thread a
 topic's other threads, in ledger order, with the source always included. `scope` says which conversation that is: `topic` or `thread` for the Inbox; `session` for a message sent straight to an ordinary session, which has no Inbox thread, so the read returns every message he sent in that session in accepted order and a later hold there is never missed; `source` for an Inbox message not yet placed in a thread. The native read executor serves it from one ledger snapshot. Exact roots, retained human replies and recorded placements supply candidates. The reader checks each candidate's current thread and authorship against the ledger, without waiting for either the Inbox warm-up or the Threads display copy. Every message in it passes the same content admission as its own exact operation read, and one the reader may not see fails the whole read. Pages agree through `contextDigest`, a hash over only that
 conversation, so unrelated Inbox activity cannot restart a read; an opaque cursor carries the
 digest, sequence and input ID, and a changed conversation answers `409 CONVERSATION_CHANGED`.
+Each page also carries `repliedTo`: `null` when the source message names no reply target, else
+the exact Inbox message its retained `replyToMessage` names, read by that ID from the owner's
+retained rows (never the display copy or a nearest earlier post). An available target gives
+`{version:1, messageId, state:'available', role, author:{kind, sessionId, requestId, inputId,
+runId, communication}, text, textSha256, createdAt, threadRootInputId, topicId,
+sameConversation}`; otherwise `{version:1, messageId, state:'unavailable', reason}` with reason
+`not-in-inbox`, `not-found` (missing, withdrawn or collapsed) or `content-withheld`. It is
+context for interpreting his words, never permission. A present `repliedTo` is part of
+`contextDigest`, so a check that re-reads before acting sees a changed or withdrawn target as a
+changed conversation; the author carries identities, not session titles, so a rename does not.
 
 The existing `sessions.id` is public as `concierge:<integer>`. An opaque address pins that row and its binding generation. Provider conversation IDs and original Slack roots remain exact bindings. A fork creates a distinct child with an exact boundary; a verified replacement binding advances the generation. Search ranking, a matching title, an import namespace or a provider UUID alone cannot establish ownership.
 
