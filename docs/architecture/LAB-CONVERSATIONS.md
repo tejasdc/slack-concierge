@@ -65,6 +65,13 @@ answers from a still-independent reader while the human can see answers as they 
 This is isolation at the supported Lab and prompt entrances, not a claim that a coding
 agent's arbitrary shell or pre-existing private history is an adversarial sandbox.
 
+Answering in turns: conversation create and respond accept `answering` (`together`, the
+default, or `in-turns`; anything else is refused and a retry must repeat it). An in-turns
+activation records `turns: true`, its opening is not independent, and its invocations run
+in stored order: a member's context is fetched only once every earlier member is published,
+failed or refused, so each answer can read the earlier ones (`answersSoFar`, supplied by the
+Lab context). Request facts carry `turns`; the conversation view lists `answeringModes`.
+
 The same rule covers every ordinary owner read, not only the Lab view. Each agent read
 carries its reader (a run token, or a declared `X-Concierge-Agent-Source` pair that the
 owner checks against an admitted live run) through HTTP, native read workers, routed
