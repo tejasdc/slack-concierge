@@ -342,7 +342,7 @@ export class LabConversations {
             if(context.version!==1||context.thread!==binding.thread||context.entryId!==payload.entryId||context.sessionId!==member.sessionId||context.membershipRevision!==binding.membershipRevision||!Array.isArray(context.entries)||!context.entries.length||context.entries.at(-1)?.id!==payload.entryId)
               throw new LabConversationError('The Lab context did not prove the exact triggering entry.',409,'LAB_CONTEXT_MISMATCH');
             const selectedSessions=payload.targets.map((key:string)=>binding.participants.find(member=>member.key===key)!.sessionId);
-            if(!payload.independent&&(!Array.isArray(context.responseTargets)||stablePayload([...context.responseTargets].sort())!==stablePayload(selectedSessions.sort())))throw new LabConversationError('The selected participants differ from the triggering Lab entry.',409,'LAB_TARGETS_MISMATCH');
+            if(!payload.independent&&payload.entryId!==binding.questionEntryId&&(!Array.isArray(context.responseTargets)||stablePayload([...context.responseTargets].sort())!==stablePayload(selectedSessions.sort())))throw new LabConversationError('The selected participants differ from the triggering Lab entry.',409,'LAB_TARGETS_MISMATCH');
             if(payload.independent&&context.entries.length!==1)throw new LabConversationError('Independent first answers may see only the common opening entry.',409,'LAB_INDEPENDENCE_REFUSED');
             if(payload.independent&&stablePayload(context.entries[0])!==stablePayload(binding.opening))throw new LabConversationError('The common opening changed from its retained comparison snapshot.',409,'LAB_QUESTION_CHANGED');
             const loaded=await this.observe(this.ports.sources(member.sources));
