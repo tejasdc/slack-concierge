@@ -30,6 +30,7 @@ import {preparedInboxDisplays,preparedTopicEntries} from './presentation-message
 import {preparedTopicEventDisplays,preparedTopics,unpreparedTopics,preparedTopicOverview,preparedTopicItems,
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
 import {movesThreadForHim} from './inbox-thread-time';
+import {houseOf,isThreadHouse,THREAD_HOUSES,THREAD_HOUSE_NAMES} from './thread-houses';
 import {areasCommand,checkedAreaIds,applyAreaChange,ensureAgentReportArea,ensureSystemNoticeArea,threadChanges} from './session-areas';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
   toReadByHim as toReadByHimWithReads,preparingForHim,type QuestionKind,type QuestionOrigin} from './topic-attention-rules';
@@ -250,7 +251,9 @@ const DISPOSITIONS=['completed','declined','withdrawn','superseded','failed'];
 type StoredTopic={topicId:string;sessionId:number;title:string;summary:string;state:'open'|'closed';setAside:any|null;
   aliases:string[];revision:number;recovered:boolean;readSequence:number;closure:any|null;createdBy:TopicBy;createdAt:string;updatedAt:string;
   /** When he pinned it; pinned threads lead the Open list in either order. */
-  pinnedAt?:string|null};
+  pinnedAt?:string|null;
+  /** Which house it lives in; null reads as discussions. */
+  house?:string|null};
 type StoredRequest={requestId:string;topicId:string;title:string;brief:string;state:'open'|'closed';disposition:string|null;
   revision:number;sources:{inputId:string;passage?:string}[];dispatches:any[];closure:any|null;createdAt:string;updatedAt:string;
   completionFloor?:number;reopenedAt?:string|null};
@@ -457,7 +460,7 @@ function reassignEntries(index:EntryIndex,affected:Set<string>):EntryIndex {
 const toStoredTopic=(row:any):StoredTopic=>({topicId:row.topic_id,sessionId:row.session_id,title:row.title,summary:row.summary,
   state:row.state,setAside:row.set_aside_json?JSON.parse(row.set_aside_json):null,aliases:JSON.parse(row.aliases_json),
   revision:row.revision,recovered:!!row.recovered,readSequence:row.read_sequence,closure:row.closure_json?JSON.parse(row.closure_json):null,
-  createdBy:JSON.parse(row.created_by_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!,pinnedAt:iso(row.pinned_at)??null});
+  createdBy:JSON.parse(row.created_by_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!,pinnedAt:iso(row.pinned_at)??null,house:row.house??null});
 const toStoredRequest=(row:any):StoredRequest=>({requestId:row.request_id,topicId:row.topic_id,title:row.title,brief:row.brief,
   state:row.state,disposition:row.disposition,revision:row.revision,sources:JSON.parse(row.sources_json),dispatches:JSON.parse(row.dispatches_json),
   closure:row.closure_json?JSON.parse(row.closure_json):null,createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!,
@@ -471,14 +474,14 @@ const toStoredQuestion=(row:any):StoredQuestion=>({questionId:row.question_id,to
   createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
 
 function upsertTopic(topic:StoredTopic) {
-  db.query(`INSERT INTO inbox_topics(topic_id,session_id,title,summary,state,set_aside_json,aliases_json,revision,recovered,read_sequence,created_at,updated_at,closure_json,created_by_json,pinned_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  db.query(`INSERT INTO inbox_topics(topic_id,session_id,title,summary,state,set_aside_json,aliases_json,revision,recovered,read_sequence,created_at,updated_at,closure_json,created_by_json,pinned_at,house)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(topic_id) DO UPDATE SET title=excluded.title,summary=excluded.summary,state=excluded.state,set_aside_json=excluded.set_aside_json,
       aliases_json=excluded.aliases_json,revision=excluded.revision,recovered=excluded.recovered,read_sequence=excluded.read_sequence,
-      updated_at=excluded.updated_at,closure_json=excluded.closure_json,pinned_at=excluded.pinned_at`)
+      updated_at=excluded.updated_at,closure_json=excluded.closure_json,pinned_at=excluded.pinned_at,house=excluded.house`)
     .run(topic.topicId,topic.sessionId,topic.title,topic.summary,topic.state,topic.setAside?JSON.stringify(topic.setAside):null,
       JSON.stringify(topic.aliases),topic.revision,topic.recovered?1:0,topic.readSequence,topic.createdAt,topic.updatedAt,
-      topic.closure?JSON.stringify(topic.closure):null,JSON.stringify(topic.createdBy),topic.pinnedAt??null);
+      topic.closure?JSON.stringify(topic.closure):null,JSON.stringify(topic.createdBy),topic.pinnedAt??null,topic.house??null);
 }
 function upsertRequest(request:StoredRequest) {
   db.query(`INSERT INTO inbox_requests(request_id,topic_id,title,brief,state,disposition,revision,sources_json,dispatches_json,closure_json,created_at,updated_at,completion_floor,reopened_at)
@@ -1015,7 +1018,7 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
   const lastAt=last.map(entry=>entry.at).sort().at(-1)??topic.createdAt;
   return {id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,
     revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
-    lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,pinnedAt:topic.pinnedAt??null,
+    lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,pinnedAt:topic.pinnedAt??null,house:houseOf(topic),
     // When it was closed, for the Closed list's order and its rows; a merged-away topic has no moment of its own here.
     closedAt:topic.state==='closed'&&topic.closure?.kind!=='merged'?topic.closure?.at??topic.updatedAt:null,
     needsYou:{count:items.length,oldestAt:items[0]?.at??null,items},
@@ -1425,11 +1428,11 @@ export function inboxTopicList<Prepared>(options:Parameters<typeof preparedTopic
 }
 
 /** The thread list computed from the ledger while the prepared list is being rebuilt. */
-function directTopicList(options:{state?:string|null;order?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}){
+function directTopicList(options:{house?:string|null;state?:string|null;order?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}){
   const offset=/^\d+$/.test(options.cursor??'')?options.cursor:null;
   return {...listTopics({...options,cursor:offset,limit:Math.min(20,Number(options.limit)||20)}),coverage:{complete:true,code:null,source:'ledger'}};
 }
-export function listTopics(options:{state?:string|null;order?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}={}) {
+export function listTopics(options:{house?:string|null;state?:string|null;order?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}={}) {
   const session=inboxOrThrow();
   const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
   const state=options.state??'open';
@@ -1438,6 +1441,7 @@ export function listTopics(options:{state?:string|null;order?:string|null;query?
   const rows=(db.query(`SELECT * FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) ORDER BY updated_at DESC,topic_id`).all(session.id) as any[]).map(toStoredTopic);
   let summaries=rows.map(topic=>topicSummary(topic,session,index,work,read));
   if(query)summaries=summaries.filter(topic=>[topic.title,topic.summary,...topic.aliases].join(' ').toLowerCase().includes(query));
+  if(options.house){const house=checkedHouse(options.house);summaries=summaries.filter(topic=>topic.house===house);}
   if(state==='open')summaries=summaries.filter(topic=>topic.state==='open');
   else if(state==='closed')summaries=summaries.filter(topic=>topic.state==='closed');
   else if(state==='background')summaries=summaries.filter(topic=>topic.state==='open'&&!topic.needsYou.count&&topic.work.kind!=='idle');
@@ -2137,10 +2141,16 @@ function parseSources(values:unknown):{inputId:string;passage?:string}[] {
   });
 }
 
-function createTopic(session:SessionRow,by:TopicBy,fields:{title:string;summary?:string|null;roots:string[];reason?:string|null;recovered?:boolean;splitFrom?:string|null;parentTopicId?:string|null;areaIds?:string[]}) {
+/** The one check for a house named by an agent or by him; the message lists the four. */
+function checkedHouse(value:unknown){
+  if(!isThreadHouse(value))throw new TopicError(`Unknown house "${String(value)}"; use one of ${THREAD_HOUSES.join(', ')}.`,400,'UNKNOWN_HOUSE');
+  return value;
+}
+
+function createTopic(session:SessionRow,by:TopicBy,fields:{title:string;summary?:string|null;roots:string[];reason?:string|null;recovered?:boolean;splitFrom?:string|null;parentTopicId?:string|null;areaIds?:string[];house?:string|null}) {
   const at=nowIso();
   const topic:StoredTopic={topicId:`topic:${randomUUID()}`,sessionId:session.id,title:fields.title,summary:fields.summary??'',state:'open',
-    setAside:null,aliases:[],revision:1,recovered:!!fields.recovered,readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at};
+    setAside:null,aliases:[],revision:1,recovered:!!fields.recovered,readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at,house:fields.house??null};
   return {topic,change:{kind:'topic',payload:{change:'created',topicId:topic.topicId,topic,
     roots:rootRecords(topic.topicId,fields.roots,by,fields.reason??null),
     areaLinks:(fields.areaIds??[]).map(areaId=>({areaId,topicId:topic.topicId,origin:by.kind==='human'?'human':'agent',reason:fields.reason??'',at})),
@@ -2156,7 +2166,7 @@ export function openAgentReport(sessionId:number,inputId:string,title:string,bri
   const existing=topicOfRoot(inputId);
   if(existing)return {topicId:existing,requestId:`req:agent-report:${inputId}`};
   const by:TopicBy={kind:'owner',sessionId:`concierge:${sessionId}`};
-  const created=createTopic(session,by,{title,roots:[inputId],areaIds:[ensureAgentReportArea(sessionId)],reason:'An agent reported an issue for Inbox routing.'});
+  const created=createTopic(session,by,{title,roots:[inputId],areaIds:[ensureAgentReportArea(sessionId)],house:'building',reason:'An agent reported an issue for Inbox routing.'});
   recordOwnerTopicChange(sessionId,`topic-agent-report:${inputId}`,'topic',created.change.payload);
   const at=nowIso();
   const request:StoredRequest={requestId:`req:agent-report:${inputId}`,topicId:created.topic.topicId,title,brief:Array.from(brief).slice(0,8000).join(''),state:'open',disposition:null,
@@ -2567,7 +2577,7 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
     throw new TopicError('Only the Inbox session owns topics; a worker may declare questions against a topic it holds a dispatch for.',403,'TOPIC_FORBIDDEN');
   };
   switch(verb) {
-    case 'list':return inboxTopicList({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor},options=>preparedTopics(options,listHead));
+    case 'list':return inboxTopicList({house:body?.house===undefined?undefined:checkedHouse(body.house),state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor},options=>preparedTopics(options,listHead));
     case 'obligations':return openInboxObligations();
     case 'read':return preparedTopicOverview(text(body?.topic_id,'topic id',200),body?.state??'open');
     case 'resolve':guard();return preparedTopicResolution(text(body?.message_id,'message id',500));
@@ -2588,8 +2598,9 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
       const topicOwner=inboxOrThrow();
       const roots=body?.roots===undefined?[]:placementRoots(topicOwner,body.roots);
       const title=text(body?.title,'--title',200),summary=optionalText(body?.summary,'--summary',2000);
+      const house=body?.house===undefined?null:checkedHouse(body.house);
       const namedParent=body?.parent_topic_id===undefined?null:text(body.parent_topic_id,'--from',200);
-      return agentMutation(actor,actionId(),{kind:'topic-create',title,summary,roots,areaIds:body?.area_ids,parentTopicId:namedParent,reason:reason()},()=>{
+      return agentMutation(actor,actionId(),{kind:'topic-create',title,summary,house,roots,areaIds:body?.area_ids,parentTopicId:namedParent,reason:reason()},()=>{
         for(const root of roots){const held=topicOfRoot(root);if(held)throw new TopicError(`${root} already belongs to ${held}; use topics place to move it.`,409,'ROOT_PLACED');}
         refuseSharedBugReportThread(roots,null);
         const forwarded=!inbox?db.query(`SELECT source_input_id,thread_root_input_id FROM session_communication_requests
@@ -2600,7 +2611,7 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
         if(parentTopicId)topicRow(parentTopicId);
         const inheritedAreas=parentTopicId?(db.query('SELECT area_id FROM inbox_area_threads WHERE topic_id=? ORDER BY created_at,area_id LIMIT 8').all(parentTopicId) as {area_id:string}[]).map(row=>row.area_id):[];
         const areaIds=checkedAreaIds(body?.area_ids??inheritedAreas);
-        const created=createTopic(topicOwner,by,{title,summary,roots,areaIds,reason:reason(),parentTopicId});
+        const created=createTopic(topicOwner,by,{title,summary,roots,areaIds,reason:reason(),parentTopicId,house});
         return {change:created.change,result:{topic:created.topic}};
       },topicOwner.id);
     }
@@ -2777,6 +2788,14 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
           requests:[keeperNext,duplicateNext],into:keeper.requestId,from:duplicate.requestId,by,reason:why,revision:duplicateTopic.revision,questions:[]}},
           result:{request:keeperNext,merged:duplicateNext}};
       });
+    }
+    case 'house':{
+      const house=checkedHouse(body?.house);
+      return agentMutation(actor,actionId(),{kind:'topic-house',topicId:body?.topic_id,house,reason:reason()},()=>{
+        const topic=topicFor(body?.topic_id);
+        const next=bumped(topic,{house});
+        return {change:{kind:'topic',payload:{change:'housed',topicId:topic.topicId,topic:next,house,houseName:THREAD_HOUSE_NAMES[house],by,reason:reason(),revision:next.revision}},result:{topic:next}};
+      },inboxOrThrow().id);
     }
     case 'request.add':{
       assertInbox(session);
@@ -3082,7 +3101,7 @@ export function clearFocusForEndedRun(turn:{id:number;session_id:number}) {
 
 /* ------------------------------------------------------------------ human actions */
 
-const HUMAN_ACTIONS=['rename','summary','close','reopen','pin','unpin','set_aside','resume','move','split','merge','read','expose','question','request','file','followup'];
+const HUMAN_ACTIONS=['rename','summary','close','reopen','pin','unpin','house','set_aside','resume','move','split','merge','read','expose','question','request','file','followup'];
 
 export function createTopicByHuman(body:any) {
   const session=inboxOrThrow();
@@ -3160,6 +3179,11 @@ export function topicHumanAction(topicId:string,body:any) {
       case 'pin':case 'unpin':{
         const next=bumped(topic,{pinnedAt:kind==='pin'?topic.pinnedAt??at:null});
         return {change:{kind:'topic',payload:{change:kind==='pin'?'pinned':'unpinned',topicId,topic:next,by,revision:next.revision}},result:{topic:next}};
+      }
+      case 'house':{
+        const house=checkedHouse(action.house);
+        const next=bumped(topic,{house});
+        return {change:{kind:'topic',payload:{change:'housed',topicId,topic:next,house,houseName:THREAD_HOUSE_NAMES[house],by,revision:next.revision}},result:{topic:next}};
       }
       case 'set_aside':{
         const why=text(action.reason,'reason',4000);
@@ -3627,7 +3651,7 @@ export function fileWorkerNeedWithoutThread(input:{respondingSessionId:number;tu
     if(!topicOfRoot(root)){
       const by:TopicBy={kind:'owner',sessionId:respondingSessionId};
       const created=createTopic(inbox,by,{title:`Question from ${title}`,roots:[root],
-        areaIds:[ensureSystemNoticeArea(inbox.id)],reason:'The Inbox request had no usable thread when its agent asked Tejas.'});
+        areaIds:[ensureSystemNoticeArea(inbox.id)],house:'notices',reason:'The Inbox request had no usable thread when its agent asked Tejas.'});
       recordOwnerTopicChange(inbox.id,`topic-worker-need:${input.eventId}`,created.change.kind,created.change.payload);
     }
     fileAgentAnswer({inboxSessionId:inbox.id,root,postId,eventId:`need:${input.eventId}`,
@@ -5303,7 +5327,7 @@ export function fileServiceNotices():{filed:number} {
         if(!topicId) {
           const existing=db.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='open' AND title=? ORDER BY updated_at DESC LIMIT 1`).get(session.id,title) as {topic_id:string}|null;
           const placed=existing?placeChange(session,topicRow(existing.topic_id),[root],by,reason):
-            createTopic(session,by,{title,roots:[root],reason,areaIds:[ensureSystemNoticeArea(session.id)]});
+            createTopic(session,by,{title,roots:[root],reason,areaIds:[ensureSystemNoticeArea(session.id)],house:'notices'});
           recordSessionEvent({eventId:`topic-service-notice:${need.eventId}:placed`,sessionId:session.id,inputId:need.inputId,kind:placed.change.kind,payload:placed.change.payload});
           applyTopicChange(placed.change.kind,placed.change.payload);
           topicId=placed.topic.topicId;

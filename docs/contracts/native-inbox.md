@@ -1260,3 +1260,17 @@ Review JSON contains `rootId`, current root `revision`, complete-entry `sourceVe
 Each portion uses root + stable line identity + exact quote as its durable identity. The first occurrence keeps the original unique-quote identity; later repeated occurrences add their zero-based matching-occurrence ordinal. Current character offsets validate the selected location and remain in the frozen source proof, while prefix edits that shift offsets leave occurrence identities unchanged. Neither whole-entry version nor character offset owns work identity. Identities are independent of reviewer and run. Its original attribution and immutable report intent survive restarts and response loss. Existing admitted or uncertain requests can instead be linked with optional `existingRequestId` and the item reasoning; the exact retained Inbox/communication request and outcome are recorded without another dispatch. Existence alone is insufficient: either retained journal metadata must match root/line/quote, or the existing bounded report-source chain must reach an uncorrected human source containing the exact quote. The receipt preserves the matching source input, payload digest and association path. Missing relation remains explicitly unconfirmed and never authorizes replay. Keeper instructions distinguish saved source event time from unproven spoken time and require existing-work reconciliation before a new handoff. Changed review contents under the same source/action refuse. Multiple portions create separate durable open Inbox requests through agent-report intake before router execution. A completed processing receipt records the source version, disposition and request for every portion. New processing inputs cannot declare success or Stop without this receipt; an explicit failed outcome first creates one durable open Inbox recovery request carrying only the source pointer and failure reason. The failed outcome receipt links that request; processing remains failed rather than completed. If Inbox admission fails, the outcome is refused. A source-stable immutable failure intent preserves attribution and returns the same request after response loss or retry, without replaying uncertain effects. Only then may the failed turn stop. No historical replay or live journal mutation is part of this mechanism.
 
 Disposable acceptance: `cd bot && bun run scripts/journal-processing-fixture.ts` exercises the real owner, retained-input contracts and Inbox admission against scratch storage, including cross-run deduplication and Stop during the canonical read. It does not prove an installed keeper turn or physical product behavior.
+
+## Houses
+
+Every Inbox thread lives in one house: `discussions`, `building`, `everyday` or `notices`
+(`bot/src/thread-houses.ts` is the only list). Unset reads as discussions, so nothing he might
+want is hidden by default. Owner-created system-notice threads (including "Question from …")
+start in notices and agent issue reports in building. Any agent sets one with
+`sessions topics house <topicId> --house H` (or `topics create --house H`); he sets it with the
+human action `house`. The change shows on the Timeline as "Moved to <name>." and, like a pin, does
+not move the thread's last activity or unread state.
+
+`GET /sessions/v1/presentation/topics?house=H` (and `sessions topics list --house H`) lists one
+house; absent means every house. Pinned threads keep their band, so they lead only inside their own
+house. Search ignores `house` and spans every house. An unknown house is refused with 400.
