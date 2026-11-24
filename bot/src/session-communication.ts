@@ -180,7 +180,7 @@ export function chatgptRequestLine(): string {
     } catch {}
     return CHATGPT_ASK_FOR_CONTEXT;
 }
-export const CHATGPT_ASK_FOR_CONTEXT = 'Before you answer: if anything you would need is missing from this message and its files (code, the data model, database schema, architecture, logs, constraints, or any other context), list exactly what is missing and ask for it. Still give your best answer with what you have, and say which parts depend on the missing pieces. I will send what you ask for in this same conversation.';
+export const CHATGPT_ASK_FOR_CONTEXT = 'First, before any work: check whether anything you need is missing from this message and its files (code, the data model, database schema, architecture, logs, constraints, or any other context). If something you need is missing, reply only with a numbered list of exactly what you need and why, then stop; I will send it in this same conversation and you will do the work then. If nothing you need is missing, say so in one line, list any optional context that would improve the answer and mark it optional, then do the work in full. Never save a request for context until the end of your answer.';
 const action = (value: string) => { if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value))
     throw new Error('A stable source-scoped action_id is required.'); return value; };
 const text = (value: string) => { if (typeof value !== 'string' || !value.trim())
@@ -2765,7 +2765,10 @@ export class SessionCommunicationCoordinator {
                 effort: input.effort,
                 hisChat: input.hisChat,
             });
-            const chatgptText = isHisChat ? input.text : `${input.text}\n\n${chatgptRequestLine()}`;
+            // The context check comes first, where ChatGPT reads it before the question: at the end of a long
+            // question it was read last, and Pro worked first and listed missing context afterwards (Tejas,
+            // 2026-11-24: "The first step it has to do is ask for additional context, and only then start processing").
+            const chatgptText = isHisChat ? input.text : `${chatgptRequestLine()}\n\n${input.text}`;
             const firstInput={text:toChatgpt?chatgptText:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''} --summary "<one line>". ${REQUEST_PROTOCOL_POINTER}\n\n${input.summary?`Summary: ${input.summary}\n\n`:''}${fitNote?`${fitNote}\n\n`:''}${history?.text?`${history.text}\n\n`:''}${requirementText?`${requirementText}\n\n`:''}${input.text}`,...extra,...(input.escalationReason?{escalationReason:input.escalationReason}:{}),...(serviceReply?{delivery:'queue'}:{})};
             if(routedFrom)firstInput.text=`This request carries Tejas’s exact Inbox message ${routedFrom.messageId} into this session. Reply to this request; the answer appears under that message in its original thread.\n\n${firstInput.text}`;
             if(input.provider) {
