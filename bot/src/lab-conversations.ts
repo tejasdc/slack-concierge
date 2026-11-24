@@ -36,6 +36,7 @@ const digest=(value:unknown)=>createHash('sha256').update(stablePayload(value)).
 const sessionNumber=(value:string)=>{if(!/^concierge:[1-9][0-9]*$/.test(value))throw new LabConversationError('Choose an exact session on this Concierge instance.');return Number(value.slice(10));};
 const object=(value:unknown):Record<string,any>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new LabConversationError('A Lab conversation action is required.');return value as Record<string,any>;};
 function only(input:Record<string,any>,fields:string[]){if(Object.keys(input).some(key=>!fields.includes(key)))throw new LabConversationError('Unknown Lab conversation field.');}
+function answeringTurns(value:unknown){if(value===undefined||value==='together')return false;if(value==='in-turns')return true;throw new LabConversationError('Answering must be together or in-turns.');}
 function identifier(value:unknown,label:string){if(typeof value!=='string'||!value.trim()||value.length>200)throw new LabConversationError(`${label} is required.`);return value;}
 function receipt(input:AcceptedSessionInput):ActionReceipt{return JSON.parse(input.receipt_json??'{"state":"pending","invocations":[]}');}
 const readAction=(scope:string,actionId:string)=>db.query('SELECT * FROM session_inputs WHERE scope=? AND action_id=?').get(scope,actionId) as AcceptedSessionInput|null;
@@ -126,7 +127,8 @@ export class LabConversations {
     db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify(value),input.id);
   }
   async create(body:unknown,actor?:LabActor){
-    const input=object(body);only(input,['clientActionId','thread','coordinatorSessionId','questionEntryId','participants','agentSource']);
+    const input=object(body);only(input,['clientActionId','thread','coordinatorSessionId','questionEntryId','participants','answering','agentSource']);
+    const turns=answeringTurns(input.answering);
     const action=identifier(input.clientActionId,'Stable action identity'),thread=identifier(input.thread,'Lab thread'),entryId=identifier(input.questionEntryId,'Opening question entry');
     const prior=readAction('lab:conversation',thread);
     if(prior){this.checkRetry(prior,input,actor);return this.view(thread);}
@@ -150,7 +152,7 @@ export class LabConversations {
         payload:{request:input,binding,...(actor?{actor}:{})},...(actor?{sourceInputId:actor.inputId,sourceRunId:actor.runId}:{})}).input;
       this.retainMembership(saved,binding);
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'pending',membershipRevision:1,membershipInputId:saved.id}),saved.id);
-      this.acceptActivation(saved,binding,action,entryId,participants.map(member=>member.key),true,actor,input);
+      this.acceptActivation(saved,binding,action,entryId,participants.map(member=>member.key),!turns,actor,input,turns);
       this.recordChoices(saved,binding.participants,choices,actor);
     })();
     this.ports.wake();return this.view(thread);
@@ -206,21 +208,22 @@ export class LabConversations {
     this.ports.wake();return this.rosterResult(saved.record,saved.duplicate);
   }
   respond(thread:string,body:unknown,actor?:LabActor){
-    const input=object(body);only(input,['clientActionId','entryId','targets','agentSource']);
+    const input=object(body);only(input,['clientActionId','entryId','targets','answering','agentSource']);
+    const turns=answeringTurns(input.answering);
     const action=identifier(input.clientActionId,'Stable action identity'),entryId=identifier(input.entryId,'Triggering entry');
     const prior=readAction(`lab:activation:${thread}`,action);
     if(prior){this.checkRetry(prior,input,actor);return this.view(thread);}
     const {input:conversation,binding}=this.conversation(thread);
     if(!Array.isArray(input.targets)||input.targets.length>binding.participants.length||input.targets.some((sessionId:unknown)=>typeof sessionId!=='string'||!binding.participants.some(member=>member.sessionId===sessionId)))throw new LabConversationError('Choose only exact participant sessions bound to this thread.');
     if(new Set(input.targets).size!==input.targets.length)throw new LabConversationError('Response targets must be unique.');
-    db.transaction(()=>this.acceptActivation(conversation,binding,action,entryId,input.targets.map((sessionId:string)=>binding.participants.find(member=>member.sessionId===sessionId)!.key),false,actor,input))();
+    db.transaction(()=>this.acceptActivation(conversation,binding,action,entryId,input.targets.map((sessionId:string)=>binding.participants.find(member=>member.sessionId===sessionId)!.key),false,actor,input,turns))();
     this.ports.wake();return this.view(thread);
   }
-  private acceptActivation(conversation:AcceptedSessionInput,binding:Conversation,action:string,entryId:string,targets:string[],independent:boolean,actor:LabActor|undefined,request:unknown){
+  private acceptActivation(conversation:AcceptedSessionInput,binding:Conversation,action:string,entryId:string,targets:string[],independent:boolean,actor:LabActor|undefined,request:unknown,turns=false){
     const scope=`lab:activation:${binding.thread}`,prior=readAction(scope,action);
     if(prior){this.checkRetry(prior,request,actor);return;}
     const saved=retainSessionInput({sessionId:sessionNumber(binding.coordinatorSessionId),scope,actionId:action,kind:'lab-activation',origin:actor?'agent':'human',
-      payload:{request,thread:binding.thread,entryId,targets,independent,membershipInputId:this.membershipRecord(binding.thread,binding.membershipRevision).record.id,membershipRevision:binding.membershipRevision,conversationInputId:conversation.id,...(actor?{actor}:{})},
+      payload:{request,thread:binding.thread,entryId,targets,independent,...(turns?{turns:true}:{}),membershipInputId:this.membershipRecord(binding.thread,binding.membershipRevision).record.id,membershipRevision:binding.membershipRevision,conversationInputId:conversation.id,...(actor?{actor}:{})},
       sourceInputId:actor?.inputId,sourceRunId:actor?.runId}).input;
     this.saveReceipt(saved,{state:targets.length?'pending':'completed',invocations:targets.map(key=>{
       const requestId=`lab-${digest([saved.id,key])}`;
@@ -239,7 +242,7 @@ export class LabConversations {
   requestFacts(thread:string,requestId:string){
     const {action}=this.activationFor(thread,requestId),payload=JSON.parse(action.payload_json),invocation=receipt(action).invocations.find(value=>value.requestId===requestId)!;
     const binding=activationBinding(action),participant=binding.participants.find(member=>member.key===invocation.key)!;
-    return {version:1,thread,entryId:payload.entryId,requestId,sessionId:participant.sessionId,coordinatorSessionId:binding.coordinatorSessionId,membershipRevision:binding.membershipRevision,independent:payload.independent,
+    return {version:1,thread,entryId:payload.entryId,requestId,sessionId:participant.sessionId,coordinatorSessionId:binding.coordinatorSessionId,membershipRevision:binding.membershipRevision,independent:payload.independent,turns:payload.turns===true,
       participant:restrictedLabThread(thread)?structuralParticipant(participant):participant,state:invocation.state,sourceInputId:action.source_input_id,sourceRunId:action.source_run_id,origin:action.origin,
       responseTargets:payload.targets.map((key:string)=>binding.participants.find(member=>member.key===key)!.sessionId)};
   }
@@ -273,7 +276,7 @@ export class LabConversations {
     publicBinding.participants=publicBinding.participants.map(member=>({...member,materials:(member.materials??[]).map(({path,sha256})=>({path,sha256}))}) as LabParticipant);
     if(restricted){publicBinding.participants=publicBinding.participants.map(structuralParticipant) as LabParticipant[];delete publicBinding.presentation;}
     const journalBinding=JSON.parse(membership.receipt_json??'{}');
-    return {version:1,...publicBinding,journalBinding:{state:journalBinding.state,error:restricted?null:journalBinding.error??null},activations:actions.slice(0,20).map(action=>{
+    return {version:1,...publicBinding,answeringModes:['together','in-turns'],journalBinding:{state:journalBinding.state,error:restricted?null:journalBinding.error??null},activations:actions.slice(0,20).map(action=>{
       const snapshot=activationBinding(action);
       return {actionId:action.action_id,entryId:JSON.parse(action.payload_json).entryId,independent:JSON.parse(action.payload_json).independent,membershipRevision:snapshot.membershipRevision,
       state:receipt(action).state,invocations:receipt(action).invocations.map(({context,...invocation})=>{
@@ -327,8 +330,10 @@ export class LabConversations {
         if(error instanceof LabConversationError&&error.status>=400&&error.status<500){for(const invocation of state.invocations){invocation.state='refused';invocation.error=`${error.code}: ${error.message}`;}state.state='completed';this.saveReceipt(action,state);}
         return;
       }
-      await Promise.all(state.invocations.map(async invocation=>{
-        if(this.abort.signal.aborted||['published','failed','refused'].includes(invocation.state))return;
+      const settled=(invocation:Invocation)=>['published','failed','refused'].includes(invocation.state);
+      const step=async(invocation:Invocation,index:number)=>{
+        if(this.abort.signal.aborted||settled(invocation))return;
+        if(payload.turns===true&&invocation.state==='context_pending'&&state.invocations.slice(0,index).some(earlier=>!settled(earlier)))return;
         const member=binding.participants.find(participant=>participant.key===invocation.key)!;
         try{
           if(invocation.state==='context_pending'){
@@ -357,6 +362,7 @@ export class LabConversations {
                 if(createHash('sha256').update(material.text).digest('hex')!==material.sha256)throw new LabConversationError('The frozen selected material no longer matches its retained digest.',409,'LAB_MATERIAL_MISMATCH');
                 return `Selected material, frozen at selection (path ${material.path}, sha256 ${material.sha256}), verbatim:\n${material.text}`;}),
               member.tools==='none'?'This ChatGPT session has no outbound tools. If the selected instructions require tools or private resources you cannot access, say exactly what cannot be performed. Do not simulate retrieval, NotebookLM, or source-constrained results.':'Use your existing native tools when the selected instructions call for them. Disclose unavailable resources and the actual sources used; do not simulate another provider.',
+              ...(payload.turns===true?['Members answer this message one after another, and it is your turn. The context’s answersSoFar holds the answers other members already gave to this message, in order. Read them first. Write one answer that takes them in: name each member you are responding to, say where you agree or disagree and why, answer what they left open, then add your own point. If answersSoFar is empty, you are the first to answer.']:[]),
               `Visible Lab discussion:\n${JSON.stringify(context)}`].join('\n\n');
             db.transaction(()=>{
               retainSessionInput({id:invocation.inputId,sessionId:sessionNumber(member.sessionId),scope:'lab:invocation',actionId:invocation.requestId,kind:'input',origin:'service',
@@ -399,7 +405,9 @@ export class LabConversations {
           if(error instanceof LabConversationError&&error.code==='LAB_BINDING_CHANGED')invocation.state='refused';
         }
         this.saveReceipt(action,state);
-      }));
+      };
+      if(payload.turns===true){for(const [index,invocation] of state.invocations.entries())await step(invocation,index);}
+      else await Promise.all(state.invocations.map(step));
       if(state.invocations.every(invocation=>['published','failed','refused'].includes(invocation.state))){state.state='completed';this.saveReceipt(action,state);}
     }));
     await membershipWork;
