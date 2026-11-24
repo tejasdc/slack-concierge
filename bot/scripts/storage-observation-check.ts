@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 import { strict as assert } from 'node:assert';
 import { Database } from 'bun:sqlite';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { awaitingOutside, observedDatabase, observeStorageOperation, storageObservationFailures, withStorageReadBudget,StorageReadBudgetError,type StorageWork } from '../src/storage-observation';
 import { ledgerRows } from '../src/ledger-rows';
 import { startStorageIntervals, takeStorageInterval, observeSynchronousStorage } from '../src/storage-interval';
@@ -80,6 +82,17 @@ try {
   const waitingWall = performance.now() - waitingBegan;
   assert.ok(waited!.awaited_ms >= 150, `overlapping waits counted as their union, then the next one added: ${waited!.awaited_ms} ms`);
   assert.ok(waited!.awaited_ms <= waitingWall + 1, `awaited never exceeds wall time: ${waited!.awaited_ms} of ${waitingWall} ms`);
+
+  // A search's read runs in the archive reader, another process, and queues behind its other
+  // reads. Four searches queued up to 2.5 s each there and were counted as slow owner requests
+  // with nothing awaited (work-flow supervisor incident 6ca7d85f, 2026-11-24), so the owner's
+  // call to that reader must stay inside the outside-wait accounting.
+  const ownerSource = readFileSync(join(import.meta.dir, '..', 'src', 'session-owner.ts'), 'utf8');
+  const searchRead = ownerSource.indexOf("fetch('http://localhost/internal/session-search'");
+  assert.ok(searchRead > 0, 'the owner still reads search through the archive reader');
+  const readDeclared = ownerSource.lastIndexOf('const read=', searchRead);
+  assert.ok(readDeclared > 0 && ownerSource.slice(readDeclared, searchRead).includes('awaitingOutside(async()=>{'),
+    'the search read is awaited as outside work');
 
   const failures = storageObservationFailures();
   assert.equal(observeStorageOperation('sink-failure', () => 42, () => { throw new Error('sink down'); }), 42);

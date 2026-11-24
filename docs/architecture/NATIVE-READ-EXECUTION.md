@@ -55,7 +55,10 @@ and logs `session_search_executor_fallback` with a content-free reason. No query
 vector is logged. `session_search_slow` retains its existing phase fields and adds
 `executor_ms` (awaited gateway/read time, including queueing and both reads), `owner_ms`
 (request time outside executor waits, including rare writes), `meaning_embed_ms` and
-`meaning_rank_ms`. Meaning overlaps executor waits and retains its own phase timings; these
+`meaning_rank_ms`. The executor wait is recorded on the owner's request as `awaited_ms`, so a
+search queued behind the archive reader is not judged as owner slowness
+([failure record](../incidents/2026-11-24-search-reader-wait-counted-as-owner-slowness.md)).
+Meaning overlaps executor waits and retains its own phase timings; these
 elapsed values are not owner CPU measurements. A failed or unavailable meaning phase keeps
 its existing word-only degradation. Failure to fetch that private result refuses the executor
 read and uses the same owner-held promise in the local fallback.

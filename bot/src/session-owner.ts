@@ -4414,7 +4414,11 @@ ${input.text}`;
     let executorMs=0,workerMs=0,fallbackReason='unavailable',answer:SearchReadAnswer|undefined;
     try {
       const stateDir=process.env.CONCIERGE_STATE_DB?dirname(process.env.CONCIERGE_STATE_DB):process.env.CONCIERGE_STATE_DIR!;
-      const read=async(materialized:SearchMaterialization[]=[])=>{
+      // The read runs in the archive reader, another process, and queues behind its other reads.
+      // That wait is the request's, not the owner's: four 100-result searches inside three
+      // seconds queued up to 2.5 s each behind one reader and were counted as owner slowness
+      // (work-flow supervisor incident 6ca7d85f, 2026-11-24). Meaning stays owner time.
+      const read=(materialized:SearchMaterialization[]=[])=>awaitingOutside(async()=>{
         const began=performance.now();
         try {
           const response=await fetch('http://localhost/internal/session-search',{
@@ -4427,7 +4431,7 @@ ${input.text}`;
           workerMs+=value.worker_ms??0;
           return value;
         } finally {executorMs+=performance.now()-began;}
-      };
+      });
       answer=await read();
       if(answer.pending.length){
         fallbackReason='materialization';
