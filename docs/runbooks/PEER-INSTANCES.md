@@ -72,9 +72,15 @@ limit arrives first, the record has `cutoffAt` and no `endedAt`; the limit is no
 
 The observer names a page renderer only from WebKit's own per-recording capture report. When a
 thnkr.ing page opens the microphone, the Web App logs `WebPageProxy::updateReportedMediaCaptureState`
-with that page proxy, its WebContent PID and the old and new capture state. At each `begin` the
-observer reads the last two minutes of those reports (plus page-close and service-worker-only
-lines) for the Web App PID. It names the renderer (`unique_webkit_capture_page`) only when exactly
+with that page proxy, its WebContent PID and the old and new capture state. At `begin` the
+observer takes its process snapshot; when the recording ends (or reaches its 120-second
+observation limit) it reads those reports (plus page-close and service-worker-only lines) for
+the Web App PID over the two minutes ending at `begin`, ignoring any line after `begin`. The
+anchored window returns the same evidence whenever it is read, and reading after the recording
+keeps it off the recording. Its 15-second limit only stops a stuck reader: a 3-second limit at
+`begin` timed out twice on 2026-11-24 under memory pressure, while a later read of the same
+windows found both capture lines in 1.0-2.9 s. The event record is saved only after this read
+settles. It names the renderer (`unique_webkit_capture_page`) only when exactly
 one Web App page proxy is capturing, the window shows that page starting active audio capture
 (state bit 2048), the page was not closed afterwards, `launchctl print pid/<Web App PID>` still
 lists its WebContent child with a matching birth identity, the PID is not a service-worker-only
