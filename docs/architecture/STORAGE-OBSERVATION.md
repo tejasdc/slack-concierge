@@ -95,6 +95,15 @@ The canonical ledger connection remains physically readonly, and lease acquisiti
 page processing and ready checkpoints retain their existing boundaries. Neither
 SQLite durability settings nor lifecycle deadlines change.
 
+### Presentation worker ledger reads
+
+The worker's reads of the canonical ledger run off the owner loop but share its page cache: a
+read that scans the event table displaces the pages the owner's own statements need. A changed
+Inbox request finds its posts through each session's `(session_id, kind)` index entries
+(`bot/src/request-posts-sql.ts`), never by kind and request across all events; the build's
+storage observation check refuses a plan that scans events
+([record](../incidents/2026-11-24-inbox-request-change-scanned-every-ledger-event.md)).
+
 ### Presentation search write budget
 
 The large trigram search index uses explicit FTS5 maintenance. Its automatic

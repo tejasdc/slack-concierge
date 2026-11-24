@@ -20,6 +20,7 @@ import {PreparedAreas} from './prepared-areas';
 import {PreparedLabRequests} from './prepared-lab-requests';
 import {CURRENT_INBOX_ID_SQL} from './inbox-lineage-sql';
 import {postIsCollapsed} from './inbox-collapse-visibility';
+import {postsForRequestSql,type RequestPost} from './request-posts-sql';
 
 const directory=process.env.CONCIERGE_STATE_DIR;
 if(!directory)throw new Error('Presentation worker requires CONCIERGE_STATE_DIR.');
@@ -346,6 +347,7 @@ async function upgradeRequestRoots(generation:number){
   while(prepared.transaction(()=>{keepLease();return topics.drain(generation,20);})().hasMore)await yieldProgress();
   prepared.transaction(()=>{keepLease();prepared.query('UPDATE presentation_message_meta SET request_roots_version=8 WHERE singleton=1').run();})();
 }
+const postsForRequest=(requestId:string)=>source.query(postsForRequestSql).all(requestId) as RequestPost[];
 const insertTopicEvent=prepared.query(`INSERT INTO presentation_topic_events(generation,topic_id,event_sequence,session_id,event_id)
   VALUES(?,?,?,?,?) ON CONFLICT(generation,event_sequence) DO UPDATE SET topic_id=excluded.topic_id`);
 const insertOwnerVersion=prepared.query(`INSERT OR IGNORE INTO presentation_owner_message_versions
@@ -942,8 +944,7 @@ async function catchUp() {
         const requests=source.query(`SELECT request_id FROM ${table} WHERE source_input_id=? AND json_extract(payload_json,'$.forwardedReply.inboxInputId')=?`)
           .all(sourceMessageId,sourceMessageId) as {request_id:string}[];
         for(const request of requests){
-          const posts=source.query("SELECT sequence,session_id AS sessionId,event_id AS messageId FROM session_owner_events WHERE kind='post' AND json_extract(payload_json,'$.requestId')=?")
-            .all(request.request_id) as {sequence:number;sessionId:number;messageId:string}[];
+          const posts=postsForRequest(request.request_id);
           for(const post of posts){
             const prior=prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND event_sequence=?')
               .get(current.generation,post.sequence) as {root:string}|null;
@@ -976,9 +977,7 @@ async function catchUp() {
       }
     }
     for(const requestId of dispatchesToReassign){
-        const posts=source.query(`SELECT sequence,session_id AS sessionId,event_id AS messageId,input_id AS inputId,created_at AS createdAt
-          FROM session_owner_events WHERE kind='post' AND json_extract(payload_json,'$.requestId')=?`).all(requestId) as
-          {sequence:number;sessionId:number;messageId:string;inputId:string;createdAt:string}[];
+        const posts=postsForRequest(requestId);
         for(const post of posts){
           const prior=prepared.query('SELECT root_input_id AS root FROM presentation_messages WHERE generation=? AND event_sequence=?')
             .get(current.generation,post.sequence) as {root:string}|null;

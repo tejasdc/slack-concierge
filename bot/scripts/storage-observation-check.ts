@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { awaitingOutside, observedDatabase, observeStorageOperation, storageObservationFailures, withStorageReadBudget,StorageReadBudgetError,type StorageWork } from '../src/storage-observation';
 import { ledgerRows } from '../src/ledger-rows';
 import { startStorageIntervals, takeStorageInterval, observeSynchronousStorage } from '../src/storage-interval';
+import { postsForRequestSql } from '../src/request-posts-sql';
 
 // No application state import: the fixture owns its database and has no production path.
 const raw = new Database(':memory:');
@@ -166,3 +167,38 @@ try {
   console.log(JSON.stringify({check:'storage-observation',status:'passed',large_bytes:payload.length,
     raw_mean_ms:rawMs/10,observed_mean_ms:observedMs/10}));
 } finally { db.close(true); }
+
+// A changed Inbox request asks which posts answered it. That lookup must read posts only, however
+// many other events the ledger holds: on 2026-11-24 it scanned every event for each such change.
+{
+  const schema = readFileSync(join(import.meta.dir, '../src/session-schema.ts'), 'utf8');
+  const postIndex = schema.match(/CREATE INDEX IF NOT EXISTS session_owner_events_session_kind ON [^;]+;/)?.[0];
+  assert.ok(postIndex, 'the session/kind index the request-post lookup walks is gone from the ledger schema');
+  for (const unrelated of [100, 10_000]) {
+    const events = new Database(':memory:');
+    try {
+      events.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY);
+        CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,session_id INTEGER NOT NULL,
+          input_id TEXT,turn_id INTEGER,kind TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        ${postIndex}
+        INSERT INTO sessions(id) VALUES(1),(2),(3);`);
+      const add = events.query('INSERT INTO session_owner_events(event_id,session_id,input_id,kind,payload_json) VALUES(?,?,?,?,?)');
+      events.transaction(() => {
+        for (let n = 0; n < unrelated; n++) add.run(`message-${n}`, 1 + n % 3, null, 'message', '{"requestId":"wanted"}');
+        add.run('post-other', 1, 'input-other', 'post', '{"requestId":"other"}');
+        add.run('post-late', 3, 'input-late', 'post', '{"requestId":"wanted"}');
+        add.run('post-later', 2, 'input-later', 'post', '{"requestId":"wanted"}');
+        add.run('post-plain', 2, 'input-plain', 'post', '{}');
+      })();
+      const plan = events.query(`EXPLAIN QUERY PLAN ${postsForRequestSql}`).all('wanted') as {detail:string}[];
+      assert.ok(plan.some(row => row.detail.includes('SEARCH event USING INDEX session_owner_events_session_kind')), JSON.stringify(plan));
+      assert.ok(plan.every(row => !row.detail.startsWith('SCAN event')), JSON.stringify(plan));
+      let work: StorageWork | undefined;
+      const observed = observedDatabase(events);
+      const posts = observeStorageOperation('request-posts', () => observed.query(postsForRequestSql).all('wanted'), value => { work = value; }) as {messageId:string;inputId:string;sessionId:number}[];
+      assert.deepEqual(posts.map(post => [post.messageId, post.inputId, post.sessionId]), [['post-late', 'input-late', 3], ['post-later', 'input-later', 2]]);
+      assert.equal(work!.db_calls, 1);
+    } finally { events.close(); }
+  }
+  console.log(JSON.stringify({check:'request-posts-read-posts-only',status:'passed'}));
+}

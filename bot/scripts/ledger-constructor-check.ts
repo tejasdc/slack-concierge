@@ -27,7 +27,7 @@ const FIXTURE_WRITERS: Readonly<Record<string, readonly string[]>> = {
   'scripts/check-presentation-worker.ts': ["new Database(join(dir,'state.db'),{create:true})", "new Database(join(dir,'state.db'))"],
   'scripts/release-application-compatibility.ts': ["new Database(join(workerState,'presentation.db'))", "new Database(join(workerState,'state.db'))"],
   'scripts/presentation-message-growth-fixtures.ts': ["new Database(':memory:')"],
-  'scripts/storage-observation-check.ts': ["new Database(':memory:')"],
+  'scripts/storage-observation-check.ts': ["new Database(':memory:')", "new Database(':memory:')"],
   'scripts/runner-lease-check.ts': ["new Database(':memory:')"],
   'scripts/runner-turn-check.ts': ["new Database(':memory:')"],
   'scripts/prepared-search-check.ts': ["new Database(':memory:')"],
