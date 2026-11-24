@@ -39,6 +39,7 @@ export function topicEventSentence(payload:any):string {
     case 'resumed':return 'Picked back up.';
     case 'pinned':return 'Pinned to the top of Open.';
     case 'unpinned':return 'Unpinned.';
+    case 'housed':return `Moved to ${payload.houseName??payload.house??'another house'}.`;
     case 'added':return `Request added: ${payload.request?.title??''}`;
     case 'amended':return `Request changed: ${payload.reason??payload.request?.title??''}`;
     case 'linked':return `Work linked to ${payload.request?.title??'this request'}.`;

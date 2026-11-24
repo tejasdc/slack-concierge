@@ -867,6 +867,8 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
       add('inbox_questions','defer_until','defer_until TEXT');
       // When he pinned a thread: pinned threads lead the Open list (Tejas, 2026-11-04: "I want to be able to pin some of the threads").
       add('inbox_topics','pinned_at','pinned_at TEXT');
+      // Which house the thread lives in (discussions, building, everyday, notices); null reads as discussions (Tejas, 2026-11-24: "just like add a tab for discussion here").
+      add('inbox_topics','house','house TEXT');
       add('session_peer_requests','thread_root_input_id','thread_root_input_id TEXT');
       db.exec(`UPDATE sessions
         SET agent_session_uuid = json_extract(native_metadata_json, '$.source.nativeId')

@@ -137,7 +137,7 @@ A design (--product design, --text-file with ## sections separated by blank line
 A watch wakes this conversation once, with no model awake meanwhile: when the file or directory changes (a deletion counts), when the command finishes (with its exit code), or at --until, whichever comes first (at most 30 days). One service input watch:<id>:<fired|expired|failed|cancelled> then reaches this session and says what was observed and any gap in observation (a Concierge restart or a sleeping Mac is a recorded gap). It is on this agent's own machine (its runner, when it runs on one); the same --action-id registers nothing twice. A progress reply that says it is waiting for a release names the active watch with --waiting-on-watch <watch-id>. For a specific Concierge repair, --renew --required-commit <full-sha> on /var/lib/slack-concierge-deployment/current wakes only after a successful installed release includes that commit. An unscoped file watch still wakes on any change.
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
-router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
+router-actions.sh sessions topics list <source-flags> [--house discussions|building|everyday|notices] [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
 router-actions.sh sessions topics obligations <source-flags>  # all open requests with owner and age
 router-actions.sh sessions topics read <topicId> <source-flags> [--state open|reading|history|deferred|checking]
 router-actions.sh sessions topics items <topicId> <source-flags> --kind questions|requests|history [--state STATE] [--cursor C] [--limit N]
@@ -156,6 +156,7 @@ router-actions.sh sessions topics merge <fromTopicId> <source-flags> --action-id
 router-actions.sh sessions topics close <topicId> <source-flags> --action-id A --scope <text> -- <reason>
 router-actions.sh sessions topics reopen <topicId> <source-flags> --action-id A -- <reason>
 router-actions.sh sessions topics pin|unpin <topicId> <source-flags> --action-id A
+router-actions.sh sessions topics house <topicId> --house discussions|building|everyday|notices [--reason R] <source-flags> --action-id A
 router-actions.sh sessions topics request add <topicId> <source-flags> --action-id A --title T [--source <inputId>[:passage] ...] -- <brief>
 router-actions.sh sessions topics request amend <requestId> <source-flags> --action-id A [--title T] [--source ...] -- <what changed and why>
 router-actions.sh sessions topics request link <requestId> <source-flags> --action-id A --dispatch <communicationRequestId>
@@ -311,10 +312,10 @@ function sourceFrom(flags: Map<string, string>): Source {
   return { channel_id: channel, message_ts: timestamp };
 }
 
-const TOPIC_VERBS = ["list","obligations","read","items","detail","resolve","message","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","request","questions","question","answer","acknowledge","focus","release","file","area"];
+const TOPIC_VERBS = ["list","obligations","read","items","detail","resolve","message","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","house","request","questions","question","answer","acknowledge","focus","release","file","area"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence","--area"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason","--correction-source","--side-scope",
-  "--into","--from","--thread","--scope","--dispatch","--disposition","--human-quote","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message"];
+  "--into","--from","--thread","--scope","--dispatch","--disposition","--human-quote","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message","--house"];
 /** `sessions topics <verb> …`: parsed here, dispatched as one operation to the coordinator. */
 function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const separator = args.indexOf("--");
@@ -375,6 +376,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   copy("--dispatch", "dispatch"); copy("--disposition", "disposition"); copy("--human-quote", "human_quote"); copy("--state", "state");
   copy("--answer", "answer"); copy("--replacement", "replacement"); copy("--query", "query"); copy("--cursor", "cursor"); copy("--need", "need");
   copy("--kind","kind");
+  copy("--house","house");
   copy("--message","message_id");
   copy("--digest","digest");
   if(flags.has('--part')){

@@ -113,6 +113,7 @@ import {openInboxObligationCount,openInboxObligations} from './session-topics';
 import {workThread} from './session-fit';
 import {sessionMutuals,mutualLift} from './session-mutuals';
 import {commitWork,originInput} from './commit-work';
+import {isThreadHouse} from './thread-houses';
 import {appendAgentReportObservation,closeQuestionsAnsweredByTodosSoon,createTopicByHuman,fileServiceNotices,inboxAttention,inboxMarkThrough,openAgentReport,refreshRootMemo,replyTargets,topicEntries,topicHumanAction,verifiedHumanConversation,topicOfRoot,reopenThreadForHisMessage,TopicError,validateReviewSelection,peerSessionView} from './session-topics';
 import {containingProject,projectCoordinates,sessionProject,sessionProjects} from './session-projects';
 import {expandHome,isSensitiveWorkspacePath,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
@@ -5636,7 +5637,9 @@ ${input.text}`;
         const query=url.searchParams.get('query');if(query&&query.length>200)throw new SessionOwnerError('Thread search is too long.');
         const order=url.searchParams.get('order')??'updated';
         if(!['updated','started'].includes(order))throw new SessionOwnerError('Unknown thread order.');
-        const options={state:state as 'open'|'closed'|'background'|'all',order:order as 'updated'|'started',query,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20};
+        const house=url.searchParams.get('house');
+        if(house!==null&&!isThreadHouse(house))throw new SessionOwnerError('Unknown part of Threads.',400);
+        const options={state:state as 'open'|'closed'|'background'|'all',order:order as 'updated'|'started',house:house??undefined,query,cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),20)??20};
         // His device never takes the ledger fallback: under the interactive read budget that full-ledger
         // scan can only answer 503 (NATIVE-READ-EXECUTION.md), and the device keeps its rows on an
         // incomplete answer and asks again. Agents' `sessions topics list` keeps the fallback.

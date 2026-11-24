@@ -581,25 +581,27 @@ function coverage(current:Meta,head:number){const complete=!!current.ready&&curr
  code:complete?null:'presentation_indexing',appliedSequence:current.source_head};}
 function reset(current:Meta){return {topics:[],nextCursor:null,coverage:{complete:false,code:'reset_required',appliedSequence:current.source_head}};}
 
-export function readPreparedTopics(db:Database,options:{state?:State;order?:'updated'|'started';query?:string|null;cursor?:string|null;limit?:number;canonicalHead:number}){
+export function readPreparedTopics(db:Database,options:{state?:State;order?:'updated'|'started';house?:string;query?:string|null;cursor?:string|null;limit?:number;canonicalHead:number}){
  const current=meta(db),state=options.state??'open',order=options.order??'updated',limit=Math.min(PAGE,Math.max(1,options.limit??PAGE));
  if(!['updated','started'].includes(order))throw new Error('Unknown topic order');
  if(!['open','closed','background','all'].includes(state))throw new Error('Unknown topic state filter');
  if(options.query?.trim())return searchPreparedTopics(db,{...options,state,limit,query:options.query.trim().toLowerCase()});
  const old=options.cursor?decode(options.cursor):null;
- if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||old.state!==state||typeof old.key!=='string'||(old.order??'updated')!==order))return reset(current);
+ if(options.cursor&&(!old||old.g!==current.generation||old.inbox!==current.inbox_session||old.state!==state||(old.house??null)!==(options.house??null)||typeof old.key!=='string'||(old.order??'updated')!==order))return reset(current);
  // Started is newest thread first and never moves for later messages; Updated follows the conversation.
  const key=order==='started'?'started_sort_key':state==='closed'?'closed_sort_key':'sort_key';
  const condition=state==='all'?'1=1':state==='background'?'background=1':`state='${state}'`;
+ // A house is part of the filter, so a thread housed elsewhere never leads this house; rows prepared before houses existed have no house and read as discussions.
+ const houseCondition=options.house?`AND COALESCE(json_extract(summary_json,'$.house'),'discussions')=?`:'';
  const rows=db.query(`SELECT ${key} AS key,summary_json FROM presentation_topics
-  WHERE generation=? AND session_id=? AND ${condition} ${old?`AND ${key}>?`:''} ORDER BY ${key} LIMIT ?`)
-  .all(current.generation,current.inbox_session,...(old?[old.key]:[]),limit+1) as {key:string;summary_json:string}[];
+  WHERE generation=? AND session_id=? AND ${condition} ${houseCondition} ${old?`AND ${key}>?`:''} ORDER BY ${key} LIMIT ?`)
+  .all(current.generation,current.inbox_session,...(options.house?[options.house]:[]),...(old?[old.key]:[]),limit+1) as {key:string;summary_json:string}[];
  const page=rows.slice(0,limit),last=page.at(-1);
  const sortingRow=db.query('SELECT count,attention_json FROM presentation_topic_sorting WHERE generation=?').get(current.generation) as {count:number;attention_json:string}|null;
  const captures=db.query('SELECT root_id AS inputId,text,at,filing_state AS filingState FROM presentation_topic_roots WHERE generation=? AND unfiled=1 ORDER BY sequence DESC,root_id LIMIT 5').all(current.generation);
  const changeHead=(db.query('SELECT COALESCE(MAX(sequence),0) AS n FROM presentation_topic_changes WHERE generation=?').get(current.generation) as {n:number}).n;
  return {topics:page.map(row=>JSON.parse(row.summary_json)),sorting:{count:sortingRow?.count??0,captures,attention:JSON.parse(sortingRow?.attention_json??'[]')},asOf:cursor({g:current.generation,inbox:current.inbox_session,sequence:changeHead}),nextCursor:rows.length>limit&&last?
-  cursor({g:current.generation,inbox:current.inbox_session,state,order,key:last.key}):null,
+  cursor({g:current.generation,inbox:current.inbox_session,state,order,house:options.house??null,key:last.key}):null,
   coverage:coverage(current,options.canonicalHead)};
 }
 /** Everything he sent the Inbox that started a thread root, newest arrival first, each with the
