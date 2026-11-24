@@ -34,7 +34,7 @@ type AttributionDiagnostics = {
   reason: "no_live_web_app_page" | "log_query_failed" | "concurrent_listener_recording" | "no_capturing_page" | "multiple_capturing_pages" | "capture_start_not_observed" | "capturing_page_closed" | "capturing_page_not_live_child" | "unique" | "observer_error";
   lines?: { captureStates: number; closes: number; serviceWorkerLines: number };
   captureTransitions?: CaptureTransition[]; capturingPages?: CapturingPage[]; candidates?: CandidateProcess[];
-  concurrentRecordings?: number; errorName?: string;
+  concurrentRecordings?: number; queriedAfterBeginMs?: number; errorName?: string;
 };
 
 async function command(file: string, args: string[], timeout = 1500) {
@@ -91,8 +91,14 @@ async function sample(): Promise<Sample> {
 // 1.9 s for 30 minutes, 3.4 s for two hours), and this chatty app's WebKit lines were retained for
 // only about six hours. Page-load history for a long-lived renderer is therefore unrecoverable at
 // any cost. WebKit instead reports each page's capture state when the page opens the microphone
-// for a recording, so a short window ending now contains this recording's own evidence.
+// for a recording, so the two minutes before `begin` contain this recording's own evidence.
+// The window is anchored to `begin`, so the read returns the same evidence whenever it runs; it
+// runs once the recording has ended, so it never competes with the recording it attributes. Its
+// time limit only bounds a stuck reader: a fixed 3 s limit at `begin` threw away evidence that a
+// later read of the same window found (2026-11-24, events 894995bc and 8661c107, under memory
+// pressure), because normal cost (0.9-2.9 s) sits right at it.
 const logWindowMs = 2 * 60_000;
+const stuckReaderLimitMs = 15_000;
 const activeAudioCapture = 2048; // WebKit MediaProducerMediaState::HasActiveAudioCaptureDevice
 
 function failedStage(stage: StageOutcome["stage"], error: unknown, elapsedMs: number): StageOutcome {
@@ -130,14 +136,20 @@ function localLogTime(line: string) {
 // other recording that could own a different capturing page. Anything else stays unknown; a page
 // is never chosen by size, renderer start time or nearness of timestamps. The one platform limit:
 // a Web App page holding the microphone, outside any listener recording, since before the window.
-async function attribute(shell: ProcessReading | null, candidates: ProcessReading[], concurrentRecordings: number) {
+const logTime = (ms: number) => `${new Date(ms).toISOString().slice(0, 19).replace("T", " ")}+0000`;
+
+async function attribute(shell: ProcessReading | null, candidates: ProcessReading[], concurrentRecordings: number, beganAt: string) {
   const start = performance.now();
   const stages: StageOutcome[] = [];
+  const began = Date.parse(beganAt);
   const finish = (attribution: string, reason: AttributionDiagnostics["reason"], extra: Partial<AttributionDiagnostics> = {}, page: VoiceEvent["page"] = null) =>
     ({ page, attribution, diagnostics: { version: 2, elapsedMs: Math.round(performance.now() - start), logWindowMs, stages, reason, concurrentRecordings, ...extra } as AttributionDiagnostics });
   if (!shell || !candidates.length) return finish("no_live_web_app_page", "no_live_web_app_page");
 
-  const query = await timedStage("log_query", "/usr/bin/log", ["show", "--last", "2m", "--style", "compact", "--predicate", `processID == ${shell.pid} AND subsystem == "com.apple.WebKit" AND (eventMessage CONTAINS "WebPageProxy::updateReportedMediaCaptureState" OR eventMessage CONTAINS "WebPageProxy::close" OR eventMessage CONTAINS "service worker process without page")`], 3000);
+  // `log show` accepts whole seconds; lines after `begin` are dropped below, so the state read is
+  // the state at `begin` however late the read runs.
+  const queriedAfterBeginMs = Date.now() - began;
+  const query = await timedStage("log_query", "/usr/bin/log", ["show", "--start", logTime(Math.floor((began - logWindowMs) / 1000) * 1000), "--end", logTime(Math.ceil(began / 1000) * 1000), "--style", "compact", "--predicate", `processID == ${shell.pid} AND subsystem == "com.apple.WebKit" AND (eventMessage CONTAINS "WebPageProxy::updateReportedMediaCaptureState" OR eventMessage CONTAINS "WebPageProxy::close" OR eventMessage CONTAINS "service worker process without page")`], stuckReaderLimitMs);
   stages.push(query.outcome);
   const transitions: CaptureTransition[] = [];
   const closedAt = new Map<number, number>();
@@ -147,8 +159,10 @@ async function attribute(shell: ProcessReading | null, candidates: ProcessReadin
     for (const line of (query.stdout ?? "").split("\n")) {
       const worker = line.match(/\[PID=(\d+)\].*service worker process without page/);
       if (worker) { workers.add(Number(worker[1])); lines.serviceWorkerLines++; }
+      const at = localLogTime(line);
+      if (at && Date.parse(at) > began) continue;
       const capture = line.match(/\[pageProxyID=(\d+), webPageID=\d+, PID=(\d+)\] WebPageProxy::updateReportedMediaCaptureState: from (\d+) to (\d+)/);
-      if (capture) { lines.captureStates++; transitions.push({ pageProxyId: Number(capture[1]), pid: Number(capture[2]), from: Number(capture[3]), to: Number(capture[4]), at: localLogTime(line) }); continue; }
+      if (capture) { lines.captureStates++; transitions.push({ pageProxyId: Number(capture[1]), pid: Number(capture[2]), from: Number(capture[3]), to: Number(capture[4]), at }); continue; }
       const close = line.match(/\[pageProxyID=(\d+), webPageID=\d+, PID=\d+\] WebPageProxy::close/);
       if (close) { lines.closes++; closedAt.set(Number(close[1]), transitions.length); }
     }
@@ -174,7 +188,7 @@ async function attribute(shell: ProcessReading | null, candidates: ProcessReadin
     closedAfter: (closedAt.get(pageProxyId) ?? -1) > item.index, liveChild: livePids.has(item.pid), serviceWorkerPid: workers.has(item.pid),
   }));
   const evidence: Partial<AttributionDiagnostics> = {
-    lines, captureTransitions: transitions.slice(-16), capturingPages,
+    lines, captureTransitions: transitions.slice(-16), capturingPages, queriedAfterBeginMs,
     candidates: candidates.map((item) => ({ pid: item.pid, birthAbstime: item.birthAbstime, launchedAt: launchedAt.get(item.pid) ?? null })),
   };
   if (query.outcome.outcome !== "ok") return finish("page_lifecycle_unavailable", "log_query_failed", evidence);
@@ -206,10 +220,32 @@ async function writeEvent(event: VoiceEvent) {
   await rename(`${path}.tmp`, path);
 }
 
+// The process snapshot is taken at `begin`; the log read waits until the recording ends (or its
+// observation limit), so the saved record always carries a settled attribution.
+const attributionWork = new WeakMap<VoiceEvent, { snapshot: Promise<Sample>; concurrentRecordings: number; settled?: Promise<void> }>();
+
+function settleAttribution(event: VoiceEvent) {
+  const work = attributionWork.get(event);
+  if (!work) return Promise.resolve();
+  work.settled ??= work.snapshot
+    .then((current) => attribute(current.shell, current.children, work.concurrentRecordings, event.beganAt))
+    .then((answer) => {
+      event.page = answer.page;
+      event.attribution = answer.attribution;
+      event.attributionDiagnostics = answer.diagnostics;
+    })
+    .catch((error) => {
+      event.attribution = "observer_error";
+      event.attributionDiagnostics = { version: 2, elapsedMs: 0, logWindowMs, stages: [], reason: "observer_error", concurrentRecordings: work.concurrentRecordings, errorName: error instanceof Error ? error.name.slice(0, 40) : "unknown" };
+    });
+  return work.settled;
+}
+
 function persist(event: VoiceEvent) {
   // A shared temp path and read-modify-write file require one writer, including overlapping finishes.
   pendingWrites++;
-  persistQueue = persistQueue.then(() => writeEvent(event)).then(() => {
+  const settled = settleAttribution(event);
+  persistQueue = persistQueue.then(() => settled).then(() => writeEvent(event)).then(() => {
     lastPersistError = null;
   }).catch((error) => {
     lastPersistError = error instanceof Error ? error.message.slice(0, 100) : "unknown";
@@ -260,18 +296,15 @@ export const macVoiceObserver = {
     };
     events.set(id, event);
     if (!eventTimer) { eventTimer = setInterval(() => { void tick(); }, 2_000); eventTimer.unref?.(); }
-    void (async () => {
-      const current = await sample();
-      event.samples.push(current);
-      const answer = await attribute(current.shell, current.children, concurrentRecordings);
-      event.page = answer.page;
-      event.attribution = answer.attribution;
-      event.attributionDiagnostics = answer.diagnostics;
-    })().catch((error) => {
-      event.attribution = "observer_error";
-      event.attributionDiagnostics = { version: 2, elapsedMs: 0, logWindowMs, stages: [], reason: "observer_error", concurrentRecordings, errorName: error instanceof Error ? error.name.slice(0, 40) : "unknown" };
-    });
+    const snapshot = sample().then((current) => { event.samples.push(current); return current; });
+    attributionWork.set(event, { snapshot, concurrentRecordings });
   },
-  end(id: string) { const event = events.get(id); if (event) { event.endedAt = new Date().toISOString(); event.afterUntil = Math.min(Date.now() + 30_000, event.deadline); } },
+  end(id: string) {
+    const event = events.get(id);
+    if (!event) return;
+    event.endedAt = new Date().toISOString();
+    event.afterUntil = Math.min(Date.now() + 30_000, event.deadline);
+    void settleAttribution(event);
+  },
   status() { return { activeEvents: events.size, pendingWrites, ringSamples: pre.length, lastSampleAt: last?.at ?? null, lastSampleElapsedMs: last?.elapsedMs ?? null, lastPageAttribution: [...events.values()].at(-1)?.attribution ?? null, lastAttributionReason: [...events.values()].at(-1)?.attributionDiagnostics?.reason ?? null, lastPersistError }; },
 };
