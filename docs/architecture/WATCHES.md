@@ -103,7 +103,17 @@ was seen.
 ## Writing a condition that can actually pass
 
 The watch reports what its command says; it cannot tell a condition that is false from one that
-could never be true. So the condition is the agent's responsibility, and two mistakes are easy.
+could never be true. So the condition is the agent's responsibility, and three mistakes are easy.
+
+**A command watch wakes on the command's *exit*, not on its success.** It reports the exit code and
+the output; it is "wake me when this finishes", not "wake me when this passes". So a command that
+checks once and exits fires on its first run, whatever it found. On 2026-11-25 a watch meant to
+confirm the banked-release fix after the next release fired 88 seconds after registration with exit
+code 1 — the condition was false and the session was woken to be told so. **The command must not
+exit until the condition holds:** poll inside it (`while true; do <check> && exit 0; sleep 60;
+done`) and let the watch's own deadline stop it. The run costs nothing to hold open — a watched
+command runs in its own execution host at the machine's lowest priority and never makes an update
+wait.
 
 **A condition asserting something is *gone* needs a string only that thing could produce.** On
 2026-10-08 a watch waited for a release that had removed an agent-callable command, with the

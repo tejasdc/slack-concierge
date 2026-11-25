@@ -108,3 +108,18 @@ questions in Needs attention clear when each session declares its outcome.
   forecast to run out before its reset records `window_runs_out_first` and does not start; one
   with every reading stale records `stale_usage_reading` and does not start.
 - **Replayable offline:** not yet; the live check was three real banked items on this server.
+
+## Found while proving it: the watch meant to confirm the fix woke on its own first run
+
+The live proof for this repair is one real banked item (turn 35489, concierge:10580) that
+reproduces the defect on the installed release and should be given an account once the fix
+installs. The watch registered to confirm that fired 88 seconds later with exit code 1, before the
+release could even start: a command watch wakes its session when the command **exits**, reporting
+the code, and the check exited immediately because the condition was still false. The condition
+itself was sound and had been exercised in all three directions first — false now, passing on a
+seeded pass, refusing a broken read — but its *shape* was wrong for the primitive.
+
+The check now polls inside itself and returns only when the condition holds, so the watch's single
+wake means what it says, and the rule is written down in
+[watches](../architecture/WATCHES.md#writing-a-condition-that-can-actually-pass) beside the two
+condition mistakes already recorded there.
