@@ -691,6 +691,35 @@ An attachment upload is authenticated owner custody, not an executable operation
 
 Public source import validates `clientActionId` at authenticated ingress; this is source custody, not an executable accepted-input operation. The owner forwards only `{name,content,scope}` to the private `/sources/import` capability. Exact content/version/branch identities supply import deduplication, as specified by the source-custody exception above; importing bytes creates no additional client-action ledger, provider run or workspace replay.
 
+### Gemini Takeout evidence and new sessions
+
+Gemini Apps Takeout appears in the existing archive search and exact history with provider `gemini`.
+Its canonical imported address identifies read-only evidence with no runtime thread or native binding.
+Activity represented in the source index's tools lane can be found with `includeTools:true`.
+The current Takeout parser emits no proof of reconstructable dialogue, including for grouped prompt/response evidence.
+
+The trusted local human creation route `POST /sessions/v1/sessions` accepts the usual new-session body
+with `reconstruction:{address,sourceId,sourceVersion,branch}`, an explicit coding provider
+(`codex`, `claude-code`, or `antigravity`), and a nonempty current request in `firstInput.text`.
+The caller supplies only source locators. The private, digest-checking source adapter may add
+`reconstruction:{sourceId,sourceVersion,branch,packetVersion:"gemini-export-dialogue-v1",dialogueDigest}`
+to a Gemini source descriptor after the export establishes explicit conversation membership,
+speakers, order, one revision path, full exported bodies and accounting for relevant records.
+This marker is an adapter assertion derived from original evidence and is never read from upload metadata.
+`dialogueDigest` is SHA-256 over UTF-8 `JSON.stringify` of the complete ordered event array.
+Each object has keys in order `eventId, ordinal, role, locator, textHash, text`.
+Ordinals are zero-based and contiguous, IDs are unique, and both user and assistant roles must appear.
+All retained events must be dialogue. The adapter accounts for omissions separately.
+
+The owner rereads and verifies the exact pinned source and each event hash, then checks the
+address generation and descriptor again in the transaction that creates and queues the new
+coding session. The lineage records the imported parent, version and path. The agent receives
+source attribution and omissions with the ordered dialogue as evidence, alongside the new
+request. The combined prepared first message is limited to 128 KiB, with no truncation.
+Missing or invalid proof returns `GEMINI_RECONSTRUCTION_UNVERIFIED` before any session or turn
+is created. An identical creation retry returns the original receipt even if the source has since
+changed. Changed content under the same action ID conflicts. This is an owner API contract.
+
 ### Explicit imported ChatGPT binding
 
 An imported source or input `evidence` alone never acquires a runnable binding. The explicit human bind route accepts an exact source anchor already retained under that canonical session: sourceId, sourceVersion, branch, messageId and textHash must all match. The owner records a `kind:"bind"`, `origin:"human"` operation before capability verification. Its immutable `request` is `{reference}` and its verification `admission` is `{bindingGeneration,reference}`, pinned to the owner's current generation; inputId/runId/requestId remain null. The owner supplies that operationId and generation to the private capability bind call. The peer independently reads this exact owner operation and current session/source, verifies the human bind intent and pins, and then verifies the signed-in native account, original conversation and exact browser anchor. It never requires an already-populated nativeBinding as proof of the first bind, and cannot substitute an old execution admission or caller-supplied receipt.

@@ -46,6 +46,9 @@ wording and Tejas's quoted reasons as dated evidence, not current operating auth
   artifacts. Preserve the authenticated data and capability boundaries in
   [session ownership](docs/architecture/SESSION-OWNER.md) and
   [agent security](docs/security/2026-10-07-agent-security-review.md).
+- [Gemini Takeout](docs/contracts/session-owner-v1.md#gemini-takeout-evidence-and-new-sessions)
+  uses the existing archive search and history. A new coding session requires an
+  exact pinned export and the source adapter's verified dialogue proof.
 - Agent session commands use each machine's installed wrapper, which selects
   the current release; see [runner command paths](docs/architecture/RUNNERS.md#agent-session-commands).
 - Claude history payload retirement preserves full SDK rows and the runner
