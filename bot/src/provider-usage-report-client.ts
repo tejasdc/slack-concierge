@@ -98,7 +98,6 @@ function mergePeriod(parts:any[]){
       unexplainedByModel:countMap(parts.map(part=>part.escalations?.unexplainedByModel))},
     fallbackModels:[...new Set(parts.flatMap(part=>part.fallbackModels))].sort(),accounts,scheduledFirings,
     attributionBuckets:parts.flatMap(part=>part.attributionBuckets??[]),
-    taskTurns:Object.assign({},...parts.map(part=>part.taskTurns??{})),
     taskMix:parts.reduce((merged:Record<string,{models:Record<string,number>;triggers:Record<string,number>}>,part)=>{
       for(const [task,mix] of Object.entries(part.taskMix??{}) as [string,any][]){
         const into=merged[task]??={models:{},triggers:{}};
