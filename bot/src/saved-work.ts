@@ -97,8 +97,6 @@ function nextQuietStart(now:number,settings:SavedWorkSettings):number {
   return now+DAY;
 }
 export function quietOnlyCutoff(now:number,settings=savedWorkSettings()){return nextQuietEnd(now,settings)-QUIET_STOP_MARGIN_MS;}
-const fleetBusy=(savedSessionId:number)=>!!db.query(`SELECT 1 FROM turns WHERE session_id<>?
-  AND (status IN ('running','delivering') OR (status='queued' AND saved_kind IS NULL)) LIMIT 1`).get(savedSessionId);
 const savedRows=()=>db.query("SELECT * FROM turns WHERE saved_kind IS NOT NULL AND status='queued' ORDER BY id").all() as SavedTurn[];
 
 /**
@@ -106,12 +104,17 @@ const savedRows=()=>db.query("SELECT * FROM turns WHERE saved_kind IS NOT NULL A
  * turn and logged when it changes, because on 2026-11-12 a quiet-only job had waited seven nights
  * and nothing recorded which of its conditions had held it.
  */
-export type BankedWait='eligible_not_claimed'|'no_usage_reading'|'no_allowance_room'|'other_work_running'|'outside_quiet_hours'|'waiting_for_reset';
+export type BankedWait='eligible_not_claimed'|'no_usage_reading'|'stale_usage_reading'|'no_allowance_room'
+  |'window_runs_out_first'|'other_work_running'|'outside_quiet_hours'|'waiting_for_reset';
 export const BANKED_WAIT_WORDS:Record<BankedWait,string>={
   eligible_not_claimed:'it was eligible to start but the queue did not take it (another unattended banked job was running, or a pause or Concierge update held the queue)',
   no_usage_reading:'Concierge had no current allowance reading for its provider',
+  stale_usage_reading:'every account reading for its provider was stale, and banked work never runs on a reading Concierge cannot trust',
   no_allowance_room:'no account had allowance left above the saved-work reserve',
-  other_work_running:'other agent work was running or queued, and generic banked work waits for an idle fleet',
+  window_runs_out_first:'an account had room, but every window it could spend is forecast to be used up by his own work before it resets, so there is nothing about to lapse',
+  // Retained for rows stored before 2026-11-25, when banked work stopped waiting for an idle
+  // fleet. Nothing writes it now; a notice about an older waiting job still needs its words.
+  other_work_running:'other agent work was running or queued, and generic banked work waited for an idle fleet',
   outside_quiet_hours:'it was outside the quiet hours',
   waiting_for_reset:'it is waiting until its allowance window is close to resetting',
 };
@@ -130,30 +133,48 @@ export function reconsiderBankedWork(now=Date.now()):number {
       ?getClaudePreferredModel(row.session_id,row.id)??sessionMetadata(session).model??null:undefined;
     const rooms=usage?savedWorkAccountRooms(provider,usage,now,model):[];
     const quietOnly=row.saved_quiet_only===1;
-    // Generic banked work exists to spend allowance that would otherwise lapse, so it needs the
-    // forecast to say the window reaches its reset unspent and a floor of time before that reset.
-    // Quiet-only work was banked by him to run while he sleeps: it needs only room above the
-    // reserve. Its run is bounded by the quiet cutoff, not by the window's reset.
+    const reserve=settings.reserve_percent;
+    /** Room means a fresh reading of that account with its tightest window above the reserve. */
+    const hasRoom=(label:string)=>{
+      const room=rooms.find(item=>item.account===label);
+      return !!room&&!room.problem&&room.tightestUsedPercent!==null&&room.tightestUsedPercent<100-reserve;
+    };
+    // "The forecast says the window reaches its reset unspent" is the waste banking exists to
+    // prevent, and a fresh reading with no projected exhaustion is exactly that evidence. Until
+    // 2026-11-25 this demanded a *positive* projection instead (`source!=='unknown'`, or the
+    // provider's own `willLastToReset`), which an account nobody is spending can never produce:
+    // no consumption means no rate, so no projection. Every generic banked item therefore waited
+    // for evidence its own idleness made impossible, and all three in the bank expired unused
+    // while two accounts sat at 0% and 6% of their weeks. Claude lost the other escape on
+    // 2026-11-01, when account usage moved to each account's own login, which reports no
+    // `willLastToReset` at all. A stale reading is still refused, by `hasRoom`: a reading that is
+    // not fresh carries no percentage.
     const candidate=usage?usageForecasts(provider).filter(window=>window.resetsAt
       &&usage.accounts.some(account=>account.label===window.account
         &&includedAllowanceWindows(provider,account,model).some(item=>item.name===window.window))
       && chooseAccountForTurn({accounts:rooms,bound:{account:window.account,reason:'spending-this-window'},prefer:null}).account===window.account
-      && (quietOnly||(usage.accounts.find(item=>item.label===window.account)?.windows.find(item=>item.name===window.window)?.willLastToReset===true
-        ||window.source!=='unknown'&&!window.runsOutBeforeReset))
-      && (quietOnly||!window.runsOutBeforeReset)&&window.usedPercent<100-settings.reserve_percent
-      && (rooms.find(room=>room.account===window.account)?.tightestUsedPercent??100)<100-settings.reserve_percent
+      && !window.runsOutBeforeReset && window.usedPercent<100-reserve
+      && hasRoom(window.account)
       && (quietOnly||Date.parse(window.resetsAt)>=now+HOUR))
       .sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]:null;
     const account=candidate?.account??null;
     const reset=candidate?Date.parse(candidate.resetsAt!):null;
-    // Only generic banking reads an idle fleet as evidence that nobody wants the allowance.
-    // Requiring it of quiet-only work kept a job banked for 2026-11-05 from ever starting: some
-    // standing agent is always running overnight. The reserve is what protects his own work.
-    const busy=!quietOnly&&fleetBusy(row.session_id);
+    // No banked work waits for an idle fleet. Quiet-only work stopped doing so on 2026-11-12,
+    // because some standing agent is always running overnight; generic banked work was left with
+    // it and so never ran either — the gate counts every queued ordinary turn fleet-wide, so one
+    // waiting item anywhere holds the whole bank. What protects his own work is the reserve, the
+    // choice of the account whose allowance lapses first, and the timing: outside his quiet hours
+    // generic banked work only runs in the last two hours before that window resets, when the
+    // allowance really is about to vanish. The design said as much: "At 3pm, idleness predicts
+    // nothing. What protects him at 3pm is therefore not the clock but the reserve."
     const timely=quietOnly?quietOnlyAdmits(now,settings):quiet(now,settings)||(reset!==null&&reset-now<=2*HOUR);
-    const eligible=!!candidate&&!busy&&timely;
-    const wait:BankedWait=eligible?'eligible_not_claimed':!usage?'no_usage_reading':!candidate?'no_allowance_room'
-      :!timely?(quietOnly?'outside_quiet_hours':'waiting_for_reset'):'other_work_running';
+    const eligible=!!candidate&&timely;
+    const readable=rooms.some(room=>!room.problem&&room.tightestUsedPercent!==null);
+    const wait:BankedWait=eligible?'eligible_not_claimed'
+      :!usage?'no_usage_reading'
+      :!readable?'stale_usage_reading'
+      :!candidate?(rooms.some(room=>hasRoom(room.account))?'window_runs_out_first':'no_allowance_room')
+      :quietOnly?'outside_quiet_hours':'waiting_for_reset';
     const next=eligible?0:quietOnly?nextQuietStart(now,settings):reset!==null?Math.min(nextQuietStart(now,settings),Math.max(now+60_000,reset-2*HOUR))
       :row.dispatch_next_attempt_ms!==null&&row.dispatch_next_attempt_ms>now+3*60_000?row.dispatch_next_attempt_ms:null;
     const boundary=eligible?(quietOnly?quietOnlyCutoff(now,settings):reset):null;
@@ -420,9 +441,14 @@ export function inspectSavedWork(now=Date.now(),lateMs=5*60_000):number {
       if(!changed.changes)return false;
       const session=getSessionById(row.session_id);if(!session)return false;
       const meta=sessionMetadata(session),generation=(meta.generation??0)+1;
+      // The reason is part of the question: three banked items expired saying only "found no safe
+      // allowance window" while three accounts had room, so the sentence gave him no way to see a
+      // defect rather than a full week (2026-11-25).
+      const because=row.saved_wait_reason&&row.saved_wait_reason in BANKED_WAIT_WORDS
+        ?` The last reason it recorded was that ${BANKED_WAIT_WORDS[row.saved_wait_reason as BankedWait]}.`:'';
       const question=expired?row.saved_quiet_only
-        ?'This quiet-only banked work found no safe overnight allowance window. Start it during quiet hours or drop it.'
-        :'This banked work found no safe allowance window. Start it now, schedule it, or drop it.'
+        ?`This quiet-only banked work expired without running.${because} Start it during quiet hours or drop it.`
+        :`This banked work expired without running.${because} Start it now, schedule it, or drop it.`
         :missed?'This scheduled work missed its expiry. Create a new schedule to run it later.'
         :'This scheduled work is past its time and remains queued. Check the deployment hold or an earlier parked turn.';
       const eventId=`saved-work-alert:${row.id}`,inputId=row.accepted_input_id??`saved:${row.id}`;

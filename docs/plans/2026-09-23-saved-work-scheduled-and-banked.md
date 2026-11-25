@@ -585,3 +585,41 @@ got through before it stopped.
 That answer also settles the cost of yielding, which this design makes routine: a run stopped at
 an allowance or deployment boundary has either shipped its small change already or is waiting on
 his OK anyway, so stopping loses a resumable conversation rather than half-delivered work.
+
+---
+
+## 2026-11-25 — the two release conditions that made the bank unreachable
+
+The base conditions above were written in September. Two of them turned out to be unsatisfiable in
+practice, and between them no generic banked item ever ran on the server: all three in the bank
+expired unused while two Claude accounts sat at 0% and 6% of their weeks. Evidence and the live
+position are in `docs/incidents/2026-11-25-banked-work-never-ran.md`.
+
+**"The forecast says the window reaches its reset unspent"** was implemented as a demand for a
+*positive* projection. The forecast reports its source as "unknown" exactly when it sees no
+projected exhaustion, and an account nobody is spending produces no rate and so no projection, so
+the condition could only be met by an account climbing fast enough to project an exhaustion that
+still lands after the reset. The allowance most certain to lapse was the one most certainly
+refused. It now reads as the design sentence does: a **fresh** reading whose window is not
+forecast to run out before it resets. The stale-reading refusal the table calls for is unchanged
+and comes from the account-room check, which reports no percentage at all for a reading that is
+not fresh.
+
+**"Nothing is executing and nothing of his is queued"** is his own September condition, and it is
+the one this change overrides. It was a reasonable reading of his words — "if there's no active
+sessions start early" — when an idle fleet was a real state. It is not one now: standing agents
+(nightly reviews, the capacity planner, drop watches) run continuously, which the 2026-11-12
+record already proved for every quiet window, and the gate counts queued ordinary turns fleet-wide,
+so one waiting item anywhere holds the whole bank. Quiet-only work was freed from it that day;
+generic work kept it and so never ran either. His later decision is explicit that work must not
+wait while capacity exists [decision: agents-never-sit-idle], and today's instruction was to stop
+wasting weekly resets, so the condition is gone for banked work of both kinds.
+
+What protects his own work is what the design already said protects it at 3pm: the **reserve**,
+read against the account's tightest window, so a spent five-hour window blocks banked work exactly
+as a spent week does; the account whose allowance **lapses first**; the **timing**, which outside
+quiet hours still means only the two hours before that window resets; and **one unattended banked
+run at a time**.
+
+Both halves of the rule — the forecast pass in `reconsiderBankedWork` and the queue's claim —
+state the same predicate and must keep doing so; a disagreement between them is silent.

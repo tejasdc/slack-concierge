@@ -5839,10 +5839,11 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
   AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR turn.saved_expires_at_ms>?)
   AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind='scheduled' OR
     (turn.saved_kind='banked' AND turn.saved_account IS NOT NULL AND turn.saved_boundary_ms>?
-      -- Only generic banking waits for an idle fleet; quiet-only work runs in his night whatever
-      -- standing agents are doing, protected by the reserve (saved-work.ts reconsiderBankedWork).
-      AND (turn.saved_quiet_only=1 OR NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
-        AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL))
+      -- No banked work waits for an idle fleet any more. Quiet-only work stopped on 2026-11-12
+      -- because standing agents run all night; generic banked work kept the gate and so never ran
+      -- either, since it counted every queued ordinary turn fleet-wide. The reserve, the account
+      -- whose allowance lapses first, and the two hours before that window resets are the
+      -- protection (saved-work.ts reconsiderBankedWork).
       AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.id<>turn.id
         AND other.status IN ('running','delivering') AND other.saved_kind='banked' AND other.saved_manual_start=0)))
   AND turn.session_id NOT IN (SELECT value FROM json_each(?))
