@@ -1,7 +1,8 @@
 import {db,claimNextQueuedTurn,executionChanged,getClaudePreferredModel,getSessionById,globalPauseHoldsSession,paceLapsedUsageHolds,settleTurnDependencies,type QueuedTurnClaimRow} from './state';
 import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,queueTurnContinuation,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
-import {usageForecasts} from './provider-usage-forecast';
+import {usageForecasts,type UsageForecast} from './provider-usage-forecast';
+import type {ProviderUsage} from './provider-account-usage';
 import type {AccountIdentityProvider} from './provider-accounts';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {includedAllowanceWindows} from './account-allowance-observation';
@@ -112,8 +113,8 @@ export const BANKED_WAIT_WORDS:Record<BankedWait,string>={
   eligible_not_claimed:'it was eligible to start but the queue did not take it (another unattended banked job was running, or a pause or Concierge update held the queue)',
   no_usage_reading:'Concierge had no current allowance reading for its provider',
   stale_usage_reading:'every account reading for its provider was stale, and banked work never runs on a reading Concierge cannot trust',
-  no_allowance_room:'no account had allowance left above the saved-work reserve',
-  window_runs_out_first:'an account had room, but every window it could spend is forecast to be used up by his own work before it resets, so there is nothing about to lapse',
+  no_allowance_room:'no account with a current reading had allowance left',
+  window_runs_out_first:'an account had allowance left, but his own work is projected to use it before it resets (at his measured rate, or by the share held back for him when there is no rate yet), so none of it is spare',
   // Retained for rows stored before 2026-11-25, when banked work stopped waiting for an idle
   // fleet. Nothing writes it now; a notice about an older waiting job still needs its words.
   other_work_running:'other agent work was running or queued, and generic banked work waited for an idle fleet',
@@ -138,6 +139,56 @@ export function bankedApiRoute(session:NonNullable<ReturnType<typeof getSessionB
     ||metadata.outside||!apiRouteRunnerHasKey(metadata.providerRunner)||metadata.providerAccount||!model||!API_BANKED_MODELS.has(model))return null;
   const decision=apiRouteDecision('banked',cycle,now,apiCreditsConfigured());
   return decision.use?{expiresAt:cycle.expiresAt,reason:decision.reason}:null;
+}
+
+/**
+ * How long each allowance window lasts, by the name the usage readers give it. The one table:
+ * the tapered fallback below is the only thing that needs a window's length.
+ */
+const WINDOW_LENGTH_HOURS:ReadonlyArray<readonly [RegExp,(match:RegExpMatchArray)=>number]>=[
+  [/5-hour/i,()=>5],
+  [/weekly/i,()=>168],
+  [/^(\d+)-minute allowance$/,match=>Number(match[1])/60],
+];
+export function windowLengthHours(name:string):number|null {
+  for(const [pattern,hours] of WINDOW_LENGTH_HOURS){const match=name.match(pattern);if(match)return hours(match);}
+  return null;
+}
+
+/**
+ * What his own work is expected to use of one window before it resets
+ * (docs/plans/2026-11-25-banked-spendable-allowance.md). A measured rate governs: rate × hours
+ * left. With no rate, future demand is unknown, not zero, so the reserve is held, tapered by the
+ * share of the window still to run — about 23% of a fresh week, a fraction of a percent in its
+ * last hour. A window whose reset or length cannot be read is held at the whole reserve.
+ */
+export function expectedOwnUse(forecast:Pick<UsageForecast,'window'|'resetsAt'|'ratePerHour'>,reservePercent:number,now:number):number {
+  const reset=Date.parse(forecast.resetsAt??'');
+  const length=windowLengthHours(forecast.window);
+  const hoursLeft=Number.isFinite(reset)?Math.max(0,(reset-now)/HOUR):length;
+  if(forecast.ratePerHour!==null)return hoursLeft===null?Infinity:forecast.ratePerHour*hoursLeft;
+  return reservePercent*(Number.isFinite(reset)&&length!==null?Math.min(1,hoursLeft!/length):1);
+}
+
+/**
+ * What banked work may spend of one account: per included window, what is left minus what his own
+ * work is expected to use before that window resets, and the smallest of them binds — a five-hour
+ * window near its limit refuses even when the week is open. Null when any included window has no
+ * forecast (its reading is stale or failed), so nothing is spent on a reading Concierge cannot
+ * trust. The forecast pass and the running-job check both use this, so they cannot disagree.
+ */
+export function bankedSpendablePercent(provider:AccountIdentityProvider,usage:ProviderUsage,forecasts:readonly UsageForecast[],
+  accountLabel:string,model:string|null|undefined,reservePercent:number,now:number):number|null {
+  const account=usage.accounts.find(item=>item.label===accountLabel);
+  const windows=account?includedAllowanceWindows(provider,account,model):[];
+  if(!windows.length)return null;
+  let spendable=Infinity;
+  for(const window of windows){
+    const forecast=forecasts.find(item=>item.account===accountLabel&&item.window===window.name);
+    if(!forecast)return null;
+    spendable=Math.min(spendable,(100-forecast.usedPercent)-expectedOwnUse(forecast,reservePercent,now));
+  }
+  return spendable;
 }
 
 /** Forecast and reachability are read outside the claim. Only changed instants are written. */
@@ -187,10 +238,17 @@ export function reconsiderBankedWork(now=Date.now()):number {
     const rooms=usage?savedWorkAccountRooms(provider,usage,now,model):[];
     const quietOnly=row.saved_quiet_only===1;
     const reserve=settings.reserve_percent;
-    /** Room means a fresh reading of that account with its tightest window above the reserve. */
+    /** Room means a fresh reading of that account with no included window used up. How much of
+     * that room is spare is `bankedSpendablePercent`'s question, not this one's. */
     const hasRoom=(label:string)=>{
       const room=rooms.find(item=>item.account===label);
-      return !!room&&!room.problem&&room.tightestUsedPercent!==null&&room.tightestUsedPercent<100-reserve;
+      return !!room&&!room.problem&&room.tightestUsedPercent!==null&&room.tightestUsedPercent<100;
+    };
+    const forecasts=usage?usageForecasts(provider):[];
+    const spendable=new Map<string,number|null>();
+    const spendableOf=(label:string)=>{
+      if(!spendable.has(label))spendable.set(label,bankedSpendablePercent(provider,usage!,forecasts,label,model,reserve,now));
+      return spendable.get(label)!;
     };
     // "The forecast says the window reaches its reset unspent" is the waste banking exists to
     // prevent, and a fresh reading with no projected exhaustion is exactly that evidence. Until
@@ -202,11 +260,11 @@ export function reconsiderBankedWork(now=Date.now()):number {
     // 2026-11-01, when account usage moved to each account's own login, which reports no
     // `willLastToReset` at all. A stale reading is still refused, by `hasRoom`: a reading that is
     // not fresh carries no percentage.
-    const candidate=usage?usageForecasts(provider).filter(window=>window.resetsAt
+    const candidate=usage?forecasts.filter(window=>window.resetsAt
       &&usage.accounts.some(account=>account.label===window.account
         &&includedAllowanceWindows(provider,account,model).some(item=>item.name===window.window))
       && chooseAccountForTurn({accounts:rooms,bound:{account:window.account,reason:'spending-this-window'},prefer:null}).account===window.account
-      && !window.runsOutBeforeReset && window.usedPercent<100-reserve
+      && !window.runsOutBeforeReset && (spendableOf(window.account)??0)>0
       && hasRoom(window.account)
       && (quietOnly||Date.parse(window.resetsAt)>=now+HOUR))
       .sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]:null;
@@ -215,7 +273,8 @@ export function reconsiderBankedWork(now=Date.now()):number {
     // No banked work waits for an idle fleet. Quiet-only work stopped doing so on 2026-11-12,
     // because some standing agent is always running overnight; generic banked work was left with
     // it and so never ran either — the gate counts every queued ordinary turn fleet-wide, so one
-    // waiting item anywhere holds the whole bank. What protects his own work is the reserve, the
+    // waiting item anywhere holds the whole bank. What protects his own work is the spendable
+    // quantity (what is left minus what his own work is projected to use, per window), the
     // choice of the account whose allowance lapses first, and the timing: outside his quiet hours
     // generic banked work only runs in the last two hours before that window resets, when the
     // allowance really is about to vanish. The design said as much: "At 3pm, idleness predicts
@@ -236,7 +295,9 @@ export function reconsiderBankedWork(now=Date.now()):number {
     if(row.saved_wait_reason!==wait&&!(quietOnly&&wait==='outside_quiet_hours'&&row.saved_wait_reason)){
       db.query("UPDATE turns SET saved_wait_reason=? WHERE id=? AND status='queued' AND saved_kind='banked'").run(wait,row.id);
       log('info','banked_work_wait',{turn_id:row.id,session_id:`concierge:${row.session_id}`,quiet_only:quietOnly,
-        reason:wait,previous:row.saved_wait_reason,account:candidate?.account??null,window:candidate?.window??null});
+        reason:wait,previous:row.saved_wait_reason,account:candidate?.account??null,window:candidate?.window??null,
+        spendable_percent:Object.fromEntries(rooms.map(room=>{const value=usage?spendableOf(room.account):null;
+          return [room.account,value===null?null:Math.round(value*10)/10];}))});
     }
     if(row.dispatch_next_attempt_ms===next&&row.saved_account===(eligible?account:null)
       &&row.saved_window===(eligible?candidate!.window:null)&&row.saved_boundary_ms===boundary)continue;

@@ -5843,7 +5843,8 @@ const CLAIMABLE_QUEUED_TURN_WHERE = `
     (turn.saved_kind='banked' AND turn.saved_account IS NOT NULL AND turn.saved_boundary_ms>?
       -- No banked work waits for an idle fleet any more. Quiet-only work stopped on 2026-11-12
       -- because standing agents run all night; generic banked work kept the gate and so never ran
-      -- either, since it counted every queued ordinary turn fleet-wide. The reserve, the account
+      -- either, since it counted every queued ordinary turn fleet-wide. What his own work is
+      -- projected to leave spare (written here as saved_account/saved_boundary_ms), the account
       -- whose allowance lapses first, and the two hours before that window resets are the
       -- protection (saved-work.ts reconsiderBankedWork).
       AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.id<>turn.id

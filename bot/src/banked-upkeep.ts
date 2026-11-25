@@ -1,6 +1,7 @@
 import {db,getClaudePreferredModel,getSessionById} from './state';
 import {sessionMetadata} from './session-inputs';
-import {inspectSavedWork,noticeMissedQuietWindows,quietOnlyCutoff,reconsiderBankedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
+import {usageForecasts} from './provider-usage-forecast';
+import {bankedSpendablePercent,inspectSavedWork,noticeMissedQuietWindows,quietOnlyCutoff,reconsiderBankedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
 import {quietOnlyAdmits} from './quiet-hours';
 import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
@@ -63,9 +64,13 @@ export function createBankedUpkeep(input:{registry:()=>ActiveTurnDispatchRegistr
       const model=provider==='claude-code'
         ?getClaudePreferredModel(row.session_id,row.id)??(owningSession?sessionMetadata(owningSession).model:null)??null:undefined;
       const room=usage?savedWorkAccountRooms(provider,usage,Date.now(),model).find(item=>item.account===row.saved_account):null;
+      // The same quantity the forecast pass admitted it on, so the run stops where admission would
+      // now refuse it: at zero spendable, not at a flat line.
+      const spendable=usage&&row.saved_account
+        ?bankedSpendablePercent(provider,usage,usageForecasts(provider),row.saved_account,model,reserve,now):null;
       if(row.saved_boundary_ms!==null&&row.saved_boundary_ms<=Date.now()||
-        !usage||!account||!room||room.problem||room.tightestUsedPercent===null||room.tightestUsedPercent>=100-reserve
-        ||!window||window.usedPercent>=100-reserve)
+        !usage||!account||!room||room.problem||room.tightestUsedPercent===null
+        ||!window||spendable===null||spendable<=0)
         requestYield(turnId,'allowance_boundary');
     }
     if(Number.isFinite(nextQuietBoundary))quietBoundaryTimer=setTimeout(()=>inspectActive(),Math.max(1,nextQuietBoundary-Date.now()));

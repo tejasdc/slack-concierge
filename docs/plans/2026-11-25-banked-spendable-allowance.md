@@ -117,3 +117,46 @@ wrote the eligible-account fields by hand, and the bank then sat dead for weeks
 
 Rows 2, 5, 6 and 7 are reproducible against live readings as they stand today. Rows 1, 3, 4, 9 and
 10 need either a seeded window or a wait for a real one, and the record must say which it was.
+
+## Implementation and verification (2026-11-25)
+
+`bankedSpendablePercent` in `bot/src/saved-work.ts` is the one predicate: the forecast pass admits
+an account only when it is positive, and the running-job check in `bot/src/banked-upkeep.ts` yields
+at zero or below. Window length comes from one table (`windowLengthHours`: `5-hour` 5 h, weekly
+168 h, Codex's `N-minute allowance`). The account-room check now only refuses a stale, failed or
+used-up reading; how much of the room is spare is the spendable question. The claim in
+`bot/src/state.ts` reads only `saved_account` and `saved_boundary_ms`, which the forecast pass
+writes from that predicate, so it needed no change. No new wait reason: `window_runs_out_first`
+covers "his own work is projected to use it", with its words widened to say so, and the
+`banked_work_wait` log line now carries each account's spendable percentage.
+
+Checked by a disposable harness (not committed) that copied the live usage report's readings and
+measured rates into a throwaway ledger and ran the real forecast pass, claim and running-job check.
+It wrote no eligible-account field by hand.
+
+| # | How | Seen |
+| --- | --- | --- |
+| 1 | Seeded: 0% week, 144 h left, no rate | 78.6% spendable; chosen |
+| 2 | Live: hey@ week 79%, measured 1–2%/h, 29 h left | −7.9% then −37.8% (rate rose between readings); not chosen; `window_runs_out_first` |
+| 3 | Seeded: 79% week, rate 0.5%/h | 1.5 h out: 20.3% spendable, chosen. 1 h out: 20.5% spendable but refused by the unchanged one-hour floor for generic work, and the reason reads `window_runs_out_first` |
+| 4 | Seeded: week 10%, five-hour 80% | With a 10%/h rate: −10%, refused. With no rate: 4.5 h out −2.5%, refused; **3 h out +5%, admitted on the five-hour window** |
+| 5 | Live: chann (resets Nov 30) and gmail (Dec 2) both spendable (78.7%, 76.8%) | chann chosen; the real claim took the turn |
+| 6 | Live: hey@ resets soonest but projected to exhaust | chann chosen; the log line shows hey@'s negative spendable |
+| 7 | Live readings aged 10 minutes | Not chosen; `stale_usage_reading` |
+| 8 | Empty bank | Pass changed nothing |
+| 9 | Live: chann job running, then its rate raised to 30%/h | No yield at 78.7%; yield requested at −2993% with `allowance_boundary`; continuation queued |
+| 10 | Live: his ordinary turn queued while the banked job runs | His turn claimed; a second banked job held by the one-unattended rule |
+
+What did not survive contact:
+
+- **A banked job's own spending counts as his rate.** The rate is measured from the account's
+  readings, which include the banked run itself. A quiet-only job on a fresh account (6% used,
+  100 h left) that spends 3%/h makes spendable −206% within minutes and is stopped. Generic banked
+  work is less exposed because it only starts in the last two hours (3%/h × 2 h = 6%). Until the
+  rate excludes banked usage, overnight quiet-only work will stop itself shortly after it starts
+  on any account early in its week.
+- **Row 4 holds only with a rate or more than 4 h left.** With no rate the fallback holds
+  25% × (hours left ÷ 5) of a five-hour window, so at 80% used with 3 h left 5% is spendable.
+- **The two-hour trigger and the one-hour floor were kept**, as the implementation brief said,
+  though this design says the spendable quantity replaces them; row 3 inside its last hour is
+  refused by the floor and reported with a reason that no longer fits.
