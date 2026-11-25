@@ -1,7 +1,6 @@
 import {db,getClaudePreferredModel,getSessionById} from './state';
 import {sessionMetadata} from './session-inputs';
-import {usageForecasts} from './provider-usage-forecast';
-import {bankedSpendablePercent,inspectSavedWork,noticeMissedQuietWindows,quietOnlyCutoff,reconsiderBankedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
+import {inspectSavedWork,noticeMissedQuietWindows,quietOnlyCutoff,reconsiderBankedWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
 import {quietOnlyAdmits} from './quiet-hours';
 import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
@@ -41,7 +40,7 @@ export function createBankedUpkeep(input:{registry:()=>ActiveTurnDispatchRegistr
     // (turns 28657 and 28743 on 2026-11-12).
     const gate=db.query('SELECT owner_pid FROM deployment_drain WHERE singleton=1').get() as {owner_pid:number}|null;
     const draining=gate?.owner_pid===process.pid;
-    const settings=savedWorkSettings(),reserve=settings.reserve_percent,now=Date.now();
+    const settings=savedWorkSettings(),now=Date.now();
     let nextQuietBoundary=Infinity;
     for(const turnId of active){
       const row=savedTurn(turnId);if(!row||row.saved_kind!=='banked'||row.saved_manual_start&&!row.saved_quiet_only)continue;
@@ -64,13 +63,13 @@ export function createBankedUpkeep(input:{registry:()=>ActiveTurnDispatchRegistr
       const model=provider==='claude-code'
         ?getClaudePreferredModel(row.session_id,row.id)??(owningSession?sessionMetadata(owningSession).model:null)??null:undefined;
       const room=usage?savedWorkAccountRooms(provider,usage,Date.now(),model).find(item=>item.account===row.saved_account):null;
-      // The same quantity the forecast pass admitted it on, so the run stops where admission would
-      // now refuse it: at zero spendable, not at a flat line.
-      const spendable=usage&&row.saved_account
-        ?bankedSpendablePercent(provider,usage,usageForecasts(provider),row.saved_account,model,reserve,now):null;
+      // The run is bounded by the level fixed at admission (saved-work.ts bankedCeilingPercent), not
+      // re-judged against a measured rate its own spending inflates. A turn admitted before the
+      // ceiling existed has none, and yields so its continuation is admitted with one.
+      const ceiling=row.saved_ceiling_percent??null;
       if(row.saved_boundary_ms!==null&&row.saved_boundary_ms<=Date.now()||
         !usage||!account||!room||room.problem||room.tightestUsedPercent===null
-        ||!window||spendable===null||spendable<=0)
+        ||!window||ceiling===null||room.tightestUsedPercent>=ceiling)
         requestYield(turnId,'allowance_boundary');
     }
     if(Number.isFinite(nextQuietBoundary))quietBoundaryTimer=setTimeout(()=>inspectActive(),Math.max(1,nextQuietBoundary-Date.now()));

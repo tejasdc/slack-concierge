@@ -120,43 +120,49 @@ Rows 2, 5, 6 and 7 are reproducible against live readings as they stand today. R
 
 ## Implementation and verification (2026-11-25)
 
-`bankedSpendablePercent` in `bot/src/saved-work.ts` is the one predicate: the forecast pass admits
-an account only when it is positive, and the running-job check in `bot/src/banked-upkeep.ts` yields
-at zero or below. Window length comes from one table (`windowLengthHours`: `5-hour` 5 h, weekly
-168 h, Codex's `N-minute allowance`). The account-room check now only refuses a stale, failed or
-used-up reading; how much of the room is spare is the spendable question. The claim in
-`bot/src/state.ts` reads only `saved_account` and `saved_boundary_ms`, which the forecast pass
-writes from that predicate, so it needed no change. No new wait reason: `window_runs_out_first`
-covers "his own work is projected to use it", with its words widened to say so, and the
-`banked_work_wait` log line now carries each account's spendable percentage.
+`bankedSpendablePercent` in `bot/src/saved-work.ts` is the one quantity: per included window, what
+is left minus what his own work is expected to use before that window resets; the smallest window
+binds. With a measured rate, expected use is rate × hours left. With none, the reserve is held, and
+only a window of a day or longer tapers it by the share still to run: the taper rests on the work he
+could still fit in shrinking as the window closes, which is true of a week and false of a five-hour
+window, where one burst can take the lot with three hours left. Window length comes from one table
+(`windowLengthHours`).
+
+**The spend is bounded at admission, not re-judged while running.** Admission stores a ceiling on
+the turn (`saved_ceiling_percent`): the account's tightest used percentage at admission plus the
+spendable percentage then. The running-job check in `bot/src/banked-upkeep.ts` yields when the
+tightest used percentage reaches that ceiling and never measures a rate. The first version re-judged
+the running job against the measured rate, which includes the job's own spending: a 3%/h job on a
+fresh week read as −206% spendable and stopped itself within minutes. A level cannot be polluted
+by who moved it, and his own work arriving mid-run reaches it sooner, so the bank yields earlier. A
+running turn admitted before the ceiling existed has none and yields once, so its continuation is
+admitted with one. A waiting admitted turn keeps its ceiling through drift under half a point.
+
+The account-room check refuses only a stale, failed or used-up reading. The claim in
+`bot/src/state.ts` reads only `saved_account` and `saved_boundary_ms`, which the pass writes from
+the same quantity, so it needed no change. Wait reasons: `window_runs_out_first` (words widened to
+"his own work is projected to use it") and a new `too_close_to_reset` for his one-hour floor, which
+stays because a job that cannot finish before the reset wastes the work. The `banked_work_wait` log
+line carries each account's spendable percentage and the ceiling.
 
 Checked by a disposable harness (not committed) that copied the live usage report's readings and
 measured rates into a throwaway ledger and ran the real forecast pass, claim and running-job check.
-It wrote no eligible-account field by hand.
+It wrote no eligible-account field by hand. Every row was re-run after the ceiling change.
 
 | # | How | Seen |
 | --- | --- | --- |
-| 1 | Seeded: 0% week, 144 h left, no rate | 78.6% spendable; chosen |
-| 2 | Live: hey@ week 79%, measured 1–2%/h, 29 h left | −7.9% then −37.8% (rate rose between readings); not chosen; `window_runs_out_first` |
-| 3 | Seeded: 79% week, rate 0.5%/h | 1.5 h out: 20.3% spendable, chosen. 1 h out: 20.5% spendable but refused by the unchanged one-hour floor for generic work, and the reason reads `window_runs_out_first` |
-| 4 | Seeded: week 10%, five-hour 80% | With a 10%/h rate: −10%, refused. With no rate: 4.5 h out −2.5%, refused; **3 h out +5%, admitted on the five-hour window** |
-| 5 | Live: chann (resets Nov 30) and gmail (Dec 2) both spendable (78.7%, 76.8%) | chann chosen; the real claim took the turn |
+| 1 | Seeded: 0% week, 144 h left, no rate | 78.6% spendable; chosen; ceiling 78.6% |
+| 2 | Live: hey@ week 79%, measured 2%/h, 29 h left | −37.7%; not chosen; `window_runs_out_first` |
+| 3 | Seeded: 79% week, rate 0.5%/h or none | 1.5 h out: 20.3% spendable, chosen, ceiling 99.3%. 54 min out: ~20.6% spendable, refused, `too_close_to_reset` |
+| 4 | Seeded: week 10%, five-hour 80% | No rate, 3 h or 4.5 h left: −5%, refused. 10%/h: −10%, refused. All `window_runs_out_first` |
+| 5 | Live: chann (resets Nov 30) and gmail (Dec 2) spendable (78.7%, 76.8%) | chann chosen; the real claim took the turn |
 | 6 | Live: hey@ resets soonest but projected to exhaust | chann chosen; the log line shows hey@'s negative spendable |
 | 7 | Live readings aged 10 minutes | Not chosen; `stale_usage_reading` |
 | 8 | Empty bank | Pass changed nothing |
-| 9 | Live: chann job running, then its rate raised to 30%/h | No yield at 78.7%; yield requested at −2993% with `allowance_boundary`; continuation queued |
+| 9 | Live: chann job running, ceiling 84.7% | Its own spending (3%/h, +1 point, rate-spendable −215%): no yield. Tightest weekly at the ceiling: yield requested, `allowance_boundary`; continuation queued |
 | 10 | Live: his ordinary turn queued while the banked job runs | His turn claimed; a second banked job held by the one-unattended rule |
 
-What did not survive contact:
-
-- **A banked job's own spending counts as his rate.** The rate is measured from the account's
-  readings, which include the banked run itself. A quiet-only job on a fresh account (6% used,
-  100 h left) that spends 3%/h makes spendable −206% within minutes and is stopped. Generic banked
-  work is less exposed because it only starts in the last two hours (3%/h × 2 h = 6%). Until the
-  rate excludes banked usage, overnight quiet-only work will stop itself shortly after it starts
-  on any account early in its week.
-- **Row 4 holds only with a rate or more than 4 h left.** With no rate the fallback holds
-  25% × (hours left ÷ 5) of a five-hour window, so at 80% used with 3 h left 5% is spendable.
-- **The two-hour trigger and the one-hour floor were kept**, as the implementation brief said,
-  though this design says the spendable quantity replaces them; row 3 inside its last hour is
-  refused by the floor and reported with a reason that no longer fits.
+Still open: a continuation queued after a banked yield is admitted by the forecast pass, which does
+judge on the measured rate, and that rate still includes the run that just yielded. A 3%/h run on a
+fresh week therefore keeps its own continuation waiting until the recent pace clears (about an
+hour). It no longer stops a running job; it only delays the restart.

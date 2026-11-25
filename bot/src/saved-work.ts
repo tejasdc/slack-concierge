@@ -22,7 +22,7 @@ export type SavedTurn={id:number;session_id:number;status:string;saved_kind:Save
   saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;saved_fire_at_ms:number|null;
   saved_daily_time:string|null;saved_time_zone:string|null;
   saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;dispatch_failure_class:string|null;
-  saved_alerted_at_ms:number|null;accepted_input_id:string|null;saved_wait_reason?:string|null};
+  saved_alerted_at_ms:number|null;accepted_input_id:string|null;saved_wait_reason?:string|null;saved_ceiling_percent?:number|null};
 
 const DAY=24*60*60_000, HOUR=60*60_000;
 export type SavedWorkSettings={quiet_start_hour:number;quiet_end_hour:number;reserve_percent:number;wait_days:number;time_zone:string};
@@ -108,7 +108,7 @@ const savedRows=()=>db.query("SELECT * FROM turns WHERE saved_kind IS NOT NULL A
  * and nothing recorded which of its conditions had held it.
  */
 export type BankedWait='eligible_not_claimed'|'no_usage_reading'|'stale_usage_reading'|'no_allowance_room'
-  |'window_runs_out_first'|'other_work_running'|'outside_quiet_hours'|'waiting_for_reset';
+  |'window_runs_out_first'|'too_close_to_reset'|'other_work_running'|'outside_quiet_hours'|'waiting_for_reset';
 export const BANKED_WAIT_WORDS:Record<BankedWait,string>={
   eligible_not_claimed:'it was eligible to start but the queue did not take it (another unattended banked job was running, or a pause or Concierge update held the queue)',
   no_usage_reading:'Concierge had no current allowance reading for its provider',
@@ -118,6 +118,7 @@ export const BANKED_WAIT_WORDS:Record<BankedWait,string>={
   // Retained for rows stored before 2026-11-25, when banked work stopped waiting for an idle
   // fleet. Nothing writes it now; a notice about an older waiting job still needs its words.
   other_work_running:'other agent work was running or queued, and generic banked work waited for an idle fleet',
+  too_close_to_reset:'an account had spare allowance, but its window resets within the hour, too soon for the job to finish, so starting it would waste the work rather than save allowance',
   outside_quiet_hours:'it was outside the quiet hours',
   waiting_for_reset:'it is waiting until its allowance window is close to resetting',
 };
@@ -143,7 +144,7 @@ export function bankedApiRoute(session:NonNullable<ReturnType<typeof getSessionB
 
 /**
  * How long each allowance window lasts, by the name the usage readers give it. The one table:
- * the tapered fallback below is the only thing that needs a window's length.
+ * the fallback below is the only thing that needs a window's length.
  */
 const WINDOW_LENGTH_HOURS:ReadonlyArray<readonly [RegExp,(match:RegExpMatchArray)=>number]>=[
   [/5-hour/i,()=>5],
@@ -158,16 +159,21 @@ export function windowLengthHours(name:string):number|null {
 /**
  * What his own work is expected to use of one window before it resets
  * (docs/plans/2026-11-25-banked-spendable-allowance.md). A measured rate governs: rate × hours
- * left. With no rate, future demand is unknown, not zero, so the reserve is held, tapered by the
- * share of the window still to run — about 23% of a fresh week, a fraction of a percent in its
- * last hour. A window whose reset or length cannot be read is held at the whole reserve.
+ * left. With no rate, future demand is unknown, not zero, so the reserve is held. Only a long
+ * window tapers it by the share still to run (about 23% of a fresh week, a fraction of a percent
+ * in its last hour): the taper rests on the work he could still fit into the window shrinking
+ * toward nothing as it closes, which is true of a week and false of a five-hour window, where one
+ * burst of his can consume the lot with three hours left. A window that refills within hours, or
+ * whose reset or length cannot be read, holds the whole reserve until a measured rate says otherwise.
  */
+const TAPER_MIN_HOURS=24;
 export function expectedOwnUse(forecast:Pick<UsageForecast,'window'|'resetsAt'|'ratePerHour'>,reservePercent:number,now:number):number {
   const reset=Date.parse(forecast.resetsAt??'');
   const length=windowLengthHours(forecast.window);
   const hoursLeft=Number.isFinite(reset)?Math.max(0,(reset-now)/HOUR):length;
   if(forecast.ratePerHour!==null)return hoursLeft===null?Infinity:forecast.ratePerHour*hoursLeft;
-  return reservePercent*(Number.isFinite(reset)&&length!==null?Math.min(1,hoursLeft!/length):1);
+  const tapers=Number.isFinite(reset)&&length!==null&&length>=TAPER_MIN_HOURS;
+  return reservePercent*(tapers?Math.min(1,hoursLeft!/length!):1);
 }
 
 /**
@@ -175,7 +181,8 @@ export function expectedOwnUse(forecast:Pick<UsageForecast,'window'|'resetsAt'|'
  * work is expected to use before that window resets, and the smallest of them binds — a five-hour
  * window near its limit refuses even when the week is open. Null when any included window has no
  * forecast (its reading is stale or failed), so nothing is spent on a reading Concierge cannot
- * trust. The forecast pass and the running-job check both use this, so they cannot disagree.
+ * trust. Admission turns it into a ceiling on the account's tightest used percentage
+ * (`bankedCeilingPercent`), which is all the running-job check reads.
  */
 export function bankedSpendablePercent(provider:AccountIdentityProvider,usage:ProviderUsage,forecasts:readonly UsageForecast[],
   accountLabel:string,model:string|null|undefined,reservePercent:number,now:number):number|null {
@@ -189,6 +196,13 @@ export function bankedSpendablePercent(provider:AccountIdentityProvider,usage:Pr
     spendable=Math.min(spendable,(100-forecast.usedPercent)-expectedOwnUse(forecast,reservePercent,now));
   }
   return spendable;
+}
+
+/** The tightest used percentage a banked run may reach: the level read at admission plus what was
+ * spendable then. Null when either is unknown, which the running-job check treats as no room. */
+export function bankedCeilingPercent(tightestUsedPercent:number|null,spendablePercent:number|null):number|null {
+  if(tightestUsedPercent===null||spendablePercent===null||!Number.isFinite(spendablePercent))return null;
+  return Math.round(Math.min(100,tightestUsedPercent+spendablePercent)*10)/10;
 }
 
 /** Forecast and reachability are read outside the claim. Only changed instants are written. */
@@ -231,7 +245,7 @@ export function reconsiderBankedWork(now=Date.now()):number {
       if(row.saved_wait_reason!==wait)db.query("UPDATE turns SET saved_wait_reason=? WHERE id=? AND status='queued' AND saved_kind='banked'").run(wait,row.id);
       const next=apiCreditsNextGrantAt(now);
       if(row.saved_account===null&&row.saved_window===null&&row.saved_boundary_ms===null&&row.dispatch_next_attempt_ms===next)continue;
-      changed+=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=NULL,saved_window=NULL,saved_boundary_ms=NULL
+      changed+=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=NULL,saved_window=NULL,saved_boundary_ms=NULL,saved_ceiling_percent=NULL
         WHERE id=? AND status='queued' AND saved_kind='banked'`).run(next,row.id).changes;
       continue;
     }
@@ -260,14 +274,22 @@ export function reconsiderBankedWork(now=Date.now()):number {
     // 2026-11-01, when account usage moved to each account's own login, which reports no
     // `willLastToReset` at all. A stale reading is still refused, by `hasRoom`: a reading that is
     // not fresh carries no percentage.
-    const candidate=usage?forecasts.filter(window=>window.resetsAt
+    const spendableWindows=usage?forecasts.filter(window=>window.resetsAt
       &&usage.accounts.some(account=>account.label===window.account
         &&includedAllowanceWindows(provider,account,model).some(item=>item.name===window.window))
       && chooseAccountForTurn({accounts:rooms,bound:{account:window.account,reason:'spending-this-window'},prefer:null}).account===window.account
       && !window.runsOutBeforeReset && (spendableOf(window.account)??0)>0
-      && hasRoom(window.account)
-      && (quietOnly||Date.parse(window.resetsAt)>=now+HOUR))
-      .sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]:null;
+      && hasRoom(window.account)):[];
+    // His one-hour floor for generic work: a job that cannot finish before the reset wastes the work
+    // rather than saving allowance. Quiet-only work is bounded by the quiet cutoff instead.
+    const candidate=spendableWindows.filter(window=>quietOnly||Date.parse(window.resetsAt!)>=now+HOUR)
+      .sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]??null;
+    // The bank's spend is bounded at admission, as a level on the account's tightest window, and
+    // never re-judged against a rate while it runs: a running banked job raises the measured rate
+    // itself, and a 3%/h job on a fresh week then reads as −206% spendable and stops itself within
+    // minutes (2026-11-25 verification). A level cannot be polluted by who moved it, and his own
+    // work arriving mid-run still reaches it sooner, so the job yields earlier.
+    const ceiling=candidate?bankedCeilingPercent(rooms.find(room=>room.account===candidate.account)?.tightestUsedPercent??null,spendableOf(candidate.account)):null;
     const account=candidate?.account??null;
     const reset=candidate?Date.parse(candidate.resetsAt!):null;
     // No banked work waits for an idle fleet. Quiet-only work stopped doing so on 2026-11-12,
@@ -285,7 +307,8 @@ export function reconsiderBankedWork(now=Date.now()):number {
     const wait:BankedWait=eligible?'eligible_not_claimed'
       :!usage?'no_usage_reading'
       :!readable?'stale_usage_reading'
-      :!candidate?(rooms.some(room=>hasRoom(room.account))?'window_runs_out_first':'no_allowance_room')
+      :!candidate?(spendableWindows.length?'too_close_to_reset'
+        :rooms.some(room=>hasRoom(room.account))?'window_runs_out_first':'no_allowance_room')
       :quietOnly?'outside_quiet_hours':'waiting_for_reset';
     const next=eligible?0:quietOnly?nextQuietStart(now,settings):reset!==null?Math.min(nextQuietStart(now,settings),Math.max(now+60_000,reset-2*HOUR))
       :row.dispatch_next_attempt_ms!==null&&row.dispatch_next_attempt_ms>now+3*60_000?row.dispatch_next_attempt_ms:null;
@@ -295,14 +318,20 @@ export function reconsiderBankedWork(now=Date.now()):number {
     if(row.saved_wait_reason!==wait&&!(quietOnly&&wait==='outside_quiet_hours'&&row.saved_wait_reason)){
       db.query("UPDATE turns SET saved_wait_reason=? WHERE id=? AND status='queued' AND saved_kind='banked'").run(wait,row.id);
       log('info','banked_work_wait',{turn_id:row.id,session_id:`concierge:${row.session_id}`,quiet_only:quietOnly,
-        reason:wait,previous:row.saved_wait_reason,account:candidate?.account??null,window:candidate?.window??null,
+        reason:wait,previous:row.saved_wait_reason,account:candidate?.account??null,window:candidate?.window??null,ceiling_percent:ceiling,
         spendable_percent:Object.fromEntries(rooms.map(room=>{const value=usage?spendableOf(room.account):null;
           return [room.account,value===null?null:Math.round(value*10)/10];}))});
     }
+    // A waiting admitted job keeps its ceiling through small drift, so each reading does not rewrite
+    // the row and wake the queue; a real move (half a point) or a new account or window replaces it.
+    const kept=row.saved_ceiling_percent??null;
+    const storedCeiling=!eligible?null:kept!==null&&ceiling!==null&&row.saved_account===account
+      &&row.saved_window===candidate!.window&&Math.abs(kept-ceiling)<0.5?kept:ceiling;
     if(row.dispatch_next_attempt_ms===next&&row.saved_account===(eligible?account:null)
-      &&row.saved_window===(eligible?candidate!.window:null)&&row.saved_boundary_ms===boundary)continue;
-    const result=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=?,saved_window=?,saved_boundary_ms=?
-      WHERE id=? AND status='queued' AND saved_kind='banked'`).run(next,eligible?account:null,eligible?candidate!.window:null,boundary,row.id);
+      &&row.saved_window===(eligible?candidate!.window:null)&&row.saved_boundary_ms===boundary
+      &&(row.saved_ceiling_percent??null)===storedCeiling)continue;
+    const result=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=?,saved_window=?,saved_boundary_ms=?,saved_ceiling_percent=?
+      WHERE id=? AND status='queued' AND saved_kind='banked'`).run(next,eligible?account:null,eligible?candidate!.window:null,boundary,storedCeiling,row.id);
     changed+=result.changes;
   }
   if(changed)executionChanged();
