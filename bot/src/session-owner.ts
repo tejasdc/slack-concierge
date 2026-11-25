@@ -1803,7 +1803,6 @@ export class SessionOwner {
     // An outside session's turns run as the Codex command line in their own unit (outside-codex.ts).
     if(input.outside&&(selected.provider!=='codex'||input.saved))throw new SessionOwnerError('An outside request runs a new Codex session; choose a Codex alias.',400);
     // Only Claude Code turns run on runners today; another provider would silently stay on this machine.
-    if(input.onRunner&&'claudeRoute' in selected)throw new SessionOwnerError('--on-runner places a session by its subscription account; the API-credit route runs on this machine.',400,'API_CREDITS_ROUTE_RUNNER');
     if(input.onRunner&&selected.provider!=='claude-code')throw new SessionOwnerError('--on-runner runs a Claude Code session; choose a Claude alias (Automatic chose '+selected.provider+').',400);
     // Pinned only where the owner verified Tejas's own choice (the same custody that exempts --provider-reason).
     const humanProviderChoice=input.provider!=='auto'&&input.provider!=='chatgpt'&&humanChoseProvider(input.sourceInputId,selected.provider);
@@ -2985,9 +2984,6 @@ export class SessionOwner {
     const project=input.projectLocation??sessionProject(this.defaultCwd,input.project,{inside:true});
     if(!project)throw new SessionOwnerError('Project is unknown or unavailable. Choose an exact project from sessions projects; do not use the Inbox or another project as a fallback.');
     const selected=resolveProviderSelector(selector),cwd=project.cwd;
-    // The API-credit route runs on this machine's Console key; a runner resolves accounts by sign-in email.
-    if(selected.route&&'runner' in project&&project.runner)
-      throw new SessionOwnerError(`${selector.alias} runs on this machine's Console API credit; this project runs on runner ${project.runner}. Choose a subscription alias for it.`,400,'API_CREDITS_ROUTE_RUNNER');
     if(selected.provider==='claude-code'&&!selected.route&&claudeAllowanceHeld())throw new SessionOwnerError(CLAUDE_ALLOWANCE_HOLD_MESSAGE,409,'CLAUDE_ALLOWANCE_HELD');
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd,
       ...(selected.route?{claudeRoute:selected.route}:{}),

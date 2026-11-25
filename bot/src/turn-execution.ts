@@ -17,7 +17,7 @@ import {codexRelayRunner} from './codex-app-server-client';
 import {runnerMachineCall} from './runner-machine-calls';
 import {claudeAccountSelection} from './provider-account-selection';
 import {holdsInbox} from './inbox-session-pin';
-import {API_CREDITS_ACCOUNT,apiCreditsConfigured,apiCreditsCycle,apiCreditsEnvironment,apiCreditsSpentMessage,apiRouteDecision,isApiCreditRefusal,isApiKeyRefusal,recordApiCreditSpend} from './claude-api-route';
+import {API_CREDITS_ACCOUNT,apiRouteRunnerHasKey,apiCreditsConfigured,apiCreditsCycle,apiCreditsEnvironment,apiCreditsSpentMessage,apiRouteDecision,isApiCreditRefusal,isApiKeyRefusal,recordApiCreditSpend} from './claude-api-route';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {homedir} from 'node:os';
@@ -390,7 +390,7 @@ function apiOverflowEligible(input:TurnExecutionInput,model:string|null):boolean
   if(!session||session.agent_session_uuid!==null||holdsInbox(session))return false;
   const metadata=sessionMetadata(session);
   if(metadata.claudeRoute||metadata.standingRole||metadata.repairAgent||metadata.inbox||metadata.outside||(metadata as {onRunner?:unknown}).onRunner===true)return false;
-  if(metadata.providerRunner||metadata.providerAccount)return false;
+  if(!apiRouteRunnerHasKey(metadata.providerRunner)||metadata.providerAccount)return false;
   return !!model&&API_OVERFLOW_MODELS.has(model);
 }
 /** Fixes the route on the session before its first conversation exists, with the reason on record. */

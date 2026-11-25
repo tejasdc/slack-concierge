@@ -60,6 +60,14 @@ export function apiCreditsEnvironment(options: { keyFile?: string; home?: string
   return { ANTHROPIC_API_KEY: key, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_ENTRYPOINT: "sdk-ts", CONCIERGE_CLAUDE_ROUTE: API_CREDITS_ACCOUNT };
 }
 
+/**
+ * Where Concierge may choose the route by itself: this machine or its own turn runner (on the server,
+ * `ax41`), which read the same key file. Another machine's runner has no key.
+ */
+export function apiRouteRunnerHasKey(runner: string | null | undefined, ownRunner = process.env.CONCIERGE_TURN_RUNNER?.trim() || null): boolean {
+  return !runner || runner === ownRunner;
+}
+
 /** Whether the key exists here; the overflow and banked rules never pick a route that cannot launch. */
 export function apiCreditsConfigured(keyFile = API_CREDITS_KEY_FILE): boolean {
   try { readApiKey(keyFile); return true; } catch { return false; }

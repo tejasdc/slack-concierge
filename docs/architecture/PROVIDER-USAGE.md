@@ -1123,7 +1123,9 @@ recorded on the session as a `claude_route` event; the session's account reads `
 
 **Where the key is read.** Only on the machine that starts Claude, from the root-only file the
 credential portal wrote. A runner turn carries just the route marker; the runner reads its own copy, as
-it resolves an account's home itself, so the key is never in a job payload or the owner's ledger. A
+it resolves an account's home itself, so the key is never in a job payload or the owner's ledger. Any
+project or runner may be chosen; a runner without the key file ends the turn saying so (today only the
+server holds it). A
 fresh `claude` started from an API-route agent's shell drops the inherited key and stays on the
 subscription accounts.
 

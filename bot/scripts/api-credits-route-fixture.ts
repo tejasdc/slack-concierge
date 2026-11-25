@@ -44,8 +44,12 @@ try{
   assert.equal(sessionMetadata(onApi).model,'claude-sonnet-5-5');
   const onSubscription=getSessionById(create('subscription','cc-sonnet').session_id)!;
   assert.equal(sessionMetadata(onSubscription).claudeRoute,undefined);
-  assert.throws(()=>create('remote','cc-api',{projectLocation:{...here,runner:'mac'}}),(error:any)=>error.code==='API_CREDITS_ROUTE_RUNNER');
-  assert.throws(()=>create('on-runner','cc-api',{onRunner:true}),(error:any)=>error.code==='API_CREDITS_ROUTE_RUNNER');
+  // Runner placement is allowed: the runner reads its own key file and refuses plainly when it has none.
+  const placed=getSessionById(create('runner','cc-api',{projectLocation:{...here,runner:'ax41'}}).session_id)!;
+  assert.equal(sessionMetadata(placed).claudeRoute,'api-credits');
+  assert.equal(route.apiRouteRunnerHasKey(null,'ax41'),true);
+  assert.equal(route.apiRouteRunnerHasKey('ax41','ax41'),true);
+  assert.equal(route.apiRouteRunnerHasKey('mac','ax41'),false,'Concierge never picks the route for a machine without the key');
 
   // 3. The cycle: granted on the 22nd, expiring at the end of the 32nd day after (Console, 2026-11-25).
   const nov25=Date.parse('2026-11-25T18:00:00Z');
