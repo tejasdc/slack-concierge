@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, symlinkSync } from "node:fs";
+import { CLAUDE_SCRATCH, isClaudePerLogin } from "./claude-home-entries";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -22,7 +23,10 @@ export type ClaudeRoute = "api-credits";
 
 /**
  * Its own Claude configuration folder. The leading dot keeps it out of every account-folder scan
- * (those skip dot entries), and its transcripts stay here so an exact resume finds them.
+ * (those skip dot entries). Like every account folder it links the machine's shared set in
+ * `~/.claude` (settings, hooks, instructions, skills, plugins, transcripts) and keeps only per-login
+ * state of its own, so its agents run with Concierge's permissions and hooks and its transcripts sit
+ * where history, archives and resumes already look.
  */
 export function apiCreditsConfigDir(home = process.env.HOME || homedir()): string {
   return join(home, ".claude-accounts", ".api-credits");
@@ -49,15 +53,52 @@ function readApiKey(path: string): string {
  * `CONCIERGE_CLAUDE_ROUTE` tells the agent's own shell launcher that the key belongs to this turn,
  * so a fresh `claude` started from the agent's shell drops it and stays on the subscription accounts.
  *
- * `CONCIERGE_CLAUDE_ACCOUNT_PIN` is deliberately not set: managed turns start the Claude binary
- * directly, and the variable would be inherited by the agent's shell, where it makes every nested
- * `claude` skip account selection and silently spend the key.
+ * `CONCIERGE_CLAUDE_ACCOUNT_PIN` is deliberately not set: it would be inherited by the agent's shell,
+ * where it makes every nested `claude` skip account selection and silently spend the key. The shell
+ * launcher tells the managed launch apart by its own parent mark (agent-claude-launch.ts).
  */
 export function apiCreditsEnvironment(options: { keyFile?: string; home?: string } = {}): Record<string, string> {
   const configDir = apiCreditsConfigDir(options.home);
   const key = readApiKey(options.keyFile ?? API_CREDITS_KEY_FILE);
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  linkSharedClaudeSet(configDir, join(options.home ?? (process.env.HOME || homedir()), ".claude"));
   return { ANTHROPIC_API_KEY: key, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_ENTRYPOINT: "sdk-ts", CONCIERGE_CLAUDE_ROUTE: API_CREDITS_ACCOUNT };
+}
+
+/**
+ * Link every shared entry of `~/.claude` into the API folder, as account folders are linked
+ * (provider-account-dispatch.ts). A private copy of a shared entry is moved aside into
+ * `.unlinked-<time>/`, never deleted. Fails closed: a folder still missing a shared settings entry
+ * would run agents without Concierge's permissions or hooks, so the launch is refused instead.
+ * (2026-11-25: the first API-route turn had no settings, and its agent could not run the reply command.)
+ */
+export function linkSharedClaudeSet(configDir: string, shared: string): void {
+  let names: string[] = [];
+  try { names = readdirSync(shared); } catch { return; }
+  const missing: string[] = [];
+  let aside: string | null = null;
+  for (const name of names) {
+    if (isClaudePerLogin(name)) continue;
+    const wanted = join(shared, name), target = join(configDir, name);
+    let linked: string | null = null, present = false;
+    try { const stat = lstatSync(target); present = true; linked = stat.isSymbolicLink() ? readlinkSync(target) : null; } catch {}
+    if (linked === wanted) continue;
+    try {
+      if (present && CLAUDE_SCRATCH.has(name)) continue;
+      if (present) {
+        aside ??= join(configDir, `.unlinked-${Date.now()}`);
+        mkdirSync(aside, { recursive: true, mode: 0o700 });
+        renameSync(target, join(aside, name));
+      }
+      symlinkSync(wanted, target);
+    } catch {
+      // Another launch may have linked it at the same moment.
+      try { if (readlinkSync(target) === wanted) continue; } catch {}
+      if (!CLAUDE_SCRATCH.has(name) && existsSync(wanted)) missing.push(name);
+    }
+  }
+  if (missing.length) throw new ApiCreditsUnavailableError(
+    `The API-credit Claude folder could not link the shared Claude settings (${missing.slice(0, 5).join(", ")}), so this API-credit session cannot start.`);
 }
 
 /**

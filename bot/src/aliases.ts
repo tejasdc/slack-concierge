@@ -169,10 +169,11 @@ export function modelDisplayName(model: string | null | undefined): string {
  * provider reads it here; `check-agent-presence.ts` refuses a `codex ? "Codex" : "Claude"`
  * guess, which called every Google (Gemini) session "Claude" in waiting notices (2026-10-13).
  */
-const PROVIDER_LABELS: Record<ProviderId, string> = {
+const PROVIDER_LABELS: Record<ProviderId | 'gemini', string> = {
   "claude-code": "Claude",
   codex: "Codex",
   antigravity: "Gemini",
+  gemini: "Gemini Takeout",
   chatgpt: "ChatGPT",
 };
 

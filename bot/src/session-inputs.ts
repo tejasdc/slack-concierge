@@ -175,7 +175,9 @@ export function humanNamedSession(sessionId:number):boolean {
  * path state one. Paths typed loosely (peer resurrection) fall back to their name, which for a
  * continued conversation is its opening words; a session with neither is refused.
  */
-export function createNativeSession(provider:ProviderId, metadata:NativeSessionMetadata&{summary:string|undefined}):SessionRow {
+export function createNativeSession(provider:ProviderId|'gemini', metadata:NativeSessionMetadata&{summary:string|undefined}):SessionRow {
+  if(provider==='gemini'&&(metadata.origin!=='imported'||metadata.source?.provider!=='gemini'||metadata.nativeBinding))
+    throw new Error('Gemini is available only as read-only imported evidence.');
   if(metadata.standingRole==='inbox'&&currentInboxHolder())throw new Error(INBOX_PIN_REFUSAL);
   if(provider==='claude-code'&&claudeAllowanceHeld())throw new Error(CLAUDE_ALLOWANCE_HOLD_MESSAGE);
   const summary=purposeLine(metadata.summary)??purposeLine(metadata.title);

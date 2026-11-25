@@ -27,7 +27,7 @@ export interface SourceEvidence {
 
 export interface CapabilitySource {
   id: string;
-  provider: "codex" | "claude-code" | "chatgpt";
+  provider: "codex" | "claude-code" | "chatgpt" | "gemini";
   scope: string;
   nativeId: string;
   synthetic: boolean;
@@ -39,6 +39,7 @@ export interface CapabilitySource {
   messages: SourceEvidence[];
   omissions: string[];
   consultation: { sourceId: string; sourceVersion: string; boundary: string; packetVersion: "dialogue-v1" } | null;
+  reconstruction?: SourceRef & { packetVersion: "gemini-export-dialogue-v1"; dialogueDigest: string };
 }
 
 export interface SourceRefresh {
@@ -269,7 +270,7 @@ function verifyEvidence(evidence: SourceEvidence, pin?: { sourceId: string; sour
 
 export function verifySource(source: unknown, pin?: SourceRef): asserts source is CapabilitySource {
   verify(isRecord(source) && nonempty(source.id) && isHash(source.version) && nonempty(source.branch)
-    && typeof source.provider === "string" && ["codex", "claude-code", "chatgpt"].includes(source.provider)
+    && typeof source.provider === "string" && ["codex", "claude-code", "chatgpt", "gemini"].includes(source.provider)
     && nonempty(source.scope) && nonempty(source.nativeId) && typeof source.synthetic === "boolean"
     && typeof source.title === "string" && nonempty(source.createdAt)
     && (source.project === null || typeof source.project === "string")
