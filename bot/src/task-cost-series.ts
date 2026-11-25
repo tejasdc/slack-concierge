@@ -20,7 +20,7 @@ const WINDOW_DAYS=7;
 const PROJECTS_SHOWN=8;
 const COSTLIEST_SHOWN=10;
 
-export type TaskCost={task:string;sessionId:string|null;firstAtMs:number;lastAtMs:number;dollars:number;calls:number;
+export type TaskCost={task:string;sessionId:string|null;firstAtMs:number;lastAtMs:number;dollars:number|null;calls:number;
   raw:{input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};combinedPercent:number|null;
   models:Record<string,number>;triggers:Record<string,number>};
 
@@ -30,6 +30,9 @@ export function ensureTaskCosts(cache:Database){
     cache_read INTEGER NOT NULL,output_tokens INTEGER NOT NULL,combined_percent REAL,models_json TEXT NOT NULL,triggers_json TEXT NOT NULL,
     updated_ms INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS task_costs_started ON task_costs(started_ms);`);
+  // A task with finished turns but no observed model call is eligible and unmeasured, never $0.
+  const columns=new Set((cache.query('PRAGMA table_info(task_costs)').all() as {name:string}[]).map(row=>row.name));
+  if(!columns.has('measured'))cache.exec('ALTER TABLE task_costs ADD COLUMN measured INTEGER NOT NULL DEFAULT 1');
 }
 
 const basename=(path:string)=>path.replace(/\/+$/,'').split('/').pop()??path;
@@ -87,27 +90,28 @@ export function recordTaskCosts(cache:Database,ledger:Database,tasks:TaskCost[],
   ensureTaskCosts(cache);
   const known=cache.query('SELECT 1 FROM task_costs WHERE task_id=?');
   const insert=cache.query(`INSERT INTO task_costs(task_id,kind,title,project,session_id,started_ms,last_ms,dollars,calls,input_tokens,cache_read,
-      output_tokens,combined_percent,models_json,triggers_json,updated_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      output_tokens,combined_percent,models_json,triggers_json,updated_ms,measured) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   const grow=cache.query(`UPDATE task_costs SET last_ms=max(last_ms,?),updated_ms=?,
       calls=CASE WHEN ?>dollars THEN ? ELSE calls END,input_tokens=CASE WHEN ?>dollars THEN ? ELSE input_tokens END,
       cache_read=CASE WHEN ?>dollars THEN ? ELSE cache_read END,output_tokens=CASE WHEN ?>dollars THEN ? ELSE output_tokens END,
       combined_percent=CASE WHEN ?>dollars THEN ? ELSE combined_percent END,models_json=CASE WHEN ?>dollars THEN ? ELSE models_json END,
-      triggers_json=CASE WHEN ?>dollars THEN ? ELSE triggers_json END,dollars=max(dollars,?) WHERE task_id=?`);
+      triggers_json=CASE WHEN ?>dollars THEN ? ELSE triggers_json END,measured=CASE WHEN ?>0 THEN 1 ELSE measured END,dollars=max(dollars,?) WHERE task_id=?`);
   cache.exec('BEGIN');
   try{
     for(const task of tasks){
-      if(task.dollars<=0)continue;
+      const measured=task.dollars!==null&&task.dollars>0;
       const written=task.raw.input+task.raw.cacheWrite+task.raw.cacheWrite1h,models=JSON.stringify(task.models),triggers=JSON.stringify(task.triggers);
       if(known.get(task.task)){
-        const d=task.dollars;
-        grow.run(task.lastAtMs,nowMs,d,task.calls,d,written,d,task.raw.cacheRead,d,task.raw.output,d,task.combinedPercent,d,models,d,triggers,d,task.task);
+        if(!measured)continue;
+        const d=task.dollars!;
+        grow.run(task.lastAtMs,nowMs,d,task.calls,d,written,d,task.raw.cacheRead,d,task.raw.output,d,task.combinedPercent,d,models,d,triggers,d,d,task.task);
         continue;
       }
       const {kind,title,project,startedMs}=describe(ledger,task.task,task.sessionId);
       const began=startedMs??task.firstAtMs;
       if(began<sinceMs||task.firstAtMs<sinceMs+15*60_000)continue;
-      insert.run(task.task,kind,title,project,task.sessionId,began,task.lastAtMs,task.dollars,task.calls,written,task.raw.cacheRead,
-        task.raw.output,task.combinedPercent,models,triggers,nowMs);
+      insert.run(task.task,kind,title,project,task.sessionId,began,task.lastAtMs,measured?task.dollars:0,task.calls,written,task.raw.cacheRead,
+        task.raw.output,task.combinedPercent,models,triggers,nowMs,measured?1:0);
     }
     cache.query('DELETE FROM task_costs WHERE started_ms<?').run(nowMs-60*DAY);
     cache.exec('COMMIT');
@@ -120,7 +124,7 @@ const median=(values:number[])=>{
   return sorted.length%2?sorted[middle]!:(sorted[middle-1]!+sorted[middle]!)/2;
 };
 const localDay=(ms:number,zone:string)=>new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(ms);
-type Row={task_id:string;kind:string;title:string|null;project:string|null;session_id:string|null;started_ms:number;last_ms:number;dollars:number;
+type Row={task_id:string;kind:string;title:string|null;project:string|null;session_id:string|null;started_ms:number;last_ms:number;measured:number;dollars:number;
   calls:number;input_tokens:number;cache_read:number;output_tokens:number;combined_percent:number|null;models_json:string;triggers_json:string};
 
 /** Shares of cost, largest first, the rest summed as "other". */
@@ -159,17 +163,18 @@ export function taskCostSeries(cache:Database,timeZone:string,nowMs=Date.now()){
   const projects=[...projectCounts].sort((a,b)=>b[1]-a[1]).slice(0,PROJECTS_SHOWN).map(([name])=>name);
   const firstDay=rows.length?localDay(rows[0]!.started_ms,timeZone):today;
   const points=days.map(day=>{
-    const list=windowRows(day);
-    return {date:day,tasks:list.length,median:median(list.map(row=>row.dollars)),
+    const eligible=windowRows(day),list=eligible.filter(row=>row.measured);
+    return {date:day,tasks:list.length,eligible:eligible.length,median:median(list.map(row=>row.dollars)),
       medianCombinedPercent:median(list.map(row=>row.combined_percent).filter((value):value is number=>value!==null)),
       byProject:Object.fromEntries(projects.map(project=>[project,median(list.filter(row=>row.project===project).map(row=>row.dollars))])),
+      byProjectCounts:Object.fromEntries(projects.map(project=>[project,{measured:list.filter(row=>row.project===project).length,eligible:eligible.filter(row=>row.project===project).length}])),
       medianCalls:median(list.map(row=>row.calls)),
       medianContextPerCall:median(list.filter(row=>row.calls>0).map(row=>row.cache_read/row.calls)),
       medianWritten:median(list.map(row=>row.input_tokens+row.output_tokens)),
       models:shares(list,'models_json',4),triggers:shares(list,'triggers_json',5)};
   });
-  const latest=windowRows(today);
-  return {definition:'A task is one thing an agent was asked to do: a request to an agent, or a message of yours that started work. Its cost is every model call that served it, at published API prices.',
+  const latest=windowRows(today).filter(row=>row.measured);
+  return {definition:'A task is one thing an agent was asked to do: a request to an agent, or a message of yours that started work. Its cost is every model call that served it, priced at published API rates: an estimate of value, not a charge.',
     windowDays:WINDOW_DAYS,days:SERIES_DAYS,recordedSince:firstDay,projects,points,
     costliest:[...latest].sort((a,b)=>b.dollars-a.dollars).slice(0,COSTLIEST_SHOWN).map(row=>({task:row.task_id,kind:row.kind,title:row.title,
       project:row.project,sessionId:row.session_id,startedAt:new Date(row.started_ms).toISOString(),dollars:row.dollars,calls:row.calls,

@@ -32,7 +32,7 @@ import {serveRunnerMachineCalls} from '../src/runner-machine-calls';
 import {codexLeftoverProcesses,codexProcessStillRunning} from '../src/codex-leftover-processes';
 import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
-import {runnerAccountHome,runnerAccountHomes,runnerClaudeAccountEmail,findRunnerProviderSessionHome,runnerCodexRepairActive,serveRunnerAccountCall} from '../src/runner-provider-accounts';
+import {runnerAccountHome,runnerAccountHomes,runnerTranscriptHomes,runnerClaudeAccountEmail,findRunnerProviderSessionHome,runnerCodexRepairActive,serveRunnerAccountCall} from '../src/runner-provider-accounts';
 import {serveProviderHistoryCall} from '../src/runner-provider-history';
 import {API_CREDITS_ACCOUNT,apiCreditsEnvironment} from '../src/claude-api-route';
 import {serveRunnerProviderForkCall} from '../src/runner-provider-fork';
@@ -665,7 +665,7 @@ function answerMachineCalls(id:string) {
         return result.cwd;
       },
     });
-    if(method==='provider-usage-breakdown.page'||method==='provider-usage-breakdown.report')return serveProviderUsageBreakdownCall(method,params,stateDir,runnerAccountHomes);
+    if(method==='provider-usage-breakdown.page'||method==='provider-usage-breakdown.report')return serveProviderUsageBreakdownCall(method,params,stateDir,runnerTranscriptHomes);
     if(method.startsWith('projects.'))return serveProjectCall(method,params,{findProviderSessionHome:findRunnerProviderSessionHome});
     if(method==='google.executable')return serveRunnerProviderCall(method,params);
     if(method==='asides.ask')return serveRunnerAside(params,{botDir,bunPath:process.execPath,

@@ -818,6 +818,18 @@ function configuredRunnerProviders(){
   return result;
 }
 
+function taskTurnsFrom(turns:Record<string,unknown>[],sinceMs:number){
+  const tasks:Record<string,{startedMs:number;sessionId:string}>={};
+  for(const turn of turns){
+    if(typeof turn.task_id!=='string'||typeof turn.provider_started_at!=='string'||!turn.ended_at)continue;
+    const startedMs=Date.parse(`${turn.provider_started_at}Z`);
+    if(!(startedMs>=sinceMs))continue;
+    const prior=tasks[turn.task_id];
+    if(!prior||startedMs<prior.startedMs)tasks[turn.task_id]={startedMs,sessionId:`concierge:${turn.session_id}`};
+  }
+  return tasks;
+}
+
 async function main(){
   if(process.argv[2]==='--provider-page'){
     await runnerProviderPage(process.argv[3]??'');
@@ -830,11 +842,16 @@ async function main(){
   const started=performance.now();
   const runners=configuredRunnerProviders();
   if(!runners.size&&process.env.CONCIERGE_PEER_NAME!=='mac')throw new Error('NO_PROVIDER_USAGE_RUNNERS_CONFIGURED');
+  const ownerSnapshot=runners.size?captureUsageLedgerSnapshot(ownerLedger(),oneWeekAgo):null;
   const {today,week}=runners.size
-    ?await collectRunnerUsageReports(runners,encodeUsageSnapshot(captureUsageLedgerSnapshot(ownerLedger(),oneWeekAgo)))
+    ?await collectRunnerUsageReports(runners,encodeUsageSnapshot(ownerSnapshot))
     :await macPeerReport();
   const readings=weeklyReadings(ownerLedger(),oneWeekAgo);
   const {taskCosts:_todayTasks,...todayReport}=attributeWeeklyAllowance(today,readings);
+  // Every task with a finished turn this week, measured or not, built here from the snapshot the
+  // owner already holds rather than shipped by each runner, so cost per task can say how many
+  // tasks its median covers and tell an unmeasured task from one that cost nothing.
+  if(ownerSnapshot)week.taskTurns=taskTurnsFrom(ownerSnapshot.turns,oneWeekAgo);
   const {taskCosts,...weekReport}=attributeWeeklyAllowance(week,readings);
   // Each finished task's cost is kept beyond the week, so the median can be drawn over a month.
   recordTaskCosts(cache,ownerLedger(),taskCosts,oneWeekAgo);

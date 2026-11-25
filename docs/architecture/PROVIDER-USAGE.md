@@ -1235,7 +1235,14 @@ provider's current reset period alone (null when that period has no fresh measur
 is what the Accounts bar divides: the account's reading restarts at each reset, so a seven-day
 estimate would describe the previous week's work. A call is assigned to a topic only when its exact turn input
 has a recorded request topic, attached thread link, or topic root; work without
-that evidence stays unassigned. **Cost per task** (`bot/src/task-cost-series.ts`). Tejas asked on 2026-11-25 for the median
+that evidence stays unassigned. **Transcript folders.** Runners scan `runnerTranscriptHomes`: each account folder plus the
+provider's live root (`~/.codex`, `~/.claude`) when it holds transcripts. Since the 2026-11-19
+account rebuild Codex's app server writes every conversation into `~/.codex`, which is not an
+account folder, so from then until 2026-11-25 usage read no Codex work at all (the nightly review
+found 11 of 19 scheduled runs unmeasured, every one a Codex session). Folders resolving to the same
+place (`~/.claude-accounts/*/projects` link to `~/.claude/projects`) are read once.
+
+**Cost per task** (`bot/src/task-cost-series.ts`). Tejas asked on 2026-11-25 for the median
 dollar cost per task (Kun Chen's "7d sliding window median $ cost per task"). A task is one
 thing an agent was asked to do: the nearest request on a turn's input chain, else the message
 of his that started it, else the turn's own input (`turnTaskIn` in `bot/src/work-thread-root.ts`,
@@ -1250,7 +1257,10 @@ tasks with calls in the last hour stay out of the medians until they settle. A t
 Accounts overview is the 30-day series: per day, the median over tasks started in the seven
 days ending then, overall and for the busiest projects, with median calls, context read per
 call, tokens written, model and start shares, and the week's costliest tasks. Dollars are
-published API prices; each task also carries its share of the combined weekly allowance.
+published API prices, an estimate of value rather than a charge; each task also carries its share of
+the combined weekly allowance. Every task with a finished turn is recorded, and one with no
+observed model call stays `measured=0`: it counts as eligible, never as a $0 task, and each point
+carries measured and eligible counts.
 
 Every projection also carries `combined`: one weekly figure across his subscriptions, each
 account's estimated share added up and divided by the number of accounts with a current weekly
