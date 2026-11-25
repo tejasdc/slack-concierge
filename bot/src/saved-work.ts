@@ -7,7 +7,7 @@ import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {includedAllowanceWindows} from './account-allowance-observation';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {log,errorFields} from './log';
-import {API_CREDITS_ACCOUNT,apiCreditsConfigured,apiCreditsCycle,apiCreditsNextGrantAt,apiRouteDecision} from './claude-api-route';
+import {API_CREDITS_ACCOUNT,apiRouteRunnerHasKey,apiCreditsConfigured,apiCreditsCycle,apiCreditsNextGrantAt,apiRouteDecision} from './claude-api-route';
 import {holdsInbox} from './inbox-session-pin';
 import {endRepeatingScheduleForInput} from './request-liveness';
 import {savedStartAt} from './saved-start-time';
@@ -135,7 +135,7 @@ export function bankedApiRoute(session:NonNullable<ReturnType<typeof getSessionB
     return decision.use?{expiresAt:cycle.expiresAt,reason:'this session runs on the API credit'}:null;
   }
   if(session.agent_session_uuid!==null||holdsInbox(session)||metadata.standingRole||metadata.inbox||metadata.repairAgent
-    ||metadata.outside||metadata.providerRunner||metadata.providerAccount||!model||!API_BANKED_MODELS.has(model))return null;
+    ||metadata.outside||!apiRouteRunnerHasKey(metadata.providerRunner)||metadata.providerAccount||!model||!API_BANKED_MODELS.has(model))return null;
   const decision=apiRouteDecision('banked',cycle,now,apiCreditsConfigured());
   return decision.use?{expiresAt:cycle.expiresAt,reason:decision.reason}:null;
 }

@@ -61,8 +61,8 @@ becomes an API one.
 1. Aliases `cc-api` (Opus 5.5) and `cc-api-sonnet` (Sonnet 5.5) carry `route: 'api-credits'`.
    Model pickers and project defaults leave them out: they choose a route, not a model.
    `sessions implement` accepts both.
-2. Session creation stores `claudeRoute: 'api-credits'`. An explicitly remote project or
-   `--on-runner` is refused, because the key exists on the server only.
+2. Session creation stores `claudeRoute: 'api-credits'`. (The handed design refused runner
+   placement; see the differences below.)
 3. `bot/src/claude-api-route.ts` owns the account label, the config folder, the launch
    environment, the cycle, the spend ledger, the decision rule and the refusal words.
 4. Turn dispatch skips account choice, allowance readings, the budget brief and every
@@ -84,7 +84,8 @@ becomes an API one.
   `ax41` runner (`CONCIERGE_TURN_RUNNERS=all`), so a blanket refusal would have made the route
   unusable. The turn sends only the route marker; the runner reads its own key file, the same way
   it resolves an account's home itself. The key never enters a job payload or the owner's ledger.
-  Only an explicitly remote project or `--on-runner` is refused.
+  No placement is refused: the slack-concierge project itself is registered to runner `ax41`
+  (this server), and a runner without the key file ends the turn saying so.
 - **Grants overlap**, so the cycle is the soonest-expiring live grant, and the ledger detects whether
   a resume restored Claude's earlier total from its cumulative token count (independent review,
   2026-11-25). A second overflow path for a first turn refused mid-flight was built and removed: by
