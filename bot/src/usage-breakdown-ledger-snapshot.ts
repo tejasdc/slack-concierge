@@ -1,6 +1,6 @@
 import {Database} from 'bun:sqlite';
 import {deflateSync,inflateSync} from 'node:zlib';
-import {turnTopicRootIn} from './work-thread-root';
+import {turnTaskIn,turnTopicRootIn} from './work-thread-root';
 
 type Row=Record<string,unknown>;
 export type UsageLedgerSnapshot={sinceMs:number;sessions:Row[];turns:Row[];events:Row[];policyRequests:Row[];timeZone:string};
@@ -62,7 +62,8 @@ export function captureUsageLedgerSnapshot(ledger:Database,sinceMs:number):Usage
       // The direct joins above miss work that reaches its thread only through the human behind it
       // (a report-back, a watch wake, a continuation); the owner's own rule resolves those.
       topic_id:row.topic_id??(topicsPresent?topicOfTurnInput(trigger_input_id):null),
-      trigger:turnTrigger(trigger_input_id,trigger_origin,row.saved_kind)}));
+      trigger:turnTrigger(trigger_input_id,trigger_origin,row.saved_kind),
+      task_id:inputsPresent&&typeof trigger_input_id==='string'?turnTaskIn(ledger,trigger_input_id)?.id??null:null}));
   const sessionIds=new Set(turns.map(row=>row.session_id as number));
   const sessions=(ledger.query('SELECT id,agent_session_uuid,provider_id,native_metadata_json,last_turn_at FROM sessions WHERE agent_session_uuid IS NOT NULL').all() as Row[])
     .filter(row=>{if(typeof row.last_turn_at==='string'&&Date.parse(row.last_turn_at)>=sinceMs)sessionIds.add(row.id as number);
@@ -140,7 +141,7 @@ export function ledgerFromUsageSnapshot(snapshot:UsageLedgerSnapshot):Database{
   const db=new Database(':memory:');
   db.exec(`CREATE TABLE sessions(id INTEGER PRIMARY KEY,agent_session_uuid TEXT,provider_id TEXT,native_metadata_json TEXT);
     CREATE TABLE turns(id INTEGER PRIMARY KEY,session_id INTEGER,status TEXT,provider_turn_id TEXT,provider_started_at TEXT,ended_at TEXT,
-      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER,topic_id TEXT,trigger TEXT);
+      saved_kind TEXT,saved_repeat_ms INTEGER,saved_root_id INTEGER,saved_sequence INTEGER,saved_fire_at_ms INTEGER,provider_duration_ms INTEGER,topic_id TEXT,trigger TEXT,task_id TEXT);
     CREATE TABLE session_owner_events(sequence INTEGER PRIMARY KEY,session_id INTEGER,turn_id INTEGER,kind TEXT,payload_json TEXT,created_at TEXT);
     CREATE TABLE saved_work_settings(singleton INTEGER PRIMARY KEY,time_zone TEXT);
     CREATE TABLE usage_policy_requests(request_id TEXT PRIMARY KEY,source_session_id INTEGER,payload_json TEXT,created_at_ms INTEGER);`);
@@ -151,7 +152,7 @@ export function ledgerFromUsageSnapshot(snapshot:UsageLedgerSnapshot):Database{
   db.exec('BEGIN');
   try{
     insert('sessions',['id','agent_session_uuid','provider_id','native_metadata_json'],snapshot.sessions);
-    insert('turns',['id','session_id','status','provider_turn_id','provider_started_at','ended_at','saved_kind','saved_repeat_ms','saved_root_id','saved_sequence','saved_fire_at_ms','provider_duration_ms','topic_id','trigger'],snapshot.turns);
+    insert('turns',['id','session_id','status','provider_turn_id','provider_started_at','ended_at','saved_kind','saved_repeat_ms','saved_root_id','saved_sequence','saved_fire_at_ms','provider_duration_ms','topic_id','trigger','task_id'],snapshot.turns);
     insert('session_owner_events',['sequence','session_id','turn_id','kind','payload_json','created_at'],snapshot.events);
     insert('usage_policy_requests',['request_id','source_session_id','payload_json','created_at_ms'],snapshot.policyRequests);
     db.query('INSERT INTO saved_work_settings VALUES(1,?)').run(snapshot.timeZone);

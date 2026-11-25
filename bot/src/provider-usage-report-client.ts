@@ -98,6 +98,14 @@ function mergePeriod(parts:any[]){
       unexplainedByModel:countMap(parts.map(part=>part.escalations?.unexplainedByModel))},
     fallbackModels:[...new Set(parts.flatMap(part=>part.fallbackModels))].sort(),accounts,scheduledFirings,
     attributionBuckets:parts.flatMap(part=>part.attributionBuckets??[]),
+    taskMix:parts.reduce((merged:Record<string,{models:Record<string,number>;triggers:Record<string,number>}>,part)=>{
+      for(const [task,mix] of Object.entries(part.taskMix??{}) as [string,any][]){
+        const into=merged[task]??={models:{},triggers:{}};
+        for(const key of ['models','triggers'] as const)for(const [name,value] of Object.entries(mix[key]??{}))
+          into[key][name]=(into[key][name]??0)+Number(value);
+      }
+      return merged;
+    },{}),
     cacheDiagnostics:{...first.cacheDiagnostics,ordinaryMissRate,ordinaryCallCount:ordinaryCalls,providerRates:rates,
       callCount:sum(diagnostics.map(value=>value.callCount)),turnCount:sum(diagnostics.map(value=>value.turnCount)),
       last48Hours:summary(diagnostics.map(value=>value.last48Hours)),last15Minutes:summary(diagnostics.map(value=>value.last15Minutes)),calls,turns}};

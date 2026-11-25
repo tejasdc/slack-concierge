@@ -1235,7 +1235,24 @@ provider's current reset period alone (null when that period has no fresh measur
 is what the Accounts bar divides: the account's reading restarts at each reset, so a seven-day
 estimate would describe the previous week's work. A call is assigned to a topic only when its exact turn input
 has a recorded request topic, attached thread link, or topic root; work without
-that evidence stays unassigned. Every projection also carries `combined`: one weekly figure across his subscriptions, each
+that evidence stays unassigned. **Cost per task** (`bot/src/task-cost-series.ts`). Tejas asked on 2026-11-25 for the median
+dollar cost per task (Kun Chen's "7d sliding window median $ cost per task"). A task is one
+thing an agent was asked to do: the nearest request on a turn's input chain, else the message
+of his that started it, else the turn's own input (`turnTaskIn` in `bot/src/work-thread-root.ts`,
+carried on each turn as `task_id`). Usage buckets carry the task; each report also carries
+`taskMix`, the models and turn starts behind each task's cost (one entry per task, so runner
+reports stay small). After merging runners, the reader writes each task that began inside the
+week (its start read from the ledger) into `task_costs` in its own cache database (never the
+ledger); later readings only grow a stored task, because once its early calls leave the week the
+report sees just its tail. The table holds the month the week cannot, pruned after 60 days;
+tasks with calls in the last hour stay out of the medians until they settle. A task worktree
+(`<repository>/.wt/<task>`) counts under its repository. `taskCost` on the week report and the
+Accounts overview is the 30-day series: per day, the median over tasks started in the seven
+days ending then, overall and for the busiest projects, with median calls, context read per
+call, tokens written, model and start shares, and the week's costliest tasks. Dollars are
+published API prices; each task also carries its share of the combined weekly allowance.
+
+Every projection also carries `combined`: one weekly figure across his subscriptions, each
 account's estimated share added up and divided by the number of accounts with a current weekly
 reading (`accounts`), plus the same per provider in `combined.byProvider`. Each account counts as
 one equal unit, as he counts them ("3 Claude accounts and only 2 Codex accounts ... aggregated

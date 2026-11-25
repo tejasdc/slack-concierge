@@ -101,7 +101,8 @@ try{
     ||result.week.directTopModelWeb.bySession.find((row:any)=>row.sessionId===1)?.calls!==2
     ||result.week.directTopModelWeb.bySession.find((row:any)=>row.sessionId===2)?.calls!==1
     ||result.week.cacheDiagnostics.calls.length>100||result.week.cacheDiagnostics.turns[0]?.turnId!==1
-    ||result.week.attributionBuckets.length!==4
+    // Buckets split by model and task as well; together they still hold every call once.
+    ||result.week.attributionBuckets.filter((bucket:any)=>bucket.window==='Weekly').reduce((sum:number,bucket:any)=>sum+bucket.calls,0)!==result.week.callMix.totalCalls
     ||result.week.attributionBuckets.some((bucket:any)=>bucket.topicId!=='topic:shared'))
     throw new Error('bounded report lost account, session, call mix or cache diagnostics');
   const codexHome=join(root,'codex-home'),codexSessions=join(codexHome,'sessions','2026','11','12');
