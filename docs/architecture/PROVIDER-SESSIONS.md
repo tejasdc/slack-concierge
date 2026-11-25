@@ -188,6 +188,8 @@ Model aliases:
 | `cc-opus-1m` | Claude Code | `opus[1m]` (Claude Code's latest Opus with extended context) |
 | `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5-5` |
 | `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-5-5` |
+| `cc-api` | Claude Code on the [API-credit route](PROVIDER-USAGE.md#claude-api-credit-route) | `claude-opus-5-5` |
+| `cc-api-sonnet` | Claude Code on the API-credit route | `claude-sonnet-5-5` |
 | `cx`, `cx-sol` | Codex | `gpt-6.2-sol` |
 | `cx-astra` | Codex | `gpt-6.2-astra` |
 | `cx-terra`, `cx-medium` | Codex | `gpt-6.1-terra` |

@@ -1,5 +1,6 @@
 import {onCodexHistoryChanged} from './codex-session-observer';
 import {boundLabInvocation,labInvocationBindingMatches} from './lab-conversations';
+import {API_CREDITS_ACCOUNT} from './claude-api-route';
 import { codexAppServerReady, codexRelayRunner, ownerCodexAppServerClient, waitForCodexAppServerOrDrain } from "./codex-app-server-client";
 import {CODEX_PROCESS_REPORT_GRACE_MS,codexLeftoverProcesses,codexProcessStillRunning,type CodexLeftoverProcess} from './codex-leftover-processes';
 import {runnerMachineCall,RunnerUnreachableError} from './runner-machine-calls';
@@ -1698,7 +1699,15 @@ export class SessionExecutionHost {
     if(successor)assertCustodyRunnerBinding(metadata.providerRunner,protectedEndpoint);
     const runnerTarget=successor?protectedEndpoint?.relayRunner??null:chooseTurnRunner(session,metadata);
     let boundAccount:{account:string;home:string|null}|null=adoption?.processor.account??null;
-    if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
+    if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start&&saved.saved_account===API_CREDITS_ACCOUNT) {
+      // Banked work on the API credit (saved-work.ts bankedApiRoute) binds no subscription account.
+      if(saved.saved_boundary_ms===null||saved.saved_boundary_ms<=Date.now()||metadata.claudeRoute!=='api-credits') {
+        if(!yieldBankedTurn(claim.turn_id,this.options.instanceId))throw new Error('Banked API-credit turn declined after admission; exact turn needs reconciliation.');
+        closeSteering();
+        return;
+      }
+    }
+    else if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
       const usage=session.provider_id==='codex'||session.provider_id==='claude-code'||session.provider_id==='antigravity'
         ?providerAccountUsage(session.provider_id):null;
       const rooms=usage&&['codex','claude-code','antigravity'].includes(session.provider_id)

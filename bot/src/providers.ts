@@ -41,6 +41,8 @@ export interface AgentProvider {
     onProgress?: ProgressCb;
     onProviderMessage?: ProviderMessageCallback;
     onClaudeCall?: (call:{conversation:string|null;callId:string;atMs:number;cacheable:boolean})=>void;
+    /** Claude's cumulative `total_cost_usd` for the conversation, at each result. */
+    onCost?: (cost:{totalUsd:number;sessionUuid:string|null})=>void;
     systemPrompt?: string;
     clientUserMessageId?: string;
     environment?: Record<string, string>;

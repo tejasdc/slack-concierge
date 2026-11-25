@@ -518,6 +518,8 @@ export async function runClaudeCodeTurn(input: {
   onProgress?: ProgressCb;
   onProviderMessage?: ProviderMessageCallback;
   onClaudeCall?: (call:{conversation:string|null;callId:string;atMs:number;cacheable:boolean})=>void;
+  /** Claude's cumulative `total_cost_usd` for the conversation at each result (claude-api-route.ts records it). */
+  onCost?: (cost:{totalUsd:number;sessionUuid:string|null})=>void;
   onProviderThreadStarted?: (providerThreadId: string) => void;
   onSteeringReady?: (sender: SteeringSender) => void;
   onCancellationReady?: (cancel: () => Promise<void>) => void;
@@ -1293,6 +1295,12 @@ export async function runClaudeCodeTurn(input: {
     }
     if (sessionMatches) publishProviderEvent(event);
     if (event.type === "result") {
+      // Every result costs what it reports, including refused and unowned ones; a replayed one was
+      // already recorded by the coordinator that saw it live.
+      if (!replaying && typeof event.total_cost_usd === "number") {
+        try { input.onCost?.({ totalUsd: event.total_cost_usd, sessionUuid: typeof event.session_id === "string" ? event.session_id : observedSessionUuid ?? input.sessionUUID ?? null }); }
+        catch (error) { log("warn", "claude_cost_observer_failed", { error: error instanceof Error ? error.message : String(error) }); }
+      }
       const terminalReason = typeof event.terminal_reason === "string" ? event.terminal_reason : "";
       if (terminalReason.startsWith("aborted_")) return;
       if (!initialPromptAcknowledged) {

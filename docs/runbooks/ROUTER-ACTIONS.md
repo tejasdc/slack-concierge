@@ -719,7 +719,12 @@ worktree, use `sessions implement --project <registered-project> --session-name
 "<task>" --summary "<acceptance criterion>" <source-flags> --action-id <stable-id>
 -- <design and acceptance criteria>`. It starts Sonnet for a Claude designer or
 Luna for a Codex designer by default; `--provider` may name a suitable cheaper
-tier in the same provider. The implementation request returns to the designer
+tier in the same provider. `--provider cc-api-sonnet` (or `cc-api` for Opus)
+runs a Claude implementer on the monthly Console API credit instead of a
+subscription account; see the
+[API-credit route](../architecture/PROVIDER-USAGE.md#claude-api-credit-route),
+which `sessions ask --provider cc-api|cc-api-sonnet` uses the same way. The
+implementation request returns to the designer
 for review. `sessions --help` and the per-run request protocol carry the exact
 command. Use the same action ID on retry so the worktree and request stay one.
 Distinct implementation requests get distinct worktrees even for the same

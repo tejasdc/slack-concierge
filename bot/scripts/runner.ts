@@ -34,6 +34,7 @@ import {localWatchMachine,serveWatchCall} from '../src/watch-machine';
 import {rewriteRelayedCodexRequest,runnerMachineEnvironment,writeRunnerConnection,type RunnerMachine} from '../src/runner-machine';
 import {runnerAccountHome,runnerAccountHomes,runnerClaudeAccountEmail,findRunnerProviderSessionHome,runnerCodexRepairActive,serveRunnerAccountCall} from '../src/runner-provider-accounts';
 import {serveProviderHistoryCall} from '../src/runner-provider-history';
+import {API_CREDITS_ACCOUNT,apiCreditsEnvironment} from '../src/claude-api-route';
 import {serveRunnerProviderForkCall} from '../src/runner-provider-fork';
 import {serveProjectCall} from '../src/runner-projects';
 import {serveRunnerProviderCall} from '../src/runner-providers';
@@ -205,7 +206,13 @@ function turnEnvironment(manifest:{environment:Record<string,string>;inheritEnvi
   const localEnvironment={...manifest.environment};
   const provider=localEnvironment.CONCIERGE_PROVIDER_ID;
   const account=localEnvironment.CONCIERGE_PROVIDER_ACCOUNT;
-  if(provider==='claude-code'&&account) {
+  // The API-credit route sends no key and no account: this machine reads its own Console key file
+  // (claude-api-route.ts), so the key never travels in a job payload or the owner's ledger.
+  if(provider==='claude-code'&&localEnvironment.CONCIERGE_CLAUDE_ROUTE===API_CREDITS_ACCOUNT){
+    if(account)throw new Error('An API-credit Claude turn names no subscription account.');
+    Object.assign(localEnvironment,apiCreditsEnvironment());
+  }
+  else if(provider==='claude-code'&&account) {
     const home=runnerAccountHome('claude-code',account);
     if(!home)throw new Error(`The selected Claude account is not available on runner ${machine.runnerName}.`);
     localEnvironment.CLAUDE_CONFIG_DIR=home;

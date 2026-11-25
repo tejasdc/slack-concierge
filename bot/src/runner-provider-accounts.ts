@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readRunnerProviderAccountReadings } from "./runner-provider-account-readings";
 import { ProviderLoginManager, endLoginGroup, endLoginProcess, loginGroupMembers, loginProcessGroup, type AuthLoginStartResult } from "./auth-login";
 import { log } from "./log";
+import { API_CREDITS_ACCOUNT, apiCreditsConfigDir } from "./claude-api-route";
 import { codexUpdaterDisabled } from "./codex-updater-settings";
 import { MANAGED_CODEX, controlSocketListeners, holdCodexDaemonAutoStart, startCodexDaemonInOwnScope } from "./codex-daemon-file-limit";
 import { CodexAppServerClient, codexAppServerSocketPath } from "./codex-app-server-client";
@@ -641,6 +642,8 @@ async function runnerSocketRepair(activeTurns:number):Promise<{status:string;det
 /** Resolve a label to this runner's home after validating the account stored there. */
 export function runnerAccountHome(key: AccountProvider, accountLabel: string): string | null {
   if (!accountLabel.trim()) return null;
+  // The API-credit route's own folder: its transcripts are read and forked from there (claude-api-route.ts).
+  if (key === "claude-code" && accountLabel === API_CREDITS_ACCOUNT) return existsSync(apiCreditsConfigDir()) ? apiCreditsConfigDir() : null;
   if (key === "claude-code") {
     const matches = namedRunnerAccountHomes(key, accountLabel);
     return matches.length === 1 ? matches[0]!.home : null;

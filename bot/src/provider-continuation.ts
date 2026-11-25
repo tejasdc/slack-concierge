@@ -23,7 +23,8 @@ export function routedProviderAlias(value: unknown) {
   const alias = normalizeProviderAliasKey(value);
   if (!alias) {
     throw new Error("Unknown provider alias. Aliases choose a model: cc, cc-fable, cc-opus, cc-sonnet, "
-      + "cc-haiku, cc-fast, cc-medium, cx, cx-astra, cx-sol, cx-terra, cx-luna, cx-fast, cx-medium.");
+      + "cc-haiku, cc-fast, cc-medium, cx, cx-astra, cx-sol, cx-terra, cx-luna, cx-fast, cx-medium; "
+      + "cc-api and cc-api-sonnet run Opus or Sonnet on the monthly Console API credit.");
   }
   return alias;
 }

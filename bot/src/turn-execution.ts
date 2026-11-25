@@ -17,6 +17,7 @@ import {codexRelayRunner} from './codex-app-server-client';
 import {runnerMachineCall} from './runner-machine-calls';
 import {claudeAccountSelection} from './provider-account-selection';
 import {holdsInbox} from './inbox-session-pin';
+import {API_CREDITS_ACCOUNT,apiCreditsConfigured,apiCreditsCycle,apiCreditsEnvironment,apiCreditsSpentMessage,apiRouteDecision,isApiCreditRefusal,isApiKeyRefusal,recordApiCreditSpend} from './claude-api-route';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {homedir} from 'node:os';
@@ -348,6 +349,7 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
       outbound_text:string|null;stop_requested_at:string|null;
     }|null;
     if(!session||holdsInbox(session)||session.provider_id!==input.providerId||!sessionMetadata(session).automaticProviderChoice||
+      sessionMetadata(session).claudeRoute||
       !turn||turn.status!=='running'||turn.owner_instance_id!==input.ownerInstanceId||
       turn.dispatch_attempt!==dispatchAttempt||turn.saved_kind||turn.outbound_text||turn.stop_requested_at||
       db.query('SELECT 1 FROM turns WHERE session_id=? AND id<>? LIMIT 1').get(session.id,input.turnId)||
@@ -373,6 +375,54 @@ function moveAutomaticFirstTurnOffRefusingModel(input:TurnExecutionInput,dispatc
       kind:'provider',payload:{from:input.providerId,to:other,reason}});
     return true;
   })();
+}
+
+/**
+ * Overflow (claude-api-route.ts): a new Claude conversation that would otherwise wait for a
+ * subscription account starts on the monthly API credit instead. Only a conversation with no provider
+ * session yet qualifies, so nothing already running moves; the Inbox and standing agents keep their
+ * subscription pin, and only the models the API-credit aliases name are eligible.
+ */
+const API_OVERFLOW_MODELS=new Set(['claude-opus-5-5','claude-sonnet-5-5']);
+function apiOverflowEligible(input:TurnExecutionInput,model:string|null):boolean {
+  if(input.presentation!=='native'||input.providerId!=='claude-code'||input.adopted||input.boundAccount)return false;
+  const session=getSessionById(input.session.id);
+  if(!session||session.agent_session_uuid!==null||holdsInbox(session))return false;
+  const metadata=sessionMetadata(session);
+  if(metadata.claudeRoute||metadata.standingRole||metadata.repairAgent||metadata.inbox||metadata.outside||(metadata as {onRunner?:unknown}).onRunner===true)return false;
+  if(metadata.providerRunner||metadata.providerAccount)return false;
+  return !!model&&API_OVERFLOW_MODELS.has(model);
+}
+/** Fixes the route on the session before its first conversation exists, with the reason on record. */
+function chooseApiOverflow(input:TurnExecutionInput,model:string|null,cause:string):boolean {
+  if(!apiOverflowEligible(input,model))return false;
+  const decision=apiRouteDecision('overflow',apiCreditsCycle(db),Date.now(),apiCreditsConfigured());
+  if(!decision.use){
+    log('info','claude_api_overflow_declined',{turn_id:input.turnId,session_id:input.session.id,reason:decision.reason,cause});
+    return false;
+  }
+  updateSessionMetadata(input.session.id,{claudeRoute:'api-credits'});
+  recordSessionEvent({eventId:`claude-route:${input.turnId}`,sessionId:input.session.id,turnId:input.turnId,
+    kind:'claude_route',payload:{route:'api-credits',why:'overflow',reason:decision.reason,cause}});
+  log('info','claude_api_route_chosen',{turn_id:input.turnId,session_id:input.session.id,why:'overflow',reason:decision.reason,cause});
+  return true;
+}
+
+/**
+ * An API-route failure in words that say what happened, and never a subscription account's usage or
+ * sign-in hold: those would move the conversation or wait for a reset that does not apply to it.
+ */
+export function apiRouteFailure(error:unknown):unknown {
+  const message=error instanceof Error?error.message:String(error);
+  const spent=isApiCreditRefusal(message), key=isApiKeyRefusal(message), usage=message.startsWith('Claude usage is exhausted');
+  if(!spent&&!key&&!usage)return error;
+  const structured=error instanceof ProviderDispatchError?error:null;
+  const text=spent?apiCreditsSpentMessage(Date.now())
+    :key?'Anthropic rejected the Console API key this API-credit session runs on, so the turn ended. A new key has to be filed before API-credit sessions can run again.'
+    :`Anthropic refused this API-credit session's request, so the turn ended; it does not move to a subscription account. ${message.replace(/^Claude usage is exhausted[^.]*\.\s*/,'')}`;
+  return new ProviderDispatchError({message:text,failureClass:'parked_terminal',terminalConfirmed:structured?.terminalConfirmed??true,
+    toolsUsed:structured?.toolsUsed,assistantOutput:structured?.assistantOutput,providerSessionId:structured?.providerSessionId??undefined,
+    providerTurnId:structured?.providerTurnId??undefined,processExit:structured?.processExit??undefined,threadScoped:true});
 }
 
 /** The Astra check refuses a prompt through Codex's hook, which ends the turn without a word; the owner's record of that refusal says why. */
@@ -513,6 +563,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   // The extra Claude home this turn launched from, so its outcome counts as evidence about that
   // home: a finished turn proves it works, a sign-in refusal withdraws that proof.
   let runningClaudeHome:string|null=null;
+  // Whether this turn runs on the Console API credit (claude-api-route.ts); read by the failure handling too.
+  let claudeApiRoute=false;
   try {
     let preparedTurn: PreparedProviderTurn;
     if (input.presentation === "native") {
@@ -670,7 +722,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     runningClaudeModel=claudeLaunchModel;
     const remoteClaudeRunner=input.providerId==='claude-code'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
     const remoteGoogleRunner=input.providerId==='antigravity'?input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null:null;
-    if(remoteClaudeRunner&&!input.adopted&&providerAccountUsage('claude-code')?.sourceRunner!==remoteClaudeRunner){
+    // An API-route session spends the Console credit, never a subscription account: no account choice,
+    // no allowance reading, no move to another account (claude-api-route.ts).
+    claudeApiRoute=input.providerId==='claude-code'&&sessionMetadata(getSessionById(input.session.id)??input.session).claudeRoute==='api-credits';
+    if(!claudeApiRoute&&remoteClaudeRunner&&!input.adopted&&providerAccountUsage('claude-code')?.sourceRunner!==remoteClaudeRunner){
       throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
         accountReadingWait:true,
         message:`Claude was placed on runner ${remoteClaudeRunner}, but the owner's saved Claude allowance reading is not from that runner. This unsent turn will retry after the owner reads that runner's allowance.`});
@@ -688,9 +743,17 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       ?input.adopted?(adoptedClaudeAccount?{account:adoptedClaudeAccount,home:input.boundAccount?.home??null,because:'spending-this-window' as const,expected:adoptedClaudeAccount,
           selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}:null)
       :input.boundAccount?{...input.boundAccount,because:'spending-this-window' as const,expected:input.boundAccount.account,selectionRevision:sessionMetadata(input.session).claudeSelectionRevision??0}
-        :chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount,remoteClaudeRunner)
+        :claudeApiRoute?null:(()=>{
+          try{return chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0,input.turnId,claudeLaunchModel,warmClaudeCacheAccount,remoteClaudeRunner);}
+          catch(error){
+            // Every subscription account is out of room: a new conversation spends the API credit instead of waiting.
+            if(error instanceof ProviderDispatchError&&error.message==='Every available Claude account is out of room.'
+              &&chooseApiOverflow(input,claudeLaunchModel,error.message)){claudeApiRoute=true;return null;}
+            throw error;
+          }
+        })()
       :null);
-    if(remoteClaudeRunner&&!input.adopted){
+    if(remoteClaudeRunner&&!input.adopted&&!claudeApiRoute){
       if(!claudeChoice)throw new ProviderDispatchError({failureClass:'retryable',terminalConfirmed:false,
         message:`No cached Claude account choice is available for runner ${remoteClaudeRunner}; the turn remains held until owner account readings are available.`});
       let validation:{available:boolean;resolution:string}|null=null;
@@ -702,7 +765,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         message:`Runner ${remoteClaudeRunner} cannot resolve selected Claude account ${claudeChoice.account} (${validation?.resolution??'unknown'}); the turn remains held.`});
     }
     runningClaudeAccount=input.providerId==='claude-code'
-      ?(remoteClaudeRunner?claudeChoice?.account??null
+      ?claudeApiRoute?API_CREDITS_ACCOUNT:(remoteClaudeRunner?claudeChoice?.account??null
         :claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
     if(remoteClaudeRunner&&!input.adopted&&!runningClaudeAccount)throw new Error(`Runner ${remoteClaudeRunner} could not identify a signed-in Claude account.`);
     const savedGoogleAccount=sessionMetadata(input.session).providerAccount;
@@ -741,8 +804,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       runningCodexRunner=metadata.providerAccount!==undefined?metadata.providerRunner??null:runner;
     }
     const remoteProviderRunner=remoteClaudeRunner;
-    runningClaudeHome=remoteProviderRunner?null:claudeChoice?.home??null;
-    const actualClaudeBrief=input.presentation==='native'&&!input.adopted&&runningClaudeAccount
+    runningClaudeHome=remoteProviderRunner||claudeApiRoute?null:claudeChoice?.home??null;
+    // The key is read on the machine that launches Claude: here, or on the runner from the route marker.
+    const apiRouteEnvironment:Record<string,string>=!claudeApiRoute?{}
+      :remoteProviderRunner?{CONCIERGE_PROVIDER_ID:'claude-code',CONCIERGE_CLAUDE_ROUTE:API_CREDITS_ACCOUNT}:apiCreditsEnvironment();
+    const actualClaudeBrief=input.presentation==='native'&&!input.adopted&&runningClaudeAccount&&!claudeApiRoute
       ?budgetBriefWithProviderRoom('claude-code',Date.now(),runningClaudeAccount):null;
     // An adopted run keeps the identity recorded when its provider started; this release's
     // rebuilt instructions were never sent to it.
@@ -791,7 +857,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_MS),
         ...input.providerEnvironment,
         ...(runningClaudeHome?{CLAUDE_CONFIG_DIR:runningClaudeHome}:{}),
-        ...(remoteProviderRunner&&runningClaudeAccount?{CONCIERGE_PROVIDER_ID:'claude-code',CONCIERGE_PROVIDER_ACCOUNT:runningClaudeAccount}:{}),
+        ...(remoteProviderRunner&&runningClaudeAccount&&!claudeApiRoute?{CONCIERGE_PROVIDER_ID:'claude-code',CONCIERGE_PROVIDER_ACCOUNT:runningClaudeAccount}:{}),
+        ...apiRouteEnvironment,
         ...(remoteGoogleRunner?{CONCIERGE_PROVIDER_ID:'antigravity',...(runningGoogleAccount?{CONCIERGE_PROVIDER_ACCOUNT:runningGoogleAccount}:{})}:{}),
         // Only an older private execution being adopted needs its original Codex home.
         ...(input.providerId==='codex'&&input.adopted&&input.boundAccount?{CODEX_HOME:input.boundAccount.home??join(homedir(),'.codex')}:{}),
@@ -808,7 +875,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         CONCIERGE_COMMIT_PROVENANCE: commitProvenanceToken,
         ...agentRunEnvironment({turnId:input.turnId,sessionId:input.session.id}),
       },
-      ...(input.boundAccount?{accountLabel:input.boundAccount.account}:claudeChoice?{accountLabel:claudeChoice.account}:{}),
+      ...(claudeApiRoute?{accountLabel:API_CREDITS_ACCOUNT}:input.boundAccount?{accountLabel:input.boundAccount.account}:claudeChoice?{accountLabel:claudeChoice.account}:{}),
+      // Each result's cumulative cost becomes the route's spend ledger (claude-api-route.ts).
+      ...(claudeApiRoute?{onCost:(cost:{totalUsd:number;sessionUuid:string|null})=>{
+        try{recordApiCreditSpend(db,{sessionId:input.session.id,turnId:input.turnId,conversationUuid:cost.sessionUuid,totalUsd:cost.totalUsd});}
+        catch(error){log('warn','claude_api_credit_spend_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+      }}:{}),
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
       onProviderTurnStarted: (providerTurnId) => {
         recordTurnProviderTurnId(input.turnId, providerTurnId);
@@ -916,7 +988,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           void offerOutageChoices({ turnId: input.turnId, status: retry.status }, recordSessionEvent);
       },
       onRetryRestartReady: (restart) => registerTurnRetryRestart(input.turnId, restart),
-    });
+    }).catch(error=>{throw claudeApiRoute?apiRouteFailure(error):error;});
     input.closeSteering();
     try { flushPendingProviderProgressEvents(); }
     catch(error){log('error','session_progress_terminal_flush_failed',{turn_id:input.turnId,...errorFields(error)});}
@@ -927,7 +999,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       resolveUsageHoldNoticesForSettledTurn(input.providerId,input.turnId);
     markClaudeHomeVerified(runningClaudeHome);
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
-    recordProviderSession(input, result.sessionUUID);
+    recordProviderSession(input, result.sessionUUID, claudeApiRoute);
     clearRetryBreaker(providerBreakerKey);
     clearRetryBreaker(capacityBreakerKey);
     clearRetryBreaker(localPrerequisiteBreakerKey);
@@ -1348,7 +1420,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
     if (preserveDispatchFailure) {
       if (structuredFailure?.providerSessionId && providerIdentityCompatible) {
-        recordProviderSession(input, structuredFailure.providerSessionId);
+        recordProviderSession(input, structuredFailure.providerSessionId, claudeApiRoute);
       }
       if (structuredFailure?.providerTurnId) recordTurnProviderTurnId(input.turnId, structuredFailure.providerTurnId);
       const message = error instanceof ProviderDispatchError&&error.message.startsWith('CODEX_INPUT_NOT_ACKNOWLEDGED:')
@@ -1360,7 +1432,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         &&isClaudeConversationRefusal(message);
       if(replaySafe&&input.presentation==='native'&&claudeConversationRefused
         &&input.session.agent_session_uuid&&structuredFailure?.providerSessionId===input.session.agent_session_uuid
-        &&!input.boundAccount&&runningClaudeAccount
+        &&!input.boundAccount&&runningClaudeAccount&&!claudeApiRoute
         &&claudeDispatchWithRoomBesides(runningClaudeAccount,runningClaudeModel,
           input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER?.trim()||null)){
         const refusedAccount=runningClaudeAccount;
@@ -1409,7 +1481,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // until that told him every account was out until chann.app's weekly reset two days away,
       // while his other account refilled that evening (2026-10-09).
       let everyAccountClearsAtMs:number|null=null;
-      if(replaySafe&&!input.boundAccount&&input.providerId==='claude-code'&&message.startsWith('Claude usage is exhausted')){
+      if(replaySafe&&!input.boundAccount&&!claudeApiRoute&&input.providerId==='claude-code'&&message.startsWith('Claude usage is exhausted')){
         // The account this attempt actually ran on, not the session's last recorded one, which is
         // written only once Claude reports the start and can name an earlier attempt's account.
         const spent=runningClaudeAccount??sessionMetadata(input.session).claudeAccount??null;
@@ -1418,6 +1490,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           switchClaudeAccount=!!spent&&!!next&&next.account!==spent;}
         catch { everyAccountClearsAtMs=claudeEveryAccountClearsAt(
           input.model||getClaudePreferredModel(input.session.id,input.turnId)||null); }
+      }
+      // Refused before any work with every subscription account out: a conversation that does not
+      // exist yet starts again on the API credit now instead of waiting for a reset.
+      if(everyAccountClearsAtMs!==null&&replaySafe&&!structuredFailure?.assistantOutput&&!structuredFailure?.toolsUsed.length
+        &&chooseApiOverflow(input,runningClaudeModel,message)
+        &&retryRunningTurnAfterProviderFailure({turnId:input.turnId,ownerInstanceId:input.ownerInstanceId,dispatchAttempt,error:message,nextAttemptMs:Date.now()})){
+        await progressController?.pauseForRetry();
+        await statusController?.stop();
+        return {status:'retry_queued',turnId:input.turnId};
       }
       const refusalClearsAtMs=structuredFailure?.clearsAtMs??null;
       const heldUntilMs = replaySafe&&!switchClaudeAccount&&refusalClearsAtMs!==null
@@ -1686,7 +1767,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           Date.now(),dispatchAttempt):null;
       // Whether any other Claude account can take the work now, judged against the account this
       // attempt actually ran on (the selected account counts too).
-      const refusal=refused&&refused.refusal==='usage'&&input.providerId==='claude-code'
+      const refusal=refused&&refused.refusal==='usage'&&input.providerId==='claude-code'&&!claudeApiRoute
         &&claudeAccountWithRoomBesides(runningClaudeAccount,runningClaudeModel)?{...refused,elsewhere:true}:refused;
       const workedOn=observedAssistantOutput || observedToolCount>0 || !!structuredFailure?.assistantOutput
         || (structuredFailure?.toolsUsed.length??0)>0 || artifactActivity;
@@ -1924,14 +2005,16 @@ async function addWorkingReaction(input: SlackTurnExecutionInput) {
 function recordProviderSession(
   input: TurnExecutionInput,
   sessionUUID: string | null,
+  claudeApiRoute = false,
 ) {
   if (input.presentation === "native") {
     if (sessionUUID) {
       // F3-deep (2026-11-19): record the account the dispatcher chose for this Claude turn
       // so a later `--resume UUID` launcher doesn't follow the JSONL `session-owner` header
       // to a different account. See claude-session-binding.ts.
+      // An API-route conversation is bound to the route's label, so a resumed shell launches it on the key.
       const claudeAccount = input.providerId === 'claude-code'
-        ? (sessionMetadata(input.session).claudeAccount as string | undefined) : undefined;
+        ? claudeApiRoute ? API_CREDITS_ACCOUNT : (sessionMetadata(input.session).claudeAccount as string | undefined) : undefined;
       input.services.bindProviderSession(input.session.id, input.providerId, sessionUUID,
         claudeAccount ? { label: claudeAccount,
           dispatchRevision: (sessionMetadata(input.session).claudeSelectionRevision as number | undefined) ?? 0 } : undefined);

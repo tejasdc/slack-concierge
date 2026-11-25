@@ -33,3 +33,5 @@ export const NATIVE_HOME_REPAIR_TEST_AUTHORIZATION='native-home-repair-2026-11-1
 export const DATABASE_SAFETY_FIXTURE_TEST_AUTHORIZATION='database-safety-fixture-02b26d77';
 export const CODEX_RUNTIME_MAINTENANCE_TEST_AUTHORIZATION='codex-runtime-maintenance-ledger-image';
 export const KEEP_WORKING_TEST_AUTHORIZATION='keep-working-2026-11-18';
+// Worker request e10abd14 requires acceptance of the Claude API-credit route in a disposable ledger.
+export const API_CREDITS_ROUTE_TEST_AUTHORIZATION='api-credits-route-e10abd14';
