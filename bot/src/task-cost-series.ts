@@ -34,6 +34,19 @@ export function ensureTaskCosts(cache:Database){
 
 const basename=(path:string)=>path.replace(/\/+$/,'').split('/').pop()??path;
 
+/** When the task began, by the ledger: the request's creation, else the input's acceptance. */
+function taskStartMs(ledger:Database,task:string):number|null{
+  try{
+    if(task.startsWith('request:')){
+      const row=ledger.query('SELECT created_at_ms FROM session_communication_requests WHERE request_id=?').get(task.slice('request:'.length)) as {created_at_ms:number}|null;
+      if(row)return row.created_at_ms;
+    }
+    const row=ledger.query('SELECT created_at FROM session_inputs WHERE id=?').get(task) as {created_at:string}|null;
+    const ms=row?Date.parse(`${row.created_at.replace(' ','T')}Z`):NaN;
+    return Number.isFinite(ms)?ms:null;
+  }catch{return null;}
+}
+
 /** What to call a task and which project it ran in, read from the owner's ledger. */
 function describe(ledger:Database,task:string,sessionId:string|null){
   let title:string|null=null,kind='other';
@@ -56,33 +69,47 @@ function describe(ledger:Database,task:string,sessionId:string|null){
   if(local){
     const row=ledger.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(Number(local[1])) as {native_metadata_json:string}|null;
     try{const meta=JSON.parse(row?.native_metadata_json??'{}');
-      project=typeof meta.project==='string'?basename(meta.project):typeof meta.cwd==='string'?basename(meta.cwd):null;
+      const path=typeof meta.project==='string'?meta.project:typeof meta.cwd==='string'?meta.cwd:null;
+      // A task worktree (<repository>/.wt/<task>) belongs to its repository.
+      project=path?basename(path.split('/.wt/')[0]!):null;
       sessionTitle=typeof meta.title==='string'?meta.title:null;}catch{}
   }
-  // Worktrees of one project are that project.
-  if(project?.startsWith('impl-')||project?.startsWith('worktree-'))project=null;
-  return {kind,title:title??sessionTitle,project};
+  return {kind,title:title??sessionTitle,project,startedMs:taskStartMs(ledger,task)};
 }
 
-/** Writes each task whose work lies wholly inside the report's week; older tasks keep the numbers they had. */
+/**
+ * Records each task that began inside the measured week. A task is written when first seen and
+ * only grows after that: once its early calls leave the week the report sees just its tail, so a
+ * later, smaller reading never replaces the larger one (review of 2026-11-25). A task that began
+ * before the week was never wholly measured and is not written at all.
+ */
 export function recordTaskCosts(cache:Database,ledger:Database,tasks:TaskCost[],sinceMs:number,nowMs=Date.now()){
   ensureTaskCosts(cache);
-  const upsert=cache.query(`INSERT INTO task_costs(task_id,kind,title,project,session_id,started_ms,last_ms,dollars,calls,input_tokens,cache_read,
-      output_tokens,combined_percent,models_json,triggers_json,updated_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(task_id) DO UPDATE SET kind=excluded.kind,title=excluded.title,project=excluded.project,session_id=excluded.session_id,
-      started_ms=excluded.started_ms,last_ms=excluded.last_ms,dollars=excluded.dollars,calls=excluded.calls,input_tokens=excluded.input_tokens,
-      cache_read=excluded.cache_read,output_tokens=excluded.output_tokens,combined_percent=excluded.combined_percent,
-      models_json=excluded.models_json,triggers_json=excluded.triggers_json,updated_ms=excluded.updated_ms`);
+  const known=cache.query('SELECT 1 FROM task_costs WHERE task_id=?');
+  const insert=cache.query(`INSERT INTO task_costs(task_id,kind,title,project,session_id,started_ms,last_ms,dollars,calls,input_tokens,cache_read,
+      output_tokens,combined_percent,models_json,triggers_json,updated_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const grow=cache.query(`UPDATE task_costs SET last_ms=max(last_ms,?),updated_ms=?,
+      calls=CASE WHEN ?>dollars THEN ? ELSE calls END,input_tokens=CASE WHEN ?>dollars THEN ? ELSE input_tokens END,
+      cache_read=CASE WHEN ?>dollars THEN ? ELSE cache_read END,output_tokens=CASE WHEN ?>dollars THEN ? ELSE output_tokens END,
+      combined_percent=CASE WHEN ?>dollars THEN ? ELSE combined_percent END,models_json=CASE WHEN ?>dollars THEN ? ELSE models_json END,
+      triggers_json=CASE WHEN ?>dollars THEN ? ELSE triggers_json END,dollars=max(dollars,?) WHERE task_id=?`);
   cache.exec('BEGIN');
   try{
     for(const task of tasks){
-      // Work that began before the week is only partly measured now; its earlier record stands.
-      if(task.firstAtMs<sinceMs+15*60_000||task.dollars<=0)continue;
-      const {kind,title,project}=describe(ledger,task.task,task.sessionId);
-      upsert.run(task.task,kind,title,project,task.sessionId,task.firstAtMs,task.lastAtMs,task.dollars,task.calls,
-        task.raw.input+task.raw.cacheWrite+task.raw.cacheWrite1h,task.raw.cacheRead,task.raw.output,task.combinedPercent,
-        JSON.stringify(task.models),JSON.stringify(task.triggers),nowMs);
+      if(task.dollars<=0)continue;
+      const written=task.raw.input+task.raw.cacheWrite+task.raw.cacheWrite1h,models=JSON.stringify(task.models),triggers=JSON.stringify(task.triggers);
+      if(known.get(task.task)){
+        const d=task.dollars;
+        grow.run(task.lastAtMs,nowMs,d,task.calls,d,written,d,task.raw.cacheRead,d,task.raw.output,d,task.combinedPercent,d,models,d,triggers,d,task.task);
+        continue;
+      }
+      const {kind,title,project,startedMs}=describe(ledger,task.task,task.sessionId);
+      const began=startedMs??task.firstAtMs;
+      if(began<sinceMs||task.firstAtMs<sinceMs+15*60_000)continue;
+      insert.run(task.task,kind,title,project,task.sessionId,began,task.lastAtMs,task.dollars,task.calls,written,task.raw.cacheRead,
+        task.raw.output,task.combinedPercent,models,triggers,nowMs);
     }
+    cache.query('DELETE FROM task_costs WHERE started_ms<?').run(nowMs-60*DAY);
     cache.exec('COMMIT');
   }catch(error){cache.exec('ROLLBACK');throw error;}
 }
@@ -93,7 +120,7 @@ const median=(values:number[])=>{
   return sorted.length%2?sorted[middle]!:(sorted[middle-1]!+sorted[middle]!)/2;
 };
 const localDay=(ms:number,zone:string)=>new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(ms);
-type Row={task_id:string;kind:string;title:string|null;project:string|null;session_id:string|null;started_ms:number;dollars:number;
+type Row={task_id:string;kind:string;title:string|null;project:string|null;session_id:string|null;started_ms:number;last_ms:number;dollars:number;
   calls:number;input_tokens:number;cache_read:number;output_tokens:number;combined_percent:number|null;models_json:string;triggers_json:string};
 
 /** Shares of cost, largest first, the rest summed as "other". */
@@ -119,7 +146,9 @@ export function taskCostSeries(cache:Database,timeZone:string,nowMs=Date.now()){
   const today=localDay(nowMs,timeZone);
   const days=Array.from({length:SERIES_DAYS},(_,index)=>localDay(nowMs-(SERIES_DAYS-1-index)*DAY,timeZone)).filter((day,index,all)=>all.indexOf(day)===index);
   const byDay=new Map<string,Row[]>();
-  for(const row of rows){const day=localDay(row.started_ms,timeZone);byDay.set(day,[...byDay.get(day)??[],row]);}
+  // A task with calls in the last hour may still be running; it joins the median once it settles.
+  for(const row of rows){if(row.last_ms>nowMs-60*60_000)continue;const day=localDay(row.started_ms,timeZone);
+    const list=byDay.get(day);if(list)list.push(row);else byDay.set(day,[row]);}
   const windowRows=(day:string)=>{
     const end=Date.parse(`${day}T12:00:00Z`),list:Row[]=[];
     for(let back=0;back<WINDOW_DAYS;back++)list.push(...byDay.get(new Date(end-back*DAY).toISOString().slice(0,10))??[]);

@@ -1241,9 +1241,12 @@ thing an agent was asked to do: the nearest request on a turn's input chain, els
 of his that started it, else the turn's own input (`turnTaskIn` in `bot/src/work-thread-root.ts`,
 carried on each turn as `task_id`). Usage buckets carry the task; each report also carries
 `taskMix`, the models and turn starts behind each task's cost (one entry per task, so runner
-reports stay small). After merging runners, the reader writes each task whose work lies wholly
-inside the week into `task_costs` in its own cache database (never the ledger), frozen once it
-ages out, so the table holds the month the week cannot. `taskCost` on the week report and the
+reports stay small). After merging runners, the reader writes each task that began inside the
+week (its start read from the ledger) into `task_costs` in its own cache database (never the
+ledger); later readings only grow a stored task, because once its early calls leave the week the
+report sees just its tail. The table holds the month the week cannot, pruned after 60 days;
+tasks with calls in the last hour stay out of the medians until they settle. A task worktree
+(`<repository>/.wt/<task>`) counts under its repository. `taskCost` on the week report and the
 Accounts overview is the 30-day series: per day, the median over tasks started in the seven
 days ending then, overall and for the busiest projects, with median calls, context read per
 call, tokens written, model and start shares, and the week's costliest tasks. Dollars are
