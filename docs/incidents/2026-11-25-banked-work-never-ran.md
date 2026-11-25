@@ -1,7 +1,7 @@
 ---
 failure: Generic banked work could never start, because it required a forecast that an unspent allowance cannot produce and an idle fleet this machine never has; all three items in the bank expired unused while two Claude accounts sat at 0% and 6% of their weeks.
 date: 2026-11-25
-fix_commits: []
+fix_commits: [807c5b3f]
 cause_status: confirmed
 ---
 
