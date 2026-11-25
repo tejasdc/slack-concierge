@@ -68,7 +68,7 @@ export function apiCreditsConfigured(keyFile = API_CREDITS_KEY_FILE): boolean {
 // ---- The credit cycle --------------------------------------------------------------------------
 
 /**
- * Observed in the Console (Settings → Billing, https://console.anthropic.com/settings/billing) on
+ * Observed in the Console (Settings → Billing, https://platform.claude.com/settings/billing) on
  * 2026-11-25: "API credit (Ultra)", $200, granted Oct 22 and Nov 22; the Nov 22 grant expires
  * Dec 24, 7:00 PM ET (Dec 25 00:00 UTC). October's expired unused. No API reads the balance, so the
  * Console stays the authority and these constants are its observed schedule.
@@ -76,7 +76,7 @@ export function apiCreditsConfigured(keyFile = API_CREDITS_KEY_FILE): boolean {
 export const API_CREDITS_GRANT_DAY = 22;
 export const API_CREDITS_LIFETIME_DAYS = 32;
 export const API_CREDITS_BUDGET_USD = 200;
-export const API_CREDITS_CONSOLE_URL = "https://console.anthropic.com/settings/billing";
+export const API_CREDITS_CONSOLE_URL = "https://platform.claude.com/settings/billing";
 /** Below this Concierge stops choosing the route by itself; a Claude Opus turn can cost a few dollars. */
 export const API_CREDITS_FLOOR_USD = 5;
 /** Banked work takes the route only in the last week, when unspent credit is about to be lost. */
