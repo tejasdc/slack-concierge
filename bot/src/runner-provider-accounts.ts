@@ -15,7 +15,7 @@ import { useCodexResetCredit } from "./codex-reset-credit";
 import { readRunnerGoogleUsage } from "./runner-google-usage";
 import {createConnection} from 'node:net';
 import { CLAUDE_SCRATCH, isClaudePerLogin } from './claude-home-entries';
-import { listAccounts as listAccountsFromResolver } from './account-home-resolver';
+import { listAccounts as listAccountsFromResolver, liveRootFor, liveRootOrphans } from './account-home-resolver';
 import {observeAppliedRuntimeMaintenance,progressRuntimeMaintenance,sameRuntime,sameRuntimeMaintenanceBinding,type RuntimeMaintenanceBinding,type RuntimeMaintenanceState,type RuntimeMaintenanceObservation} from './codex-runtime-maintenance';
 import {isProcessIdentityAlive,processIdentity,type ProcessIdentity} from './runtime-identity';
 import {LEDGER_IMAGE_PATH} from './agent-ledger-image-boundary';
@@ -676,6 +676,24 @@ export function runnerAccountHome(key: AccountProvider, accountLabel: string): s
  */
 export function runnerAccountHomes(key: AccountProvider): { account: string; home: string }[] {
   return resolveAccountsFor(key).map(record => ({ account: record.label, home: record.canonicalHome }));
+}
+
+/**
+ * Every folder whose transcripts usage must read: each account's folder, plus the provider's live
+ * root (`~/.codex`, `~/.claude`) when it holds transcripts. Dispatch never uses this. Since the
+ * 2026-11-19 account rebuild Codex's app server writes every conversation into `~/.codex`, which
+ * is not an account folder, so usage read none of a week of Codex work and the nightly review
+ * found 11 of 19 scheduled runs unmeasured (2026-11-25). A conversation mirrored in two folders is
+ * counted once by the reader; the turn's recorded account, not this label, decides its account.
+ */
+export function runnerTranscriptHomes(key: AccountProvider): { account: string; home: string }[] {
+  const homes = runnerAccountHomes(key);
+  if (key !== 'claude-code' && key !== 'codex') return homes;
+  const live = liveRootFor(key);
+  if (homes.some(candidate => candidate.home === live)) return homes;
+  if (!existsSync(join(live, key === 'claude-code' ? 'projects' : 'sessions'))) return homes;
+  const account = runnerLiveRootMirror(key)?.account ?? liveRootOrphans(key)[0]?.label ?? (key === 'codex' ? 'unknown Codex account' : 'unknown');
+  return [...homes, { account, home: live }];
 }
 
 /** The one additional kind of candidate the transcript-discovery paths may need: a

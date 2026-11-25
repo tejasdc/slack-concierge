@@ -14,10 +14,12 @@ const report={since:new Date(since).toISOString(),timeZone:'America/New_York',ac
   attributionBuckets:[bucket('request:a',1,now-2*day),bucket('request:a',2,now-2*day+step),
     bucket('request:b',5,now-3*day),bucket('capture:c',1,now-day),bucket('request:old',9,since)],
   taskMix:{'request:a':{models:{'gpt-6.1-sol':1,'gpt-6-luna':2},triggers:{'agent request':1,'report-back':2}},
-    'request:b':{models:{'gpt-6.1-sol':5},triggers:{'agent request':5}},'capture:c':{models:{'gpt-6.1-sol':1},triggers:{'his message':1}}}};
+    'request:b':{models:{'gpt-6.1-sol':5},triggers:{'agent request':5}},'capture:c':{models:{'gpt-6.1-sol':1},triggers:{'his message':1}}},
+  // Finished turns, no model call observed: eligible but unmeasured, never a $0 task.
+  taskTurns:{'request:z':{startedMs:now-day,sessionId:'concierge:1'},'request:a':{startedMs:now-2*day,sessionId:'concierge:1'}}};
 const result=attributeWeeklyAllowance(report,[],now) as any;
 const a=result.taskCosts.find((row:any)=>row.task==='request:a');
-if(result.taskCosts.length!==4||a.dollars!==3||a.calls!==4||a.models['gpt-6-luna']!==2||a.triggers['report-back']!==2)
+if(result.taskCosts.length!==5||result.taskCosts.find((row:any)=>row.task==='request:z')?.dollars!==null||a.dollars!==3||a.calls!==4||a.models['gpt-6-luna']!==2||a.triggers['report-back']!==2)
   throw new Error(`task costs did not sum their calls: ${JSON.stringify(result.taskCosts)}`);
 
 const ledger=ledgerWriteResults(new Database(':memory:'));
@@ -25,6 +27,7 @@ ledger.exec(`CREATE TABLE session_communication_requests(request_id TEXT PRIMARY
   CREATE TABLE session_inputs(id TEXT PRIMARY KEY,origin TEXT,payload_json TEXT,created_at TEXT);
   CREATE TABLE sessions(id INTEGER PRIMARY KEY,native_metadata_json TEXT);`);
 ledger.query('INSERT INTO session_communication_requests VALUES(?,?,?)').run('a',JSON.stringify({summary:'Fix the typing delay'}),now-2*day);
+ledger.query('INSERT INTO session_communication_requests VALUES(?,?,?)').run('z',JSON.stringify({summary:'Run with no usage seen'}),now-day);
 ledger.query('INSERT INTO session_communication_requests VALUES(?,?,?)').run('b',JSON.stringify({summary:'Measure the slow key'}),now-3*day);
 // Began before the week: its calls in the week are only its tail, so it is never written.
 ledger.query('INSERT INTO session_communication_requests VALUES(?,?,?)').run('old',JSON.stringify({summary:'Older work'}),since-day);
@@ -33,7 +36,7 @@ ledger.query('INSERT INTO sessions VALUES(1,?)').run(JSON.stringify({project:'/r
 const cache=ledgerWriteResults(new Database(':memory:'));
 recordTaskCosts(cache,ledger,result.taskCosts,since,now);
 const stored=cache.query('SELECT task_id,kind,title,project,dollars FROM task_costs ORDER BY task_id').all() as any[];
-if(stored.length!==3||stored.some(row=>row.task_id==='request:old')
+if(stored.length!==4||stored.some(row=>row.task_id==='request:old')
   ||stored.find(row=>row.task_id==='request:a')?.title!=='Fix the typing delay'||stored.find(row=>row.task_id==='capture:c')?.kind!=='message'
   ||stored.some(row=>row.project!=='thinkering'))
   throw new Error(`recorded tasks wrong: ${JSON.stringify(stored)}`);
@@ -44,7 +47,7 @@ const kept=cache.query("SELECT dollars,calls,started_ms FROM task_costs WHERE ta
 if(kept.dollars!==3||kept.calls!==4||kept.started_ms!==now-2*day)throw new Error(`a later partial reading shrank a task: ${JSON.stringify(kept)}`);
 const series=taskCostSeries(cache,'America/New_York',now);
 const last=series.points.at(-1)!;
-if(last.tasks!==3||last.median!==3||last.byProject.thinkering!==3||series.costliest[0]?.dollars!==5
+if(last.tasks!==3||last.eligible!==4||last.median!==3||series.costliest.some(row=>row.task==='request:z')||last.byProject.thinkering!==3||series.costliest[0]?.dollars!==5
   ||series.points.length<29||series.projects[0]!=='thinkering'||!last.models.length||!last.triggers.length)
   throw new Error(`series wrong: ${JSON.stringify({last,costliest:series.costliest})}`);
-console.log(`cost per task: 3 tasks recorded (the one begun before the week left alone), latest 7-day median $${last.median}, costliest $${series.costliest[0]!.dollars}`);
+console.log(`cost per task: 3 of 4 eligible tasks measured (the unmeasured one kept out of the median, the one begun before the week left alone), latest 7-day median $${last.median}, costliest $${series.costliest[0]!.dollars}`);

@@ -251,7 +251,11 @@ export function attributeWeeklyAllowance(report:any,readings:Reading[],nowMs=Dat
       calls:value.callCount,raw:value.rawTokens,combinedPercent:value.combined.usedPercent,
       models:report.taskMix?.[task]?.models??{},triggers:report.taskMix?.[task]?.triggers??{}};
   });
-  const {attributionBuckets:_,taskMix:_mix,...rest}=report;
+  // Tasks with finished turns but no observed model call: eligible, unmeasured, never a zero.
+  for(const [task,turns] of Object.entries(report.taskTurns??{}) as [string,{startedMs:number;sessionId?:string}][])
+    if(!taskRows.has(task))taskCosts.push({task,sessionId:turns.sessionId??null,firstAtMs:turns.startedMs,lastAtMs:turns.startedMs,dollars:null,calls:0,
+      raw:blank(),combinedPercent:null,models:{},triggers:{}} as any);
+  const {attributionBuckets:_,taskMix:_mix,taskTurns:_turns,...rest}=report;
   return {...rest,taskCosts,accounts,combinedWeekly,sessionAllowanceById,threadAllowanceById,
     byThread:Object.entries(threadAllowanceById).filter(([id])=>id!=='unassigned').map(([topicId,weeklyAllowance])=>({topicId,weeklyAllowance})),
     byRoutine:Object.entries(routineAllowanceById).map(([rootId,weeklyAllowance])=>({rootId:Number(rootId),weeklyAllowance,

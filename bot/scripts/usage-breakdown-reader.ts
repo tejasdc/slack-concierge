@@ -639,6 +639,11 @@ function report(period:'today'|'week',since:number,zone:string){
   };
   return {period,since:new Date(since).toISOString(),through:new Date().toISOString(),timeZone:zone,
     attributionBuckets:[...attributionBuckets.values()],taskMix:Object.fromEntries(taskMix),
+    // Every task with a finished turn in the period, measured or not, so cost per task can say how
+    // many tasks its median covers and tell an unmeasured task from one that cost nothing.
+    taskTurns:Object.fromEntries((ledger.query(`SELECT task_id,min(provider_started_at) AS started,count(*) AS turns,min(session_id) AS session_id FROM turns
+      WHERE task_id IS NOT NULL AND provider_started_at IS NOT NULL AND ended_at IS NOT NULL GROUP BY task_id`).all() as {task_id:string;started:string;turns:number;session_id:number}[])
+      .map(row=>[row.task_id,{startedMs:Date.parse(`${row.started}Z`),turns:row.turns,sessionId:`concierge:${row.session_id}`}]).filter(([,row]:any)=>row.startedMs>=since)),
     callMix:callMixView(overallMix),editMix:editMixView(overallEditMix),implementation:{handoffs:implementationHandoffs.length,
       heldTurns:implementationHolds.length,reasons:implementationReasons,
       bySession:[...new Set([...implementationHandoffs.map(row=>row.sessionId),...implementationReasons.map(row=>row.sessionId),...implementationHolds.map(row=>row.session_id)])]
