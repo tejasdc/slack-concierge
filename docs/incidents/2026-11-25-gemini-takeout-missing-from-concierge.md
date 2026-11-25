@@ -29,3 +29,11 @@ the exact source and validating the trusted adapter's complete dialogue proof.
 - **Action:** Import the bytes, search each record, read its exact history, then request a new session from each source.
 - **Expected:** Search returns pinned Gemini evidence. Both current export forms refuse new session creation with no queued turns. A verified adapter fixture permits one new queued session and one reusable receipt.
 - **Replayable offline:** yes. Run `bun bot/scripts/gemini-takeout-owner-fixture.ts <absolute built Thinkering release>`.
+
+## Queued work recovery
+
+During source review follow-up, a check of the ordinary work-move paths found that both the
+usage recovery and handoff paths copied only the first message, dropping the verified history
+prepared by the owner. Both paths now read the same prepared input as execution. The existing
+held-work fixture verifies that a synthetic reconstructed first message retains its exact
+prepared context through both moves.

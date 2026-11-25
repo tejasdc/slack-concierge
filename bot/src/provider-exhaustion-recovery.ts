@@ -1,5 +1,5 @@
 import {db,executionChanged,getSessionById} from './state';
-import {createNativeSession,enqueueSessionInput,getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedExecutionPayload,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {newWorkCapacity} from './provider-start-choice';
 import {accountsWithRoom} from './provider-usage-forecast';
 import {claudeAccountAwaitingSignIn} from './provider-account-dispatch';
@@ -134,8 +134,7 @@ export function transferSession(sessionId:number):number {
   for(let index=0;index<turns.length;index++){
     const turn=turns[index]!,input=inputs[index]!;
     if(db.query('SELECT 1 FROM provider_recovery_inputs WHERE source_input_id=?').get(input.id))continue;
-    const retained=JSON.parse(input.payload_json);
-    const original=input.kind==='create'?retained.firstInput:retained;
+    const original=acceptedExecutionPayload(input);
     const accepted=retainSessionInput({id:`recovery:${input.id}`,sessionId:successor.id,
       scope:`provider-recovery:${source.id}`,actionId:input.id,kind:'input',origin:input.origin,
       payload:{...original,preparedPrompt:contextPrompt(sourceAddress,input.id,original.preparedPrompt??original.text)},

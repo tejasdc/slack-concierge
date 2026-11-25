@@ -716,6 +716,8 @@ address generation and descriptor again in the transaction that creates and queu
 coding session. The lineage records the imported parent, version and path. The agent receives
 source attribution and omissions with the ordered dialogue as evidence, alongside the new
 request. The combined prepared first message is limited to 128 KiB, with no truncation.
+An ordinary handoff or usage recovery can move a queued input only under its existing
+pre-execution rules. Both keep the verified packet and the accepted request together.
 Missing or invalid proof returns `GEMINI_RECONSTRUCTION_UNVERIFIED` before any session or turn
 is created. An identical creation retry returns the original receipt even if the source has since
 changed. Changed content under the same action ID conflicts. This is an owner API contract.
