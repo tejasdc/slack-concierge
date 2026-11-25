@@ -147,6 +147,9 @@ export function recordUsageReading(provider: AccountIdentityProvider, usage: Pro
 const SAME_WINDOW_MS = 5 * 60_000;
 const sameWindow = (left: number | null, right: number | null) =>
   left === null || right === null || Math.abs(left - right) <= SAME_WINDOW_MS;
+/** The same comparison where both instants must be known: an unknown reset proves nothing. */
+export const sameAllowanceWindow = (left: number, right: number) =>
+  Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= SAME_WINDOW_MS;
 
 /**
  * The samples that belong to the window running now. A window that reset starts again from

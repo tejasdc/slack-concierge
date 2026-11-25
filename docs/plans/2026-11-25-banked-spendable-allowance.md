@@ -138,6 +138,17 @@ by who moved it, and his own work arriving mid-run reaches it sooner, so the ban
 running turn admitted before the ceiling existed has none and yields once, so its continuation is
 admitted with one. A waiting admitted turn keeps its ceiling through drift under half a point.
 
+**A continuation inherits its predecessor's ceiling while the window is the same one.** A yield is
+a pause in one job, not a new job (the November 12 record settled that for the request side), so
+re-admitting would re-decide a settled question on worse evidence: a rate the paused job moved.
+Admission stores, beside the ceiling, the account, window and the reset instant of each included
+window (`saved_ceiling_window_json`); the continuation copies it (`saved_inherited_ceiling_json`).
+While every reset instant still matches within the forecast module's five-minute tolerance, the
+continuation resumes on that ceiling without re-admission, or waits (`waiting_for_reset`) if the
+account is already at it. If any window reset during the pause, the inheritance is dropped and the
+continuation is admitted from scratch: an inherited 84% ceiling would otherwise let it spend most
+of a fresh week.
+
 The account-room check refuses only a stale, failed or used-up reading. The claim in
 `bot/src/state.ts` reads only `saved_account` and `saved_boundary_ms`, which the pass writes from
 the same quantity, so it needed no change. Wait reasons: `window_runs_out_first` (words widened to
@@ -162,7 +173,11 @@ It wrote no eligible-account field by hand. Every row was re-run after the ceili
 | 9 | Live: chann job running, ceiling 84.7% | Its own spending (3%/h, +1 point, rate-spendable −215%): no yield. Tightest weekly at the ceiling: yield requested, `allowance_boundary`; continuation queued |
 | 10 | Live: his ordinary turn queued while the banked job runs | His turn claimed; a second banked job held by the one-unattended rule |
 
-Still open: a continuation queued after a banked yield is admitted by the forecast pass, which does
-judge on the measured rate, and that rate still includes the run that just yielded. A 3%/h run on a
-fresh week therefore keeps its own continuation waiting until the recent pace clears (about an
-hour). It no longer stops a running job; it only delays the restart.
+Pause-and-continue, run after the inheritance change on the same live readings (all rows above
+were re-run too, with the same results):
+
+| Case | Seen |
+| --- | --- |
+| Yield at the ceiling (row 9), continuation in the same week | Inherited; not chosen; `waiting_for_reset` |
+| Paused by a Concierge update at ceiling 84.7, then its own pace reads 3%/h (fresh spendable −215%) | Inherited 84.7; chosen; the real claim took it |
+| Same pause, but the week reset meanwhile (reset +7 days, 0% used) | Inheritance dropped; admitted afresh on the account now resetting soonest, ceiling 76.8 |

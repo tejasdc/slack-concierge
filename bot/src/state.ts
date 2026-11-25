@@ -1032,6 +1032,10 @@ addColumn("turns", "saved_window", "saved_window TEXT");
 addColumn("turns", "saved_boundary_ms", "saved_boundary_ms INTEGER");
 // The tightest used percentage a banked run may reach, fixed at admission (saved-work.ts).
 addColumn("turns", "saved_ceiling_percent", "saved_ceiling_percent REAL");
+// The allowance windows that ceiling was set in, and the ceiling a continuation inherits from its
+// paused predecessor (saved-work.ts BankedCeiling).
+addColumn("turns", "saved_ceiling_window_json", "saved_ceiling_window_json TEXT");
+addColumn("turns", "saved_inherited_ceiling_json", "saved_inherited_ceiling_json TEXT");
 addColumn("turns", "saved_alerted_at_ms", "saved_alerted_at_ms INTEGER");
 addColumn("turns", "saved_manual_start", "saved_manual_start INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "saved_quiet_only", "saved_quiet_only INTEGER NOT NULL DEFAULT 0 CHECK(saved_quiet_only IN (0,1))");
@@ -4233,6 +4237,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
           saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
           saved_boundary_ms=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_boundary_ms END,
           saved_ceiling_percent=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_ceiling_percent END,
+          saved_ceiling_window_json=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_ceiling_window_json END,
           status_desired_text=CASE WHEN saved_kind='banked' THEN NULL ELSE ? END,
           status_desired_revision=status_desired_revision+1,
           status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
@@ -4461,6 +4466,7 @@ export function requeueOrphanedPreAdmissionTurn(
           saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
           saved_boundary_ms=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_boundary_ms END,
           saved_ceiling_percent=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_ceiling_percent END,
+          saved_ceiling_window_json=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_ceiling_window_json END,
           status_desired_text=CASE WHEN saved_kind='banked' THEN NULL ELSE ? END,
           status_desired_revision=status_desired_revision+1,
           status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,

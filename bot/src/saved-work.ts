@@ -1,7 +1,7 @@
 import {db,claimNextQueuedTurn,executionChanged,getClaudePreferredModel,getSessionById,globalPauseHoldsSession,paceLapsedUsageHolds,settleTurnDependencies,type QueuedTurnClaimRow} from './state';
 import {enqueueSessionInput,getAcceptedSessionInput,nativeRunId,queueTurnContinuation,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {providerAccountUsage} from './provider-account-usage';
-import {usageForecasts,type UsageForecast} from './provider-usage-forecast';
+import {sameAllowanceWindow,usageForecasts,type UsageForecast} from './provider-usage-forecast';
 import type {ProviderUsage} from './provider-account-usage';
 import type {AccountIdentityProvider} from './provider-accounts';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
@@ -22,7 +22,8 @@ export type SavedTurn={id:number;session_id:number;status:string;saved_kind:Save
   saved_repeat_ms:number|null;saved_root_id:number|null;saved_sequence:number|null;saved_fire_at_ms:number|null;
   saved_daily_time:string|null;saved_time_zone:string|null;
   saved_account:string|null;saved_window:string|null;saved_boundary_ms:number|null;dispatch_next_attempt_ms:number|null;dispatch_failure_class:string|null;
-  saved_alerted_at_ms:number|null;accepted_input_id:string|null;saved_wait_reason?:string|null;saved_ceiling_percent?:number|null};
+  saved_alerted_at_ms:number|null;accepted_input_id:string|null;saved_wait_reason?:string|null;saved_ceiling_percent?:number|null;
+  saved_ceiling_window_json?:string|null;saved_inherited_ceiling_json?:string|null};
 
 const DAY=24*60*60_000, HOUR=60*60_000;
 export type SavedWorkSettings={quiet_start_hour:number;quiet_end_hour:number;reserve_percent:number;wait_days:number;time_zone:string};
@@ -74,12 +75,15 @@ export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expires
         .get(turn.session_id,turnId) as {id:number}|null;
       if(existing)throw new Error(`The ${standingRole} role already has repeating schedule ${existing.id} queued. Change its time in Thinkering Saved work, or cancel it with sessions saved cancel ${existing.id} before scheduling another.`);
     }
-    const inherited=continuationOf?savedTurn(continuationOf)?.saved_quiet_only===1:false;
+    const predecessor=continuationOf?savedTurn(continuationOf):null;
+    const inherited=predecessor?.saved_quiet_only===1;
     const next=kind==='scheduled'?atMs!:null;
     db.query(`UPDATE turns SET saved_kind=?,saved_at_ms=?,saved_expires_at_ms=?,dispatch_failure_class=NULL,dispatch_next_attempt_ms=?,
-      saved_fire_at_ms=?,saved_repeat_ms=?,saved_root_id=?,saved_sequence=?,saved_quiet_only=?,saved_daily_time=?,saved_time_zone=? WHERE id=?`)
+      saved_fire_at_ms=?,saved_repeat_ms=?,saved_root_id=?,saved_sequence=?,saved_quiet_only=?,saved_daily_time=?,saved_time_zone=?,
+      saved_inherited_ceiling_json=? WHERE id=?`)
       .run(kind,now,kind==='scheduled'?expiresAtMs??null:now+savedWorkSettings().wait_days*DAY,next,next,
-        repeatEveryMs??null,repeatEveryMs?turnId:null,repeatEveryMs?0:null,quietOnly||inherited?1:0,daily?.time??null,daily?.timeZone??null,turnId);
+        repeatEveryMs??null,repeatEveryMs?turnId:null,repeatEveryMs?0:null,quietOnly||inherited?1:0,daily?.time??null,daily?.timeZone??null,
+        kind==='banked'?predecessor?.saved_ceiling_window_json??null:null,turnId);
   })();
   executionChanged();
 }
@@ -205,6 +209,27 @@ export function bankedCeilingPercent(tightestUsedPercent:number|null,spendablePe
   return Math.round(Math.min(100,tightestUsedPercent+spendablePercent)*10)/10;
 }
 
+/**
+ * A banked ceiling with the allowance windows it was decided in. A yield pauses one job; it does
+ * not start a new one, so a continuation inherits its predecessor's ceiling instead of being
+ * re-judged against a rate the paused job itself moved — but only while every one of the
+ * account's windows is still the one the ceiling was set in. A window that reset during the pause
+ * would otherwise turn "84% of last week" into most of a fresh week, so it is re-admitted instead.
+ */
+type BankedCeiling={account:string;window:string;ceiling:number;resets:Record<string,number>};
+function parseCeiling(json:string|null|undefined):BankedCeiling|null {
+  if(!json)return null;
+  try {const value=JSON.parse(json) as BankedCeiling;return typeof value?.ceiling==='number'&&value.account&&value.window&&value.resets?value:null;}
+  catch {return null;}
+}
+function sameCeilingWindows(ceiling:BankedCeiling,forecasts:readonly UsageForecast[]):boolean {
+  const names=Object.keys(ceiling.resets);
+  return names.length>0&&names.every(name=>{
+    const forecast=forecasts.find(item=>item.account===ceiling.account&&item.window===name);
+    return !!forecast&&sameAllowanceWindow(Date.parse(forecast.resetsAt??''),ceiling.resets[name]!);
+  });
+}
+
 /** Forecast and reachability are read outside the claim. Only changed instants are written. */
 export function reconsiderBankedWork(now=Date.now()):number {
   const settings=savedWorkSettings();let changed=0;
@@ -274,22 +299,36 @@ export function reconsiderBankedWork(now=Date.now()):number {
     // 2026-11-01, when account usage moved to each account's own login, which reports no
     // `willLastToReset` at all. A stale reading is still refused, by `hasRoom`: a reading that is
     // not fresh carries no percentage.
-    const spendableWindows=usage?forecasts.filter(window=>window.resetsAt
+    let inherited=parseCeiling(row.saved_inherited_ceiling_json);
+    if(inherited&&usage&&!sameCeilingWindows(inherited,forecasts)){
+      db.query("UPDATE turns SET saved_inherited_ceiling_json=NULL WHERE id=? AND status='queued'").run(row.id);
+      log('info','banked_inherited_ceiling_dropped',{turn_id:row.id,account:inherited.account,window:inherited.window,ceiling_percent:inherited.ceiling});
+      inherited=null;
+    }
+    const spendableWindows=inherited||!usage?[]:forecasts.filter(window=>window.resetsAt
       &&usage.accounts.some(account=>account.label===window.account
         &&includedAllowanceWindows(provider,account,model).some(item=>item.name===window.window))
       && chooseAccountForTurn({accounts:rooms,bound:{account:window.account,reason:'spending-this-window'},prefer:null}).account===window.account
       && !window.runsOutBeforeReset && (spendableOf(window.account)??0)>0
-      && hasRoom(window.account)):[];
+      && hasRoom(window.account));
     // His one-hour floor for generic work: a job that cannot finish before the reset wastes the work
     // rather than saving allowance. Quiet-only work is bounded by the quiet cutoff instead.
-    const candidate=spendableWindows.filter(window=>quietOnly||Date.parse(window.resetsAt!)>=now+HOUR)
-      .sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]??null;
+    const beforeFloor=(window:UsageForecast)=>quietOnly||Date.parse(window.resetsAt!)>=now+HOUR;
+    // A continuation in the same windows resumes on its predecessor's ceiling while the account is
+    // below it; once reached, it waits for that window to reset and is then admitted afresh.
+    const inheritedWindow=inherited?forecasts.find(item=>item.account===inherited!.account&&item.window===inherited!.window)??null:null;
+    const belowInherited=!!inherited&&hasRoom(inherited.account)
+      &&(rooms.find(room=>room.account===inherited!.account)?.tightestUsedPercent??100)<inherited.ceiling;
+    const inheritedRefusal:BankedWait|null=!inherited?null:!belowInherited?'waiting_for_reset'
+      :inheritedWindow&&!beforeFloor(inheritedWindow)?'too_close_to_reset':null;
+    const candidate=inherited?(inheritedRefusal===null?inheritedWindow:null)
+      :spendableWindows.filter(beforeFloor).sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]??null;
     // The bank's spend is bounded at admission, as a level on the account's tightest window, and
     // never re-judged against a rate while it runs: a running banked job raises the measured rate
     // itself, and a 3%/h job on a fresh week then reads as −206% spendable and stops itself within
     // minutes (2026-11-25 verification). A level cannot be polluted by who moved it, and his own
     // work arriving mid-run still reaches it sooner, so the job yields earlier.
-    const ceiling=candidate?bankedCeilingPercent(rooms.find(room=>room.account===candidate.account)?.tightestUsedPercent??null,spendableOf(candidate.account)):null;
+    const ceiling=inherited?inherited.ceiling:candidate?bankedCeilingPercent(rooms.find(room=>room.account===candidate.account)?.tightestUsedPercent??null,spendableOf(candidate.account)):null;
     const account=candidate?.account??null;
     const reset=candidate?Date.parse(candidate.resetsAt!):null;
     // No banked work waits for an idle fleet. Quiet-only work stopped doing so on 2026-11-12,
@@ -307,8 +346,8 @@ export function reconsiderBankedWork(now=Date.now()):number {
     const wait:BankedWait=eligible?'eligible_not_claimed'
       :!usage?'no_usage_reading'
       :!readable?'stale_usage_reading'
-      :!candidate?(spendableWindows.length?'too_close_to_reset'
-        :rooms.some(room=>hasRoom(room.account))?'window_runs_out_first':'no_allowance_room')
+      :!candidate?(inheritedRefusal??(spendableWindows.length?'too_close_to_reset'
+        :rooms.some(room=>hasRoom(room.account))?'window_runs_out_first':'no_allowance_room'))
       :quietOnly?'outside_quiet_hours':'waiting_for_reset';
     const next=eligible?0:quietOnly?nextQuietStart(now,settings):reset!==null?Math.min(nextQuietStart(now,settings),Math.max(now+60_000,reset-2*HOUR))
       :row.dispatch_next_attempt_ms!==null&&row.dispatch_next_attempt_ms>now+3*60_000?row.dispatch_next_attempt_ms:null;
@@ -319,19 +358,28 @@ export function reconsiderBankedWork(now=Date.now()):number {
       db.query("UPDATE turns SET saved_wait_reason=? WHERE id=? AND status='queued' AND saved_kind='banked'").run(wait,row.id);
       log('info','banked_work_wait',{turn_id:row.id,session_id:`concierge:${row.session_id}`,quiet_only:quietOnly,
         reason:wait,previous:row.saved_wait_reason,account:candidate?.account??null,window:candidate?.window??null,ceiling_percent:ceiling,
+        ceiling_inherited:!!inherited,
         spendable_percent:Object.fromEntries(rooms.map(room=>{const value=usage?spendableOf(room.account):null;
           return [room.account,value===null?null:Math.round(value*10)/10];}))});
     }
     // A waiting admitted job keeps its ceiling through small drift, so each reading does not rewrite
     // the row and wake the queue; a real move (half a point) or a new account or window replaces it.
     const kept=row.saved_ceiling_percent??null;
-    const storedCeiling=!eligible?null:kept!==null&&ceiling!==null&&row.saved_account===account
+    const storedCeiling=!eligible?null:inherited?inherited.ceiling:kept!==null&&ceiling!==null&&row.saved_account===account
       &&row.saved_window===candidate!.window&&Math.abs(kept-ceiling)<0.5?kept:ceiling;
     if(row.dispatch_next_attempt_ms===next&&row.saved_account===(eligible?account:null)
       &&row.saved_window===(eligible?candidate!.window:null)&&row.saved_boundary_ms===boundary
       &&(row.saved_ceiling_percent??null)===storedCeiling)continue;
-    const result=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=?,saved_window=?,saved_boundary_ms=?,saved_ceiling_percent=?
-      WHERE id=? AND status='queued' AND saved_kind='banked'`).run(next,eligible?account:null,eligible?candidate!.window:null,boundary,storedCeiling,row.id);
+    // The windows the ceiling was set in, read once when it is written, so a continuation can prove
+    // it is still in them (the provider jitters reset instants; the comparison tolerates that).
+    const ceilingWindow:BankedCeiling|null=!eligible||storedCeiling===null?null:inherited?inherited
+      :{account:account!,window:candidate!.window,ceiling:storedCeiling,resets:Object.fromEntries(
+        forecasts.filter(item=>item.account===account&&usage!.accounts.some(entry=>entry.label===account
+          &&includedAllowanceWindows(provider,entry,model).some(window=>window.name===item.window)))
+          .map(item=>[item.window,Date.parse(item.resetsAt??'')]).filter(([,ms])=>Number.isFinite(ms)))};
+    const result=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=?,saved_window=?,saved_boundary_ms=?,saved_ceiling_percent=?,
+      saved_ceiling_window_json=? WHERE id=? AND status='queued' AND saved_kind='banked'`)
+      .run(next,eligible?account:null,eligible?candidate!.window:null,boundary,storedCeiling,ceilingWindow&&JSON.stringify(ceilingWindow),row.id);
     changed+=result.changes;
   }
   if(changed)executionChanged();
