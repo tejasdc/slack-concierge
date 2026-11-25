@@ -103,7 +103,19 @@ was seen.
 ## Writing a condition that can actually pass
 
 The watch reports what its command says; it cannot tell a condition that is false from one that
-could never be true. So the condition is the agent's responsibility, and three mistakes are easy.
+could never be true. So the condition is the agent's responsibility, and four mistakes are easy.
+
+**A watched command outlives the run that registered it, so its check cannot depend on that run's
+identity.** `sessions` calls validate the registering run, and a watch commonly runs for hours after
+that run has ended. On 2026-11-25 the same banked-release watch carried its registering run's
+`--source-input`/`--source-run` pair into a `sessions saved list` call; once that run ended the call
+was refused, the loop read every refusal as "not true yet", and the watch sat for its full three
+hours and expired — while the condition it was waiting for had in fact come true. Check something
+the host can read on its own (a file, an installed bundle, a process, an HTTP endpoint that needs no
+run identity). If the answer genuinely only exists behind a `sessions` read, have the watch wake the
+session on a cheap proxy and let the woken turn do the authenticated read. And whatever the check
+is, treat "could not read" and "read, still false" as different: the loop above should keep waiting
+on the second and say something about the first.
 
 **A command watch wakes on the command's *exit*, not on its success.** It reports the exit code and
 the output; it is "wake me when this finishes", not "wake me when this passes". So a command that

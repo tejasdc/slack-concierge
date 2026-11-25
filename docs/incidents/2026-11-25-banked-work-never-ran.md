@@ -123,3 +123,22 @@ The check now polls inside itself and returns only when the condition holds, so 
 wake means what it says, and the rule is written down in
 [watches](../architecture/WATCHES.md#writing-a-condition-that-can-actually-pass) beside the two
 condition mistakes already recorded there.
+
+## The same watch failed a second way, and the condition came true unseen
+
+The replacement watch — the one that polls inside itself rather than exiting on its first check —
+expired at its three-hour deadline without firing, and the thing it was watching for had already
+happened: turn 35489 moved from `no_allowance_room` to `waiting_for_reset` once the release
+installed, which was exactly its pass condition.
+
+The check called `sessions saved list` carrying the `--source-input`/`--source-run` pair of the run
+that registered the watch. A watched command runs in its own execution host and outlives that run,
+and `sessions` calls validate the registering run, so every call after the run ended was refused.
+The loop treated a refused read the same as a false condition and waited forever.
+
+So the live proof came from reading the installed bundle for markers only the new code emits
+(`too_close_to_reset`, `saved_ceiling_percent`, `banked_inherited_ceiling_dropped`) and from the
+turn's own recorded reason, not from the watch. The rule is now in
+[watches](../architecture/WATCHES.md#writing-a-condition-that-can-actually-pass) as the fourth
+mistake: a watched command's check cannot depend on the identity of the run that registered it, and
+"could not read" is not "read, still false".
