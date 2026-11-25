@@ -1,7 +1,8 @@
 import {PROVIDER_ALIASES,isAstraModel} from './aliases';
 import {parseShell} from './history-rewrite-policy';
 
-export const IMPLEMENTATION_ALIASES = ['cc-haiku','cc-sonnet','cx-luna','cx-terra','cx-sol'] as const;
+// cc-api-sonnet and cc-api run the same models on the monthly Console API credit (claude-api-route.ts).
+export const IMPLEMENTATION_ALIASES = ['cc-haiku','cc-sonnet','cc-api-sonnet','cc-api','cx-luna','cx-terra','cx-sol'] as const;
 export type ImplementationAlias = typeof IMPLEMENTATION_ALIASES[number];
 
 /** A designer can choose a stronger implementer when the fixed task needs it. */

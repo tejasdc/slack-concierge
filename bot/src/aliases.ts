@@ -4,6 +4,8 @@ export interface ProviderAliasTarget {
   provider: ProviderId;
   model?: string;
   reasoning_effort?: string;
+  /** Runs on the Console API credit instead of the subscription accounts (claude-api-route.ts). */
+  route?: "api-credits";
 }
 
 export type ProviderAliasKey =
@@ -15,6 +17,8 @@ export type ProviderAliasKey =
   | "cc-opus-1m"
   | "cc-sonnet"
   | "cc-haiku"
+  | "cc-api"
+  | "cc-api-sonnet"
   | "cx"
   | "cx-fast"
   | "cx-medium"
@@ -211,14 +215,16 @@ export interface ModelCatalogueEntry {
  */
 export function providerSelectorCatalogue(): { key: ProviderAliasKey; model: string; label: string; provider: ProviderId }[] {
   return (Object.entries(PROVIDER_ALIASES) as [ProviderAliasKey, ProviderAliasTarget][])
-    .filter(([, target]) => !!target.model)
+    // A project default chooses a model; the API-credit route is chosen per session.
+    .filter(([, target]) => !!target.model && !target.route)
     .map(([key, target]) => ({ key, model: target.model!, label: modelDisplayName(target.model!), provider: target.provider }));
 }
 
 export function modelCatalogue(provider?: ProviderId): ModelCatalogueEntry[] {
   const seen = new Map<string, ModelCatalogueEntry>();
   for (const [alias, target] of Object.entries(PROVIDER_ALIASES) as [ProviderAliasKey, ProviderAliasTarget][]) {
-    if (!target.model || (provider && target.provider !== provider)) continue;
+    // An API-credit alias names the same model on another route; it must never take the model's place.
+    if (!target.model || target.route || (provider && target.provider !== provider)) continue;
     const existing = seen.get(target.model);
     // The shortest alias wins, so `cx-sol` is offered rather than the retained `cx`.
     if (existing && existing.alias.length <= alias.length) continue;
@@ -344,6 +350,10 @@ export const PROVIDER_ALIASES = {
   "cc-opus-1m": { provider: "claude-code", model: CLAUDE_MODELS.opus1m },
   "cc-sonnet": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
   "cc-haiku": { provider: "claude-code", model: CLAUDE_MODELS.haiku },
+  // The monthly Console API credit, spent through the Agent SDK route (docs/architecture/PROVIDER-USAGE.md).
+  // They pick a route, not a model, so the model catalogues below leave them out.
+  "cc-api": { provider: "claude-code", model: CLAUDE_MODELS.opus, route: "api-credits" },
+  "cc-api-sonnet": { provider: "claude-code", model: CLAUDE_MODELS.sonnet, route: "api-credits" },
   cx: { provider: "codex", model: CODEX_MODELS.sol },
   "cx-fast": { provider: "codex", model: CODEX_MODELS.luna },
   "cx-medium": { provider: "codex", model: CODEX_MODELS.terra },
@@ -413,7 +423,9 @@ export const UNSET_PROVIDER_DEFAULT = "codex";
 export function configuredProviderDefault(stored: string | null | undefined): string {
   const value = String(stored ?? "").trim();
   if (!value || value.toLowerCase() === UNSET_PROVIDER_DEFAULT) return DEFAULT_PROVIDER_ALIAS;
-  return parseProviderSelector(value) ? value : DEFAULT_PROVIDER_ALIAS;
+  const selector = parseProviderSelector(value);
+  // A route is chosen per session; a stored default naming one would apply its model without its route.
+  return selector && !(PROVIDER_ALIASES[selector.alias] as ProviderAliasTarget).route ? value : DEFAULT_PROVIDER_ALIAS;
 }
 
 const EFFORT_TOKENS = [...REASONING_EFFORTS, ...Object.keys(REASONING_EFFORT_SYNONYMS)]

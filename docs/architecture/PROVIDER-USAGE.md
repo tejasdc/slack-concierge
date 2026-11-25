@@ -1061,7 +1061,7 @@ polling budget is shared with claude-swap):
 Until a key is filed the line says so and shows what is known (the amount, the plan, the renewal).
 The remaining amount is the grant minus that spend only while the organization holds no other
 credits; the page says "about … left if nothing else was bought". The Console's own
-Settings > Billing > Promotional credits remains the authority for the balance and its expiry.
+Settings > Billing > Promotional credits remains the authority for the balance and its expiry. Concierge spends that credit itself through the [API-credit route](#claude-api-credit-route).
 
 A Codex row shows the ChatGPT credit balance its own usage reading reports (OpenAI's "Extra usage"
 pool, 62,500 granted on 2026-09-30 to the personal Pro account). The reading carries no expiry, so the
@@ -1084,6 +1084,73 @@ personal account's did from Oct 23 because claude-swap refreshes copies only fro
 folder), the reader asks Anthropic's usage endpoint with the login in that account's own home,
 read-only and never refreshed, and uses those windows. A verified Ultra account reports no
 five-hour window there, and the reading is still complete.
+
+## Claude API-credit route
+
+The `tejas` Console organization receives a promotional "API credit (Ultra)" of $200 on the 22nd of
+each month, expiring at the end of the 32nd day after the grant (Nov 22 → Dec 24, 7:00 PM ET); October's
+lapsed unused. It covers the Agent SDK, API, Batch API, Playground and Managed Agents, never Claude Code
+subscription use. Tejas, 2026-11-05: "We need to be better about using all of these API credits … do
+some of the banked work, especially at the end of the credit cycle." Design record:
+[2026-11-25 plan](../plans/2026-11-25-api-credits-route.md).
+
+**What it is.** A Claude session on the route runs the same `claude` binary every managed turn runs,
+with the Console API key and the Agent SDK entrypoint (`CLAUDE_CODE_ENTRYPOINT=sdk-ts`, which is all the
+Agent SDK adds), in its own config folder `~/.claude-accounts/.api-credits` (the dot keeps it out of
+account scans; its transcripts live there so resumes, history and forks find them). Everything else is
+an ordinary Concierge session: worktrees, requests, replies, Inbox threads. Managed Agents was rejected
+because it runs in Anthropic's sandbox with no repository credentials or Concierge tools and bills a
+session-hour on top of tokens; revisit it only for work that cannot run on the server.
+
+**The route belongs to the session.** It is fixed before the session's first provider conversation
+exists and never changes: an API-route session never spends a subscription account, and a subscription
+conversation never moves onto the key. Its turns skip account choice, allowance readings and the budget
+brief, record the account `api-credits`, and bind the conversation to that label so a shell resume
+(`claude --resume <uuid>`) launches it on the key.
+
+**How it is chosen.**
+
+| Way | When | Why |
+| --- | --- | --- |
+| `--provider cc-api` (Opus 5.5) or `cc-api-sonnet` (Sonnet 5.5) on `sessions ask` or `sessions implement` | Always, while the key exists | An explicit choice of the route |
+| Overflow | A new Opus 5.5 or Sonnet 5.5 conversation (Automatic, `cc`, `cc-opus`, `cc-sonnet`) whose first turn finds every subscription account out of room at dispatch, while more than $5 is left by Concierge's count | Holding the work until a reset helps nobody when a paid-for credit is idle |
+| Banked work | A banked Opus/Sonnet turn whose session has no conversation yet, in the last 7 days before expiry, more than $5 left; a session already on the route runs its banked work whenever credit is left, and waits for the next grant (never a subscription account) when it is not | Unspent credit is lost at expiry, while subscription windows renew anyway |
+
+The Inbox router, standing agents, the repair agent, outside sessions and sessions placed on another
+machine never take it by themselves. Banked work on the route has no allowance window or reserve; it is bounded by the cycle's expiry and still runs one unattended banked job at a time.
+Each choice is logged (`claude_api_route_chosen`, or `claude_api_overflow_declined` with its reason) and
+recorded on the session as a `claude_route` event; the session's account reads `api-credits`.
+
+**Where the key is read.** Only on the machine that starts Claude, from the root-only file the
+credential portal wrote. A runner turn carries just the route marker; the runner reads its own copy, as
+it resolves an account's home itself, so the key is never in a job payload or the owner's ledger. A
+fresh `claude` started from an API-route agent's shell drops the inherited key and stays on the
+subscription accounts.
+
+**The spend ledger.** No API returns the credit balance, and the Admin key that would read the cost
+report sits behind a Console captcha, so Concierge keeps its own count in one table,
+`claude_api_credit_spend`. Claude reports `total_cost_usd` cumulatively for a conversation, including
+within one process; a resumed process restores the earlier total only when its config folder last ran
+that conversation (one resume did on 2026-11-25), which concurrent sessions sharing the folder break.
+So a later reading in the same process counts its increase; the first reading of a process counts its
+increase only when its cumulative token count reaches the conversation's previous count (a restored total
+contains every earlier token), and otherwise counts in full. Grants overlap by about three days (the
+Nov 22 grant lasts until Dec 25 00:00 UTC; Dec's arrives Dec 22): until the older grant expires it is the
+cycle, because it is the one about to be lost, and the cycle's spend is the sum since its grant. The
+Accounts page adds one line to the Claude row in use: "API credits route: $X of $200 spent this cycle by
+Concierge (Console is the authority); expires Dec 24, 7:00 PM ET". Spend outside Concierge (Playground,
+other keys) is not counted; the Console stays the authority.
+
+**When it runs out.** Anthropic refuses with "credit balance is too low"; the turn ends in plain words
+saying the month's credit is spent and when the next grant is expected, and nothing moves it to a
+subscription account. A rejected key ends the turn the same way, not as a sign-in to renew. Transient
+API errors (overload, 5xx) keep their ordinary retry. A fork of an API-route session stays on the route.
+
+**Known limits.** The turn's own shell holds the key in its environment; only the `claude` launcher
+drops it, so another Anthropic client an agent runs there would spend the credit, and printing the
+environment would put the key in that transcript. Restoring an archived API-route conversation and
+reading history of an API-route session run without a runner are not supported (production places every
+Claude turn on a runner); both look only in the subscription account folders.
 
 ## What he is told about accounts, and when he is not
 

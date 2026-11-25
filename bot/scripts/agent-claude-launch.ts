@@ -5,6 +5,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {requestApiResponse} from './router-request-client';
 import {LAUNCH_REFUSED_EXIT,LAUNCH_REFUSED_MARKER} from '../src/claude-launch-refusal';
 import {agentLedgerImageCommand} from '../src/agent-ledger-image-boundary';
+import {API_CREDITS_ACCOUNT,apiCreditsConfigDir,apiCreditsEnvironment} from '../src/claude-api-route';
 
 // When the owner places a launch on a runner, it names the account, not a path: the path is the
 // runner's own (runner-provider-accounts.ts). Passed through unresolved, Claude found no sign-in at
@@ -145,6 +146,13 @@ const environment={...process.env};
 // Scope the guard to our immediate child. Claude Code may later launch its own
 // nested agent command, which must remain allowed under a different parent.
 environment.CONCIERGE_CLAUDE_LAUNCH_PARENT_PID=String(process.pid);
+// A turn on the API-credit route hands its key to its own shell (claude-api-route.ts). That key
+// belongs to the turn's conversation: a fresh Claude started from the shell stays on the
+// subscription accounts, and only an exact resume of an API-credit conversation takes it again.
+if(environment.CONCIERGE_CLAUDE_ROUTE===API_CREDITS_ACCOUNT){
+  delete environment.ANTHROPIC_API_KEY;delete environment.CLAUDE_CODE_ENTRYPOINT;delete environment.CONCIERGE_CLAUDE_ROUTE;
+  if(environment.CLAUDE_CONFIG_DIR===apiCreditsConfigDir())delete environment.CLAUDE_CONFIG_DIR;
+}
 if(!passthrough){
   for(const name of ['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY']){
     if(environment[name])throw new Error(`Claude account selection refused a competing ${name} credential or provider setting. Explicitly pin an intentional route.`);
@@ -185,7 +193,13 @@ if(!passthrough){
     try {
       const bindingResponse=await requestApiResponse(`/sessions/v1/auth/claude-resume-binding?sessionUUID=${encodeURIComponent(exactResume)}`);
       const binding=(bindingResponse as any)?.binding;
-      if(binding?.accountLabel){
+      if(binding?.accountLabel===API_CREDITS_ACCOUNT){
+        // An API-credit conversation resumes on the key in its own folder, never on a sign-in.
+        Object.assign(environment,apiCreditsEnvironment());
+        useConciergeChoice=false;
+        bindingResolved=true;
+      }
+      else if(binding?.accountLabel){
         bindingEndpointSaidYes = true;
         bindingNamedAccount = binding.accountLabel;
         for(const home of homes){

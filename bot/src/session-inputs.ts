@@ -44,6 +44,8 @@ export type NativeSessionMetadata = {
   codexLifecycle?:import('./codex-session-lifecycle').CodexSessionLifecycle;
   title?:string; summary?:string; purpose?:string; cwd?:string; additionalDirs?:string[];
   claudeAccount?:string;
+  /** Fixed before the first provider conversation: this Claude session runs on the Console API credit (claude-api-route.ts). */
+  claudeRoute?:import('./claude-api-route').ClaudeRoute;
   /** Immutable account and runner that first started this provider conversation; labels only, never machine paths. */
   providerAccount?:string; providerRunner?:string|null;
   claudeCacheCall?:{account:string;conversation:string|null;callId:string;atMs:number;cacheable:boolean};

@@ -9,7 +9,9 @@ import {claudeAccountSelection} from './provider-account-selection';
 import {noticeTime} from './provider-free-notice';
 import {providerRunnerTarget} from './provider-runner-target';
 import {db} from './state-database';
+import {API_CREDITS_BUDGET_USD,apiCreditsNextGrantAt,apiCreditsConfigured,apiCreditsCycle,apiCreditsLine} from './claude-api-route';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
+import type {ApiCreditsFacts} from './claude-account-facts';
 import type {ProviderAuthView} from './session-execution-host';
 
 function claudeInUseSentence(chosen:string,usage:ProviderUsage|null):string {
@@ -42,6 +44,23 @@ function claudeInUseSentence(chosen:string,usage:ProviderUsage|null):string {
 /** Account listing runs in an isolated reader. Login state comes from the command owner. */
 export function providerAuthRead(ephemera:ProviderAuthEphemera):readonly ProviderAuthView[] {
   return [...(['claude-code','codex'] as const).map(provider=>providerAuthView(provider,ephemera)),antigravityAuthView(ephemera)];
+}
+
+/**
+ * The API-credit route's one line beside the Claude accounts (claude-api-route.ts), on the row in use
+ * because the credit belongs to the Console organization rather than to any one sign-in. Concierge
+ * counts only its own spend; the Console is the authority and the line says so.
+ */
+function withApiCreditsLine<T extends {label:string;apiCredits?:ApiCreditsFacts|null}>(accounts:readonly T[],inUse:string|null):readonly T[] {
+  if(!accounts.length||!apiCreditsConfigured())return accounts;
+  let cycle;try{cycle=apiCreditsCycle(db);}catch{return accounts;}
+  const renewsAt=new Date(apiCreditsNextGrantAt(Date.now())).toISOString();
+  const routeLine=apiCreditsLine(cycle);
+  const index=Math.max(0,accounts.findIndex(item=>item.label===inUse));
+  // The plan-tier facts already on the row stay; the route's own count is added to its line.
+  return accounts.map((item,position)=>position!==index?item:{...item,apiCredits:item.apiCredits
+    ?{...item.apiCredits,line:`${item.apiCredits.line} ${routeLine}.`}
+    :{line:`${routeLine}.`,monthlyUsd:API_CREDITS_BUDGET_USD,renewsAt,spentUsd:Math.round(cycle.spentUsd*100)/100,spentAsOf:new Date().toISOString(),source:null}});
 }
 
 export function antigravityAuthView(ephemera:ProviderAuthEphemera):ProviderAuthView {
@@ -87,6 +106,7 @@ function providerAuthView(provider:ProviderKey,ephemera:ProviderAuthEphemera):Pr
       account=active?{id:active.id,label:active.label,detail:active.detail}:null;
     }
   }
+  if(provider==='claude-code'&&usage)usage.accounts=withApiCreditsLine(usage.accounts,account?.label??null);
   const refused=new Set((usage?.accounts??[]).filter(entry=>entry.signedOut).map(entry=>entry.label));
   const brokenInUse=provider==='codex'&&ephemera.codexSignIn==='signed-out';
   const listed=provider==='codex'&&account&&!profiles.some(profile=>profile.current)

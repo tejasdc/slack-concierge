@@ -7,6 +7,8 @@ import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {includedAllowanceWindows} from './account-allowance-observation';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {log,errorFields} from './log';
+import {API_CREDITS_ACCOUNT,apiCreditsConfigured,apiCreditsCycle,apiCreditsNextGrantAt,apiRouteDecision} from './claude-api-route';
+import {holdsInbox} from './inbox-session-pin';
 import {endRepeatingScheduleForInput} from './request-liveness';
 import {savedStartAt} from './saved-start-time';
 import {inQuietHours,localParts,nextQuietEnd,quietOnlyAdmits,QUIET_STOP_MARGIN_MS} from './quiet-hours';
@@ -119,6 +121,25 @@ export const BANKED_WAIT_WORDS:Record<BankedWait,string>={
   waiting_for_reset:'it is waiting until its allowance window is close to resetting',
 };
 
+/**
+ * Whether a banked Claude turn runs on the API credit. A session already on the route always does
+ * while credit is left; another takes the route only before its first conversation exists and in the
+ * cycle's last week (unspent credit is lost at expiry; subscription windows renew anyway).
+ */
+const API_BANKED_MODELS=new Set(['claude-opus-5-5','claude-sonnet-5-5']);
+export function bankedApiRoute(session:NonNullable<ReturnType<typeof getSessionById>>,model:string|null,now:number):{expiresAt:number;reason:string}|null {
+  const metadata=sessionMetadata(session);
+  const cycle=apiCreditsCycle(db,now);
+  if(metadata.claudeRoute==='api-credits'){
+    const decision=apiRouteDecision('overflow',cycle,now,apiCreditsConfigured());
+    return decision.use?{expiresAt:cycle.expiresAt,reason:'this session runs on the API credit'}:null;
+  }
+  if(session.agent_session_uuid!==null||holdsInbox(session)||metadata.standingRole||metadata.inbox||metadata.repairAgent
+    ||metadata.outside||metadata.providerRunner||metadata.providerAccount||!model||!API_BANKED_MODELS.has(model))return null;
+  const decision=apiRouteDecision('banked',cycle,now,apiCreditsConfigured());
+  return decision.use?{expiresAt:cycle.expiresAt,reason:decision.reason}:null;
+}
+
 /** Forecast and reachability are read outside the claim. Only changed instants are written. */
 export function reconsiderBankedWork(now=Date.now()):number {
   const settings=savedWorkSettings();let changed=0;
@@ -131,6 +152,38 @@ export function reconsiderBankedWork(now=Date.now()):number {
     const usage=providerAccountUsage(provider);
     const model=provider==='claude-code'
       ?getClaudePreferredModel(row.session_id,row.id)??sessionMetadata(session).model??null:undefined;
+    const api=provider==='claude-code'?bankedApiRoute(session,model??null,now):null;
+    if(api){
+      // The API credit has no allowance window or reserve: it lapses at the cycle's
+      // expiry whatever else runs, so the run is bounded by that expiry (claude-api-route.ts).
+      const quietOnly=row.saved_quiet_only===1;
+      const eligible=!quietOnly||quietOnlyAdmits(now,settings);
+      const next=eligible?0:nextQuietStart(now,settings),boundary=eligible?api.expiresAt:null;
+      const wait:BankedWait=eligible?'eligible_not_claimed':'outside_quiet_hours';
+      if(eligible&&sessionMetadata(session).claudeRoute!=='api-credits'){
+        updateSessionMetadata(session.id,{claudeRoute:'api-credits'});
+        recordSessionEvent({eventId:`claude-route:${row.id}`,sessionId:session.id,turnId:row.id,
+          kind:'claude_route',payload:{route:'api-credits',why:'banked',reason:api.reason}});
+        log('info','claude_api_route_chosen',{turn_id:row.id,session_id:session.id,why:'banked',reason:api.reason});
+      }
+      if(row.saved_wait_reason!==wait)db.query("UPDATE turns SET saved_wait_reason=? WHERE id=? AND status='queued' AND saved_kind='banked'").run(wait,row.id);
+      if(row.dispatch_next_attempt_ms===next&&row.saved_account===(eligible?API_CREDITS_ACCOUNT:null)
+        &&row.saved_window===(eligible?API_CREDITS_ACCOUNT:null)&&row.saved_boundary_ms===boundary)continue;
+      changed+=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=?,saved_window=?,saved_boundary_ms=?
+        WHERE id=? AND status='queued' AND saved_kind='banked'`).run(next,eligible?API_CREDITS_ACCOUNT:null,eligible?API_CREDITS_ACCOUNT:null,boundary,row.id).changes;
+      continue;
+    }
+    // An API-route session never binds a subscription account, even when its credit is spent: it
+    // waits for the next grant (or a manual start, which ends plainly if the credit is still gone).
+    if(provider==='claude-code'&&sessionMetadata(session).claudeRoute==='api-credits'){
+      const wait:BankedWait='no_allowance_room';
+      if(row.saved_wait_reason!==wait)db.query("UPDATE turns SET saved_wait_reason=? WHERE id=? AND status='queued' AND saved_kind='banked'").run(wait,row.id);
+      const next=apiCreditsNextGrantAt(now);
+      if(row.saved_account===null&&row.saved_window===null&&row.saved_boundary_ms===null&&row.dispatch_next_attempt_ms===next)continue;
+      changed+=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=NULL,saved_window=NULL,saved_boundary_ms=NULL
+        WHERE id=? AND status='queued' AND saved_kind='banked'`).run(next,row.id).changes;
+      continue;
+    }
     const rooms=usage?savedWorkAccountRooms(provider,usage,now,model):[];
     const quietOnly=row.saved_quiet_only===1;
     const reserve=settings.reserve_percent;

@@ -6,6 +6,7 @@ import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
 import type {ActiveTurnDispatchRegistry} from './turn-dispatch-seams';
 import {log,errorFields} from './log';
+import {API_CREDITS_ACCOUNT} from './claude-api-route';
 
 export type BankedYieldReason='allowance_boundary'|'deployment_boundary'|'quiet_boundary';
 
@@ -50,6 +51,8 @@ export function createBankedUpkeep(input:{registry:()=>ActiveTurnDispatchRegistr
         nextQuietBoundary=Math.min(nextQuietBoundary,quietOnlyCutoff(now,settings));
       }
       if(row.saved_manual_start)continue;
+      // API-credit banked work has no allowance window to watch; it ends at the cycle's expiry.
+      if(row.saved_account===API_CREDITS_ACCOUNT){if(row.saved_boundary_ms!==null&&row.saved_boundary_ms<=now)requestYield(turnId,'allowance_boundary');continue;}
       const session=db.query('SELECT provider_id FROM sessions WHERE id=?').get(row.session_id) as {provider_id:string}|null;
       if(!session||!['codex','claude-code','antigravity'].includes(session.provider_id))continue;
       const provider=session.provider_id as 'codex'|'claude-code'|'antigravity';
