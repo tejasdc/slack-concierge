@@ -21,11 +21,13 @@ every one of those queries runs here in milliseconds.
 
 ## Gemini Takeout import and search
 
-Run this on Concierge's owner host (the server for thnkr.ing imports). Replace both
-UTC dates with the observation day and the following day.
+Run this on Concierge's owner host (the server for thnkr.ing imports). Name the
+owner ledger explicitly: agent shells on this host set `CONCIERGE_STATE_DIR` to
+their runner ledger. Replace both UTC dates with the observation day and the
+following day.
 
 ```sh
-python3 scripts/ledger-read.py --max-seconds 3 --max-rows 10 "
+python3 scripts/ledger-read.py --database /var/lib/concierge-ledger/state.db --max-seconds 3 --max-rows 10 "
 WITH day AS (
   SELECT *, CASE
     WHEN accepted_at_ms IS NOT NULL AND first_search_at_ms IS NULL THEN 'accepted_no_exact_search_hit'
@@ -56,7 +58,7 @@ values. To investigate an import without valid string content, use an empty
 version.
 
 ```sh
-python3 scripts/ledger-read.py --max-seconds 3 --max-rows 1 "
+python3 scripts/ledger-read.py --database /var/lib/concierge-ledger/state.db --max-seconds 3 --max-rows 1 "
 SELECT action_id, source_version, accepted_at_ms, import_duration_ms,
        indexed_conversations, indexed_activity_records,
        failed_attempts, source_refusals, last_failure_kind, last_failure_at_ms, last_failure_duration_ms,
