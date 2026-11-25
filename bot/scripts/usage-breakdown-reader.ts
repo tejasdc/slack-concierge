@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import {jsonLines} from '../src/json-lines';
 import {CLAUDE_HELPER_CACHE_LIFETIME_MS,CLAUDE_MAIN_CACHE_LIFETIME_MS} from '../src/prompt-cache-lifetime';
 import {closeRunnerMachineCalls} from '../src/runner-machine-calls';
+import {recordTaskCosts,taskCostSeries} from '../src/task-cost-series';
 import {decodeUsageSnapshot,ledgerFromUsageSnapshot,captureUsageLedgerSnapshot,encodeUsageSnapshot} from '../src/usage-breakdown-ledger-snapshot';
 import {collectRunnerUsageReports} from '../src/provider-usage-report-client';
 import {attributeWeeklyAllowance,nameAllowanceRows,weeklyReadings} from '../src/weekly-allowance-attribution';
@@ -263,7 +264,7 @@ type RecordRow={path:string;record_id:string;provider:string;conversation:string
   source_account:string|null;parent_thread_id:string|null;first_usage:number};
 type Session={id:number;agent_session_uuid:string;native_metadata_json:string;provider_id:string};
 type Turn={id:number;session_id:number;status:string;provider_turn_id:string|null;provider_started_at:string|null;ended_at:string|null;
-  systemInstructionsSha256:string|null;effort:string|null;topic_id:string|null;trigger:string|null;startMs:number;endMs:number};
+  systemInstructionsSha256:string|null;effort:string|null;topic_id:string|null;trigger:string|null;task_id:string|null;startMs:number;endMs:number};
 type ScheduledFiring={id:number;session_id:number;status:string;saved_root_id:number;saved_sequence:number;saved_fire_at_ms:number;
   provider_started_at:string|null;provider_duration_ms:number|null;ended_at:string|null};
 type CallMix={totalCalls:number;helperCalls:number;models:Map<string,{calls:number;helperCalls:number}>};
@@ -326,7 +327,7 @@ function report(period:'today'|'week',since:number,zone:string){
   const accountsByTurn=new Map<number,string>();
   for(const e of events){const a=accounts.get(e.session_id)??[];a.push({at:Date.parse(e.created_at+'Z'),name:e.account});accounts.set(e.session_id,a);
     if(e.turn_id!==null)accountsByTurn.set(e.turn_id,e.account);}
-  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,turn.topic_id,turn.trigger,
+  const turns=(ledger.query(`SELECT turn.id,turn.session_id,turn.status,turn.provider_turn_id,turn.provider_started_at,turn.ended_at,turn.topic_id,turn.trigger,turn.task_id,
     json_extract(identity.payload_json,'$.systemInstructionsSha256') AS systemInstructionsSha256,
     json_extract(identity.payload_json,'$.effort') AS effort
     FROM turns turn LEFT JOIN session_owner_events identity ON identity.sequence=(
@@ -379,7 +380,9 @@ function report(period:'today'|'week',since:number,zone:string){
   },{}));
   const groups=new Map<string,any>();
   const attributionBuckets=new Map<string,{provider:string;account:string;window:string;atMs:number;sessionId:string|null;topicId:string|null;
-    routineRootId:number|null;weighted:number;raw:Counts;calls:number;conversation:string|null;unlinked:string|null}>();
+    routineRootId:number|null;weighted:number;raw:Counts;calls:number;conversation:string|null;unlinked:string|null;task:string|null}>();
+  // Per task, which models and which starts its cost came from: one small entry per task, not per bucket.
+  const taskMix=new Map<string,{models:Record<string,number>;triggers:Record<string,number>}>();
   const scheduled=(ledger.query(`SELECT id,session_id,status,saved_root_id,saved_sequence,saved_fire_at_ms,
     provider_started_at,provider_duration_ms,ended_at FROM turns
     WHERE saved_kind='scheduled' AND saved_repeat_ms IS NOT NULL AND saved_root_id IS NOT NULL
@@ -502,10 +505,17 @@ function report(period:'today'|'week',since:number,zone:string){
     const conversation=s?null:`outside:${r.conversation}`;
     // Why this use has no thread: run outside Concierge, between a session's turns, or the turn's trigger.
     const unlinked=topicId?null:!s?'outside Concierge':!turn?'between turns':turn.trigger??'no recorded input';
+    // The task this call served (work-thread-root.ts turnTaskIn), its model and what started the turn, for cost per task.
+    const task=turn?.task_id??null,callModel=r.model??'unreported',trigger=!s?'outside Concierge':!turn?'between turns':turn.trigger??'no recorded input';
+    if(task){
+      const mix=taskMix.get(task)??{models:{},triggers:{}};
+      mix.models[callModel]=(mix.models[callModel]??0)+weighted;mix.triggers[trigger]=(mix.triggers[trigger]??0)+weighted;
+      taskMix.set(task,mix);
+    }
     for(const window of windows){
-      const bucketKey=JSON.stringify([key,window,atMs,sessionId,conversation,topicId,routineRootId,unlinked]);
+      const bucketKey=JSON.stringify([key,window,atMs,sessionId,conversation,topicId,routineRootId,unlinked,task]);
       let bucket=attributionBuckets.get(bucketKey);
-      if(!bucket){bucket={provider:r.provider,account,window,atMs,sessionId,topicId,routineRootId,weighted:0,raw:empty(),calls:0,conversation,unlinked};attributionBuckets.set(bucketKey,bucket);}
+      if(!bucket){bucket={provider:r.provider,account,window,atMs,sessionId,topicId,routineRootId,weighted:0,raw:empty(),calls:0,conversation,unlinked,task};attributionBuckets.set(bucketKey,bucket);}
       bucket.weighted+=weighted;bucket.calls++;
       bucket.raw.input+=r.input;bucket.raw.cacheWrite+=r.cache_write;bucket.raw.cacheWrite1h+=r.cache_write_1h;
       bucket.raw.cacheRead+=r.cache_read;bucket.raw.output+=r.output;
@@ -628,7 +638,7 @@ function report(period:'today'|'week',since:number,zone:string){
         accountAttribution:counts(item=>item.accountKnown?'known':'unavailable')}};
   };
   return {period,since:new Date(since).toISOString(),through:new Date().toISOString(),timeZone:zone,
-    attributionBuckets:[...attributionBuckets.values()],
+    attributionBuckets:[...attributionBuckets.values()],taskMix:Object.fromEntries(taskMix),
     callMix:callMixView(overallMix),editMix:editMixView(overallEditMix),implementation:{handoffs:implementationHandoffs.length,
       heldTurns:implementationHolds.length,reasons:implementationReasons,
       bySession:[...new Set([...implementationHandoffs.map(row=>row.sessionId),...implementationReasons.map(row=>row.sessionId),...implementationHolds.map(row=>row.session_id)])]
@@ -824,8 +834,13 @@ async function main(){
     ?await collectRunnerUsageReports(runners,encodeUsageSnapshot(captureUsageLedgerSnapshot(ownerLedger(),oneWeekAgo)))
     :await macPeerReport();
   const readings=weeklyReadings(ownerLedger(),oneWeekAgo);
-  console.log(JSON.stringify({today:nameAllowanceRows(attributeWeeklyAllowance(today,readings),ownerLedger()),
-    week:nameAllowanceRows(attributeWeeklyAllowance(week,readings),ownerLedger()),
+  const {taskCosts:_todayTasks,...todayReport}=attributeWeeklyAllowance(today,readings);
+  const {taskCosts,...weekReport}=attributeWeeklyAllowance(week,readings);
+  // Each finished task's cost is kept beyond the week, so the median can be drawn over a month.
+  recordTaskCosts(cache,ownerLedger(),taskCosts,oneWeekAgo);
+  weekReport.taskCost=taskCostSeries(cache,week.timeZone);
+  console.log(JSON.stringify({today:nameAllowanceRows(todayReport,ownerLedger()),
+    week:nameAllowanceRows(weekReport,ownerLedger()),
     scanMs:Math.round(performance.now()-started)}));
 }
 main().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>closeRunnerMachineCalls());

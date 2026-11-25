@@ -1,0 +1,148 @@
+import type {Database} from 'bun:sqlite';
+
+/**
+ * Median cost per task, the metric Tejas asked for on 2026-11-25 after Kun Chen's note ("7d sliding
+ * window median $ cost per task"): when agents do most of the work, a rising median says each piece
+ * of work is getting harder for them, and the breakdown says why.
+ *
+ * A task is one thing an agent was asked to do: a request to an agent (each request it makes in turn
+ * is its own task), else a message of his that started work, else one scheduled run
+ * (work-thread-root.ts turnTaskIn). Its cost is every model call of the turns that served it, priced at
+ * the providers' published API prices, plus its share of his combined weekly allowance.
+ *
+ * The usage report only keeps a week of model calls, so a task's numbers are written here once its
+ * work is wholly inside that week and frozen when it ages out; this table, not the week, holds the
+ * month the chart draws. It lives in the usage reader's own cache database, never the ledger.
+ */
+const DAY=86_400_000;
+export const SERIES_DAYS=30;
+const WINDOW_DAYS=7;
+const PROJECTS_SHOWN=8;
+const COSTLIEST_SHOWN=10;
+
+export type TaskCost={task:string;sessionId:string|null;firstAtMs:number;lastAtMs:number;dollars:number;calls:number;
+  raw:{input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};combinedPercent:number|null;
+  models:Record<string,number>;triggers:Record<string,number>};
+
+export function ensureTaskCosts(cache:Database){
+  cache.exec(`CREATE TABLE IF NOT EXISTS task_costs(task_id TEXT PRIMARY KEY,kind TEXT NOT NULL,title TEXT,project TEXT,session_id TEXT,
+    started_ms INTEGER NOT NULL,last_ms INTEGER NOT NULL,dollars REAL NOT NULL,calls INTEGER NOT NULL,input_tokens INTEGER NOT NULL,
+    cache_read INTEGER NOT NULL,output_tokens INTEGER NOT NULL,combined_percent REAL,models_json TEXT NOT NULL,triggers_json TEXT NOT NULL,
+    updated_ms INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS task_costs_started ON task_costs(started_ms);`);
+}
+
+const basename=(path:string)=>path.replace(/\/+$/,'').split('/').pop()??path;
+
+/** What to call a task and which project it ran in, read from the owner's ledger. */
+function describe(ledger:Database,task:string,sessionId:string|null){
+  let title:string|null=null,kind='other';
+  try{
+    if(task.startsWith('request:')){
+      kind='request';
+      const row=ledger.query('SELECT payload_json FROM session_communication_requests WHERE request_id=?').get(task.slice('request:'.length)) as {payload_json:string}|null;
+      const payload=row?JSON.parse(row.payload_json):null;
+      title=typeof payload?.summary==='string'?payload.summary:null;
+    }else{
+      const row=ledger.query('SELECT origin,payload_json FROM session_inputs WHERE id=?').get(task) as {origin:string;payload_json:string}|null;
+      if(row?.origin==='human')kind='message';
+      const payload=row?JSON.parse(row.payload_json):null;
+      const text=typeof payload?.text==='string'?payload.text:typeof payload?.content==='string'?payload.content:null;
+      title=text?text.replace(/\s+/g,' ').trim().slice(0,120):null;
+    }
+  }catch{/* A record without readable words keeps its kind; the session title stands in below. */}
+  let project:string|null=null,sessionTitle:string|null=null;
+  const local=/^concierge:(\d+)$/.exec(sessionId??'');
+  if(local){
+    const row=ledger.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(Number(local[1])) as {native_metadata_json:string}|null;
+    try{const meta=JSON.parse(row?.native_metadata_json??'{}');
+      project=typeof meta.project==='string'?basename(meta.project):typeof meta.cwd==='string'?basename(meta.cwd):null;
+      sessionTitle=typeof meta.title==='string'?meta.title:null;}catch{}
+  }
+  // Worktrees of one project are that project.
+  if(project?.startsWith('impl-')||project?.startsWith('worktree-'))project=null;
+  return {kind,title:title??sessionTitle,project};
+}
+
+/** Writes each task whose work lies wholly inside the report's week; older tasks keep the numbers they had. */
+export function recordTaskCosts(cache:Database,ledger:Database,tasks:TaskCost[],sinceMs:number,nowMs=Date.now()){
+  ensureTaskCosts(cache);
+  const upsert=cache.query(`INSERT INTO task_costs(task_id,kind,title,project,session_id,started_ms,last_ms,dollars,calls,input_tokens,cache_read,
+      output_tokens,combined_percent,models_json,triggers_json,updated_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(task_id) DO UPDATE SET kind=excluded.kind,title=excluded.title,project=excluded.project,session_id=excluded.session_id,
+      started_ms=excluded.started_ms,last_ms=excluded.last_ms,dollars=excluded.dollars,calls=excluded.calls,input_tokens=excluded.input_tokens,
+      cache_read=excluded.cache_read,output_tokens=excluded.output_tokens,combined_percent=excluded.combined_percent,
+      models_json=excluded.models_json,triggers_json=excluded.triggers_json,updated_ms=excluded.updated_ms`);
+  cache.exec('BEGIN');
+  try{
+    for(const task of tasks){
+      // Work that began before the week is only partly measured now; its earlier record stands.
+      if(task.firstAtMs<sinceMs+15*60_000||task.dollars<=0)continue;
+      const {kind,title,project}=describe(ledger,task.task,task.sessionId);
+      upsert.run(task.task,kind,title,project,task.sessionId,task.firstAtMs,task.lastAtMs,task.dollars,task.calls,
+        task.raw.input+task.raw.cacheWrite+task.raw.cacheWrite1h,task.raw.cacheRead,task.raw.output,task.combinedPercent,
+        JSON.stringify(task.models),JSON.stringify(task.triggers),nowMs);
+    }
+    cache.exec('COMMIT');
+  }catch(error){cache.exec('ROLLBACK');throw error;}
+}
+
+const median=(values:number[])=>{
+  if(!values.length)return null;
+  const sorted=[...values].sort((a,b)=>a-b),middle=sorted.length>>1;
+  return sorted.length%2?sorted[middle]!:(sorted[middle-1]!+sorted[middle]!)/2;
+};
+const localDay=(ms:number,zone:string)=>new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(ms);
+type Row={task_id:string;kind:string;title:string|null;project:string|null;session_id:string|null;started_ms:number;dollars:number;
+  calls:number;input_tokens:number;cache_read:number;output_tokens:number;combined_percent:number|null;models_json:string;triggers_json:string};
+
+/** Shares of cost, largest first, the rest summed as "other". */
+function shares(rows:Row[],field:'models_json'|'triggers_json',keep:number){
+  const totals=new Map<string,number>();
+  for(const row of rows)for(const [name,value] of Object.entries(JSON.parse(row[field]) as Record<string,number>))totals.set(name,(totals.get(name)??0)+value);
+  const all=[...totals].sort((a,b)=>b[1]-a[1]),sum=all.reduce((total,[,value])=>total+value,0);
+  if(!sum)return [];
+  const shown=all.slice(0,keep).map(([name,value])=>({name,share:value/sum}));
+  const rest=all.slice(keep).reduce((total,[,value])=>total+value,0);
+  return rest?[...shown,{name:'other',share:rest/sum}]:shown;
+}
+
+/**
+ * The chart's data: for each of the last 30 days, the median over tasks started in the seven days
+ * ending that day, overall and for the busiest projects, with what explains each window's median
+ * (calls, context read per call, tokens written, models and what started the work) and the
+ * costliest tasks of the latest week. A few tens of kilobytes, whatever the month held.
+ */
+export function taskCostSeries(cache:Database,timeZone:string,nowMs=Date.now()){
+  ensureTaskCosts(cache);
+  const rows=cache.query('SELECT * FROM task_costs WHERE started_ms>=? ORDER BY started_ms').all(nowMs-(SERIES_DAYS+WINDOW_DAYS)*DAY) as Row[];
+  const today=localDay(nowMs,timeZone);
+  const days=Array.from({length:SERIES_DAYS},(_,index)=>localDay(nowMs-(SERIES_DAYS-1-index)*DAY,timeZone)).filter((day,index,all)=>all.indexOf(day)===index);
+  const byDay=new Map<string,Row[]>();
+  for(const row of rows){const day=localDay(row.started_ms,timeZone);byDay.set(day,[...byDay.get(day)??[],row]);}
+  const windowRows=(day:string)=>{
+    const end=Date.parse(`${day}T12:00:00Z`),list:Row[]=[];
+    for(let back=0;back<WINDOW_DAYS;back++)list.push(...byDay.get(new Date(end-back*DAY).toISOString().slice(0,10))??[]);
+    return list;
+  };
+  const projectCounts=new Map<string,number>();
+  for(const row of rows)if(row.project)projectCounts.set(row.project,(projectCounts.get(row.project)??0)+1);
+  const projects=[...projectCounts].sort((a,b)=>b[1]-a[1]).slice(0,PROJECTS_SHOWN).map(([name])=>name);
+  const firstDay=rows.length?localDay(rows[0]!.started_ms,timeZone):today;
+  const points=days.map(day=>{
+    const list=windowRows(day);
+    return {date:day,tasks:list.length,median:median(list.map(row=>row.dollars)),
+      medianCombinedPercent:median(list.map(row=>row.combined_percent).filter((value):value is number=>value!==null)),
+      byProject:Object.fromEntries(projects.map(project=>[project,median(list.filter(row=>row.project===project).map(row=>row.dollars))])),
+      medianCalls:median(list.map(row=>row.calls)),
+      medianContextPerCall:median(list.filter(row=>row.calls>0).map(row=>row.cache_read/row.calls)),
+      medianWritten:median(list.map(row=>row.input_tokens+row.output_tokens)),
+      models:shares(list,'models_json',4),triggers:shares(list,'triggers_json',5)};
+  });
+  const latest=windowRows(today);
+  return {definition:'A task is one thing an agent was asked to do: a request to an agent, or a message of yours that started work. Its cost is every model call that served it, at published API prices.',
+    windowDays:WINDOW_DAYS,days:SERIES_DAYS,recordedSince:firstDay,projects,points,
+    costliest:[...latest].sort((a,b)=>b.dollars-a.dollars).slice(0,COSTLIEST_SHOWN).map(row=>({task:row.task_id,kind:row.kind,title:row.title,
+      project:row.project,sessionId:row.session_id,startedAt:new Date(row.started_ms).toISOString(),dollars:row.dollars,calls:row.calls,
+      combinedPercent:row.combined_percent,model:shares([row],'models_json',1)[0]?.name??null}))};
+}

@@ -120,6 +120,7 @@ function allowanceOverview(report:Record<string,any>){
   return {accounts:(report.accounts??[]).map((account:any)=>({provider:account.provider,account:account.account,
       weeklyAllowance:account.weeklyAllowance??null,notInThread:account.notInThread??null})),
     combinedWeekly:report.combinedWeekly??null,
+    taskCost:report.taskCost??null,
     byThread:threads.slice(0,OVERVIEW_THREADS),threadCount:threads.length,
     unassignedThread:report.unassignedThread??null,byRoutine:report.byRoutine??[],byDay:report.byDay??[]};
 }

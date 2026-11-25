@@ -50,3 +50,24 @@ export function turnTopicRootIn(database:Database,acceptedInputId:string|null|un
   }
   return topicRootIn(database,null,acceptedInputId);
 }
+
+/**
+ * The task a turn's work belongs to: the nearest request that set it going (a request to an
+ * agent is one task, and each request it makes in turn is its own task), else the message of
+ * his at the start of its chain, else the turn's own input (a scheduled run). A report-back, a
+ * watch wake or a continuation belongs to the task it continues. Used for cost per task:
+ * Tejas asked on 2026-11-25 for the median dollar cost per task, after Kun Chen's note.
+ */
+export function turnTaskIn(database:Database,acceptedInputId:string|null|undefined):{id:string;kind:'request'|'message'|'other'}|null {
+  if(!acceptedInputId)return null;
+  const seen=new Set<string>();
+  let human:string|null=null,last:string=acceptedInputId;
+  for(let id:string|null=acceptedInputId;id&&!seen.has(id)&&seen.size<32;){
+    seen.add(id);last=id;
+    if(id.startsWith('request:'))return {id,kind:'request'};
+    const row=database.query('SELECT origin,source_input_id FROM session_inputs WHERE id=?').get(id) as {origin:string;source_input_id:string|null}|null;
+    if(row?.origin==='human')human=id;
+    id=row?.source_input_id??null;
+  }
+  return human?{id:human,kind:'message'}:{id:last,kind:'other'};
+}

@@ -2,7 +2,8 @@ import type {Database} from 'bun:sqlite';
 
 type Raw={input:number;cacheWrite:number;cacheWrite1h:number;cacheRead:number;output:number};
 type Bucket={provider:string;account:string;window:string;atMs:number;sessionId:string|null;topicId:string|null;
-  routineRootId:number|null;weighted:number;raw:Raw;calls:number;conversation?:string|null;unlinked?:string|null};
+  routineRootId:number|null;weighted:number;raw:Raw;calls:number;conversation?:string|null;unlinked?:string|null;
+  task?:string|null};
 type Reading={provider:string;account:string;window_name:string;observed_at_ms:number;used_percent:number;resets_at_ms:number|null};
 /** One allowance period: the readings that share a reset instant. Its rise is shared only among work inside it. */
 type Period={from:number;through:number;delta:number;denominator:number};
@@ -175,7 +176,16 @@ export function attributeWeeklyAllowance(report:any,readings:Reading[],nowMs=Dat
     value.weighted.set(meterId,share);
     map.set(id,value);
   };
+  // One record per task: what it cost at published prices, its share of the combined allowance,
+  // and what explains that cost (models, calls, context read, what started its turns).
+  const taskRows=new Map<string,{value:Accumulator;sessionId:string|null;first:number;last:number}>();
   for(const bucket of buckets){
+    if(bucket.task){
+      const row=taskRows.get(bucket.task)??{value:accumulator(),sessionId:bucket.sessionId,first:bucket.atMs,last:bucket.atMs};
+      const holder=new Map([[bucket.task,row.value]]);put(holder,bucket.task,bucket);row.value=holder.get(bucket.task)!;
+      row.first=Math.min(row.first,bucket.atMs);row.last=Math.max(row.last,bucket.atMs);
+      taskRows.set(bucket.task,row);
+    }
     put(accountRows,JSON.stringify([bucket.provider,bucket.account]),bucket);
     put(sessions,bucket.sessionId??'unassigned',bucket);
     put(accountSessions,JSON.stringify([bucket.provider,bucket.account,bucket.sessionId??bucket.conversation??'unassigned']),bucket);
@@ -233,8 +243,16 @@ export function attributeWeeklyAllowance(report:any,readings:Reading[],nowMs=Dat
       const own=counted.filter(meter=>meter.provider===provider);
       return {provider,usedPercent:average(own),accounts:own.length};
     })};
-  const {attributionBuckets:_,...rest}=report;
-  return {...rest,accounts,combinedWeekly,sessionAllowanceById,threadAllowanceById,
+  const weeklyWeighted=(value:Accumulator)=>[...value.weighted].filter(([id])=>(JSON.parse(id) as string[])[2]==='Weekly')
+    .reduce((sum,[,share])=>sum+[...share.covered.values()].reduce((a,b)=>a+b,0)+share.uncovered,0);
+  const taskCosts=[...taskRows].map(([task,row])=>{
+    const value=projection(row.value,allMeters);
+    return {task,sessionId:row.sessionId,firstAtMs:row.first,lastAtMs:row.last+QUARTER_HOUR,dollars:weeklyWeighted(row.value),
+      calls:value.callCount,raw:value.rawTokens,combinedPercent:value.combined.usedPercent,
+      models:report.taskMix?.[task]?.models??{},triggers:report.taskMix?.[task]?.triggers??{}};
+  });
+  const {attributionBuckets:_,taskMix:_mix,...rest}=report;
+  return {...rest,taskCosts,accounts,combinedWeekly,sessionAllowanceById,threadAllowanceById,
     byThread:Object.entries(threadAllowanceById).filter(([id])=>id!=='unassigned').map(([topicId,weeklyAllowance])=>({topicId,weeklyAllowance})),
     byRoutine:Object.entries(routineAllowanceById).map(([rootId,weeklyAllowance])=>({rootId:Number(rootId),weeklyAllowance,
       byDay:[...routineDays].filter(([id])=>JSON.parse(id)[0]===Number(rootId)).map(([id,value])=>({date:JSON.parse(id)[1],weeklyAllowance:projection(value,allMeters)}))})),
