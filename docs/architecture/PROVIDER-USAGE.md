@@ -1113,8 +1113,8 @@ brief, record the account `api-credits`, and bind the conversation to that label
 | Way | When | Why |
 | --- | --- | --- |
 | `--provider cc-api` (Opus 5.5) or `cc-api-sonnet` (Sonnet 5.5) on `sessions ask` or `sessions implement` | Always, while the key exists | An explicit choice of the route |
-| Overflow | A new Opus 5.5 or Sonnet 5.5 conversation (Automatic, `cc`, `cc-opus`, `cc-sonnet`) whose first turn finds every subscription account out of room, or is refused before any work with every account out, while more than $5 is left by Concierge's count | Holding the work until a reset helps nobody when a paid-for credit is idle |
-| Banked work | A banked Opus/Sonnet turn whose session has no conversation yet, in the last 7 days before expiry, more than $5 left; a session already on the route runs its banked work whenever credit is left | Unspent credit is lost at expiry, while subscription windows renew anyway |
+| Overflow | A new Opus 5.5 or Sonnet 5.5 conversation (Automatic, `cc`, `cc-opus`, `cc-sonnet`) whose first turn finds every subscription account out of room at dispatch, while more than $5 is left by Concierge's count | Holding the work until a reset helps nobody when a paid-for credit is idle |
+| Banked work | A banked Opus/Sonnet turn whose session has no conversation yet, in the last 7 days before expiry, more than $5 left; a session already on the route runs its banked work whenever credit is left, and waits for the next grant (never a subscription account) when it is not | Unspent credit is lost at expiry, while subscription windows renew anyway |
 
 The Inbox router, standing agents, the repair agent, outside sessions and sessions placed on another
 machine never take it by themselves. Banked work on the route has no allowance window or reserve; it is bounded by the cycle's expiry and still runs one unattended banked job at a time.
@@ -1130,8 +1130,13 @@ subscription accounts.
 **The spend ledger.** No API returns the credit balance, and the Admin key that would read the cost
 report sits behind a Console captcha, so Concierge keeps its own count in one table,
 `claude_api_credit_spend`. Claude reports `total_cost_usd` cumulatively for a conversation, including
-across resumes (verified 2026-11-25), so each result records its increase over the previous reading of
-that conversation, and a lower reading counts in full. The cycle's spend is the sum since the grant. The
+within one process; a resumed process restores the earlier total only when its config folder last ran
+that conversation (one resume did on 2026-11-25), which concurrent sessions sharing the folder break.
+So a later reading in the same process counts its increase; the first reading of a process counts its
+increase only when its cumulative token count reaches the conversation's previous count (a restored total
+contains every earlier token), and otherwise counts in full. Grants overlap by about three days (the
+Nov 22 grant lasts until Dec 25 00:00 UTC; Dec's arrives Dec 22): until the older grant expires it is the
+cycle, because it is the one about to be lost, and the cycle's spend is the sum since its grant. The
 Accounts page adds one line to the Claude row in use: "API credits route: $X of $200 spent this cycle by
 Concierge (Console is the authority); expires Dec 24, 7:00 PM ET". Spend outside Concierge (Playground,
 other keys) is not counted; the Console stays the authority.
@@ -1139,7 +1144,13 @@ other keys) is not counted; the Console stays the authority.
 **When it runs out.** Anthropic refuses with "credit balance is too low"; the turn ends in plain words
 saying the month's credit is spent and when the next grant is expected, and nothing moves it to a
 subscription account. A rejected key ends the turn the same way, not as a sign-in to renew. Transient
-API errors (overload, 5xx) keep their ordinary retry.
+API errors (overload, 5xx) keep their ordinary retry. A fork of an API-route session stays on the route.
+
+**Known limits.** The turn's own shell holds the key in its environment; only the `claude` launcher
+drops it, so another Anthropic client an agent runs there would spend the credit, and printing the
+environment would put the key in that transcript. Restoring an archived API-route conversation and
+reading history of an API-route session run without a runner are not supported (production places every
+Claude turn on a runner); both look only in the subscription account folders.
 
 ## What he is told about accounts, and when he is not
 

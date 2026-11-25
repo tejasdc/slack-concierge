@@ -45,6 +45,8 @@ export function forkedSessionMetadata(pin: NativeForkPin): NativeSessionMetadata
     ...(pin.runner!==undefined?{providerRunner:pin.runner}
       :Object.hasOwn(parent,'providerRunner')?{providerRunner:parent.providerRunner??null}:{}),
     ...((pin.account??parent.providerAccount)?{providerAccount:pin.account??parent.providerAccount}:{}),
+    // A copy of an API-credit conversation lives in the route's folder and runs on the key too.
+    ...(parent.claudeRoute?{claudeRoute:parent.claudeRoute}:{}),
     model: parent.model, reasoningEffort: parent.reasoningEffort, workflowId: parent.workflowId,
     origin: "native", suspended: false, pinned: false, saved: false, outcome: "open",
     generation: 0, readGeneration: 0, dismissedGeneration: 0, needs: [],

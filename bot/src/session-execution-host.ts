@@ -1707,6 +1707,12 @@ export class SessionExecutionHost {
         return;
       }
     }
+    else if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start&&metadata.claudeRoute==='api-credits') {
+      // An API-route session's banked turn bound to anything but the credit is stale; it never takes a subscription account.
+      if(!yieldBankedTurn(claim.turn_id,this.options.instanceId))throw new Error('Banked API-credit turn declined after admission; exact turn needs reconciliation.');
+      closeSteering();
+      return;
+    }
     else if(!adoption&&saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
       const usage=session.provider_id==='codex'||session.provider_id==='claude-code'||session.provider_id==='antigravity'
         ?providerAccountUsage(session.provider_id):null;

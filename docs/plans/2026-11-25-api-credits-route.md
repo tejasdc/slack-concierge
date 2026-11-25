@@ -85,7 +85,9 @@ becomes an API one.
   unusable. The turn sends only the route marker; the runner reads its own key file, the same way
   it resolves an account's home itself. The key never enters a job payload or the owner's ledger.
   Only an explicitly remote project or `--on-runner` is refused.
-- **Overflow also covers a first turn refused mid-flight** with every account out, before any work
-  and before a conversation exists, not only a dispatch that found no room.
+- **Grants overlap**, so the cycle is the soonest-expiring live grant, and the ledger detects whether
+  a resume restored Claude's earlier total from its cumulative token count (independent review,
+  2026-11-25). A second overflow path for a first turn refused mid-flight was built and removed: by
+  then the turn has already recorded its subscription account, so the path could never fire.
 - The Accounts line is added to the existing `apiCredits` facts on the Claude row in use, so the
   plan-tier credit facts that row already showed stay.

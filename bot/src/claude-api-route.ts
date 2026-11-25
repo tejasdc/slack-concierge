@@ -84,15 +84,32 @@ export const API_CREDITS_BANKED_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
 export type ApiCreditsCycle = { grantedAt: number; expiresAt: number; budgetUsd: number; spentUsd: number; remainingUsd: number };
 
-/** The grant in force at `now`: the latest 22nd (UTC) not after it. */
-export function apiCreditsGrant(now: number): { grantedAt: number; expiresAt: number } {
-  const date = new Date(now);
-  let year = date.getUTCFullYear(), month = date.getUTCMonth();
-  if (date.getUTCDate() < API_CREDITS_GRANT_DAY) { month -= 1; if (month < 0) { month = 11; year -= 1; } }
-  const grantedAt = Date.UTC(year, month, API_CREDITS_GRANT_DAY);
+function grantOf(year: number, month: number): { grantedAt: number; expiresAt: number } {
   // The Console's expiry is the end of the 32nd day after the grant date: Nov 22 → Dec 24, 7 PM ET.
-  const expiresAt = Date.UTC(year, month, API_CREDITS_GRANT_DAY + API_CREDITS_LIFETIME_DAYS + 1);
-  return { grantedAt, expiresAt };
+  return { grantedAt: Date.UTC(year, month, API_CREDITS_GRANT_DAY), expiresAt: Date.UTC(year, month, API_CREDITS_GRANT_DAY + API_CREDITS_LIFETIME_DAYS + 1) };
+}
+function latestGrantMonth(now: number): { year: number; month: number } {
+  const date = new Date(now);
+  const back = date.getUTCDate() < API_CREDITS_GRANT_DAY ? 1 : 0;
+  const month = date.getUTCMonth() - back;
+  return month < 0 ? { year: date.getUTCFullYear() - 1, month: 11 } : { year: date.getUTCFullYear(), month };
+}
+
+/**
+ * The grant Concierge spends against at `now`. Grants overlap: the Nov 22 grant lives until Dec 25
+ * 00:00 UTC while the Dec 22 grant has already arrived. In that overlap the older one is the cycle,
+ * because it is the one about to be lost; that is exactly when banked work should spend it.
+ */
+export function apiCreditsGrant(now: number): { grantedAt: number; expiresAt: number } {
+  const { year, month } = latestGrantMonth(now);
+  const previous = grantOf(month === 0 ? year - 1 : year, month === 0 ? 11 : month - 1);
+  return now < previous.expiresAt ? previous : grantOf(year, month);
+}
+
+/** When the next grant is expected: the first 22nd (UTC) after `now`. */
+export function apiCreditsNextGrantAt(now: number): number {
+  const { year, month } = latestGrantMonth(now);
+  return grantOf(month === 11 ? year + 1 : year, month === 11 ? 0 : month + 1).grantedAt;
 }
 
 export function ensureApiCreditSpendTable(db: Database) {
@@ -103,6 +120,7 @@ CREATE TABLE IF NOT EXISTS claude_api_credit_spend (
   turn_id INTEGER,
   conversation_uuid TEXT,
   reported_total_usd REAL NOT NULL,
+  reported_tokens INTEGER,
   delta_usd REAL NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 );
@@ -111,20 +129,31 @@ CREATE INDEX IF NOT EXISTS claude_api_credit_spend_conversation ON claude_api_cr
 }
 
 /**
- * Record one result's `total_cost_usd`. Claude reports that figure cumulatively for the conversation,
- * including across resumes (2026-11-25: a resumed Haiku call reported its own tokens plus the first
- * call's). The spend is the increase over the previous reading of the same conversation; a lower
- * reading means Claude restarted its count, and the whole reading is new spend.
+ * Record one result's `total_cost_usd`. Within one Claude process each result's figure is cumulative.
+ * A resumed process may or may not restore the conversation's earlier total (2026-11-25: one resume
+ * did, adding the first call's tokens; Claude restores it only when its config folder last ran that
+ * conversation, which concurrent sessions in one folder break). So:
+ *
+ * - a later reading in the same process counts its increase over the previous reading;
+ * - the first reading of a process counts its increase only when its cumulative token count reaches
+ *   the conversation's previous count (a restored total includes every earlier token); otherwise it
+ *   is the process's own spend and counts in full. Each query re-reads the whole context, so a fresh
+ *   process's first query almost never exceeds everything the conversation read before.
  */
-export function recordApiCreditSpend(db: Database, input: { sessionId: number; turnId: number | null; conversationUuid: string | null; totalUsd: number; nowMs?: number }): number {
+export function recordApiCreditSpend(db: Database, input: { sessionId: number; turnId: number | null; conversationUuid: string | null; totalUsd: number;
+  tokens?: number | null; firstInProcess?: boolean; nowMs?: number }): number {
   if (!Number.isFinite(input.totalUsd) || input.totalUsd < 0) return 0;
   const previous = input.conversationUuid
-    ? db.query("SELECT reported_total_usd FROM claude_api_credit_spend WHERE conversation_uuid=? ORDER BY id DESC LIMIT 1").get(input.conversationUuid) as { reported_total_usd: number } | null
+    ? db.query("SELECT reported_total_usd,reported_tokens FROM claude_api_credit_spend WHERE conversation_uuid=? ORDER BY id DESC LIMIT 1").get(input.conversationUuid) as { reported_total_usd: number; reported_tokens: number | null } | null
     : null;
-  const delta = previous && input.totalUsd >= previous.reported_total_usd ? input.totalUsd - previous.reported_total_usd : input.totalUsd;
-  if (previous && delta === 0) return 0;
-  db.query(`INSERT INTO claude_api_credit_spend (session_id,turn_id,conversation_uuid,reported_total_usd,delta_usd,recorded_at_ms)
-    VALUES (?,?,?,?,?,?)`).run(input.sessionId, input.turnId, input.conversationUuid, input.totalUsd, delta, input.nowMs ?? Date.now());
+  const restored = !previous ? false
+    : input.firstInProcess === false ? true
+    : input.tokens != null && previous.reported_tokens != null ? input.tokens >= previous.reported_tokens
+    : input.totalUsd >= previous.reported_total_usd;
+  const delta = restored && input.totalUsd >= previous!.reported_total_usd ? input.totalUsd - previous!.reported_total_usd : input.totalUsd;
+  if (previous && restored && delta === 0) return 0;
+  db.query(`INSERT INTO claude_api_credit_spend (session_id,turn_id,conversation_uuid,reported_total_usd,reported_tokens,delta_usd,recorded_at_ms)
+    VALUES (?,?,?,?,?,?,?)`).run(input.sessionId, input.turnId, input.conversationUuid, input.totalUsd, input.tokens ?? null, delta, input.nowMs ?? Date.now());
   return delta;
 }
 
@@ -182,9 +211,7 @@ export function isApiKeyRefusal(message: string): boolean {
 }
 
 export function apiCreditsSpentMessage(now: number, detail = ""): string {
-  const granted = new Date(apiCreditsGrant(now).grantedAt);
-  const nextGrant = new Date(Date.UTC(granted.getUTCFullYear(), granted.getUTCMonth() + 1, API_CREDITS_GRANT_DAY));
-  const day = nextGrant.toLocaleDateString("en-US", { timeZone: "UTC", month: "long", day: "numeric" });
+  const day = new Date(apiCreditsNextGrantAt(now)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", day: "numeric" });
   return `This session runs on the monthly Anthropic API credit, and Anthropic says that credit is spent for this cycle. `
     + `Nothing moves it to a subscription account; the next grant is expected on ${day}. `
     + `Start a new session on another alias to continue now.${detail ? ` ${detail}` : ""}`;

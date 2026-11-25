@@ -877,8 +877,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       },
       ...(claudeApiRoute?{accountLabel:API_CREDITS_ACCOUNT}:input.boundAccount?{accountLabel:input.boundAccount.account}:claudeChoice?{accountLabel:claudeChoice.account}:{}),
       // Each result's cumulative cost becomes the route's spend ledger (claude-api-route.ts).
-      ...(claudeApiRoute?{onCost:(cost:{totalUsd:number;sessionUuid:string|null})=>{
-        try{recordApiCreditSpend(db,{sessionId:input.session.id,turnId:input.turnId,conversationUuid:cost.sessionUuid,totalUsd:cost.totalUsd});}
+      ...(claudeApiRoute?{onCost:(cost:{totalUsd:number;sessionUuid:string|null;tokens:number|null;firstInProcess:boolean})=>{
+        try{recordApiCreditSpend(db,{sessionId:input.session.id,turnId:input.turnId,conversationUuid:cost.sessionUuid,totalUsd:cost.totalUsd,
+          tokens:cost.tokens,firstInProcess:cost.firstInProcess});}
         catch(error){log('warn','claude_api_credit_spend_record_failed',{turn_id:input.turnId,...errorFields(error)});}
       }}:{}),
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
@@ -1491,15 +1492,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         catch { everyAccountClearsAtMs=claudeEveryAccountClearsAt(
           input.model||getClaudePreferredModel(input.session.id,input.turnId)||null); }
       }
-      // Refused before any work with every subscription account out: a conversation that does not
-      // exist yet starts again on the API credit now instead of waiting for a reset.
-      if(everyAccountClearsAtMs!==null&&replaySafe&&!structuredFailure?.assistantOutput&&!structuredFailure?.toolsUsed.length
-        &&chooseApiOverflow(input,runningClaudeModel,message)
-        &&retryRunningTurnAfterProviderFailure({turnId:input.turnId,ownerInstanceId:input.ownerInstanceId,dispatchAttempt,error:message,nextAttemptMs:Date.now()})){
-        await progressController?.pauseForRetry();
-        await statusController?.stop();
-        return {status:'retry_queued',turnId:input.turnId};
-      }
+
       const refusalClearsAtMs=structuredFailure?.clearsAtMs??null;
       const heldUntilMs = replaySafe&&!switchClaudeAccount&&refusalClearsAtMs!==null
         ? Math.min(refusalClearsAtMs,everyAccountClearsAtMs??refusalClearsAtMs) : null;
@@ -1524,10 +1517,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         // A runner account has no owner-local home; its exact saved label still names the
         // sign-in that the Mac browser agent must renew.
         if(runningClaudeHome||input.providerId==='claude-code'&&input.providerEnvironment?.CONCIERGE_PROVIDER_RUNNER)
-          needClaudeSignInRenewal(runningClaudeAccount,'a turn was refused');
+          {if(!claudeApiRoute)needClaudeSignInRenewal(runningClaudeAccount,'a turn was refused');}
         if(input.providerId==='codex')needSignInRenewal('codex',runningCodexAccount??currentAccount('codex')?.label??null,'a turn was refused');
       }
-      const authWait = replaySafe && !claudeConversationRefused && input.providerId !== 'chatgpt'
+      // The API-credit route has no sign-in to renew: a key refusal ends the turn (apiRouteFailure).
+      const authWait = replaySafe && !claudeConversationRefused && input.providerId !== 'chatgpt' && !claudeApiRoute
         && isRefreshableAuthFailure(message)
         && !structuredFailure?.assistantOutput
         && (!dispatchBoundary.admissionIntended || structuredFailure?.terminalConfirmed === true);

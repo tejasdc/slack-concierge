@@ -9,7 +9,7 @@ import {claudeAccountSelection} from './provider-account-selection';
 import {noticeTime} from './provider-free-notice';
 import {providerRunnerTarget} from './provider-runner-target';
 import {db} from './state-database';
-import {API_CREDITS_BUDGET_USD,API_CREDITS_GRANT_DAY,apiCreditsConfigured,apiCreditsCycle,apiCreditsLine} from './claude-api-route';
+import {API_CREDITS_BUDGET_USD,apiCreditsNextGrantAt,apiCreditsConfigured,apiCreditsCycle,apiCreditsLine} from './claude-api-route';
 import type {ProviderAuthEphemera} from './provider-auth-ephemera';
 import type {ApiCreditsFacts} from './claude-account-facts';
 import type {ProviderAuthView} from './session-execution-host';
@@ -54,8 +54,7 @@ export function providerAuthRead(ephemera:ProviderAuthEphemera):readonly Provide
 function withApiCreditsLine<T extends {label:string;apiCredits?:ApiCreditsFacts|null}>(accounts:readonly T[],inUse:string|null):readonly T[] {
   if(!accounts.length||!apiCreditsConfigured())return accounts;
   let cycle;try{cycle=apiCreditsCycle(db);}catch{return accounts;}
-  const granted=new Date(cycle.grantedAt);
-  const renewsAt=new Date(Date.UTC(granted.getUTCFullYear(),granted.getUTCMonth()+1,API_CREDITS_GRANT_DAY)).toISOString();
+  const renewsAt=new Date(apiCreditsNextGrantAt(Date.now())).toISOString();
   const routeLine=apiCreditsLine(cycle);
   const index=Math.max(0,accounts.findIndex(item=>item.label===inUse));
   // The plan-tier facts already on the row stay; the route's own count is added to its line.

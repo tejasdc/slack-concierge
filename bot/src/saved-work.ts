@@ -7,7 +7,7 @@ import {savedWorkAccountRooms} from './provider-account-dispatch';
 import {includedAllowanceWindows} from './account-allowance-observation';
 import {chooseAccountForTurn} from './provider-account-choice';
 import {log,errorFields} from './log';
-import {API_CREDITS_ACCOUNT,apiCreditsConfigured,apiCreditsCycle,apiRouteDecision} from './claude-api-route';
+import {API_CREDITS_ACCOUNT,apiCreditsConfigured,apiCreditsCycle,apiCreditsNextGrantAt,apiRouteDecision} from './claude-api-route';
 import {holdsInbox} from './inbox-session-pin';
 import {endRepeatingScheduleForInput} from './request-liveness';
 import {savedStartAt} from './saved-start-time';
@@ -171,6 +171,17 @@ export function reconsiderBankedWork(now=Date.now()):number {
         &&row.saved_window===(eligible?API_CREDITS_ACCOUNT:null)&&row.saved_boundary_ms===boundary)continue;
       changed+=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=?,saved_window=?,saved_boundary_ms=?
         WHERE id=? AND status='queued' AND saved_kind='banked'`).run(next,eligible?API_CREDITS_ACCOUNT:null,eligible?API_CREDITS_ACCOUNT:null,boundary,row.id).changes;
+      continue;
+    }
+    // An API-route session never binds a subscription account, even when its credit is spent: it
+    // waits for the next grant (or a manual start, which ends plainly if the credit is still gone).
+    if(provider==='claude-code'&&sessionMetadata(session).claudeRoute==='api-credits'){
+      const wait:BankedWait='no_allowance_room';
+      if(row.saved_wait_reason!==wait)db.query("UPDATE turns SET saved_wait_reason=? WHERE id=? AND status='queued' AND saved_kind='banked'").run(wait,row.id);
+      const next=apiCreditsNextGrantAt(now);
+      if(row.saved_account===null&&row.saved_window===null&&row.saved_boundary_ms===null&&row.dispatch_next_attempt_ms===next)continue;
+      changed+=db.query(`UPDATE turns SET dispatch_next_attempt_ms=?,saved_account=NULL,saved_window=NULL,saved_boundary_ms=NULL
+        WHERE id=? AND status='queued' AND saved_kind='banked'`).run(next,row.id).changes;
       continue;
     }
     const rooms=usage?savedWorkAccountRooms(provider,usage,now,model):[];

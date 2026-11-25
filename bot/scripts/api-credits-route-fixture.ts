@@ -54,20 +54,28 @@ try{
   assert.equal(new Date(grant.expiresAt).toISOString(),'2026-12-25T00:00:00.000Z');
   assert.equal(route.formatEasternInstant(grant.expiresAt),'Dec 24, 7:00 PM ET');
   assert.equal(new Date(route.apiCreditsGrant(Date.parse('2026-01-05T00:00:00Z')).grantedAt).toISOString(),'2025-12-22T00:00:00.000Z');
+  // Grants overlap: until the older one expires it is the cycle, since it is the one about to be lost.
+  assert.equal(new Date(route.apiCreditsGrant(Date.parse('2026-12-23T12:00:00Z')).grantedAt).toISOString(),'2026-11-22T00:00:00.000Z');
+  assert.equal(new Date(route.apiCreditsGrant(Date.parse('2026-12-25T00:00:00Z')).grantedAt).toISOString(),'2026-12-22T00:00:00.000Z');
+  assert.equal(new Date(route.apiCreditsNextGrantAt(nov25)).toISOString(),'2026-12-22T00:00:00.000Z');
+  assert.equal(new Date(route.apiCreditsNextGrantAt(Date.parse('2026-12-23T00:00:00Z'))).toISOString(),'2027-01-22T00:00:00.000Z');
+  assert.equal(route.apiRouteDecision('banked',{...route.apiCreditsCycle(db,Date.parse('2026-12-23T12:00:00Z')),remainingUsd:100},Date.parse('2026-12-23T12:00:00Z')).use,true,
+    'the expiring grant is still spent by banked work after the next one arrives');
 
   // 4. The ledger counts each reading's increase per conversation; Claude's figure is cumulative across resumes.
   const at=Date.parse('2026-11-23T00:00:00Z');
-  const spend=(uuid:string|null,totalUsd:number)=>route.recordApiCreditSpend(db,{sessionId:onApi.id,turnId:null,conversationUuid:uuid,totalUsd,nowMs:at});
-  assert.equal(spend('a',0.5),0.5);
-  assert.ok(Math.abs(spend('a',0.8)-0.3)<1e-9);
-  assert.equal(spend('a',0.8),0,'a replayed reading adds nothing');
-  assert.equal(spend('a',0.2),0.2,'a restarted count is new spend');
-  assert.equal(spend('b',1),1);
+  const spend=(uuid:string|null,totalUsd:number,tokens:number,firstInProcess:boolean)=>route.recordApiCreditSpend(db,{sessionId:onApi.id,turnId:null,conversationUuid:uuid,totalUsd,tokens,firstInProcess,nowMs:at});
+  assert.equal(spend('a',0.5,1000,true),0.5);
+  assert.ok(Math.abs(spend('a',0.8,1600,false)-0.3)<1e-9,'later readings in one process count their increase');
+  assert.equal(spend('a',0.8,1600,false),0,'a repeated reading adds nothing');
+  assert.ok(Math.abs(spend('a',1.1,2400,true)-0.3)<1e-9,'a resume that restored the earlier total counts its increase');
+  assert.equal(spend('a',0.9,900,true),0.9,'a resume that started its count afresh counts in full, even above the old total');
+  assert.equal(spend('b',0.3,500,true),0.3);
   route.recordApiCreditSpend(db,{sessionId:onApi.id,turnId:null,conversationUuid:'old',totalUsd:50,nowMs:Date.parse('2026-11-20T00:00:00Z')});
   const cycle=route.apiCreditsCycle(db,nov25);
-  assert.ok(Math.abs(cycle.spentUsd-2)<1e-9,'spend before the grant belongs to the previous cycle');
-  assert.ok(Math.abs(cycle.remainingUsd-198)<1e-9);
-  assert.match(route.apiCreditsLine(cycle),/^API credits route: \$2\.00 of \$200 spent this cycle by Concierge \(Console is the authority\); expires Dec 24, 7:00 PM ET$/);
+  assert.ok(Math.abs(cycle.spentUsd-2.3)<1e-9,'spend before the grant belongs to the previous cycle');
+  assert.ok(Math.abs(cycle.remainingUsd-197.7)<1e-9);
+  assert.match(route.apiCreditsLine(cycle),/^API credits route: \$2\.30 of \$200 spent this cycle by Concierge \(Console is the authority\); expires Dec 24, 7:00 PM ET$/);
 
   // 5. When Concierge picks the route itself.
   const full={...cycle,spentUsd:0,remainingUsd:200};
