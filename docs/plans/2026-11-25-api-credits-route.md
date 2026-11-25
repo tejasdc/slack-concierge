@@ -92,3 +92,12 @@ becomes an API one.
   then the turn has already recorded its subscription account, so the path could never fire.
 - The Accounts line is added to the existing `apiCredits` facts on the Claude row in use, so the
   plan-tier credit facts that row already showed stay.
+
+## Found by the live checks (2026-11-25)
+
+- The first live turn ran on a subscription account: runner turns start `claude` through the shell
+  launcher, which dropped the key as if the launch were an agent's nested one. The managed launch is
+  now told apart by the launcher's own parent mark.
+- The second ran on the credit but without the shared Claude settings, so its agent could not run
+  its reply command. The API folder now links the shared set like every account folder and refuses
+  to launch when it cannot.

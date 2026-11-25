@@ -1097,7 +1097,10 @@ some of the banked work, especially at the end of the credit cycle." Design reco
 **What it is.** A Claude session on the route runs the same `claude` binary every managed turn runs,
 with the Console API key and the Agent SDK entrypoint (`CLAUDE_CODE_ENTRYPOINT=sdk-ts`, which is all the
 Agent SDK adds), in its own config folder `~/.claude-accounts/.api-credits` (the dot keeps it out of
-account scans; its transcripts live there so resumes, history and forks find them). Everything else is
+account scans). Like every account folder it links the shared set in `~/.claude` (settings, hooks,
+instructions, skills, plugins, transcripts) and keeps only per-login state; a folder that cannot link
+the shared settings refuses the launch, because its agent would run without Concierge's permissions
+(the first live turn, 2026-11-25, could not run its own reply command). Everything else is
 an ordinary Concierge session: worktrees, requests, replies, Inbox threads. Managed Agents was rejected
 because it runs in Anthropic's sandbox with no repository credentials or Concierge tools and bills a
 session-hour on top of tokens; revisit it only for work that cannot run on the server.
@@ -1150,9 +1153,12 @@ API errors (overload, 5xx) keep their ordinary retry. A fork of an API-route ses
 
 **Known limits.** The turn's own shell holds the key in its environment; only the `claude` launcher
 drops it, so another Anthropic client an agent runs there would spend the credit, and printing the
-environment would put the key in that transcript. Restoring an archived API-route conversation and
-reading history of an API-route session run without a runner are not supported (production places every
-Claude turn on a runner); both look only in the subscription account folders.
+environment would put the key in that transcript.
+
+**Managed launch versus shell launch.** Runner turns reach `claude` through the shell launcher, as an
+agent's own `claude` does. The launcher marks the Claude it starts with its process ID, and every shell
+under that Claude inherits the mark; so a launch carrying the route marker and no mark is the managed
+turn (it gets the key), and a marked one is an agent's nested launch (it drops the key).
 
 ## What he is told about accounts, and when he is not
 

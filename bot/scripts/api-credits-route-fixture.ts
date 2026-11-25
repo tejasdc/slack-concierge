@@ -2,7 +2,7 @@
 // the route fixed on the session at creation, the credit cycle, the spend ledger, when Concierge chooses
 // the route by itself, and how its refusals read. Runs in a disposable ledger; starts no provider.
 import assert from 'node:assert/strict';
-import {existsSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readdirSync,readlinkSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {API_CREDITS_ROUTE_TEST_AUTHORIZATION} from '../src/test-authorizations';
@@ -103,7 +103,19 @@ try{
   const keyFile=join(scratch,'key.json');
   assert.throws(()=>route.apiCreditsEnvironment({keyFile,home:scratch}),route.ApiCreditsUnavailableError);
   writeFileSync(keyFile,JSON.stringify({api_key:'sk-ant-fixture'}),{mode:0o600});
+  // The folder links the shared Claude set like every account folder, keeps per-login state private,
+  // and moves a private copy of a shared entry aside rather than deleting it.
+  const shared=join(scratch,'.claude');
+  mkdirSync(join(shared,'projects'),{recursive:true});
+  writeFileSync(join(shared,'settings.json'),'{}');writeFileSync(join(shared,'.credentials.json'),'{}');
+  const apiDir=join(scratch,'.claude-accounts','.api-credits');
+  mkdirSync(join(apiDir,'projects','old'),{recursive:true});
   const environment=route.apiCreditsEnvironment({keyFile,home:scratch});
+  assert.equal(readlinkSync(join(apiDir,'settings.json')),join(shared,'settings.json'));
+  assert.equal(readlinkSync(join(apiDir,'projects')),join(shared,'projects'));
+  assert.ok(!existsSync(join(apiDir,'.credentials.json')),'per-login state is never linked');
+  assert.ok(readdirSync(apiDir).some(name=>name.startsWith('.unlinked-')&&existsSync(join(apiDir,name,'projects','old'))),'a private copy is kept aside');
+  route.apiCreditsEnvironment({keyFile,home:scratch});
   assert.deepEqual(Object.keys(environment).sort(),['ANTHROPIC_API_KEY','CLAUDE_CODE_ENTRYPOINT','CLAUDE_CONFIG_DIR','CONCIERGE_CLAUDE_ROUTE']);
   assert.equal(environment.CLAUDE_CODE_ENTRYPOINT,'sdk-ts');
   assert.equal(environment.CLAUDE_CONFIG_DIR,join(scratch,'.claude-accounts','.api-credits'));
