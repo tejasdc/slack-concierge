@@ -1208,7 +1208,7 @@ export class SessionExecutionHost {
   }
   private prompt(input:AcceptedSessionInput):string {
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
-    let prompt=payload.preparedPrompt??payload.text;
+    let prompt=body.preparedPrompt??payload.text;
     // Argument-map speech must be byte-for-byte the human transcript in Codex's user
     // message. Its identity, board and capability instructions travel through Codex's
     // separate application-context channel.
