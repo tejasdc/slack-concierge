@@ -61,14 +61,32 @@ so three defect reports read as three ordinary full weeks.
 ## Fix
 
 - The lapse condition is now the design's: a fresh reading whose window is not forecast to run out
-  before it resets. `source==='unknown'` with a fresh reading is the evidence, not the
-  disqualification. Staleness is still refused, through the account-room check, which reports no
+  before it resets. Staleness is still refused, through the account-room check, which reports no
   percentage at all for a reading that is not fresh.
-- No banked work waits for an idle fleet, in the forecast pass or in the claim. What protects his
-  own work is the 25% reserve against the account's tightest window (so a spent five-hour window
-  blocks banked work exactly as a spent week does), the choice of the account whose allowance
-  lapses first, and the timing: outside quiet hours generic banked work only runs in the two hours
-  before that window resets.
+  **What that condition establishes, stated honestly:** the capacity is safely expendable — fresh
+  reading, above the reserve, nothing projected to consume it before its reset. It does not
+  establish that the allowance *would* have lapsed. A missing projection is missing information,
+  not a forecast of surplus, and `source==='unknown'` covers both "no model ran" and "the observed
+  rate is zero". Nothing in the system may report that it proved the allowance would lapse.
+- No banked work waits for an idle fleet, in the forecast pass or in the claim.
+- **What is guaranteed, and what is not.** Guaranteed: a quarter of the chosen account's tightest
+  window stays unspent, because that account is only a candidate above the reserve and because a
+  running banked turn is asked to yield (`allowance_boundary`) on the first reading that shows it
+  reaching the floor. Not guaranteed: that banked work can never be the reason his own work waits.
+  Between admission and the floor the bank can consume allowance a later request of his needed —
+  60 units left, the bank spends 30, 30 remain above a 25 floor, and his next request needs 40.
+  That was equally true under the idle-fleet gate, since idleness at admission says nothing about
+  his arrival ten minutes later; it is a property of spending shared allowance at all, not of this
+  change. The remaining protections are the reserve, the choice of the account whose allowance
+  lapses first, and the timing: outside his quiet hours generic banked work runs only in the two
+  hours before that window resets.
+- **Open, with an owner.** A sized foreground entitlement — an amount of five-hour and weekly
+  allowance reserved for his own work, with banked spending bounded above it — is the protection
+  that would make the stronger promise true. ChatGPT Pro (gpt-6-pro) recommended exactly that when
+  consulted on this change (request `3eb0cd46-3e2c-43e6-a4d3-ba2b438112eb`, concierge:10569), and
+  it needs a number: today's 25% is a percentage floor, not a measured entitlement. This session
+  (concierge:3633) owns that follow-up. Until it exists, the reserve is a bound on what remains,
+  not a promise about what he will need.
 - Two new recorded reasons so this cannot be mislabelled again: `window_runs_out_first` (an
   account had room, but his own work is forecast to spend it before the reset) and
   `stale_usage_reading`. `no_allowance_room` now means only what it says.

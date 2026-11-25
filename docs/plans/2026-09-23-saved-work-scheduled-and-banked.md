@@ -619,7 +619,25 @@ What protects his own work is what the design already said protects it at 3pm: t
 read against the account's tightest window, so a spent five-hour window blocks banked work exactly
 as a spent week does; the account whose allowance **lapses first**; the **timing**, which outside
 quiet hours still means only the two hours before that window resets; and **one unattended banked
-run at a time**.
+run at a time**. A running banked turn is also asked to yield on the first reading that shows it
+reaching the reserve.
+
+Two honest limits on that, both raised by ChatGPT Pro when this change was put to it
+(request `3eb0cd46-3e2c-43e6-a4d3-ba2b438112eb`):
+
+- **The reserve bounds what remains, it does not promise what he will need.** The table above says
+  banked work "may never be the reason his own work waits". With 60 units left, a bank that spends
+  30 leaves 30 — above a 25 floor — and a next request needing 40 now waits. An idle fleet never
+  protected against that either, because idleness at admission says nothing about his arriving ten
+  minutes later. Making the strong promise true needs a **sized foreground entitlement**: an
+  amount of five-hour and weekly allowance held for his own work, with banked spending bounded
+  above it. Today's 25% is a percentage floor, not a measured entitlement. Open, owned by
+  concierge:3633.
+- **An absent projection is not a forecast of surplus.** The condition now means the capacity is
+  *safely expendable*; it does not establish that the allowance would otherwise have lapsed, and
+  nothing may report that it does. "Unknown" covers both "no model ran" and "the observed rate is
+  zero", and 0% just after a reset is weak evidence where 0% near the end of a window is strong.
+  The proximity trigger is what keeps that honest outside the quiet band.
 
 Both halves of the rule — the forecast pass in `reconsiderBankedWork` and the queue's claim —
 state the same predicate and must keep doing so; a disagreement between them is silent.
