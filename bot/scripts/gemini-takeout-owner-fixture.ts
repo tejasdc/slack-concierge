@@ -26,7 +26,7 @@ const responder=Bun.spawn(['node',responderPath,sourceSocket,join(scratch,'archi
 const digest=(bytes:string)=>createHash('sha256').update(bytes).digest('hex');
 let server:ReturnType<typeof Bun.serve>|undefined;
 try {
-  const [{SessionOwner},{SessionCapabilityClient},{db},{getAcceptedSessionInput}]=await Promise.all([
+  const [{SessionOwner},{SessionCapabilityClient,SessionCapabilityError},{db},{getAcceptedSessionInput}]=await Promise.all([
     import('../src/session-owner'),import('../src/session-capability-client'),import('../src/state'),import('../src/session-inputs')]);
   for(let attempts=0;attempts<100&&!existsSync(sourceSocket);attempts++)await Bun.sleep(100);
   assert.ok(existsSync(sourceSocket),'The isolated Thinkering capability did not listen.');
@@ -49,9 +49,20 @@ try {
   const text='Synthetic current request: summarize the provenance.';
   const content=JSON.stringify([
     {header:'Gemini Apps',conversationId:'marked-group',title:'Prompted markedgrpword',safeHtmlItem:[{html:'<p>Exported answer</p>'}]},
-    {header:'Gemini Apps',title:'markedactivityword'},
+    {header:'Gemini Apps',activityId:'activity-with-explicit-id',title:'markedactivityword'},
   ]);
-  const imported=await call('imports',{clientActionId:randomUUID(),name:'MyActivity.json',scope:'marked-owner-check',content});
+  const importBody={clientActionId:randomUUID(),name:'MyActivity.json',scope:'marked-owner-check',content};
+  const imported=await call('imports',importBody);
+  const readObservation=(action:string,version=digest(content))=>db.query(
+    'SELECT * FROM archive_import_observations WHERE action_id=? AND source_version=?').get(action,version) as Record<string,any>;
+  const initial=readObservation(importBody.clientActionId);
+  assert.equal(initial.indexed_conversations,1);
+  assert.equal(initial.indexed_activity_records,1);
+  assert.ok(initial.accepted_at_ms>0&&initial.import_duration_ms>=0);
+  assert.equal(initial.first_search_at_ms,null);
+  await call('search',{query:'notpresentinthisfixtureba42'});
+  assert.equal(readObservation(importBody.clientActionId).first_search_at_ms,null);
+  let firstSearch:Record<string,any>|undefined;
   for(const [index,query] of ['markedgrpword','markedactivityword'].entries()){
     const session=imported.sessions[index],source=imported.sources[index],message=source.messages[0];
     assert.equal(session.provider,'gemini');
@@ -70,6 +81,14 @@ try {
     }
     assert.ok(hit,`Missing exact Gemini result for ${query}: ${JSON.stringify(search)}`);
     assert.ok(hit.evidence.some((item:any)=>item.eventId===message.eventId&&item.textHash===message.textHash));
+    const observation=readObservation(importBody.clientActionId);
+    assert.ok(observation.first_search_at_ms>=initial.accepted_at_ms&&observation.first_search_duration_ms>=0);
+    if(index===0){
+      assert.equal(observation.first_search_coverage_complete,Number(search.coverage.complete));
+      firstSearch=observation;
+    } else {
+      assert.deepEqual(observation,firstSearch,'Later search matches cannot replace the first hit');
+    }
     const pin={address:session.address,sourceId:source.id,sourceVersion:source.version};
     assert.equal((await call('context',{...pin,eventId:message.eventId})).evidence[0].text,message.text);
     const history=await call(`sessions/${session.id}/history`);
@@ -77,6 +96,34 @@ try {
     const refused=await call('sessions',{clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text},
       reconstruction:{...pin,branch:source.branch}},409);
     assert.equal(refused.error.code,'GEMINI_RECONSTRUCTION_UNVERIFIED');
+  }
+  await call('imports',importBody);
+  assert.deepEqual(readObservation(importBody.clientActionId),firstSearch,'Retry preserves the accepted import and first search');
+  const otherAction={...importBody,clientActionId:randomUUID()};
+  await call('imports',otherAction);
+  assert.equal(readObservation(otherAction.clientActionId).first_search_at_ms,null,'The earlier search is not a witness for a later import action');
+  const sourceImport=owner.runtime.sources!.import;
+  owner.runtime.sources!.import=async()=>{throw new SessionCapabilityError('SOURCE_REFUSED','private refusal text',422);};
+  const refusedImport={...importBody,clientActionId:randomUUID()};
+  await call('imports',refusedImport,422);
+  assert.equal(readObservation(refusedImport.clientActionId).accepted_at_ms,null);
+  assert.equal(readObservation(refusedImport.clientActionId).last_failure_kind,'source_rejected');
+  assert.equal(readObservation(refusedImport.clientActionId).failed_attempts,1);
+  owner.runtime.sources!.import=async()=>{throw new SessionCapabilityError('SOURCE_CAPABILITY_FAILED','private diagnostic text',503,true);};
+  await call('imports',refusedImport,503);
+  assert.equal(readObservation(refusedImport.clientActionId).failed_attempts,2);
+  assert.equal(readObservation(refusedImport.clientActionId).source_refusals,1);
+  assert.equal(readObservation(refusedImport.clientActionId).last_failure_kind,'source_outcome_unknown');
+  owner.runtime.sources!.import=sourceImport;
+  await call('imports',refusedImport);
+  assert.equal(readObservation(refusedImport.clientActionId).failed_attempts,2,'Acceptance preserves the failed attempt count');
+  assert.equal(readObservation(refusedImport.clientActionId).source_refusals,1,'Acceptance preserves the proven source refusal');
+  assert.equal(readObservation(refusedImport.clientActionId).indexed_conversations,1);
+  const observations=JSON.stringify(db.query('SELECT * FROM archive_import_observations').all())+
+    JSON.stringify(db.query('SELECT * FROM archive_import_source_pins').all());
+  for(const privateValue of ['marked-owner-check','MyActivity.json','markedgrpword','markedactivityword','marked-group',
+    'activity-with-explicit-id','Exported answer','private refusal text','private diagnostic text']) {
+    assert.ok(!observations.includes(privateValue),'Diagnostic rows must omit content and raw source identifiers');
   }
   assert.equal((db.query('SELECT count(*) AS n FROM turns').get() as {n:number}).n,0);
   console.log('Installed Thinkering responder through scratch owner socket: grouped and activity-only search, exact context/history, two refusals, zero turns.');
@@ -110,9 +157,14 @@ try {
   assert.ok(payload.preparedPrompt.includes(JSON.stringify(events)));
   const nextSource={...source,version:'1'.repeat(64),reconstruction:undefined};
   owner.runtime.sources!.import=async()=>({sources:[nextSource]});
-  const next=(await call('imports',{clientActionId:randomUUID()})).sessions[0];
+  const nextAction=randomUUID();
+  const next=(await call('imports',{clientActionId:nextAction})).sessions[0];
   assert.equal(next.id,verified.id);
   assert.notEqual(next.address,verified.address);
+  assert.equal(readObservation(nextAction,nextSource.version).first_search_at_ms,null);
+  await call('search',{query:'markedgrpword'});
+  assert.equal(readObservation(nextAction,nextSource.version).first_search_at_ms,null,'An older version of the same source does not count');
+  assert.ok(readObservation(otherAction.clientActionId).first_search_at_ms>=firstSearch!.first_search_at_ms);
   owner.runtime.sources!.context=async()=>{throw new Error('A committed retry must never reopen sources.');};
   assert.equal((await call('sessions',body)).session.id,created.session.id);
   await call('sessions',{...body,clientActionId:randomUUID()},409);

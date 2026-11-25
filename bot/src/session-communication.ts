@@ -737,15 +737,16 @@ export class SessionCommunicationCoordinator {
         peer?: string;
         thread?: string;
     }) {
+        const started=performance.now();
         const actor = this.actor(input.source);
         if (!Array.isArray(input.concepts) || input.concepts.length < 1 || input.concepts.length > 8
             || input.concepts.some(value => typeof value !== 'string' || !value.trim()))
             throw new Error('Use one to eight nonempty search concepts.');
         if (input.peer !== undefined) return boundSearchResponse(await this.peers().search(input.peer, input.concepts, input.limit));
         if (!this.dependencies.owner) throw new Error('Common session discovery is unavailable.');
-        const local = () => actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.search({query:conceptQuery(input.concepts),limit:input.limit})):this.dependencies.owner.search({query:conceptQuery(input.concepts),limit:input.limit}, {
+        const local = () => actor.inputId?withContentSource({inputId:actor.inputId,runId:nativeRunId(actor.turn)},()=>this.dependencies.owner.search({query:conceptQuery(input.concepts),limit:input.limit},undefined,false)):this.dependencies.owner.search({query:conceptQuery(input.concepts),limit:input.limit}, {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
-        });
+        },false);
         // One search for every machine: where this machine has no meaning index (the Mac), the
         // machine that has one runs the whole search, which already covers this machine's sessions
         // through the archive and a live word search here. Only when that machine cannot be reached
@@ -761,12 +762,16 @@ export class SessionCommunicationCoordinator {
         }
         // Sessions live on several instances; discovery covers all of them unless one was named.
         found ??= await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local());
-        return boundSearchResponse({...found,results:this.withWorkload(found.results??[],actor,input.thread)});
+        const response=boundSearchResponse({...found,results:this.withWorkload(found.results??[],actor,input.thread)});
+        this.dependencies.owner.observeSearchResponse(response,started);
+        return response;
     }
     /** The whole search from this machine, for a peer that searches through it. */
     async searchEverywhere(query: string, limit?: number) {
-        const local = () => this.dependencies.owner.search({query, limit});
-        return boundSearchResponse(await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, [query], limit) : local()));
+        const started=performance.now(),local = () => this.dependencies.owner.search({query, limit},undefined,false);
+        const response=boundSearchResponse(await (this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, [query], limit) : local()));
+        this.dependencies.owner.observeSearchResponse(response,started);
+        return response;
     }
     async context(input: {
         source: CommunicationSource;

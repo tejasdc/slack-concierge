@@ -697,6 +697,8 @@ Gemini Apps Takeout appears in the existing archive search and exact history wit
 Its canonical imported address identifies read-only evidence with no runtime thread or native binding.
 Activity represented in the source index's tools lane can be found with `includeTools:true`.
 The current Takeout parser emits no proof of reconstructable dialogue, including for grouped prompt/response evidence.
+The owner records verified imports and a later first exact search hit in its private
+[archive import observations](../runbooks/DIAGNOSTIC-SQLITE-SNAPSHOT.md#gemini-takeout-import-and-search).
 
 The trusted local human creation route `POST /sessions/v1/sessions` accepts the usual new-session body
 with `reconstruction:{address,sourceId,sourceVersion,branch}`, an explicit coding provider

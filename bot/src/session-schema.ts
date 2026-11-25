@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import {initializePeerCatalogueSchema} from './peer-catalogue-sync';
 import {initializePresentationChanges} from './presentation-changes';
 import {initializeRunnerSchema} from './runner-leases';
+import {initializeArchiveImportObservation} from './archive-import-observation';
 
 const identifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
 
@@ -878,6 +879,7 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           AND json_extract(native_metadata_json, '$.source.nativeId') IS NOT NULL;`);
       initializePresentationChanges(db);
       initializeRunnerSchema(db);
+      initializeArchiveImportObservation(db);
       // This whole-ledger scan grows with history. Foreign keys guard ordinary writes; run
       // the full check when this startup changed the schema, including earlier state batches.
       const schemaVersionNow = (db.query('PRAGMA schema_version').get() as { schema_version: number }).schema_version;

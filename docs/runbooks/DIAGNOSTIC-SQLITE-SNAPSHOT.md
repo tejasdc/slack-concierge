@@ -19,6 +19,82 @@ into `/tmp` with the snapshot below to run a few dozen queries, and each copy to
 under its floor ([failure record](../incidents/2026-11-04-ledger-snapshots-filled-root-disk.md));
 every one of those queries runs here in milliseconds.
 
+## Gemini Takeout import and search
+
+Run this on Concierge's owner host (the server for thnkr.ing imports). Replace both
+UTC dates with the observation day and the following day.
+
+```sh
+python3 scripts/ledger-read.py --max-seconds 3 --max-rows 10 "
+WITH day AS (
+  SELECT *, CASE
+    WHEN accepted_at_ms IS NOT NULL AND first_search_at_ms IS NULL THEN 'accepted_no_exact_search_hit'
+    WHEN accepted_at_ms IS NOT NULL AND first_search_coverage_complete = 0 THEN 'hit_in_incomplete_search'
+    WHEN accepted_at_ms IS NOT NULL THEN 'hit_in_complete_search'
+    ELSE last_failure_kind END AS result
+  FROM archive_import_observations
+  WHERE first_observed_at_ms >= unixepoch('2026-11-25T00:00:00Z') * 1000
+    AND first_observed_at_ms <  unixepoch('2026-11-26T00:00:00Z') * 1000
+)
+SELECT result, count(*) AS action_versions, sum(failed_attempts) AS failed_attempts,
+       sum(source_refusals) AS source_refusals,
+       sum(indexed_conversations) AS indexed_conversations,
+       sum(indexed_activity_records) AS indexed_activity_records,
+       max(import_duration_ms) AS max_import_ms, max(first_search_duration_ms) AS max_search_ms
+FROM day GROUP BY result ORDER BY result LIMIT 10"
+```
+
+This groups logical import action/version pairs by the day of their first recorded
+outcome. Counts and first-search status reflect the latest committed observation
+of that cohort, including later outcomes. Totals sum per import action, so a new
+action reimporting the same bytes contributes its own counts. A failed attempt with
+no accepted Gemini descriptor has an unknown provider. Keep it unattributed.
+
+For the per-import timings and exact current disposition, use both pins from the
+owner import. Replace the UUID and the 64-character SHA-256 value with the exact
+values. To investigate an import without valid string content, use an empty
+version.
+
+```sh
+python3 scripts/ledger-read.py --max-seconds 3 --max-rows 1 "
+SELECT action_id, source_version, accepted_at_ms, import_duration_ms,
+       indexed_conversations, indexed_activity_records,
+       failed_attempts, source_refusals, last_failure_kind, last_failure_at_ms, last_failure_duration_ms,
+       first_search_at_ms, first_search_duration_ms, first_search_coverage_complete,
+       first_search_at_ms - accepted_at_ms AS elapsed_until_first_hit_ms
+FROM archive_import_observations
+WHERE action_id = '00000000-0000-4000-8000-000000000000'
+  AND source_version = '0000000000000000000000000000000000000000000000000000000000000000'
+LIMIT 1"
+```
+
+- The owner records an acceptance after Thinkering returns verified indexed
+  sources and Concierge materializes their views. Grouped evidence has explicit
+  conversation membership. The activity count includes ungrouped records with
+  an activity ID as well as records with a synthetic ID. Neither count measures
+  reconstructable conversations or coverage of the original Gemini account.
+- A first hit requires a returned local Gemini result with the exact retained
+  source ID, version and branch in its evidence. The owner matches a digest of
+  the ID and branch. A hit can coexist with incomplete coverage of the search
+  as a whole. Search candidates discarded by ranking or response limits give no
+  witness. Meaning-only previews with no exact source pin also give no witness.
+- Duration columns measure the owner's work to produce its response, using
+  elapsed milliseconds. The difference between acceptance and first hit is
+  wall time and includes the wait for a search. A null hit means the owner has
+  no retained first-hit witness for that import. The source capability has a
+  separate request identity. The UTF-8 source version joins the two views of
+  the bytes, while repeated imports of that version can have different action
+  and request IDs.
+- The ledger keeps these small rows with its ordinary retention and backup
+  policy, with no backfill or separate expiry. The observer saves the first
+  accepted import, first exact search hit, failure and confirmed refusal counts,
+  and the most recent failure.
+  It stores neither upload contents, filenames, raw source IDs, nor query or
+  exception text. If the ledger write fails, the owner preserves the operation's
+  result and emits an `archive_import_observation_write_failed` warning with the
+  stage. An empty result, a missing table on an older release, and an interrupted
+  query have different meanings. None establishes an import's outcome.
+
 ## Copying one database
 
 Use `scripts/diagnostic-sqlite-snapshot.py` only when an investigation truly needs an offline
