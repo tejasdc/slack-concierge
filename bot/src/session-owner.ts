@@ -51,6 +51,7 @@ import {noteOwnerStall,noteSlowOwnerRequest,startOwnerResponsivenessWatch} from 
 import {meaningIndex,type MeaningHit,type MeaningSearch} from './meaning-index';
 import {OWNER_READ_RESPONSE_MS} from './owner-transport-policy';
 import {retainedArchiveSearchSource} from './archive-search-source';
+import {observeArchiveImportFailure,observeGeminiImport,observeGeminiSearch,type ImportFailure} from './archive-import-observation';
 import {geminiDialogue,geminiReconstructionUnavailable,hasGeminiReconstructionProof} from './gemini-source-reconstruction';
 import {presentSessionForPeer} from './peer-identity';
 import {providerDisplayName,CHATGPT_THINKING_LEVELS,DEFAULT_HIS_CHATGPT_THINKING,HIS_CHATGPT_PREFIX,chatgptSessionModel,isRetiredChatgptGpt,CHATGPT_GPT_RETIREMENT,parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderAlias,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES,AUTOMATIC_PROVIDER_ALIASES} from './aliases';
@@ -4445,7 +4446,11 @@ ${input.text}`;
     }
     return session;
   }
-  async search(body:unknown,routingSource?:SearchRoutingSource) {
+  observeSearchResponse(response:{results:any[];coverage:{complete?:boolean}},started:number) {
+    try{observeGeminiSearch(db,response,Date.now(),Math.round(performance.now()-started));}
+    catch{log('warn','archive_import_observation_write_failed',{stage:'search'});}
+  }
+  async search(body:unknown,routingSource?:SearchRoutingSource,observe=true) {
     const started=performance.now(),timing=searchTiming(),meaningTiming={embed_ms:0,rank_ms:0};
     const input=object(body);only(input,['query','limit','includeTools','everywhere']);
     if(typeof input.query!=='string'||!input.query.trim())throw new SessionOwnerError('Search query required.');
@@ -4510,6 +4515,7 @@ ${input.text}`;
     }
     Object.assign(timing,answer!.timing,{meaning_ms:timing.meaning_ms,meaning_embed_ms:timing.meaning_embed_ms,meaning_rank_ms:timing.meaning_rank_ms});
     const response=answer!.response!,durationMs=Math.round(performance.now()-started);
+    if(observe)this.observeSearchResponse(response,started);
     if(durationMs>=500)log('warn','session_search_slow',{duration_ms:durationMs,...timing,
       executor_ms:Math.round(executorMs),executor_wait_ms:Math.max(0,Math.round(executorMs-workerMs)),owner_ms:Math.max(0,Math.round(performance.now()-started-executorMs)),
       results:response.results.length,evidence:response.results.reduce((sum:number,result:any)=>sum+result.evidence.length,0),
@@ -4796,11 +4802,28 @@ ${input.text}`;
     }
   }
   async importSource(body:unknown) {
-    const input=object(body);only(input,['clientActionId','name','content','scope']);actionId(input);
-    if(!this.runtime.sources)throw new SessionOwnerError('Archive source adapter unavailable.',409,'CAPABILITY_UNAVAILABLE');
+    const started=performance.now(),input=object(body),id=actionId(input);
+    const measurement=()=>({actionId:id,atMs:Date.now(),durationMs:Math.round(performance.now()-started)});
     const {name,content,scope}=input;
-    const result=await this.runtime.sources.import({name,content,scope});
-    return {sessions:result.sources.map((source:any)=>this.view(this.sourceSession(source))),sources:result.sources};
+    let failure:ImportFailure='invalid_request';
+    try {
+      only(input,['clientActionId','name','content','scope']);
+      failure='adapter_unavailable';
+      if(!this.runtime.sources)throw new SessionOwnerError('Archive source adapter unavailable.',409,'CAPABILITY_UNAVAILABLE');
+      failure='source_outcome_unknown';
+      const result=await this.runtime.sources.import({name,content,scope});
+      failure='owner_materialization_failed';
+      const sessions=result.sources.map((source:CapabilitySource)=>this.view(this.sourceSession(source)));
+      try{observeGeminiImport(db,measurement(),result.sources);}
+      catch{log('warn','archive_import_observation_write_failed',{stage:'accept'});}
+      return {sessions,sources:result.sources};
+    } catch(error) {
+      if(failure==='source_outcome_unknown'&&error instanceof SessionCapabilityError&&!error.uncertain
+        &&error.status!==null&&error.status>=400&&error.status<500)failure='source_rejected';
+      try{observeArchiveImportFailure(db,measurement(),content,failure);}
+      catch{log('warn','archive_import_observation_write_failed',{stage:'failure'});}
+      throw error;
+    }
   }
   async bind(id:string,body:unknown) {
     const input=object(body);only(input,['clientActionId','reference']);const action=actionId(input);
