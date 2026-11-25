@@ -117,3 +117,67 @@ wrote the eligible-account fields by hand, and the bank then sat dead for weeks
 
 Rows 2, 5, 6 and 7 are reproducible against live readings as they stand today. Rows 1, 3, 4, 9 and
 10 need either a seeded window or a wait for a real one, and the record must say which it was.
+
+## Implementation and verification (2026-11-25)
+
+`bankedSpendablePercent` in `bot/src/saved-work.ts` is the one quantity: per included window, what
+is left minus what his own work is expected to use before that window resets; the smallest window
+binds. With a measured rate, expected use is rate × hours left. With none, the reserve is held, and
+only a window of a day or longer tapers it by the share still to run: the taper rests on the work he
+could still fit in shrinking as the window closes, which is true of a week and false of a five-hour
+window, where one burst can take the lot with three hours left. Window length comes from one table
+(`windowLengthHours`).
+
+**The spend is bounded at admission, not re-judged while running.** Admission stores a ceiling on
+the turn (`saved_ceiling_percent`): the account's tightest used percentage at admission plus the
+spendable percentage then. The running-job check in `bot/src/banked-upkeep.ts` yields when the
+tightest used percentage reaches that ceiling and never measures a rate. The first version re-judged
+the running job against the measured rate, which includes the job's own spending: a 3%/h job on a
+fresh week read as −206% spendable and stopped itself within minutes. A level cannot be polluted
+by who moved it, and his own work arriving mid-run reaches it sooner, so the bank yields earlier. A
+running turn admitted before the ceiling existed has none and yields once, so its continuation is
+admitted with one. A waiting admitted turn keeps its ceiling through drift under half a point.
+
+**A continuation inherits its predecessor's ceiling while the window is the same one.** A yield is
+a pause in one job, not a new job (the November 12 record settled that for the request side), so
+re-admitting would re-decide a settled question on worse evidence: a rate the paused job moved.
+Admission stores, beside the ceiling, the account, window and the reset instant of each included
+window (`saved_ceiling_window_json`); the continuation copies it (`saved_inherited_ceiling_json`).
+While every reset instant still matches within the forecast module's five-minute tolerance, the
+continuation resumes on that ceiling without re-admission, or waits (`waiting_for_reset`) if the
+account is already at it. If any window reset during the pause, the inheritance is dropped and the
+continuation is admitted from scratch: an inherited 84% ceiling would otherwise let it spend most
+of a fresh week.
+
+The account-room check refuses only a stale, failed or used-up reading. The claim in
+`bot/src/state.ts` reads only `saved_account` and `saved_boundary_ms`, which the pass writes from
+the same quantity, so it needed no change. Wait reasons: `window_runs_out_first` (words widened to
+"his own work is projected to use it") and a new `too_close_to_reset` for his one-hour floor, which
+stays because a job that cannot finish before the reset wastes the work. The `banked_work_wait` log
+line carries each account's spendable percentage and the ceiling.
+
+Checked by a disposable harness (not committed) that copied the live usage report's readings and
+measured rates into a throwaway ledger and ran the real forecast pass, claim and running-job check.
+It wrote no eligible-account field by hand. Every row was re-run after the ceiling change.
+
+| # | How | Seen |
+| --- | --- | --- |
+| 1 | Seeded: 0% week, 144 h left, no rate | 78.6% spendable; chosen; ceiling 78.6% |
+| 2 | Live: hey@ week 79%, measured 2%/h, 29 h left | −37.7%; not chosen; `window_runs_out_first` |
+| 3 | Seeded: 79% week, rate 0.5%/h or none | 1.5 h out: 20.3% spendable, chosen, ceiling 99.3%. 54 min out: ~20.6% spendable, refused, `too_close_to_reset` |
+| 4 | Seeded: week 10%, five-hour 80% | No rate, 3 h or 4.5 h left: −5%, refused. 10%/h: −10%, refused. All `window_runs_out_first` |
+| 5 | Live: chann (resets Nov 30) and gmail (Dec 2) spendable (78.7%, 76.8%) | chann chosen; the real claim took the turn |
+| 6 | Live: hey@ resets soonest but projected to exhaust | chann chosen; the log line shows hey@'s negative spendable |
+| 7 | Live readings aged 10 minutes | Not chosen; `stale_usage_reading` |
+| 8 | Empty bank | Pass changed nothing |
+| 9 | Live: chann job running, ceiling 84.7% | Its own spending (3%/h, +1 point, rate-spendable −215%): no yield. Tightest weekly at the ceiling: yield requested, `allowance_boundary`; continuation queued |
+| 10 | Live: his ordinary turn queued while the banked job runs | His turn claimed; a second banked job held by the one-unattended rule |
+
+Pause-and-continue, run after the inheritance change on the same live readings (all rows above
+were re-run too, with the same results):
+
+| Case | Seen |
+| --- | --- |
+| Yield at the ceiling (row 9), continuation in the same week | Inherited; not chosen; `waiting_for_reset` |
+| Paused by a Concierge update at ceiling 84.7, then its own pace reads 3%/h (fresh spendable −215%) | Inherited 84.7; chosen; the real claim took it |
+| Same pause, but the week reset meanwhile (reset +7 days, 0% used) | Inheritance dropped; admitted afresh on the account now resetting soonest, ceiling 76.8 |
