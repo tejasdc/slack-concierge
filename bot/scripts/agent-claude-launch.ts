@@ -133,11 +133,13 @@ const exactResume=(()=>{
   if(values.length!==1||!uuid.test(values[0]!))return null;
   return values[0]!;
 })();
+const managedApiCreditsLaunch=process.env.CONCIERGE_CLAUDE_ROUTE===API_CREDITS_ACCOUNT&&!process.env.CONCIERGE_CLAUDE_LAUNCH_PARENT_PID;
 const passthrough=['auth','config','doctor','update','mcp','plugin','agents'].includes(firstCommandArg??'')
   || args.some(arg=>['--version','-v','--help','-h'].includes(arg))
   || (!exactResume&&args.some(arg=>arg==='--resume'||arg==='-r'||arg.startsWith('--resume=')||arg.startsWith('-r')||arg==='--continue'||arg==='-c'||arg==='--fork-session'))
   || args.some(arg=>arg==='--agent-id'||arg.startsWith('--agent-id='))
-  || process.env.CONCIERGE_CLAUDE_ACCOUNT_PIN==='1';
+  || process.env.CONCIERGE_CLAUDE_ACCOUNT_PIN==='1'
+  || managedApiCreditsLaunch;
 const model=(()=>{for(let i=0;i<args.length;i++){
   if(args[i]==='--model')return args[i+1]??null;
   if(args[i]?.startsWith('--model='))return args[i]!.slice('--model='.length);
@@ -146,10 +148,17 @@ const environment={...process.env};
 // Scope the guard to our immediate child. Claude Code may later launch its own
 // nested agent command, which must remain allowed under a different parent.
 environment.CONCIERGE_CLAUDE_LAUNCH_PARENT_PID=String(process.pid);
-// A turn on the API-credit route hands its key to its own shell (claude-api-route.ts). That key
-// belongs to the turn's conversation: a fresh Claude started from the shell stays on the
-// subscription accounts, and only an exact resume of an API-credit conversation takes it again.
-if(environment.CONCIERGE_CLAUDE_ROUTE===API_CREDITS_ACCOUNT){
+// A turn on the API-credit route (claude-api-route.ts) reaches this launcher twice over: once as the
+// managed turn itself, whose execution host (here or on a runner) starts `claude` with the route's
+// environment, and again for every fresh `claude` an agent starts from that turn's shell, which
+// inherits it. Only the managed launch has no launcher above it: this launcher marks its own Claude
+// with CONCIERGE_CLAUDE_LAUNCH_PARENT_PID and every shell under that Claude inherits the mark. The
+// managed launch runs on the key from this machine's own file; a shell launch drops the key and stays
+// on the subscription accounts, and only an exact resume of an API-credit conversation takes it again.
+// (2026-11-25: the first live check dropped the key at the managed launch too and ran on a
+// subscription account, because runner turns reach `claude` through this launcher.)
+if(managedApiCreditsLaunch)Object.assign(environment,apiCreditsEnvironment());
+else if(environment.CONCIERGE_CLAUDE_ROUTE===API_CREDITS_ACCOUNT){
   delete environment.ANTHROPIC_API_KEY;delete environment.CLAUDE_CODE_ENTRYPOINT;delete environment.CONCIERGE_CLAUDE_ROUTE;
   if(environment.CLAUDE_CONFIG_DIR===apiCreditsConfigDir())delete environment.CLAUDE_CONFIG_DIR;
 }
