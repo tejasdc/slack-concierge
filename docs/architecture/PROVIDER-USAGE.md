@@ -1117,8 +1117,7 @@ brief, record the account `api-credits`, and bind the conversation to that label
 | Banked work | A banked Opus/Sonnet turn whose session has no conversation yet, in the last 7 days before expiry, more than $5 left; a session already on the route runs its banked work whenever credit is left | Unspent credit is lost at expiry, while subscription windows renew anyway |
 
 The Inbox router, standing agents, the repair agent, outside sessions and sessions placed on another
-machine never take it by themselves. Banked work on the route has no allowance window, reserve or
-idle-fleet rule; it is bounded by the cycle's expiry and still runs one unattended banked job at a time.
+machine never take it by themselves. Banked work on the route has no allowance window or reserve; it is bounded by the cycle's expiry and still runs one unattended banked job at a time.
 Each choice is logged (`claude_api_route_chosen`, or `claude_api_overflow_declined` with its reason) and
 recorded on the session as a `claude_route` event; the session's account reads `api-credits`.
 

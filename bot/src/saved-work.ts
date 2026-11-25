@@ -154,7 +154,7 @@ export function reconsiderBankedWork(now=Date.now()):number {
       ?getClaudePreferredModel(row.session_id,row.id)??sessionMetadata(session).model??null:undefined;
     const api=provider==='claude-code'?bankedApiRoute(session,model??null,now):null;
     if(api){
-      // The API credit has no allowance window, reserve or idle-fleet rule: it lapses at the cycle's
+      // The API credit has no allowance window or reserve: it lapses at the cycle's
       // expiry whatever else runs, so the run is bounded by that expiry (claude-api-route.ts).
       const quietOnly=row.saved_quiet_only===1;
       const eligible=!quietOnly||quietOnlyAdmits(now,settings);
