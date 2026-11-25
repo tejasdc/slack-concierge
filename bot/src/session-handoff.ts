@@ -5,7 +5,7 @@ import {promisify} from 'node:util';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {db,executionChanged,finishTurn,getSessionById,settleTurnDependencies} from './state';
-import {createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,sessionInputProvenance,sessionMetadata,stablePayload,updateSessionMetadata} from './session-inputs';
+import {acceptedExecutionPayload,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,sessionInputProvenance,sessionMetadata,stablePayload,updateSessionMetadata} from './session-inputs';
 import {lastLaunchedConversationHome} from './session-runner-home';
 import {safeTurn,type WaitingTurn} from './provider-exhaustion-recovery';
 import {isAstraModel,parseProviderSelector,resolveProviderSelector,normalizeReasoningEffort} from './aliases';
@@ -611,9 +611,8 @@ async function acceptHandoffInternal(input:{actorSession:number;inputId:string;r
         }
         finishTurn(turn.id,'cancelled','Continued in another agent session.');
         settleTurnDependencies(turn.id);
-        const originalPayload=JSON.parse(original.payload_json);
         const cloned=retainSessionInput({id:`handoff-input:${state.id}:${original.id}`,sessionId:to,scope:`handoff:${state.id}`,actionId:original.id,
-          kind:'input',origin:original.origin,payload:original.kind==='create'?originalPayload.firstInput:originalPayload,
+          kind:'input',origin:original.origin,payload:acceptedExecutionPayload(original),
           ...(original.source_input_id?{sourceInputId:original.source_input_id}:{}),
           ...(original.source_run_id?{sourceRunId:original.source_run_id}:{}),
           ...(original.request_id?{requestId:original.request_id}:{})}).input;

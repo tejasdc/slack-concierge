@@ -151,8 +151,15 @@ try{
   assert.equal(db.query('SELECT 1 FROM provider_recovery_sessions WHERE source_session_id=?').get(proposed.session.id),null);
 
   const unproposed=heldInput('fixture-no-proposal',false,'claude-code',true);
+  const firstInput={text:'Summarize the retained dialogue.'};
+  const preparedPrompt='Verified Gemini dialogue: synthetic historical evidence.\n\nCurrent request: '+firstInput.text;
+  db.query("UPDATE session_inputs SET kind='create',payload_json=? WHERE id=?")
+    .run(JSON.stringify({firstInput,preparedPrompt}),unproposed.input.id);
   assert.equal(transferSession(unproposed.session.id),1,'without a proposed SAME handoff, automatic transfer still works');
   assert.ok(db.query('SELECT 1 FROM provider_recovery_sessions WHERE source_session_id=?').get(unproposed.session.id));
+  const recovered=JSON.parse(getAcceptedSessionInput(`recovery:${unproposed.input.id}`)!.payload_json);
+  assert.equal(recovered.text,firstInput.text);
+  assert.ok(recovered.preparedPrompt.endsWith(preparedPrompt),'automatic transfer keeps the complete prepared source context');
 
   // concierge:9767 → 9847, 2026-11-16: a predecessor holding an unanswered ChatGPT question has both its
   // answer duty and its sent request in the inventory. Moving the answer moved the request first, and the
@@ -201,6 +208,9 @@ try{
   const returnInput=retainSessionInput({id:'return:fixture-answer-event',sessionId:stuck.id,scope:'fixture',actionId:'return',kind:'input',origin:'service',
     payload:{text:'ChatGPT answered your final review'}}).input;
   assert.ok(enqueueSessionInput(returnInput.id).turn_id,'the return waits in a queued turn');
+  const reconstructed=retainSessionInput({id:'fixture-queued-reconstruction',sessionId:stuck.id,scope:'fixture',
+    actionId:'reconstruct',kind:'create',origin:'human',payload:{firstInput,preparedPrompt}}).input;
+  assert.ok(enqueueSessionInput(reconstructed.id).turn_id);
   db.query("UPDATE session_communication_requests SET outcome='answered',status='answered' WHERE request_id=?").run('fixture-answered-question');
   db.query(`INSERT INTO session_communication_events(event_id,request_id,kind,payload_json,status,created_at_ms,accepted_input_id)
     VALUES(?,?,'final',?,'admitted',?,?)`).run('fixture-answer-event','fixture-answered-question',JSON.stringify({text:'Ship it'}),Date.now(),returnInput.id);
@@ -212,6 +222,11 @@ try{
   const stuckAccepted=await acceptHandoff({actorSession:stuckSuccessor,inputId:`handoff:${stuckProposal.handoffId}`,runId:'fixture-successor-run-2',
     handoffId:stuckProposal.handoffId,digest:stuckProposal.digest});
   assert.equal(stuckAccepted.accepted,true,`a queued, never-started answer return moves with its duty: ${(stuckAccepted as any).reason??''}`);
+  const movedReconstruction=getAcceptedSessionInput(`handoff-input:${stuckProposal.handoffId}:${reconstructed.id}`)!;
+  assert.equal(movedReconstruction.session_id,stuckSuccessor);
+  const movedPayload=JSON.parse(movedReconstruction.payload_json);
+  assert.equal(movedPayload.text,firstInput.text);
+  assert.equal(movedPayload.preparedPrompt,preparedPrompt);
   const obligation=db.query('SELECT asker_session_id,state,answer_return_input_id FROM session_chatgpt_obligations WHERE obligation_id=?')
     .get('fixture-answered-question') as any;
   assert.equal(obligation.asker_session_id,stuckSuccessor);

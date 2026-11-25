@@ -29,6 +29,13 @@ export type AcceptedSessionInput = {
   source_input_id:string|null; source_run_id:string|null; request_id:string|null; receipt_json:string|null;
   created_at:string; updated_at:string;
 };
+
+/** Execution and a move of accepted work must carry the same owner-prepared context. */
+export function acceptedExecutionPayload(input: Pick<AcceptedSessionInput,'kind'|'payload_json'>) {
+  const body=JSON.parse(input.payload_json);
+  if(input.kind!=='create')return body;
+  return body.preparedPrompt===undefined?body.firstInput:{...body.firstInput,preparedPrompt:body.preparedPrompt};
+}
 /**
  * Who actually wrote an input recorded as Tejas's, when that record was wrong: an agent
  * that reached a human intake (September 23, 2026: test captures shown as his words).
