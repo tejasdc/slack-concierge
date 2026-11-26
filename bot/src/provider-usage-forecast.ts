@@ -3,6 +3,7 @@ import { db } from "./state";
 // other at runtime; the stored snapshot is read back from its table directly below.
 import type { AccountUsage, ProviderUsage } from "./provider-account-usage";
 import {accountReadingAt,accountReadingFresh,includedAllowanceWindows,accountCanTakeWork,withLocalCurrentAccount} from './account-allowance-observation';
+import { listAccounts } from './account-home-resolver';
 import { BUDGET_NOTICE_MAX_AGE_MS, type AccountIdentityProvider } from "./provider-accounts";
 import { accountUsageTable } from "./provider-usage-tables";
 import { claudeRunsFromOwnHomes, selectedClaudeHome } from "./provider-account-dispatch";
@@ -362,6 +363,92 @@ export function usageSignal(provider: AccountIdentityProvider) {
     &&accountReadingFresh(provider,usage,account)));
   const tightest = tightestCurrentWindow(provider);
   const spare = accountsWithRoom(provider,null);
+
+  const nowMs = Date.now();
+  const knownAccounts = new Map<string, { label: string; current: boolean; accountUsage?: AccountUsage }>();
+
+  for (const account of usage?.accounts ?? []) {
+    knownAccounts.set(account.label, { label: account.label, current: !!account.current, accountUsage: account });
+  }
+
+  if (provider === "claude-code" || provider === "codex") {
+    try {
+      for (const home of listAccounts(provider)) {
+        if (!knownAccounts.has(home.label)) {
+          knownAccounts.set(home.label, { label: home.label, current: false });
+        }
+      }
+    } catch { /* resolver unavailable or ignored */ }
+  }
+
+  const accountSummaries: Array<{
+    account: string;
+    current: boolean;
+    status: 'current' | 'old' | 'unknown' | 'unreadable';
+    hasRoom: boolean;
+    problem: string | null;
+    readAt: string | null;
+  }> = [];
+  const unreadableAccounts: string[] = [];
+  const unreadable: Array<{ account: string; problem: string; readAt: string | null }> = [];
+
+  for (const [label, entry] of knownAccounts) {
+    const acct = entry.accountUsage;
+    const isCurrent = entry.current;
+    if (!acct) {
+      const problem = "Sign-in exists on disk but has not been read by usage provider.";
+      accountSummaries.push({
+        account: label,
+        current: isCurrent,
+        status: "unreadable",
+        hasRoom: false,
+        problem,
+        readAt: null,
+      });
+      unreadableAccounts.push(label);
+      unreadable.push({ account: label, problem, readAt: null });
+      continue;
+    }
+
+    const fresh = usage ? accountReadingFresh(provider, usage, acct, nowMs, undefined, null) : false;
+    const at = usage ? accountReadingAt(acct, usage.observedAt) : null;
+    const hasRoom = fresh && accountCanTakeWork(provider, acct, null);
+    const status: 'current' | 'old' | 'unknown' | 'unreadable' = acct.problem || usage?.problem
+      ? 'unreadable'
+      : at === null
+      ? 'unknown'
+      : fresh
+      ? 'current'
+      : 'old';
+
+    const problem = acct.problem
+      || (status === 'unreadable' ? (usage?.problem || 'Usage could not be read.')
+          : status === 'unknown' ? 'No usage reading has been recorded.'
+          : status === 'old' ? 'Usage reading is stale.'
+          : null);
+
+    const readAtIso = at !== null ? new Date(at).toISOString() : null;
+    accountSummaries.push({
+      account: label,
+      current: isCurrent,
+      status,
+      hasRoom,
+      problem,
+      readAt: readAtIso,
+    });
+
+    if (status !== 'current' || !hasRoom) {
+      if (status === 'unreadable' || status === 'unknown' || status === 'old') {
+        unreadableAccounts.push(label);
+        unreadable.push({
+          account: label,
+          problem: problem || 'Usage reading is not fresh.',
+          readAt: readAtIso,
+        });
+      }
+    }
+  }
+
   return {
     provider,
     observedAt: usage?.observedAt ?? null,
@@ -374,6 +461,9 @@ export function usageSignal(provider: AccountIdentityProvider) {
       ratePerHour: tightest.ratePerHour, samples: tightest.samples, spanMinutes: tightest.spanMinutes,
     },
     accountsWithRoom: spare,
+    unreadableAccounts,
+    unreadable,
+    accounts: accountSummaries,
     // Banked resets, so the router and any agent can see them rather than only Tejas on the
     // Accounts page. A reset belongs to the account, so it is listed per account.
     resets: (usage?.accounts ?? []).flatMap(account => account.resetCredits?.available
