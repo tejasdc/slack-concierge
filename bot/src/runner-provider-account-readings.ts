@@ -13,6 +13,9 @@ const LOCAL_BIN = join(homedir(), ".local", "bin");
 const codexBar = findTool(process.env.CONCIERGE_CODEXBAR, ["/root/tools/codexbar-cli/codexbar", "/opt/homebrew/bin/codexbar",
   "/usr/local/bin/codexbar", join(LOCAL_BIN, "codexbar"), "/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI"]);
 const claudeSwap = findTool(process.env.CONCIERGE_CSWAP, [join(LOCAL_BIN, "cswap"), "/opt/homebrew/bin/cswap", "/usr/local/bin/cswap"]);
+const claudeExecutable = findTool(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE, [
+  "/usr/bin/claude", "/usr/local/bin/claude", join(LOCAL_BIN, "claude"), "claude"
+]);
 
 function findTool(override: string | undefined, candidates: string[]): string {
   if (override?.trim()) return override.trim();
@@ -94,6 +97,67 @@ function claudeWindows(usage: any): UsageWindow[] {
   return windows;
 }
 const ownClaudeReads = new Map<string, { version: string; nextAt: number; windows: UsageWindow[] | null; readAt: string | null }>();
+const renewingOwnClaudeHomes = new Map<string, Promise<void>>();
+const ownClaudeRenewalRetry = new Map<string, { version: string | null; failures: number; nextAt: number }>();
+
+function liveAccessToken(home: string): string | null {
+  try {
+    const creds = JSON.parse(readFileSync(join(home, ".credentials.json"), "utf8"))?.claudeAiOauth;
+    const token = creds?.accessToken;
+    const expiresAt = Number(creds?.expiresAt);
+    if (typeof token !== "string" || !token) return null;
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now() + 60_000) return null;
+    return token;
+  } catch { return null; }
+}
+
+async function renewClaudeHomeForUsage(home: string, rejected = false): Promise<void> {
+  const inFlight = renewingOwnClaudeHomes.get(home);
+  if (inFlight) return inFlight;
+  if (!rejected && liveAccessToken(home)) return;
+  if (!ownLoginRefreshable(home)) return;
+  const path = join(home, ".credentials.json");
+  let version: string | null = null;
+  try {
+    const stat = statSync(path);
+    version = `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+  } catch { return; }
+  const retry = ownClaudeRenewalRetry.get(home);
+  if (retry?.version === version && Date.now() < retry.nextAt) return;
+  const failures = retry?.version === version ? retry.failures + 1 : 1;
+  ownClaudeRenewalRetry.set(home, {
+    version,
+    failures,
+    nextAt: Date.now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 30 * 60_000),
+  });
+
+  const renewal = (async () => {
+    const env = { ...process.env, CLAUDE_CONFIG_DIR: home };
+    if (process.platform === "darwin" && home === join(homedir(), ".claude")) {
+      delete env.CLAUDE_CONFIG_DIR;
+    }
+    const child = Bun.spawn([claudeExecutable, "-p", "/usage", "--no-session-persistence", "--output-format", "json"], {
+      env,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const deadline = setTimeout(() => child.kill(), 120_000);
+    try {
+      await child.exited;
+      if (liveAccessToken(home)) {
+        ownClaudeRenewalRetry.delete(home);
+      }
+    } finally {
+      clearTimeout(deadline);
+    }
+  })().catch(() => {}).finally(() => {
+    renewingOwnClaudeHomes.delete(home);
+  });
+
+  renewingOwnClaudeHomes.set(home, renewal);
+  return renewal;
+}
 
 /** The runner launches from this home. claude-swap's separate copy can report an old refusal after
  * Accounts has filed a working login here, so a fresh own-home answer takes precedence. */
@@ -105,30 +169,53 @@ async function ownClaudeWindows(home: string): Promise<{ windows: UsageWindow[];
   const prior = ownClaudeReads.get(home);
   if (prior?.version === version && Date.now() < prior.nextAt)
     return prior.windows && prior.readAt ? { windows: prior.windows, readAt: prior.readAt } : null;
+
+  let token = liveAccessToken(home);
+  if (!token && ownLoginRefreshable(home)) {
+    await renewClaudeHomeForUsage(home);
+    token = liveAccessToken(home);
+    try { const stat = statSync(path); version = `${stat.mtimeMs}:${stat.size}`; } catch {}
+  }
+
   let windows: UsageWindow[] | null = null;
   let readAt: string | null = null;
+
+  const fetchUsage = async (accessToken: string): Promise<boolean> => {
+    const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
+      headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": "oauth-2025-04-20",
+        "user-agent": "Concierge/1.0 (https://thnkr.ing)" },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (response.status === 401) return false;
+    if (response.ok) {
+      const usage: any = await response.json();
+      windows = [];
+      const add = (name: string, block: any) => {
+        const usedPercent = percent(block?.utilization);
+        if (usedPercent === null) return;
+        windows!.push({ name, usedPercent, resetsAt: iso(block?.resets_at), willLastToReset: null, runsOutAt: null });
+      };
+      add("5-hour", usage?.five_hour);
+      add("Weekly", usage?.seven_day);
+      for (const limit of Array.isArray(usage?.limits) ? usage.limits : [])
+        if (limit?.kind === "weekly_scoped" && typeof limit?.scope?.model?.display_name === "string")
+          add(`Weekly · ${limit.scope.model.display_name} only`, { utilization: limit.percent, resets_at: limit.resets_at });
+      readAt = new Date().toISOString();
+      return true;
+    }
+    return false;
+  };
+
   try {
-    const token = JSON.parse(readFileSync(path, "utf8"))?.claudeAiOauth?.accessToken;
-    if (typeof token === "string" && token) {
-      const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
-        headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20",
-          "user-agent": "Concierge/1.0 (https://thnkr.ing)" },
-        signal: AbortSignal.timeout(12_000),
-      });
-      if (response.ok) {
-        const usage: any = await response.json();
-        windows = [];
-        const add = (name: string, block: any) => {
-          const usedPercent = percent(block?.utilization);
-          if (usedPercent === null) return;
-          windows!.push({ name, usedPercent, resetsAt: iso(block?.resets_at), willLastToReset: null, runsOutAt: null });
-        };
-        add("5-hour", usage?.five_hour);
-        add("Weekly", usage?.seven_day);
-        for (const limit of Array.isArray(usage?.limits) ? usage.limits : [])
-          if (limit?.kind === "weekly_scoped" && typeof limit?.scope?.model?.display_name === "string")
-            add(`Weekly · ${limit.scope.model.display_name} only`, { utilization: limit.percent, resets_at: limit.resets_at });
-        readAt = new Date().toISOString();
+    if (token) {
+      const ok = await fetchUsage(token);
+      if (!ok && ownLoginRefreshable(home)) {
+        await renewClaudeHomeForUsage(home, true);
+        const renewedToken = liveAccessToken(home);
+        if (renewedToken) {
+          try { const stat = statSync(path); version = `${stat.mtimeMs}:${stat.size}`; } catch {}
+          await fetchUsage(renewedToken);
+        }
       }
     }
   } catch { /* A failed read cannot invalidate the sign-in or the last provider reading. */ }
@@ -197,3 +284,5 @@ export async function readRunnerProviderAccountReadings(): Promise<Record<"codex
   const [codex, claudeCode] = await Promise.all([readCodex(), readClaude()]);
   return { codex, "claude-code": claudeCode };
 }
+
+export { ownClaudeWindows, ownLoginRefreshable, renewClaudeHomeForUsage, liveAccessToken };
