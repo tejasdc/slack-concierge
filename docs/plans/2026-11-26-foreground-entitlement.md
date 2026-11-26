@@ -1,7 +1,7 @@
 # What stays held for his own work: a measured entitlement, apart from the forecast
 
-**Status:** built and verified on live readings (2026-11-26); live owner observation after the
-release is recorded at the end. Owner: concierge:10580, on request `9afe7b3c` from concierge:3633.
+**Status:** built, released and observed on the live owner (2026-11-26); the live observation
+is recorded at the end. Owner: concierge:10580, on request `9afe7b3c` from concierge:3633.
 Closes the open item in `2026-09-23-saved-work-scheduled-and-banked.md` ("2026-11-25 — the two
 release conditions") and in `docs/incidents/2026-11-25-banked-work-never-ran.md`.
 
@@ -127,3 +127,16 @@ the live week report and the live levels at 2026-11-26 05:05 UTC:
 | Codex with a five-hour window at 30% | spendable −30: the single account's five-hour window is never banked |
 | His own work spends the pool to 15 with 10 h left | spendable −11.5 → running job yields, queued job `held_for_his_work` |
 | No launchable account | spendable −100 |
+
+## Live observation after the release (2026-11-26)
+
+Release `48e25d74` installed at 05:34 UTC; the startup built `banked_turns_by_saved_at` on the live
+ledger. A one-line Haiku item was banked through the agent entrance (request `b974efe9`,
+concierge:10609, turn 35659) at 05:35. The owner's `banked_work_wait` line for it, seconds later:
+
+- protection measured from the live week: held 110.8% for a six-day horizon, 25.6% for the
+  one-day horizon; pooled weekly room 115; no five-hour window anywhere (five_hour null)
+- tejastej.dc@gmail.com: forecast 100 (no rate), protection 89.2 → admitted with ceiling 89.2%
+- hey@tejas.nyc: forecast −6.4 (his measured rate spends it before its reset) → not chosen
+
+The turn was claimed at 05:35:09, ran on tejastej.dc@gmail.com, and answered its request.
