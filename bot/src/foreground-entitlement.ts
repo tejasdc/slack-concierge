@@ -116,6 +116,9 @@ export type ForegroundProtection=Readonly<{
   pooled:Record<WindowKind,number>;
   held:Record<WindowKind,number>;
   measured:boolean;
+  /** The unmeasured five-hour hold is what refuses: named on its own so the bank going quiet
+   * the week five-hour windows return is visible and asks for a measurement, not a hunt. */
+  fiveHourBinds:boolean;
 }>;
 
 /**
@@ -145,7 +148,9 @@ export function foregroundProtection(provider:AccountIdentityProvider,usage:Prov
     }
     weekly=Math.min(weekly,pooled.weekly+credited-held.weekly);
   }
-  return {spendablePercent:Math.min(weekly,pooled.fiveHour-held.fiveHour),pooled,held,measured:!!need};
+  const fiveHour=pooled.fiveHour-held.fiveHour;
+  return {spendablePercent:Math.min(weekly,fiveHour),pooled,held,measured:!!need,
+    fiveHourBinds:Number.isFinite(fiveHour)&&fiveHour<=0&&fiveHour<=weekly};
 }
 
 /** Weekly windows in the pool that reset strictly before `untilMs`, soonest first, with the share each gives back. */

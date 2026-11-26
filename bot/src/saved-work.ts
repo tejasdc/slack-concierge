@@ -114,7 +114,8 @@ const savedRows=()=>db.query("SELECT * FROM turns WHERE saved_kind IS NOT NULL A
  * and nothing recorded which of its conditions had held it.
  */
 export type BankedWait='eligible_not_claimed'|'no_usage_reading'|'stale_usage_reading'|'no_allowance_room'
-  |'window_runs_out_first'|'held_for_his_work'|'too_close_to_reset'|'other_work_running'|'outside_quiet_hours'|'waiting_for_reset';
+  |'window_runs_out_first'|'held_for_his_work'|'held_five_hour_unmeasured'|'too_close_to_reset'|'other_work_running'|'outside_quiet_hours'|'waiting_for_reset';
+const fiveHourHoldLogged=new Set<string>();
 export const BANKED_WAIT_WORDS:Record<BankedWait,string>={
   eligible_not_claimed:'it was eligible to start but the queue did not take it (another unattended banked job was running, or a pause or Concierge update held the queue)',
   no_usage_reading:'Concierge had no current allowance reading for its provider',
@@ -122,6 +123,7 @@ export const BANKED_WAIT_WORDS:Record<BankedWait,string>={
   no_allowance_room:'no account with a current reading had allowance left',
   window_runs_out_first:'an account had allowance left, but his own work is projected to use it before it resets at his measured rate, so none of it is spare',
   held_for_his_work:'the allowance left across every account his own work can use was no more than what is held for it (his busiest day for each day left, up to his whole week, measured from the last seven days), so none of it is spare',
+  held_five_hour_unmeasured:'an account his own work can use reports a five-hour window again, and his five-hour demand has never been measured, so a whole account\'s five-hour window is held for him and none is spare; measuring his five-hour use is the fix (docs/plans/2026-11-26-foreground-entitlement.md)',
   // Retained for rows stored before 2026-11-25, when banked work stopped waiting for an idle
   // fleet. Nothing writes it now; a notice about an older waiting job still needs its words.
   other_work_running:'other agent work was running or queued, and generic banked work waited for an idle fleet',
@@ -326,6 +328,15 @@ export function reconsiderBankedWork(now=Date.now()):number {
       if(!protection.has(label))protection.set(label,bankedProtection(provider,usage!,rooms,forecasts,label,model,now));
       return protection.get(label)!;
     };
+    const heldReason=(label:string):BankedWait=>{
+      if(!protectionOf(label).fiveHourBinds)return 'held_for_his_work';
+      // Once per process start, so the first week a five-hour window returns is in the logs as the
+      // moment to measure his five-hour demand, not discovered weeks later from a quiet bank.
+      if(!fiveHourHoldLogged.has(provider)){fiveHourHoldLogged.add(provider);
+        log('warn','banked_five_hour_hold_unmeasured',{provider,turn_id:row.id,account:label,
+          pooled_five_hour:protectionOf(label).pooled.fiveHour,held_five_hour:protectionOf(label).held.fiveHour});}
+      return 'held_five_hour_unmeasured';
+    };
     const spendableOf=(label:string)=>{
       const forecast=forecastOf(label);
       return forecast===null?null:Math.min(forecast,protectionOf(label).spendablePercent);
@@ -363,7 +374,7 @@ export function reconsiderBankedWork(now=Date.now()):number {
     // An inherited ceiling skips re-judging the forecast, which the paused job polluted, but not
     // his protection: that is levels only, and his own work may have used the pool meanwhile.
     const inheritedHeld=!!inherited&&belowInherited&&protectionOf(inherited.account).spendablePercent<=0;
-    const inheritedRefusal:BankedWait|null=!inherited?null:!belowInherited?'waiting_for_reset':inheritedHeld?'held_for_his_work'
+    const inheritedRefusal:BankedWait|null=!inherited?null:!belowInherited?'waiting_for_reset':inheritedHeld?heldReason(inherited.account)
       :inheritedWindow&&!beforeFloor(inheritedWindow)?'too_close_to_reset':null;
     const candidate=inherited?(inheritedRefusal===null?inheritedWindow:null)
       :spendableWindows.filter(beforeFloor).sort((a,b)=>Date.parse(a.resetsAt!)-Date.parse(b.resetsAt!))[0]??null;
@@ -392,7 +403,8 @@ export function reconsiderBankedWork(now=Date.now()):number {
       :!usage?'no_usage_reading'
       :!readable?'stale_usage_reading'
       :!candidate?(inheritedRefusal??(spendableWindows.length?'too_close_to_reset'
-        :rooms.some(room=>hasRoom(room.account)&&(forecastOf(room.account)??0)>0&&protectionOf(room.account).spendablePercent<=0)?'held_for_his_work'
+        :rooms.some(room=>hasRoom(room.account)&&(forecastOf(room.account)??0)>0&&protectionOf(room.account).spendablePercent<=0)
+          ?heldReason(rooms.find(room=>hasRoom(room.account)&&(forecastOf(room.account)??0)>0&&protectionOf(room.account).spendablePercent<=0)!.account)
         :rooms.some(room=>hasRoom(room.account))?'window_runs_out_first':'no_allowance_room'))
       :quietOnly?'outside_quiet_hours':'waiting_for_reset';
     const next=eligible?0:quietOnly?nextQuietStart(now,settings):reset!==null?Math.min(nextQuietStart(now,settings),Math.max(now+60_000,reset-2*HOUR))

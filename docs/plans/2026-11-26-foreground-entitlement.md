@@ -140,3 +140,59 @@ concierge:10609, turn 35659) at 05:35. The owner's `banked_work_wait` line for i
 - hey@tejas.nyc: forecast −6.4 (his measured rate spends it before its reset) → not chosen
 
 The turn was claimed at 05:35:09, ran on tejastej.dc@gmail.com, and answered its request.
+
+## Follow-ups from concierge:3633's acceptance (2026-11-26, request `c4254c98`)
+
+### An unreadable account: decided, not yet built
+
+**Seen.** At 05:xx UTC tejas@chann.app was absent from the Claude usage report: its access token had
+expired at 04:55 UTC, but its home held a refresh token and a credential written at 20:55 UTC, so
+the login was fine and only the reading was missing. The pool counted only the two readable
+accounts (115), against a hold of about 111, leaving the bank about 4 — while the account with the
+largest genuinely spare week (94% free, three days to run) was the one left out. Counting only
+readable rooms while holding his whole measured need is a double penalty, and it silently turns a
+reading failure into a closed bank.
+
+**Decision.** The pool counts exactly the accounts ordinary dispatch would send *his* work to, at
+the level dispatch itself believes. Dispatch already answers that question: since 2026-10-15 an
+account whose last reading showed room is tried (the account authority's "last reading showed
+room" verdict, `bot/src/account-authority.ts`), so an account with a live login and a stale
+reading does carry his work. Its room in the pool is its last read level, and a full refill if
+that reading's week has since reset. An account dispatch would refuse — signed out, not set up on
+this machine, refused by the provider, or never read at all — counts nothing. **The bank still
+spends only on a fresh reading**; this changes what protects him, not where the bank may spend.
+
+Why this and not the alternatives:
+
+| Option | Wins | Loses |
+| --- | --- | --- |
+| Count unreadable accounts as zero (today) | never overstates room | contradicts dispatch, which will run his work there; one expired access token closes the bank |
+| Shrink the hold by the unreadable accounts' share | keeps the pool honest | invents a number for his need that the measurement does not support |
+| Refuse banking whenever any account is unreadable | simplest | the same closed bank, now on purpose |
+| **Count what dispatch counts, at its last level (chosen)** | the protection and the router agree about where his work can go; one place decides | a stale level can overstate room by whatever his own work spent there unseen — bounded by how long the reading has been stale, and the running-job check reads the pool again on every reading |
+
+Not built yet, by agreement with concierge:3633, who asked for the decision to be recorded before it
+is coded. The reading failure itself belongs to concierge:8691 (the renewal path).
+
+### The five-hour hold now says so when it bites
+
+A whole account's five-hour window is held whenever any account in the pool reports one, and no
+account does today, so the moment one returns the bank stops. That is now visible: a refusal
+caused by the five-hour hold records `held_five_hour_unmeasured` (its words say his five-hour
+demand has never been measured and that measuring it is the fix), the banked expiry question
+carries that reason to him, and the owner logs `banked_five_hour_hold_unmeasured` at warning level
+the first time it binds after each start — the signal to measure.
+
+**How to measure, when that happens.** Five-hour readings are kept as the latest 300 samples per
+window (`KEEP_OTHER_SAMPLES` in `bot/src/provider-usage-forecast.ts`), about a day at the
+five-minute cadence, which is not a week. The first step is to keep five-hour readings for eight
+days as weekly ones are, then size the hold as his busiest five-hour rise across the pool, less
+standing routines and banked sessions, the same way the week is sized.
+
+### Today's small figure is a trough, not the steady state
+
+On the morning of 2026-11-26 the bank could spend only a few percent with tejas@chann.app missing
+(and about 89% of the Gmail week with it). That is a trough: hey@tejas.nyc was at 85% with 19 hours
+to run, and one account was unreadable. Once the other weeks reset, three accounts give a pool of
+about 300 against a hold of about 111, and most of a fresh week is spendable. Read a small
+spendable figure against where each account is in its week before reopening the sizing.
