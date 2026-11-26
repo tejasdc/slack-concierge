@@ -244,3 +244,15 @@ over 59 min 0.98, hey@ 0.98; forecast spendable 91.0 / 98.0 / 13.0.
 account's meter, which records how much was used and not by whom; per-session attribution exists
 only in the five-minute weekly report. The narrowed span bounds it instead: a banked job's own pace
 can refuse at most what it would spend in the next span. The running check reads levels, as before.
+
+### Known cost of taking the soonest reset (concierge:3633, request `7493d340`)
+
+The bank spends the window whose reset is soonest, and that is often the account his live
+conversations are warm on: on 2026-11-26 item 35679 took hey@tejas.nyc, the account he was working on,
+with a ceiling of 99%. If the bank takes the last of that week, one of his conversations moves to
+another account mid-stream and continues there with its context. This is accepted, not free: moving a
+conversation between accounts with its history intact was proven live on his Mac in September
+(shared history across accounts), so the cost is a cold prompt cache on the next turn, not lost work.
+If it is ever seen to bite (a conversation of his moving because the bank took the last slice), write
+a failure record even though the behaviour is correct: how it felt is the evidence that would decide
+whether to reserve the warm account's remainder.
