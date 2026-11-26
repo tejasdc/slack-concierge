@@ -1135,6 +1135,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS session_followed_messages (
 CREATE INDEX IF NOT EXISTS session_followed_messages_recent ON session_followed_messages(created_at DESC);`);
 db.exec("CREATE INDEX IF NOT EXISTS session_followed_messages_page ON session_followed_messages(created_at DESC,session_id DESC,message_id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS saved_work_queued_page ON turns(id DESC) WHERE saved_kind IS NOT NULL AND status='queued'");
+// Which sessions ran banked work recently, so their spending is not counted as his own when
+// sizing what is held for him (saved-work.ts bankedSessionsFor). Partial: banked turns are few.
+db.exec("CREATE INDEX IF NOT EXISTS banked_turns_by_saved_at ON turns(saved_at_ms,session_id) WHERE saved_kind='banked'");
 // Scheduled work that missed its expiry and has not yet raised its one alert; saved-work inspection reads only these.
 db.exec("CREATE INDEX IF NOT EXISTS saved_work_missed_unalerted ON turns(id) WHERE saved_kind='scheduled' AND status='error' AND saved_alerted_at_ms IS NULL AND saved_expires_at_ms IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS fork_requests_slack_root_idx ON fork_requests(slack_channel_id, slack_message_ts)");
