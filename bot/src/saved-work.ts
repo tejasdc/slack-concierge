@@ -167,18 +167,28 @@ export function windowLengthHours(name:string):number|null {
 }
 
 /**
- * The forecast's answer to "will this window be spent anyway before it resets?"
- * (docs/plans/2026-11-25-banked-spendable-allowance.md): its measured rate × hours left. With no
- * rate the forecast has no answer, and contributes nothing here. That is deliberate: until
- * 2026-11-26 a missing rate was filled with a tapered share of the reserve, which made a missing
- * projection stand in for his protection. His protection is now its own question, answered from
- * his measured week whether or not a rate exists (foreground-entitlement.ts).
+ * The forecast's answer to "will this window be spent anyway before it resets?", only over the
+ * horizon its own samples cover (docs/plans/2026-11-26-foreground-entitlement.md): measured rate ×
+ * the lesser of hours left and the span the rate was measured over (FORECAST_SPAN_TO_HORIZON = 1).
+ * Beyond that span it contributes nothing, neither a refusal nor a blessing: his demand over days
+ * is the protection's question, sized from a full week with banked sessions excluded
+ * (foreground-entitlement.ts). One estimator per horizon.
+ *
+ * Two errors this replaces. Until 2026-11-25 the rule demanded a projection an unspent account
+ * cannot produce; then, until 2026-11-26, it extrapolated any rate over the whole window, so 22
+ * minutes of readings (2.7%/h) were projected across three days as 241% and closed the bank on
+ * every account. The admission rate cannot exclude banked spending: it is read from the account's
+ * meter, which records how much was used, not by whom, and per-session attribution exists only in
+ * the five-minute weekly report. Limiting the projection to the rate's own span bounds that: a
+ * banked job's own pace can refuse at most what it would spend in the next span.
  */
-export function expectedOwnUse(forecast:Pick<UsageForecast,'window'|'resetsAt'|'ratePerHour'>,now:number):number {
-  if(forecast.ratePerHour===null)return 0;
+const FORECAST_SPAN_TO_HORIZON=1;
+export function expectedOwnUse(forecast:Pick<UsageForecast,'window'|'resetsAt'|'ratePerHour'|'spanMinutes'>,now:number):number {
+  if(forecast.ratePerHour===null||!forecast.spanMinutes)return 0;
   const reset=Date.parse(forecast.resetsAt??'');
   const hoursLeft=Number.isFinite(reset)?Math.max(0,(reset-now)/HOUR):windowLengthHours(forecast.window);
-  return hoursLeft===null?Infinity:forecast.ratePerHour*hoursLeft;
+  const covered=FORECAST_SPAN_TO_HORIZON*forecast.spanMinutes/60;
+  return forecast.ratePerHour*Math.min(hoursLeft??covered,covered);
 }
 
 /**
@@ -376,7 +386,10 @@ export function reconsiderBankedWork(now=Date.now()):number {
       &&usage.accounts.some(account=>account.label===window.account
         &&includedAllowanceWindows(provider,account,model).some(item=>item.name===window.window))
       && chooseAccountForTurn({accounts:rooms,bound:{account:window.account,reason:'spending-this-window'},prefer:null}).account===window.account
-      && !window.runsOutBeforeReset && (spendableOf(window.account)??0)>0
+      // The forecast module's own exhaustion flag projects an observed rate to the reset, which is
+      // the over-extrapolation `expectedOwnUse` now refuses; only a provider's own pace, which
+      // rests on the provider's whole window, still refuses here.
+      && !(window.source==='provider'&&window.runsOutBeforeReset) && (spendableOf(window.account)??0)>0
       && hasRoom(window.account));
     // His one-hour floor for generic work: a job that cannot finish before the reset wastes the work
     // rather than saving allowance. Quiet-only work is bounded by the quiet cutoff instead.

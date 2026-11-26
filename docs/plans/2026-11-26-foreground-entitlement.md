@@ -223,3 +223,24 @@ on every account. **Forecast:** refused every account — tejas@chann.app −241
 measured over 22 and 59 minutes (chann 6→8%, 2.7%/h; gmail 0→1%, 1%/h, partly this morning's own banked
 live checks) projected across three to six days. That is the forecast half, owned by the
 2026-11-25 spendable design, and was handed back to concierge:3633 with the evidence.
+
+### The forecast answers only over its own span (2026-11-26, concierge:3633 request `dcbe5f5b`)
+
+The live check above showed the forecast closing the bank on every account by projecting 22–59
+minutes of readings across three to six days. The forecast no longer estimates his demand over days:
+it projects its measured rate only over the span it was measured over, and beyond that contributes
+nothing. His demand over days is the protection's, from a full week with banked sessions excluded —
+one estimator per horizon. Within its span a projected exhaustion still refuses. The forecast
+module's own full-horizon exhaustion flag no longer refuses banked work; a provider's own pace still does.
+
+**Span-to-horizon ratio: 1.** A rate fitted over S minutes is evidence about S minutes; claiming more
+is extrapolation with no data behind it, which is the error being removed. A ratio above 1 would
+rebuild the over-projection in miniature; below 1 would discard evidence actually observed. Nothing
+beyond the span is left unprotected, because the protection covers every horizon. On the live
+readings that refused at 06:16 UTC: chann 2.7%/h over 22 min projects 0.99 (was 241.8), gmail 1%/h
+over 59 min 0.98, hey@ 0.98; forecast spendable 91.0 / 98.0 / 13.0.
+
+**Banked spending at admission is not excluded from the rate**, because the rate comes from the
+account's meter, which records how much was used and not by whom; per-session attribution exists
+only in the five-minute weekly report. The narrowed span bounds it instead: a banked job's own pace
+can refuse at most what it would spend in the next span. The running check reads levels, as before.
