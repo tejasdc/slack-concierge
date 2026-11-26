@@ -212,3 +212,14 @@ On the morning of 2026-11-26 the bank could spend only a few percent with tejas@
 to run, and one account was unreadable. Once the other weeks reset, three accounts give a pool of
 about 300 against a hold of about 111, and most of a fresh week is spendable. Read a small
 spendable figure against where each account is in its week before reopening the sizing.
+
+### Live after release 5c71adac (2026-11-26 06:16 UTC)
+
+A one-line banked item (request `74bc8119`, concierge:10610, turn 35679) was judged by the live owner
+within seconds. **Protection:** all three Claude accounts read fresh again, so no stale decay applied to
+any of them (`stale: {}` for each); pooled weekly room 205, held 26.1–108.7 by horizon, spendable 178.9
+on every account. **Forecast:** refused every account — tejas@chann.app −241.8, tejastej.dc@gmail.com
+−46.7, hey@tejas.nyc −4.7 — so the item waits as `window_runs_out_first`. Those figures come from rates
+measured over 22 and 59 minutes (chann 6→8%, 2.7%/h; gmail 0→1%, 1%/h, partly this morning's own banked
+live checks) projected across three to six days. That is the forecast half, owned by the
+2026-11-25 spendable design, and was handed back to concierge:3633 with the evidence.
