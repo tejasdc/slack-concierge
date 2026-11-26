@@ -631,8 +631,9 @@ Two honest limits on that, both raised by ChatGPT Pro when this change was put t
   protected against that either, because idleness at admission says nothing about his arriving ten
   minutes later. Making the strong promise true needs a **sized foreground entitlement**: an
   amount of five-hour and weekly allowance held for his own work, with banked spending bounded
-  above it. Today's 25% is a percentage floor, not a measured entitlement. Open, owned by
-  concierge:3633.
+  above it. Today's 25% is a percentage floor, not a measured entitlement. **Built 2026-11-26**
+  by concierge:10580: a pooled hold sized from his measured week, kept apart from the forecast
+  ([design](2026-11-26-foreground-entitlement.md)).
 - **An absent projection is not a forecast of surplus.** The condition now means the capacity is
   *safely expendable*; it does not establish that the allowance would otherwise have lapsed, and
   nothing may report that it does. "Unknown" covers both "no model ran" and "the observed rate is

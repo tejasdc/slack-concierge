@@ -86,7 +86,9 @@ so three defect reports read as three ordinary full weeks.
   consulted on this change (request `3eb0cd46-3e2c-43e6-a4d3-ba2b438112eb`, concierge:10569), and
   it needs a number: today's 25% is a percentage floor, not a measured entitlement. This session
   (concierge:3633) owns that follow-up. Until it exists, the reserve is a bound on what remains,
-  not a promise about what he will need.
+  not a promise about what he will need. **Built 2026-11-26** (concierge:10580): his busiest
+  measured day for each day left, up to his measured week, held across every account his work can
+  use; see `docs/plans/2026-11-26-foreground-entitlement.md`.
 - Two new recorded reasons so this cannot be mislabelled again: `window_runs_out_first` (an
   account had room, but his own work is forecast to spend it before the reset) and
   `stale_usage_reading`. `no_allowance_room` now means only what it says.

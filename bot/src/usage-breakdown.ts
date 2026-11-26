@@ -78,6 +78,18 @@ function scan():Promise<void>{
   return running;
 }
 
+/**
+ * The latest rolling-week report as it stands, or null when none exists or it has gone
+ * unrefreshed past its stale limit. Never scans: a caller that decides something from it
+ * (foreground-entitlement.ts) must treat a missing week as unmeasured, not wait for one.
+ */
+export function latestWeekReport():{computedAt:string;week:Record<string,any>}|null{
+  const known=current();
+  if(!known||Date.now()-Date.parse(known.computedAt)>=RESULT_STALE_MS)return null;
+  const week=known.both.week as Record<string,any>|undefined;
+  return week?{computedAt:known.computedAt,week}:null;
+}
+
 /** Called on every usage reading; starts a background scan when the last one is older than five minutes. */
 export function refreshUsageBreakdownIfStale():void{
   const latest=current();
