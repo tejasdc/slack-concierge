@@ -1,4 +1,5 @@
 import { db } from "./state";
+import { log } from "./log";
 import { fileServiceNotices, settleServiceNotice } from "./session-topics";
 import { markServiceNoticeResolutionSettled, pendingServiceNoticeResolutions } from "./service-notice-resolutions";
 
@@ -14,11 +15,22 @@ export function serviceNoticeUpkeepPass(): { filed: number; settled: number } {
   const { filed } = fileServiceNotices();
   let settled = 0;
   for (const resolution of pendingServiceNoticeResolutions(db)) {
-    if (settleServiceNotice({ inputId: `service:service-notice:${resolution.key}`, text: resolution.text })) settled++;
-    markServiceNoticeResolutionSettled(db, resolution.key);
+    const inputId = `service:service-notice:${resolution.key}`;
+    try {
+      if (settleServiceNotice({ inputId, text: resolution.text })) settled++;
+    } catch (error) {
+      // One bad row must not hold every later resolution; it stays pending and is retried.
+      if (!failuresLogged.has(resolution.key)) log("error", "service_notice_resolution_failed", { key: resolution.key, error: String(error) });
+      failuresLogged.add(resolution.key);
+      continue;
+    }
+    // Done only once its resolution is in the thread; with no Inbox yet it stays pending.
+    if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(`post:service-resolved:${inputId}`))
+      markServiceNoticeResolutionSettled(db, resolution.key);
   }
   return { filed, settled };
 }
+const failuresLogged = new Set<string>();
 
 export function startServiceNoticeUpkeep(log: (level: "info" | "error", event: string, fields: Record<string, unknown>) => void): () => void {
   const pass = () => {

@@ -29,9 +29,8 @@ export function publishProviderFreeNotice(db: Database, input: {
 }): boolean {
   // A health notice is the repair agent's to work on first; he hears only what it cannot solve.
   if (REPAIR_FIRST_KINDS.has(input.kind)) return recordRepairNotice(db, input);
-  const inbox = db.query(`SELECT id,native_metadata_json FROM sessions WHERE id=(${CURRENT_INBOX_ID_SQL})`)
+  const readInbox = () => db.query(`SELECT id,native_metadata_json FROM sessions WHERE id=(${CURRENT_INBOX_ID_SQL})`)
     .get() as { id: number; native_metadata_json: string | null } | null;
-  if (!inbox) throw new Error("No Inbox session exists for the service notice.");
   const eventId = `service-notice:${input.key}`;
   const inputId = `service:${eventId}`;
   // A notice is read by Tejas in his Inbox, not by a log reader: a moment is written in his time
@@ -40,6 +39,9 @@ export function publishProviderFreeNotice(db: Database, input: {
   const unreadable = [/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(input.text) ? "iso-timestamp" : "", /(?:^|[\s(])(?:\/|~\/)[\w.-]+\/[\w./-]+/.test(input.text) || /\b[\w-]+\/[\w-]+\/[\w-]+\.(?:log|md|txt|json|ts|js|sh)\b/.test(input.text) ? "file-path" : ""].filter(Boolean);
   if (unreadable.length) writeLogLine("warn", JSON.stringify({ level: "warn", event: "service_notice_unreadable", key: input.key, unreadable }));
   return db.transaction(() => {
+    // Re-read under the write lock: a writer in another process must not overwrite the owner's newer metadata.
+    const inbox = readInbox();
+    if (!inbox) throw new Error("No Inbox session exists for the service notice.");
     const inserted = db.query(`INSERT OR IGNORE INTO session_inputs
       (id,session_id,scope,action_id,kind,origin,payload_json,receipt_json)
       VALUES(?,?,?,?,?,?,?,?)`).run(inputId, inbox.id, SERVICE_NOTICE_SCOPE, eventId,
@@ -64,5 +66,5 @@ export function publishProviderFreeNotice(db: Database, input: {
     addEvent(`needs_you:${eventId}`, "needs_you", { outcome, question, inputId, generation,
       ...(input.needsHim ? { taskTitle: question.split("\n")[0]!.trim().slice(0, 120) } : {}) });
     return true;
-  })();
+  }).immediate();
 }

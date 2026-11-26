@@ -5310,6 +5310,7 @@ export function expireUnreadableReadingItems() {
  * when a message is resolved to its thread. Safe to run twice: a filed notice is no longer
  * unfiled. Notices never sit in "being sorted" for him or for the router.
  */
+const serviceNoticeFailuresLogged=new Set<string>();
 export function fileServiceNotices():{filed:number} {
   const session=inboxSession();
   if(!session)return {filed:0};
@@ -5325,7 +5326,9 @@ export function fileServiceNotices():{filed:number} {
       db.transaction(()=>{
         let topicId=topicOfRoot(root);
         if(!topicId) {
-          const existing=db.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='open' AND title=? ORDER BY updated_at DESC LIMIT 1`).get(session.id,title) as {topic_id:string}|null;
+          // A notice only he can act on is its own thread: sharing one by title let resolving one
+          // close the other's still-open question.
+          const existing=need.outcome!=='response'?null:db.query(`SELECT topic_id FROM inbox_topics WHERE session_id IN (${inboxLineageSql}) AND state='open' AND title=? ORDER BY updated_at DESC LIMIT 1`).get(session.id,title) as {topic_id:string}|null;
           const placed=existing?placeChange(session,topicRow(existing.topic_id),[root],by,reason):
             createTopic(session,by,{title,roots:[root],reason,areaIds:[ensureSystemNoticeArea(session.id)],house:'notices'});
           recordSessionEvent({eventId:`topic-service-notice:${need.eventId}:placed`,sessionId:session.id,inputId:need.inputId,kind:placed.change.kind,payload:placed.change.payload});
@@ -5347,6 +5350,9 @@ export function fileServiceNotices():{filed:number} {
       filed++;
       log('info','inbox_service_notice_filed',{session_id:session.id,input_id:need.inputId,title});
     } catch(error) {
+      // The minute pass retries it; logged once per owner process so a stuck notice does not flood the journal.
+      if(serviceNoticeFailuresLogged.has(need.eventId))continue;
+      serviceNoticeFailuresLogged.add(need.eventId);
       log('error','inbox_service_notice_file_failed',{session_id:session.id,input_id:need.inputId,error:String(error)});
     }
   }
