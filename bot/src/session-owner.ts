@@ -2147,6 +2147,7 @@ export class SessionOwner {
     const canvasTitles=this.projectSetup?.canvasProjectTitles();
     const remote=await this.runnerProjectCall<{workspaceRoot:string;projects:{name:string;path:string}[]}>('projects.list',{});
     const projects=remote?remote.projects.map(project=>({name:project.name,cwd:join(remote.workspaceRoot,project.path)})):sessionProjects(this.defaultCwd);
+    this.projectCount={value:projects.length,at:Date.now()};
     return {projects:projects.map(project=>({...project,...(canvasTitles?.has(project.name)?{canvasTitle:canvasTitles.get(project.name)}:{}),defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':configuredProviderDefault(remote?this.managedProjectRecord(project.name)?.provider_default:getChannelByCodePath(project.cwd)?.provider_default)}))};
   }
   private managedProjectRecord(id:string) {
@@ -2291,9 +2292,26 @@ export class SessionOwner {
     try {writeFileSync(temporary,input.content,{encoding:'utf8',flag:'wx',mode:0o600});renameSync(temporary,path);} catch(error) {try {if(existsSync(temporary)) unlinkSync(temporary);} catch {} throw error;}
     return {project:project.name,content:input.content,sha256:hash(input.content)};
   }
+  /** The project count status reports, as of the last project listing. Listing asks the runner to
+   * walk the workspace; status awaited that on every read (p50 43 ms of a 43 ms read) and took
+   * 2.5 s when a disk flush stalled it on 2026-11-25 (thnkr.ing read 68488d95). A count up to a
+   * minute old is exact enough for a status line, so status waits only for the first listing. */
+  private projectCount:{value:number;at:number}|null=null;
+  private projectCountRefresh:Promise<number>|null=null;
+  private countProjects():Promise<number> {
+    this.projectCountRefresh??=this.projects().then(listed=>listed.projects.length)
+      .finally(()=>{this.projectCountRefresh=null;});
+    return this.projectCountRefresh;
+  }
+  private async statusProjectCount():Promise<number> {
+    const known=this.projectCount;
+    if(!known)return this.countProjects();
+    if(Date.now()-known.at>60_000)void this.countProjects().catch(()=>{});
+    return known.value;
+  }
   async status() {
-    const projects=await this.projects();
-    return {owner:{available:true},capabilities:{passiveContext:1},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:projects.projects.length,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
+    const projectCount=await this.statusProjectCount();
+    return {owner:{available:true},capabilities:{passiveContext:1},captureDelivery:this.captureDeliveryStatus?.()??null,providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),antigravity:this.runtime.available('antigravity'),chatgpt:this.runtime.available('chatgpt')},projects:projectCount,deployment:await this.deploymentWait(),deploymentStuck:await this.stuckUpdate(),
       executionsOnPreviousVersion:this.executionsOnPreviousVersion()};
   }
   /**
