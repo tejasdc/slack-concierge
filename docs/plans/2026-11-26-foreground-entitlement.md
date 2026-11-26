@@ -143,7 +143,7 @@ The turn was claimed at 05:35:09, ran on tejastej.dc@gmail.com, and answered its
 
 ## Follow-ups from concierge:3633's acceptance (2026-11-26, request `c4254c98`)
 
-### An unreadable account: decided, not yet built
+### An unreadable account: count what dispatch counts, decayed by his pace
 
 **Seen.** At 05:xx UTC tejas@chann.app was absent from the Claude usage report: its access token had
 expired at 04:55 UTC, but its home held a refresh token and a credential written at 20:55 UTC, so
@@ -171,8 +171,24 @@ Why this and not the alternatives:
 | Refuse banking whenever any account is unreadable | simplest | the same closed bank, now on purpose |
 | **Count what dispatch counts, at its last level (chosen)** | the protection and the router agree about where his work can go; one place decides | a stale level can overstate room by whatever his own work spent there unseen — bounded by how long the reading has been stale, and the running-job check reads the pool again on every reading |
 
-Not built yet, by agreement with concierge:3633, who asked for the decision to be recorded before it
-is coded. The reading failure itself belongs to concierge:8691 (the renewal path).
+**The stale level is decayed (concierge:3633, request `f3640a9b`).** The cost in the last row is
+not a tail risk. A stale level is consulted only because dispatch is willing to send his work to
+that account, which is exactly when his work may be spending it unseen, so the overstatement is
+systematic and in the dangerous direction: an inflated pool satisfies the hold more easily, and the
+bank spends more on some other, fresh account. On this morning's numbers, chann read 94% free; had
+he spent it to 10%, the pool would read about 194 against 110 and the bank would see 83 spare when
+the truth was none. So a stale level is reduced by his own measured pace over the staleness — his
+busiest day per hour times the hours since that reading, floored at zero (a whole account a day
+when the week is unmeasured). That is about 1% after an hour and 8.5% after eight, roughly what he
+could really have spent. A reset since the reading still counts a full refill, which is certain in
+the safe direction; a stale five-hour window counts nothing until its reset, because a weekly pace
+says nothing about a five-hour burst. Eligibility is the account authority's own verdict for the
+model dispatch would ask for, so the protection and the router cannot drift apart; Codex is
+unchanged, because its work runs on its one active account. Each decay is logged per account in
+`banked_work_wait` (`protection.<account>.stale`).
+
+Built 2026-11-26 after the decision was recorded. The reading failure itself belongs to
+concierge:8691 (the renewal path).
 
 ### The five-hour hold now says so when it bites
 
