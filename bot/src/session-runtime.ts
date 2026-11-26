@@ -23,6 +23,7 @@ import {keepThreadsCurrent,migrateInboxTopics,reconcileCarriedClosures,reconcile
 import {log,errorFields} from './log';
 import {startStuckWorkWatch} from './stuck-work-watch';
 import {startRepairNoticeDelivery} from './repair-notices';
+import {startServiceNoticeUpkeep} from './service-notice-upkeep';
 import {bindCodexProviderSession,CodexSessionObserver} from './codex-session-observer';
 import {prepareSavedWorkForClaims} from './saved-work';
 import {createBankedUpkeep} from './banked-upkeep';
@@ -143,6 +144,7 @@ export async function startSessionRuntime() {
   reconcileCoveredTasteRequest();recoverOctoberBudgetPauses();recoverExhaustedClaudeWork();
   startStuckWorkWatch(wake,()=>registry.activeSessions);
   startRepairNoticeDelivery(()=>host.owner.deliverRepairNotices(),log);
+  startServiceNoticeUpkeep(log);
   if(peering.listen)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
   // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
   // composition, so this runtime spent the same accounts while never watching them.

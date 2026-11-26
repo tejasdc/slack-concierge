@@ -32,6 +32,7 @@ import {
 import { errorFields, log } from "./log";
 import { startStuckWorkWatch } from "./stuck-work-watch";
 import { recordRepairNotice, startRepairNoticeDelivery } from "./repair-notices";
+import { startServiceNoticeUpkeep } from "./service-notice-upkeep";
 import { installOwnerCpuProfileSignal } from "./owner-cpu-profile";
 import { configuredSkillRoutes, loadSkillPrompt, selectSkillRoute } from "./skill-routes";
 import {
@@ -4385,6 +4386,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             globalPauseReconcile.unref?.();
             startStuckWorkWatch(wakeOwnerPaths,()=>activeTurnDispatch.activeSessions);
             startRepairNoticeDelivery(()=>sessionExecutionHost.owner.deliverRepairNotices(),log);
+            startServiceNoticeUpkeep(log);
             if (peering.listen) {
               log('info', 'concierge_peer_listener_online', {instance: peering.self, hostname: peering.listen.hostname, port: peering.listen.port, peers: peering.peers.map(peer => peer.name)});
             }

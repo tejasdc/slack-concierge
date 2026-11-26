@@ -493,6 +493,32 @@ when all have exited. A timeout exits 124 and names any still-running IDs. The
 pre-command guard refuses a loop around a full-command process-name search,
 because such a loop can match itself and hold a run open indefinitely.
 
+## Host-script notices
+
+A server script with no agent session (a systemd timer in remote-box, a failure hook)
+reports through the installed service-notice script, run as root with
+`CONCIERGE_STATE_DIR=/root/.local/state/concierge`:
+
+```
+/usr/local/lib/slack-concierge-deployment/bun run \
+  /var/lib/slack-concierge-deployment/current/control/bot/scripts/service-notice.js \
+  [--needs-tejas] --key <episode key> --title "<one line>" [--text-file <path> | -- <text>]
+.../service-notice.js --resolve --key <same key> -- "<what is fixed now, naming it>"
+```
+
+- Without `--needs-tejas` the notice is a health notice for the Repair agent, unchanged.
+- `--needs-tejas` is for what only Tejas can do (sign in again on his laptop, approve on his
+  device). It becomes its own Inbox thread titled by `--title`, holding a ready decision,
+  and thnkr.ing rings his devices once with "Needs you". Prints `recorded`, or `duplicate`
+  for a key already used (no second notification).
+- `--resolve` prints `resolve-recorded`, `duplicate`, or `no-notice` when that key was never
+  published, so a job may call it after every healthy run. The owner posts the text in the
+  thread, closes it, expires the question and thnkr.ing withdraws the notification.
+- Use one key per episode (for example `substack-access-expired:<date first seen>`) and keep it
+  until the resolve; a reused key after a resolve is a duplicate and stays silent.
+- The running owner files new notices and settles resolutions once a minute; see
+  [host-script notices](../contracts/native-inbox.md#host-script-notices).
+
 ## Reading his texts (Mac)
 
 `router-actions.sh messages [--with <number, address or chat name>] [--q <words>] [--days <n>]
