@@ -16,14 +16,16 @@ export {noticeTime} from './notice-time';
  * Publish one service-authored Inbox message and reading notice without starting a provider.
  * The notice has no turn behind it, so nothing would ever file it into a thread; the owner files
  * it itself (`fileServiceNotices` in session-topics.ts) — a caller inside the Concierge process
- * calls that right after publishing, and a separate process relies on the running owner doing
- * it at startup and when the message is resolved to its thread.
+ * calls that right after publishing, and a separate process relies on the running owner's
+ * minute pass (`service-notice-upkeep.ts`).
  */
 export function publishProviderFreeNotice(db: Database, input: {
   key: string;
   text: string;
   kind: string;
   payload?: Record<string, unknown>;
+  /** Only he can act on it (sign in again, approve on his device): filed as his decision and rung once. */
+  needsHim?: boolean;
 }): boolean {
   // A health notice is the repair agent's to work on first; he hears only what it cannot solve.
   if (REPAIR_FIRST_KINDS.has(input.kind)) return recordRepairNotice(db, input);
@@ -52,11 +54,15 @@ export function publishProviderFreeNotice(db: Database, input: {
     const meta = JSON.parse(inbox.native_metadata_json || "{}");
     const generation = (meta.generation ?? 0) + 1;
     const question = input.text.slice(0, 2000);
+    // A notice he must act on is a blocking need: thnkr.ing rings "Needs you" for it once, and its
+    // filing makes it a ready decision in its own thread. Anything else stays a reading item.
+    const outcome = input.needsHim ? "needs_you" : "response";
     db.query("UPDATE sessions SET native_metadata_json=? WHERE id=?")
       .run(JSON.stringify({ ...meta, generation, needs: [...(meta.needs ?? []), {
-        inputId, outcome: "response", question, generation, at: new Date().toISOString(), runId: "", eventId,
+        inputId, outcome, question, generation, at: new Date().toISOString(), runId: "", eventId,
       }] }), inbox.id);
-    addEvent(`needs_you:${eventId}`, "needs_you", { outcome: "response", question, inputId, generation });
+    addEvent(`needs_you:${eventId}`, "needs_you", { outcome, question, inputId, generation,
+      ...(input.needsHim ? { taskTitle: question.split("\n")[0]!.trim().slice(0, 120) } : {}) });
     return true;
   })();
 }

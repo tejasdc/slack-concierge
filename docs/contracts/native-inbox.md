@@ -1251,6 +1251,25 @@ outcome/no relay, retained local and peer overdue notices, handoff copies, genui
 answers, agent questions and the human silence guard. See the
 [failure record](../incidents/2026-11-16-no-reply-notice-forced-thread-post.md).
 
+## Host-script notices
+
+Host scripts outside Concierge write service notices straight into the ledger through the
+installed service-notice script ([command](../runbooks/ROUTER-ACTIONS.md#host-script-notices)).
+A plain notice keeps its repair-first kind and goes to the Repair agent. With `--needs-tejas`
+it uses kind `host_needs_tejas` and a `needs_you` attention outcome: thnkr.ing's attention
+notifier rings once ("Needs you", the title as its task line) from that single event, and
+the owner files it as a ready blocking decision whose brief is the notice's own words, in a
+new thread titled by the notice (or the open thread of the same title). Filing records no
+second attention event. The key is the identity; a repeated key is a duplicate and never rings.
+
+Because the writer is another process, the owner learns of its rows only by looking. Each
+minute the running owner files unfiled service notices and settles recorded resolutions
+(`--resolve --key`), which post the resolution, close the thread and expire its question;
+thnkr.ing withdraws the notification on that thread change. Before this pass a script's
+notice waited for the next owner restart. Tejas, 2026-11-26, after a Substack sign-in expiry
+reached him only through retired Slack: "I didn't get that notification in my thnkr.ing app
+... Why do you not know? Why do you not remind me?"
+
 ## Journal processing dispositions
 
 Observation requests with additive `processingVersion:1` carry a versioned processing obligation bound to their source root. Unversioned requests retain legacy tracker filing; unsupported versions refuse. Install Concierge support before the Thinkering change that sends version 1 together with reader provenance. An old owner rejects the new field, leaving Thinkering’s existing queue pending. Queued jobs freeze their original protocol version: a legacy job with no version retries without a version, even after the caller upgrades. The exact owner retry returns the old admission without adding a processing claim; changing that same job to version 1 remains a refused body conflict. Older admissions remain unchanged. Tracker filing and delivery receipts do not satisfy it. The authenticated command is `sessions journal-review --review-file <JSON-path> --source-input <id> --source-run <id> --action-id <stable-id>`. It uses the existing private capability transport to read `/journal/entry?objectId=...`; missing root or line revision/actor proof refuses processing. Both review dispositions must match the canonical complete-entry version, so a new child command invalidates an older review even when the root revision is unchanged. The active source/fence is rechecked after this read. It never changes journal access, saving, friction policy or journal meaning.

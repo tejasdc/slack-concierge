@@ -5333,7 +5333,12 @@ export function fileServiceNotices():{filed:number} {
           topicId=placed.topic.topicId;
         }
         const topic=topicRow(topicId);
-        const question=fileNeed(session,topic,need.eventId,by);
+        // A notice only he can act on is a ready decision: its words are the whole brief, and no
+        // agent prepares it further. Without a complete brief it would wait as "preparing" forever.
+        const brief=need.outcome==='response'?undefined:{decision:title,why:{text:need.question,sources:[need.inputId]},known:'',choices:[],uncertain:[],
+          answerable:'Do what the notice asks. The service that raised it closes this thread itself once it sees the problem fixed; reply here if you cannot.',
+          recoveredFrom:'Filed from a host service notice'};
+        const question=fileNeed(session,topic,need.eventId,by,brief);
         const next=bumped(topic);
         const payload={change:'filed',topicId,topic:next,questions:[question],by,reason,revision:next.revision};
         recordSessionEvent({eventId:`topic-service-notice:${need.eventId}:filed`,sessionId:session.id,inputId:need.inputId,kind:'topic_question',payload});
