@@ -206,9 +206,27 @@ export function bankedSpendablePercent(provider:AccountIdentityProvider,usage:Pr
  * it lowers pooled room exactly as much as it spends, which is the bound working.
  */
 export function bankedProtection(provider:AccountIdentityProvider,usage:ProviderUsage,rooms:readonly AccountRoom[],
-  model:string|null|undefined,untilMs:number,now:number):ForegroundProtection {
-  const hours=Number.isFinite(untilMs)?Math.max(0,(untilMs-now)/HOUR):7*24;
-  return foregroundProtection(provider,usage,rooms,model,foregroundNeed(provider,latestWeekReport()),hours,savedWorkSettings().reserve_percent,now);
+  forecasts:readonly UsageForecast[],accountLabel:string,model:string|null|undefined,now:number):ForegroundProtection {
+  // One horizon for admission and for the running check, so a job admitted with room is not
+  // judged against a different hold a moment later: the soonest reset among the account's windows.
+  const resets=forecasts.filter(item=>item.account===accountLabel&&item.resetsAt).map(item=>Date.parse(item.resetsAt!)).filter(Number.isFinite);
+  const hours=resets.length?Math.max(0,(Math.min(...resets)-now)/HOUR):7*24;
+  const report=latestWeekReport();
+  return foregroundProtection(provider,usage,rooms,model,foregroundNeed(provider,report,bankedSessionsFor(report?.computedAt??null,now)),
+    hours,savedWorkSettings().reserve_percent,now);
+}
+
+/** Sessions that ran banked work in the report's week, read once per report (every five minutes at most). */
+let bankedSessionsCache:{computedAt:string;sessions:Set<string>}|null=null;
+function bankedSessionsFor(computedAt:string|null,now:number):Set<string> {
+  if(!computedAt)return new Set();
+  if(bankedSessionsCache?.computedAt===computedAt)return bankedSessionsCache.sessions;
+  // A banked item waits at most its waiting setting before running, so one saved within the
+  // waiting setting plus the report's week may have spent inside that week.
+  const since=now-(7+savedWorkSettings().wait_days)*DAY;
+  const rows=db.query("SELECT DISTINCT session_id FROM turns INDEXED BY banked_turns_by_saved_at WHERE saved_kind='banked' AND saved_at_ms>=?").all(since) as {session_id:number}[];
+  bankedSessionsCache={computedAt,sessions:new Set(rows.map(row=>`concierge:${row.session_id}`))};
+  return bankedSessionsCache.sessions;
 }
 
 /** The tightest used percentage a banked run may reach: the level read at admission plus what was
@@ -305,10 +323,7 @@ export function reconsiderBankedWork(now=Date.now()):number {
     };
     const protection=new Map<string,ForegroundProtection>();
     const protectionOf=(label:string)=>{
-      if(!protection.has(label)){
-        const resets=forecasts.filter(item=>item.account===label&&item.resetsAt).map(item=>Date.parse(item.resetsAt!)).filter(Number.isFinite);
-        protection.set(label,bankedProtection(provider,usage!,rooms,model,resets.length?Math.min(...resets):Infinity,now));
-      }
+      if(!protection.has(label))protection.set(label,bankedProtection(provider,usage!,rooms,forecasts,label,model,now));
       return protection.get(label)!;
     };
     const spendableOf=(label:string)=>{

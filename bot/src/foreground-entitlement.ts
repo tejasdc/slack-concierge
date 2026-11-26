@@ -44,19 +44,26 @@ const weeklyComponents=(projection:any,provider:string)=>((projection?.component
  * His own work's week, from the rolling seven-day attribution report. Null when the report has
  * no weekly estimate for this provider at all, which the caller holds as unmeasured.
  *
- * Banked runs are not subtracted: they are counted under their own sessions, so they make the
- * entitlement larger while they run. That errs toward him and shrinks the bank, never the reverse.
+ * Sessions that ran banked work (`bankedSessions`, `concierge:<id>`) are subtracted too: left in,
+ * the bank's own spending would raise the hold that bounds it, until a busy banked day held the
+ * whole week and the bank blocked itself (independent review, 2026-11-26). The report has no
+ * per-session day, so the busiest day is scaled by the share of the week that was his.
  */
-export function foregroundNeed(provider:AccountIdentityProvider,report:{computedAt:string;week:Record<string,any>}|null):ForegroundNeed|null {
+export function foregroundNeed(provider:AccountIdentityProvider,report:{computedAt:string;week:Record<string,any>}|null,
+  bankedSessions:ReadonlySet<string>=new Set()):ForegroundNeed|null {
   if(!report)return null;
   const accounts=((report.week.accounts??[]) as any[]).filter(account=>account.provider===provider);
   const total=accounts.flatMap(account=>weeklyComponents(account.weeklyAllowance?.estimatedUse,provider));
   if(!total.length)return null;
   const sum=(items:any[])=>items.reduce((value,item)=>value+item.usedPercent,0);
   const routines=sum(((report.week.byRoutine??[]) as any[]).flatMap(row=>weeklyComponents(row.weeklyAllowance,provider)));
+  const bySession=(report.week.sessionAllowanceById??{}) as Record<string,any>;
+  const banked=sum([...bankedSessions].flatMap(id=>weeklyComponents(bySession[id],provider)));
   const days=((report.week.byDay??[]) as any[]).map(day=>sum(weeklyComponents(day.weeklyAllowance,provider)));
-  const weeklyPercent=Math.max(0,sum(total)-routines);
-  return {provider,weeklyPercent,busiestDayPercent:Math.min(weeklyPercent,Math.max(0,...days)),computedAt:report.computedAt};
+  const all=sum(total);
+  const weeklyPercent=Math.max(0,all-routines-banked);
+  const share=all>0?weeklyPercent/all:0;
+  return {provider,weeklyPercent,busiestDayPercent:Math.min(weeklyPercent,Math.max(0,...days)*share),computedAt:report.computedAt};
 }
 
 /**

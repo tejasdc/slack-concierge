@@ -68,10 +68,26 @@ never been observed, so the hold is the smallest figure that keeps a burst of hi
 whole account kept free — and it costs nothing while no window exists. It is labelled unmeasured
 in code and here; when a five-hour window returns, its readings make a measured figure possible.
 
-**What the evidence does not show.** One week is one week. Banked runs are not subtracted from "his
-own work" (they count under their sessions), so the bank enlarges the hold while it runs — this errs
-toward him. Use outside Concierge (the Mac, claude.ai, the phone) is in the meter but not in the
-attribution, so it lands in "his own work", again erring toward him.
+**Banked sessions are subtracted.** The first version left them in, reasoning that a larger hold errs
+toward him. The independent review showed the loop: a bank spending 30% in a day raises the busiest
+day to 30%, the hold to most of the week, and the bank then blocks itself (and a running job could
+yield on its own spending at the next report refresh). Sessions with a banked turn saved within the
+week plus the waiting setting are now subtracted from the week (one indexed read per five-minute
+report). The report has no per-session day, so the busiest day is scaled by his share of the week;
+that spreads the bank's spending evenly across days and can understate his busiest day slightly
+(seeded: 24.6 instead of 26.5), which the held-back minimum of 25 covers on these numbers.
+
+**What the evidence does not show.** One week is one week. Use outside Concierge (the Mac,
+claude.ai, the phone) is in the meter but not in the attribution, so it lands in "his own work",
+erring toward him.
+
+**Quiet-only banked work is bound by the same hold.** It spends the same allowance, so it gets the
+same protection; with a stale week report it can still spend what exceeds one whole account's
+window (16% of the pool today).
+
+**One horizon.** Admission and the running-job check both size the hold to the soonest reset among
+the account's windows, so a job admitted with room is not judged a moment later against a different
+hold (review finding).
 
 ## What it beat
 

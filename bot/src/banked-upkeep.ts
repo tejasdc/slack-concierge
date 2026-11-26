@@ -4,6 +4,7 @@ import {bankedProtection,inspectSavedWork,noticeMissedQuietWindows,quietOnlyCuto
 import {quietOnlyAdmits} from './quiet-hours';
 import {providerAccountUsage} from './provider-account-usage';
 import {savedWorkAccountRooms} from './provider-account-dispatch';
+import {usageForecasts} from './provider-usage-forecast';
 import type {ActiveTurnDispatchRegistry} from './turn-dispatch-seams';
 import {log,errorFields} from './log';
 import {API_CREDITS_ACCOUNT} from './claude-api-route';
@@ -70,8 +71,8 @@ export function createBankedUpkeep(input:{registry:()=>ActiveTurnDispatchRegistr
       // The ceiling bounds what the bank itself spends on its account. His own work meanwhile
       // spends the other accounts, which no ceiling on this one sees, so the pooled protection is
       // read live as well: levels only, so the job's own spending cannot stop it early.
-      const held=usage&&room?bankedProtection(provider,usage,savedWorkAccountRooms(provider,usage,Date.now(),model),model,
-        row.saved_boundary_ms??Infinity,Date.now()).spendablePercent<=0:false;
+      const held=usage&&room&&row.saved_account?bankedProtection(provider,usage,savedWorkAccountRooms(provider,usage,Date.now(),model),
+        usageForecasts(provider),row.saved_account,model,Date.now()).spendablePercent<=0:false;
       if(row.saved_boundary_ms!==null&&row.saved_boundary_ms<=Date.now()||
         !usage||!account||!room||room.problem||room.tightestUsedPercent===null
         ||!window||ceiling===null||room.tightestUsedPercent>=ceiling||held)
