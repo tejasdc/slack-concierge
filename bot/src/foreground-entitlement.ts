@@ -80,33 +80,83 @@ export function weeklyHoldPercent(need:ForegroundNeed|null,hoursLeft:number,floo
 
 type WindowKind='weekly'|'fiveHour';
 const kindOf=(name:string):WindowKind|null=>/5-hour/i.test(name)?'fiveHour':/weekly/i.test(name)?'weekly':null;
+const HOUR_MS=3_600_000;
 
 /**
- * Room his work could still use, per window kind, summed over every account it can launch on: a
- * fresh reading with room in its tightest window. An account without a window of that kind (a
- * Claude account with no five-hour limit) is not limited by it and counts as a whole window.
+ * An account dispatch would still send his work to although its reading is not fresh: the
+ * account authority's own verdict (`last-showed-room` and the like), with the instant of the
+ * reading its stored windows come from. Null when dispatch would not use it.
  */
-export function pooledRoomPercent(provider:AccountIdentityProvider,usage:ProviderUsage,rooms:readonly AccountRoom[],
-  model:string|null|undefined):Record<WindowKind,number> {
-  const pooled:Record<WindowKind,number>={weekly:0,fiveHour:0};
-  const limited:Record<WindowKind,boolean>={weekly:false,fiveHour:false};
-  for(const room of rooms){
-    if(room.problem||room.tightestUsedPercent===null||room.tightestUsedPercent>=100)continue;
-    const account=usage.accounts.find(item=>item.label===room.account);
-    if(!account)continue;
+export type StaleEligibility=(label:string)=>{readAtMs:number}|null;
+
+/** One account's share of the pool, and for a stale one how much of it was taken back. */
+export type PoolMember=Readonly<{
+  account:string;
+  room:Record<WindowKind,number>;
+  limited:Record<WindowKind,boolean>;
+  /** When its weekly room comes back in full, if that is known. */
+  weeklyResetMs:number|null;
+  stale:{hours:number;decayPercent:number}|null;
+}>;
+
+/**
+ * Every account his work can run on, with the room it still has, per window kind. The pool is
+ * what ordinary dispatch would use, at the level dispatch believes (decided 2026-11-26 with
+ * concierge:3633): a fresh reading with room, and also an account whose reading is stale but
+ * which the account authority still admits because its last reading showed room — counting it as
+ * absent closed the bank when one access token expired, while his work kept running there.
+ *
+ * A stale level is decayed by his own measured pace over the staleness (`decayPerHour`, his
+ * busiest day per hour), floored at zero. The level is only consulted when dispatch is willing to
+ * send his work there, which is exactly when his work may be spending it unseen, so the error is
+ * systematic and in the dangerous direction unless it is taken back. A window whose reset has
+ * passed since the reading counts as a full refill, which is certain in the safe direction. A
+ * stale five-hour window counts nothing until its reset has passed: his weekly pace says nothing
+ * about a five-hour window, and one burst can empty it.
+ *
+ * An account without a window of a kind (a Claude account with no five-hour limit) is not
+ * limited by it and counts as a whole window.
+ */
+export function poolMembers(provider:AccountIdentityProvider,usage:ProviderUsage,rooms:readonly AccountRoom[],
+  model:string|null|undefined,now:number,decayPerHour:number,staleEligible:StaleEligibility=()=>null):PoolMember[] {
+  const members:PoolMember[]=[];
+  for(const account of usage.accounts){
+    const room=rooms.find(item=>item.account===account.label);
+    const fresh=!!room&&!room.problem&&room.tightestUsedPercent!==null&&room.tightestUsedPercent<100;
+    const stale=fresh?null:staleEligible(account.label);
+    if(!fresh&&!stale)continue;
     const windows=includedAllowanceWindows(provider,account,model);
     if(!windows.length)continue;
-    for(const kind of ['weekly','fiveHour'] as const){
-      const used=windows.filter(window=>kindOf(window.name)===kind).map(window=>window.usedPercent);
-      if(used.length)limited[kind]=true;
-      pooled[kind]+=Math.max(0,100-(used.length?Math.max(...used):0));
-    }
+    const hours=stale?Math.max(0,(now-stale.readAtMs)/HOUR_MS):0;
+    const decay=stale?decayPerHour*hours:0;
+    const roomOf=(kind:WindowKind)=>{
+      const ofKind=windows.filter(window=>kindOf(window.name)===kind);
+      if(!ofKind.length)return 100;
+      const reset=Math.max(...ofKind.map(window=>Date.parse(window.resetsAt??'')));
+      if(stale&&Number.isFinite(reset)&&reset<=now)return 100;
+      if(stale&&kind==='fiveHour')return 0;
+      return Math.max(0,100-Math.max(...ofKind.map(window=>window.usedPercent))-decay);
+    };
+    const weekly=windows.filter(window=>kindOf(window.name)==='weekly');
+    const weeklyResets=weekly.map(window=>Date.parse(window.resetsAt??''));
+    members.push({account:account.label,
+      room:{weekly:roomOf('weekly'),fiveHour:roomOf('fiveHour')},
+      limited:{weekly:weekly.length>0,fiveHour:windows.some(window=>kindOf(window.name)==='fiveHour')},
+      weeklyResetMs:weekly.length&&weeklyResets.every(Number.isFinite)?Math.max(...weeklyResets):null,
+      stale:stale?{hours,decayPercent:decay}:null});
   }
-  // A kind no account in the pool is limited by protects nothing: with no five-hour window
-  // anywhere there is no five-hour wall for the bank to push him into.
+  return members;
+}
+
+export function pooledRoomPercent(members:readonly PoolMember[]):Record<WindowKind,number> {
   // An empty pool is no room at all, not an unlimited one.
-  if(!limited.weekly&&!limited.fiveHour&&pooled.weekly===0)return pooled;
-  for(const kind of ['weekly','fiveHour'] as const)if(!limited[kind])pooled[kind]=Infinity;
+  if(!members.length)return {weekly:0,fiveHour:0};
+  const pooled:Record<WindowKind,number>={weekly:0,fiveHour:0};
+  for(const kind of ['weekly','fiveHour'] as const){
+    // A kind no account in the pool is limited by protects nothing: with no five-hour window
+    // anywhere there is no five-hour wall for the bank to push him into.
+    pooled[kind]=members.some(member=>member.limited[kind])?members.reduce((sum,member)=>sum+member.room[kind],0):Infinity;
+  }
   return pooled;
 }
 
@@ -119,6 +169,8 @@ export type ForegroundProtection=Readonly<{
   /** The unmeasured five-hour hold is what refuses: named on its own so the bank going quiet
    * the week five-hour windows return is visible and asks for a measurement, not a hunt. */
   fiveHourBinds:boolean;
+  /** Accounts counted from a stale reading, with how much of their level was taken back. */
+  stale:Record<string,{hours:number;decayPercent:number}>;
 }>;
 
 /**
@@ -127,22 +179,30 @@ export type ForegroundProtection=Readonly<{
  * five-hour hold does not shrink with time — it is the next burst, which can come at any hour.
  */
 export function foregroundProtection(provider:AccountIdentityProvider,usage:ProviderUsage,rooms:readonly AccountRoom[],
-  model:string|null|undefined,need:ForegroundNeed|null,hoursLeft:number,floorPercent:number,now=Date.now()):ForegroundProtection {
-  const pooled=pooledRoomPercent(provider,usage,rooms,model);
+  model:string|null|undefined,need:ForegroundNeed|null,hoursLeft:number,floorPercent:number,now=Date.now(),
+  staleEligible:StaleEligibility=()=>null):ForegroundProtection {
+  // His pace for the decay: his busiest day per hour; a whole account a day when unmeasured.
+  const decayPerHour=(need?need.busiestDayPercent:UNMEASURED_HOLD_PERCENT)/24;
+  const members=poolMembers(provider,usage,rooms,model,now,decayPerHour,staleEligible);
+  const pooled=pooledRoomPercent(members);
   const held={weekly:weeklyHoldPercent(need,hoursLeft,floorPercent),fiveHour:Math.max(floorPercent,UNMEASURED_HOLD_PERCENT)};
   // Another account's week that resets before the horizon gives his work its spent share back
   // from that instant on (2026-11-26: without this, an account resetting in 20 hours made the
   // bank treat a six-day horizon as if no week would refill, leaving it 4.6% of a fresh week).
   // So the hold is checked just before each such refill, against what he could need by then,
-  // and at the horizon with every earlier refill counted. A refill is credited only with the
-  // share used now, which is the least it can give back.
+  // and at the horizon with every earlier refill counted. A refill is credited only with what
+  // the account is not counted as having now, which is the least it can give back.
   let weekly=pooled.weekly-held.weekly;
   if(Number.isFinite(pooled.weekly)){
     weekly=Infinity;
-    const refills=weeklyRefills(provider,usage,rooms,model,now,now+hoursLeft*3_600_000);
+    const untilMs=now+hoursLeft*HOUR_MS;
+    const refills=members.filter(member=>member.limited.weekly&&member.weeklyResetMs!==null
+        &&member.weeklyResetMs>now&&member.weeklyResetMs<untilMs)
+      .map(member=>({atMs:member.weeklyResetMs!,percent:Math.min(100,100-member.room.weekly)}))
+      .sort((a,b)=>a.atMs-b.atMs);
     let credited=0;
     for(const refill of refills){
-      const hoursToRefill=Math.max(0,(refill.atMs-now)/3_600_000);
+      const hoursToRefill=Math.max(0,(refill.atMs-now)/HOUR_MS);
       weekly=Math.min(weekly,pooled.weekly+credited-weeklyHoldPercent(need,hoursToRefill,floorPercent));
       credited+=refill.percent;
     }
@@ -150,23 +210,6 @@ export function foregroundProtection(provider:AccountIdentityProvider,usage:Prov
   }
   const fiveHour=pooled.fiveHour-held.fiveHour;
   return {spendablePercent:Math.min(weekly,fiveHour),pooled,held,measured:!!need,
-    fiveHourBinds:Number.isFinite(fiveHour)&&fiveHour<=0&&fiveHour<=weekly};
-}
-
-/** Weekly windows in the pool that reset strictly before `untilMs`, soonest first, with the share each gives back. */
-function weeklyRefills(provider:AccountIdentityProvider,usage:ProviderUsage,rooms:readonly AccountRoom[],
-  model:string|null|undefined,now:number,untilMs:number):{atMs:number;percent:number}[] {
-  const refills:{atMs:number;percent:number}[]=[];
-  for(const room of rooms){
-    if(room.problem||room.tightestUsedPercent===null||room.tightestUsedPercent>=100)continue;
-    const account=usage.accounts.find(item=>item.label===room.account);
-    const weekly=account?includedAllowanceWindows(provider,account,model).filter(window=>kindOf(window.name)==='weekly'):[];
-    if(!weekly.length)continue;
-    // An account's weekly room is its tightest weekly window, so it refills when the last of them does.
-    const resets=weekly.map(window=>Date.parse(window.resetsAt??''));
-    if(!resets.every(Number.isFinite))continue;
-    const atMs=Math.max(...resets);
-    if(atMs>now&&atMs<untilMs)refills.push({atMs,percent:Math.min(100,Math.max(...weekly.map(window=>window.usedPercent)))});
-  }
-  return refills.sort((a,b)=>a.atMs-b.atMs);
+    fiveHourBinds:Number.isFinite(fiveHour)&&fiveHour<=0&&fiveHour<=weekly,
+    stale:Object.fromEntries(members.filter(member=>member.stale).map(member=>[member.account,member.stale!]))};
 }

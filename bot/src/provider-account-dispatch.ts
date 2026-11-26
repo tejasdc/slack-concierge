@@ -350,6 +350,8 @@ const noOwnClaudeLogin=()=>new ProviderDispatchError({failureClass:'parked_acces
  *     the `canTakeWork` call is model-specific. F7: cross-provider recovery uses the
  *     authority, not `/usage` percentages.
  */
+/** The model a Claude turn with no model of its own is judged for; banked work's pool asks the same. */
+export const DISPATCH_DEFAULT_CLAUDE_MODEL='claude-opus-5-5';
 export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,turnId?:number,model?:string|null,warmCacheAccount?:string|null,runnerTarget:string|null|undefined=undefined):{account:string;home:string|null;because:AccountReason;expected:string|null;selectionRevision:number}|null {
   const proof=turnId===undefined?null:provenWaitingTurns.get(turnId)??null;
   if(turnId!==undefined)provenWaitingTurns.delete(turnId);
@@ -362,7 +364,7 @@ export function chooseClaudeDispatch(prefer:string|null,seenSelectionRevision=0,
   const selected=selectedClaudeHome(runnerTarget)?.label??null;
   const expected=selectedAccount??prefer??selection?.label??defaultAccount;
   const selectionRevision=selection?.revision??0;
-  const resolvedModel=model??'claude-opus-5-5';
+  const resolvedModel=model??DISPATCH_DEFAULT_CLAUDE_MODEL;
   // I1 (2026-11-19): the cached-refusal check lives inside the authority (`canTakeWork`
   // Step 2). The dispatcher used to double-gate with `claudeAccountCachedReset(r.account,model)`
   // AND `authorityOk`, bypassing the `resolvedModel` fallback on the raw call. Collapse

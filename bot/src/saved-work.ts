@@ -4,10 +4,11 @@ import {providerAccountUsage} from './provider-account-usage';
 import {sameAllowanceWindow,usageForecasts,type UsageForecast} from './provider-usage-forecast';
 import type {ProviderUsage} from './provider-account-usage';
 import type {AccountIdentityProvider} from './provider-accounts';
-import {savedWorkAccountRooms} from './provider-account-dispatch';
+import {DISPATCH_DEFAULT_CLAUDE_MODEL,savedWorkAccountRooms} from './provider-account-dispatch';
+import {canTakeWork} from './account-authority';
 import {includedAllowanceWindows} from './account-allowance-observation';
 import {chooseAccountForTurn,type AccountRoom} from './provider-account-choice';
-import {foregroundNeed,foregroundProtection,type ForegroundProtection} from './foreground-entitlement';
+import {foregroundNeed,foregroundProtection,type ForegroundProtection,type StaleEligibility} from './foreground-entitlement';
 import {latestWeekReport} from './usage-breakdown';
 import {log,errorFields} from './log';
 import {API_CREDITS_ACCOUNT,apiRouteRunnerHasKey,apiCreditsConfigured,apiCreditsCycle,apiCreditsNextGrantAt,apiRouteDecision} from './claude-api-route';
@@ -215,7 +216,21 @@ export function bankedProtection(provider:AccountIdentityProvider,usage:Provider
   const hours=resets.length?Math.max(0,(Math.min(...resets)-now)/HOUR):7*24;
   const report=latestWeekReport();
   return foregroundProtection(provider,usage,rooms,model,foregroundNeed(provider,report,bankedSessionsFor(report?.computedAt??null,now)),
-    hours,savedWorkSettings().reserve_percent,now);
+    hours,savedWorkSettings().reserve_percent,now,dispatchStaleEligibility(provider,model,now));
+}
+
+/**
+ * Which stale accounts ordinary dispatch would still send his work to: the account authority's
+ * own verdict, asked for the model dispatch would ask for. Only Claude dispatch spreads his work
+ * across accounts this way; Codex runs on its one active account, which `rooms` already holds.
+ */
+function dispatchStaleEligibility(provider:AccountIdentityProvider,model:string|null|undefined,now:number):StaleEligibility {
+  if(provider!=='claude-code')return ()=>null;
+  return label=>{
+    const verdict=canTakeWork('claude-code',{provider:'claude-code',label},model??DISPATCH_DEFAULT_CLAUDE_MODEL,now);
+    return verdict.ok&&verdict.source.readingFresh===false&&typeof verdict.source.readingReadAtMs==='number'
+      ?{readAtMs:verdict.source.readingReadAtMs}:null;
+  };
 }
 
 /** Sessions that ran banked work in the report's week, read once per report (every five minutes at most). */
@@ -425,7 +440,8 @@ export function reconsiderBankedWork(now=Date.now()):number {
         protection:usage&&rooms.length?Object.fromEntries(rooms.map(room=>{const value=protectionOf(room.account);
           return [room.account,{spendable:Math.round(value.spendablePercent*10)/10,held:value.held,measured:value.measured,
             pooled:{weekly:Number.isFinite(value.pooled.weekly)?Math.round(value.pooled.weekly):null,
-              five_hour:Number.isFinite(value.pooled.fiveHour)?Math.round(value.pooled.fiveHour):null}}];})):null});
+              five_hour:Number.isFinite(value.pooled.fiveHour)?Math.round(value.pooled.fiveHour):null},
+            stale:value.stale}];})):null});
     }
     // A waiting admitted job keeps its ceiling through small drift, so each reading does not rewrite
     // the row and wake the queue; a real move (half a point) or a new account or window replaces it.
