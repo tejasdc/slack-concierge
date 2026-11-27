@@ -780,7 +780,7 @@ export class SessionPeers {
     requestedEffect?:'informational'|'work';authorityInputId?:string;files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[];threadRoot?:string|null;threadSourceMessageId?:string;returnToRequester?:boolean;
     routedFrom?:{sessionId:string;messageId:string;topicId:string;root:string;title:string;originalText:string;originalCreatedAt:string;authorKind:'human'|'agent'|'service'|'unknown';author?:import('./provider-history').MessageAuthor};
     /** The words the recipient reads instead of the standard agent-request framing (his thread reply), and the thread message it answers so its replies post there. */
-    framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent';messageThreadRootId?:string;messageThreadRequestId?:string}}) {
+    framing?:(id:string)=>string;forwardedReply?:{inboxInputId:string;topicId:string;authorKind?:'human'|'agent';messageThreadRootId?:string;messageThreadRequestId?:string;follower?:boolean}}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
     if(actor.turn===null&&input.responseMode!=='context')throw new Error('An active peer request needs its actual provider turn.');
     const client=this.client(input.peer);
@@ -789,7 +789,7 @@ export class SessionPeers {
     const encode=(taskRef:ChatGptTask|null)=>JSON.stringify({peer:input.peer,...(input.responseMode==='context'?{responseMode:'context',contextPayload:input.contextPayload,...(input.contextOperationPayload?{contextOperationPayload:input.contextOperationPayload,contextOperationId:`context-operation:${requestIdFor(actor.inputId,input.action_id)}`}:{})}: {answerGuaranteeVersion:1}),...(input.provider?{provider:input.provider}:{address:input.address}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary}),text:input.text,
       ...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(input.purpose===undefined?{}:{purpose:input.purpose}),...(input.providerReason===undefined?{}:{providerReason:input.providerReason}),...(input.project===undefined?{}:{project:input.project}),...(input.files===undefined?{}:{files:input.files}),
       ...(input.captureId===undefined?{}:{captureId:input.captureId}),...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),requestedEffect:effect,...(input.authorityInputId?{authorityInputId:input.authorityInputId}:{}),...(input.threadRoot?{thread:input.threadRoot}:{}),...(input.returnToRequester?{returnToRequester:true}:{}),
-      ...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),...(input.routedFrom?{routedMessage:{sourceInputId:input.routedFrom.messageId},routedFrom:input.routedFrom}:{}),
+      ...(input.forwardedReply?{forwardedReply:input.forwardedReply,...(input.forwardedReply.follower?{follower:true,promptAnswer:false}:{promptAnswer:true})}:{}),...(input.routedFrom?{routedMessage:{sourceInputId:input.routedFrom.messageId},routedFrom:input.routedFrom}:{}),
       ...(taskRef?{taskRef}:{}),...(input.recoveryOf?{recoveryOf:input.recoveryOf}:{}),...(input.correctionOf?{correctionOf:input.correctionOf}:{})});
     if(input.responseMode==='context') {
       const existing=prior(),encoded=encode(null),digest=hash(encoded);
@@ -893,7 +893,7 @@ export class SessionPeers {
       ...(humanProviderChoices.length?{humanProviderChoices}:{}),
       ...(humanChatGptEfforts.length?{humanChatGptEfforts}:{}),
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.escalationReason===undefined?{}:{escalationReason:input.escalationReason}),...(humanModelChoice?{humanModelChoice:selectedModel}:{}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title}),...(input.summary===undefined?{}:{summary:input.summary})}:{address:input.address}),
-      text,message:input.text,requestedEffect:effect,...(input.purpose?{purpose:input.purpose}:{}),...(input.providerReason?{providerReason:input.providerReason}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),...(input.forwardedReply?{forwardedReply:input.forwardedReply,promptAnswer:true}:{}),
+      text,message:input.text,requestedEffect:effect,...(input.purpose?{purpose:input.purpose}:{}),...(input.providerReason?{providerReason:input.providerReason}:{}),...(input.machineNeed?{machineNeed:input.machineNeed}:{}),...(input.forwardedReply?{forwardedReply:input.forwardedReply,...(input.forwardedReply.follower?{follower:true,promptAnswer:false}:{promptAnswer:true})}:{}),
       ...(input.routedFrom?{routedFrom:input.routedFrom}:{}) ,...(input.correctionOf?{correctionOf:input.correctionOf}:{}),...(files.length?{files}:{})};
     const retain=(accepted:{sessionId:string;address:string;operationId:string},queued:boolean)=>db.transaction(()=>{
       const raced=prior();
@@ -904,7 +904,7 @@ export class SessionPeers {
         sourceInputId:actor.inputId,sourceRunId:runId??undefined,payload:input.contextOperationPayload}):null;
       if(contextOperation&&!contextOperation.duplicate)this.dependencies.owner.recordContextMessage(contextOperation.input);
       db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,delivery_json,status,due_at_ms,created_at_ms,thread_root_input_id,topic_root_input_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+(input.forwardedReply?PROMPT_ANSWER_REMINDER_MS:STILL_WAITING_AFTER_MS),now,input.threadRoot??null,input.routedFrom?.root??topicRootFor(input.threadRoot,actor.inputId)??'');
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+(input.forwardedReply&&!input.forwardedReply.follower?PROMPT_ANSWER_REMINDER_MS:STILL_WAITING_AFTER_MS),now,input.threadRoot??null,input.routedFrom?.root??topicRootFor(input.threadRoot,actor.inputId)??'');
       if(input.responseMode==='context')db.query("UPDATE session_inputs SET receipt_json=json_remove(json_set(coalesce(receipt_json,'{}'),'$.contextDelivery',json(?)),'$.contextForward'),updated_at=CURRENT_TIMESTAMP WHERE id=?")
         .run(JSON.stringify({requestId:id,peer:input.peer,state:'pending'}),contextOperation?.input.id??actor.inputId);
       if(contextOperation)db.query("UPDATE session_inputs SET receipt_json=json_set(receipt_json,'$.contextTarget',?) WHERE id=?")
@@ -1194,7 +1194,9 @@ export class SessionPeers {
         throw new SessionOwnerError('--notify requires a reply that posts into an Inbox thread.');
     }
     const promptAnswer=!!requestPayload.promptAnswer;
-    if(final&&input.replyBody===''&&!input.files?.length){
+    // A follower's bodyless final closes its copy of his message without a word in the thread.
+    const silent=final&&requestPayload.follower===true&&input.replyBody===''&&!input.files?.length;
+    if(final&&!silent&&input.replyBody===''&&!input.files?.length){
       const answer=db.query(`SELECT json_extract(payload_json,'$.answersQuestion') AS marked,json_extract(payload_json,'$.text') AS text FROM session_peer_events
         WHERE request_id=? AND kind='progress' AND (json_extract(payload_json,'$.answersQuestion')=1 OR json_extract(payload_json,'$.answerMarkDropped')=1)
         ORDER BY rowid DESC LIMIT 1`).get(requestId) as {marked:number|null;text:string|null}|null;
@@ -1230,6 +1232,7 @@ export class SessionPeers {
         ...(final?{settlementProof:input.settlementProof}:{}),
         ...(input.replyBody!==undefined?{replyBody:input.replyBody}:{}),...(input.closingLine?{closingLine:input.closingLine}:{}),...(input.answerGroup?{answerGroup:input.answerGroup}:{}),
         ...(input.answersQuestion?{answersQuestion:true}:{}),...(answerMarkDropped?{answerMarkDropped:true}:{}),...(input.notify?{notify:true}:{}),...(input.alsoMainThread?{alsoMainThread:true}:{}),
+        ...(silent?{silent:true}:{}),
         ...(attachments.length?{attachments}:{}),
         ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{}),
         ...(typeof input.handBack==='string'&&input.handBack?{handBack:input.handBack}:{}),
@@ -1513,7 +1516,7 @@ export class SessionPeers {
       })();
       log('info','session_peer_request_delivered_late',{request_id:row.request_id,peer:row.peer});
       // His thread reply the Mac has now taken: its message stops saying it is queued.
-      if(JSON.parse(row.payload_json).forwardedReply)db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.statusDetail'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(row.source_input_id);
+      if(JSON.parse(row.payload_json).forwardedReply&&!JSON.parse(row.payload_json).follower)db.query("UPDATE session_inputs SET receipt_json=json_remove(receipt_json,'$.statusDetail'),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(row.source_input_id);
       row=this.row(row.request_id);
       if(row.outcome==='canceled'){
         await this.revokeCanceledRemote(row.request_id);
@@ -1580,7 +1583,7 @@ export class SessionPeers {
     row=this.row(row.request_id);
     const recipient=currentPeerRecipient(row),custodyPlacement=recipient.custodyPlacement;
     // His thread reply on a Mac agent says what that agent is doing with it, as a server agent's does.
-    if(JSON.parse(row.payload_json).forwardedReply)followForwardedReply(row.source_input_id,{sessionId:this.presentedSession(row.peer,recipient.sessionId),requestId:row.request_id},
+    if(JSON.parse(row.payload_json).forwardedReply&&!JSON.parse(row.payload_json).follower)followForwardedReply(row.source_input_id,{sessionId:this.presentedSession(row.peer,recipient.sessionId),requestId:row.request_id},
       {working:!!remote.execution?.acknowledged||['running','delivering'].includes(remote.execution?.status??''),hold:remote.hold??null});
     // A reply the peer retained but could not push yet lands here by the same event ID, so
     // push and pull never produce two records for one reply.
@@ -1778,6 +1781,9 @@ export class SessionPeers {
   }
   private postThreadEvent(row:PeerRequestRow,event:PeerEventRow,declared:any):boolean {
     if(event.kind==='overdue')return false;
+    // A follower's silent close posts nothing; the thread stays its destination (thread-followers.ts).
+    if(declared.silent===true)return true;
+    const follower=JSON.parse(row.payload_json).follower===true;
     const recipient=currentPeerRecipient(row);
     // A named thread receives the peer's own reply; requester delivery needs its own choice.
     const requestPayload=JSON.parse(row.payload_json);
@@ -1803,12 +1809,13 @@ export class SessionPeers {
         answerSource:declared.source?.input_id&&declared.source?.run_id
           ?{inputId:declared.source.input_id,runId:declared.source.run_id}:null,
         noticeGroup:typeof declared.noticeGroup==='string'?declared.noticeGroup:null,
-        hisInputId:routed?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
+        hisInputId:routed||follower?null:row.source_input_id,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
         messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null,
         alsoMainThread:declared.alsoMainThread===true,
         informational:JSON.parse(row.payload_json).requestedEffect==='informational'});
     }
     let stoppedPost=false;
+    if(follower&&declared.output?.stoppedBy==='tejas')return true;
     if(declared.output?.stoppedBy==='tejas'&&typeof declared.output.stoppedAtMs==='number'){
       const root=route&&'topicId' in route?route.messageId:inboxRequestRoot(db,row.request_id,row.thread_root_input_id??requestPayload.routedFrom?.root??(forwarded?row.source_input_id:null));
       if(root&&inbox&&sessionMetadata(inbox).inbox&&topicOfRoot(root)){
@@ -2000,7 +2007,8 @@ export class SessionPeers {
     }
     if(input.forwardedReply!==undefined&&(typeof input.forwardedReply?.inboxInputId!=='string'||typeof input.forwardedReply?.topicId!=='string'||(input.forwardedReply.authorKind!==undefined&&!['human','agent'].includes(input.forwardedReply.authorKind))
       ||(input.forwardedReply.messageThreadRootId!==undefined&&typeof input.forwardedReply.messageThreadRootId!=='string')
-      ||(input.forwardedReply.messageThreadRequestId!==undefined&&typeof input.forwardedReply.messageThreadRequestId!=='string')))
+      ||(input.forwardedReply.messageThreadRequestId!==undefined&&typeof input.forwardedReply.messageThreadRequestId!=='string')
+      ||(input.forwardedReply.follower!==undefined&&typeof input.forwardedReply.follower!=='boolean')))
       throw new SessionOwnerError('A forwarded thread reply needs its exact source input and topic.');
     if(input.routedFrom!==undefined&&(typeof input.routedFrom?.sessionId!=='string'||typeof input.routedFrom?.messageId!=='string'||typeof input.routedFrom?.topicId!=='string'||typeof input.routedFrom?.originalText!=='string'||typeof input.routedFrom?.originalCreatedAt!=='string'||!['human','agent','service','unknown'].includes(input.routedFrom?.authorKind)))
       throw new SessionOwnerError('A routed message needs its exact source and original words.');
@@ -2303,14 +2311,16 @@ export class SessionPeers {
         source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`}),this.now());
     this.wake();
   }
-  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;replyBody?:string;closingLine?:string;answerGroup?:string;final:boolean;answersQuestion?:boolean;waitingOnWatch?:string;notify?:boolean;alsoMainThread?:boolean;workDisposition?:WorkDisposition;openChatGptIds?:string[];evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
+  reply(actor:PeerActor,input:{silent?:boolean;action_id:string;request_id:string;text:string;replyBody?:string;closingLine?:string;answerGroup?:string;final:boolean;answersQuestion?:boolean;waitingOnWatch?:string;notify?:boolean;alsoMainThread?:boolean;workDisposition?:WorkDisposition;openChatGptIds?:string[];evidence?:unknown[];attachments?:string[];handBack?:string;quiet?:string}) {
     if(this.stopped)throw new Error('Session communication is not accepting replies.');
     const row=this.delivery(input.request_id);
     if(row.target_session_id!==actor.session)throw new Error('Only the exact recipient session/conversation can reply.');
     if(input.workDisposition!==undefined&&(!input.final||row.requested_effect!=='work'||!['completed','failed','needs_decision'].includes(input.workDisposition)))throw new Error('A work disposition requires a final reply to a work request.');
     if(input.final&&row.requested_effect==='work'&&input.workDisposition===undefined)throw new Error('A final reply to a work request needs --work-disposition completed, failed or needs_decision.');
     // Whether there is a thread question to answer is the origin's to judge: it holds the thread.
-    if(input.final&&input.replyBody===''&&!input.attachments?.length&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(row.request_id))
+    const follower=JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.forwardedReply?.follower===true;
+    if(input.silent&&!follower)throw new Error('--silent closes only a request from a thread you follow.');
+    if(input.final&&input.replyBody===''&&!input.attachments?.length&&!follower&&!db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(row.request_id))
       throw new Error('A final reply without a body needs an earlier prompt answer to this request.');
     if(input.notify&&(!input.text.trim()||input.final&&input.replyBody===''))throw new Error('--notify requires a new reply message with words.');
     if(input.alsoMainThread&&!JSON.parse(row.origin_provenance_json??'{}').forwardedIntent?.forwardedReply?.messageThreadRootId)

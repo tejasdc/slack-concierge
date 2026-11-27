@@ -26,6 +26,8 @@ export type ReplyTargetInput=Readonly<{
  questions:readonly Readonly<{id:string;state:string;ownerSessionId?:string|null;decision?:string|null;sources:readonly string[]}>[];
  /** Work the router has in flight from one of this thread's messages. */
  workDispatches:readonly Readonly<{root:string|null;sessionId:string|null}>[];
+ /** Sessions following this thread (thread-followers.ts): each is a choice, never the default by itself. */
+ followers?:readonly string[];
  /** The message he is replying under, and the agent that wrote it when the caller knows. */
  about?:string|null;spokenBy?:string|null;
  resolve:(sessionId:string)=>Readonly<{title:string|null}>|null;
@@ -134,6 +136,8 @@ export function topicReplyTargets(source:Database,input:ReplyTargetInput):ReplyT
  for(const dispatch of input.workDispatches)if(dispatch.root&&roots.includes(dispatch.root))busy(add(dispatch.sessionId,'working on this thread now',[dispatch.root]));
  for(const question of input.questions)if(OPEN_QUESTION_STATES.some(state=>state===question.state)||question.state==='deferred')
   busy(add(question.ownerSessionId,question.decision?`asked you: ${question.decision}`:'asked you a question here',[question.id,...question.sources]));
+ // A follower hears every message he writes here, so he can address one directly in the To line.
+ for(const follower of input.followers??[])add(follower,'follows this thread',[]);
  const selectedSpeaker=about&&input.spokenBy?add(input.spokenBy,'answered here',[about]):null;
  for(const [sessionId,title] of signedAs){const choice=choices.get(sessionId);if(choice&&title)choice.title=title;}
  const list=[...choices.values()];

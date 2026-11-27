@@ -452,7 +452,12 @@ export class PreparedTopics {
   const focus=value.detail.focus&&Buffer.byteLength(json(value.detail.focus))>2048?
    {topicId,runId:value.detail.focus.runId,summary:preview(value.detail.focus.summary??''),detailRef:this.retain(value.detail.focus)}:value.detail.focus;
   const questionCounts=value.questionCounts;
-  const overview={topic:summary,work:summary.work,focus,replyTargets,questionCounts,requestCount:value.requestCount};
+  // Who follows this thread (thread-followers.ts); older readers ignore the field. A follower's
+  // session is a dependency, so its rename or archive re-prepares the overview; a follow or unfollow
+  // changes the topic row itself and marks it dirty.
+  const followers=value.detail.followers;
+  const overview={topic:summary,work:summary.work,focus,replyTargets,followers,questionCounts,requestCount:value.requestCount};
+  for(const follower of followers)depend('session',follower.sessionId);
   for(const root of value.summary.roots)depend('root',root);
   if(['router_working','router_queued'].includes(value.summary.work.kind))depend('inbox-work',String(value.sessionId));
   for(const target of value.detail.replyTargets.choices)depend('session',target.sessionId);

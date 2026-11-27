@@ -99,6 +99,7 @@ import {standingAgentView} from './standing-agent-view';
 import {hostTimerView} from './host-timer-view';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {legacyNotificationRequest,notificationRequest} from './session-notification-request';
+import {topicFollowers} from './thread-followers';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxRowByMessageId,inboxThreadLink,inboxThreadRoot,recordForwardedThreadReply,type InboxCapture} from './session-inbox';
 import {capturesEnterRouter,isInboxProducerKind,readerCaptureAuthor,readerCaptureRefusal,type ReaderCaptureOrigin} from './inbox-producer-sources';
 import {inboxCapturesPage} from './inbox-captures-page';
@@ -3223,6 +3224,7 @@ export class SessionOwner {
         if(retained.duplicate)return saved;
         const forward=recipient;
         this.recordContextMessage(saved);
+        this.forwardToFollowers(session,saved,input,forward?.sessionId??null);
         if(forward?.local){
           const author=acceptedInputAuthor(saved).author;
           const carried=retainSessionInput({sessionId:forward.local,scope:`context-forward:${saved.id}`,actionId:'context',kind:'input',origin:'agent',
@@ -3324,6 +3326,7 @@ export class SessionOwner {
       // A paused, archived or unavailable session has accepted custody but no turn. Publish that
       // receipt change in the same transaction without pretending the provider accepted work.
       if(!forward&&!saved.duplicate&&!canceled&&!this.canSend(session))recordHeldInputReceiptEvent(saved.input);
+      if(!saved.duplicate&&!canceled)this.forwardToFollowers(session,saved.input,input,forward?.sessionId??null);
       return saved;
     })();
     if(heldCaptureId)return {operation:this.receipt(getAcceptedSessionInput(retained.input.id)!)};
@@ -3345,6 +3348,7 @@ export class SessionOwner {
         ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),payload:input});
       if(!retained.duplicate){
         this.recordContextMessage(retained.input);
+        this.forwardToFollowers(session,retained.input,input,target.sessionId);
         const author=acceptedInputAuthor(retained.input).author;
         const payload={...input,contributedFrom:{inputId:retained.input.id,sessionId:`concierge:${session.id}`,author},
           routedFrom:{sessionId:`concierge:${session.id}`,messageId:retained.input.id,originalText:input.text,
@@ -3402,8 +3406,9 @@ export class SessionOwner {
     // Only an explicit intent written by this admission path is eligible for recovery.
     if(db.query('SELECT 1 FROM turns WHERE accepted_input_id=? LIMIT 1').get(input.id)
       ||db.query('SELECT 1 FROM turn_steering_messages WHERE accepted_input_id=? LIMIT 1').get(input.id)
-      ||db.query('SELECT 1 FROM session_communication_requests WHERE source_input_id=? LIMIT 1').get(input.id)
-      ||db.query('SELECT 1 FROM session_peer_requests WHERE source_input_id=? LIMIT 1').get(input.id))return;
+      // A follower's copy of his message (thread-followers.ts) is not this message's own delivery.
+      ||db.query("SELECT 1 FROM session_communication_requests WHERE source_input_id=? AND action_id NOT LIKE 'follow:%' LIMIT 1").get(input.id)
+      ||db.query("SELECT 1 FROM session_peer_requests WHERE source_input_id=? AND action_id NOT LIKE 'follow:%' LIMIT 1").get(input.id))return;
     if(receipt?.state&&receipt.state!=='waiting')return;
     if(!['queue','live'].includes(receipt?.admissionIntent)&&!receipt?.forwardTarget) {
       // Older split-commit records have no proof that an external effect never began.
@@ -3424,6 +3429,33 @@ export class SessionOwner {
       return;
     }
     if(['queue','live'].includes(receipt?.admissionIntent)&&this.canSend(getSessionById(input.session_id)!))this.dispatch(input);
+  }
+  /**
+   * Each session following the thread he wrote in gets his message as its own request
+   * (thread-followers.ts), except the session he sent it to. Only his own messages in an Inbox
+   * thread fan out; agent and service inputs never do. Called inside the admission transaction, so
+   * a local follower's request commits with his message; a follower that fails is logged and
+   * skipped, never a reason to refuse what he wrote.
+   */
+  private forwardToFollowers(session:SessionRow,saved:AcceptedSessionInput,input:Record<string,any>,deliveredTo:string|null) {
+    if(!this.communication||!sessionMetadata(session).inbox||saved.origin!=='human'||saved.source_input_id!==null)return;
+    const messageId=input.replyToMessage?.messageId;
+    if(typeof messageId!=='string')return;
+    const root=inboxThreadRoot(session.id,messageId);
+    const topicId=root?topicOfRoot(root):null;
+    if(!root||!topicId)return;
+    const followers=topicFollowers(topicId).filter(item=>item.sessionId!==deliveredTo);
+    if(!followers.length)return;
+    const title=(db.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(topicId) as {title:string}|null)?.title??null;
+    for(const follower of followers){
+      const local=localSessionNumber(follower.sessionId);
+      const peer=local===null?this.peers?.splitAddress(peerSessionView(follower.sessionId)?.address??'')??null:null;
+      if(local===null&&!peer){log('info','thread_follower_skipped',{input_id:saved.id,follower:follower.sessionId,reason:'unaddressable_peer'});continue;}
+      try{
+        this.communication.forwardToFollower({inbox:session,inputId:saved.id,follower:{sessionId:follower.sessionId,local,peer},topicId,topicTitle:title,root,
+          text:String(input.text??''),...(Array.isArray(input.attachments)&&input.attachments.length?{attachments:input.attachments as string[]}:{})});
+      }catch(error){log('warn','thread_follower_forward_failed',{input_id:saved.id,follower:follower.sessionId,error:String((error as Error)?.message??error).slice(0,300)});}
+    }
   }
   /** Where a reply inside an Inbox thread goes: an agent working on it, or null for the router (and for a message not yet in a placed thread). */
   private threadReplyTarget(session:SessionRow,input:Record<string,any>):{sessionId:string;local:number|null;peer:{peer:string;address:string}|null;title:string|null;topicId:string;root:string;messageThreadRootId?:string;messageThreadRequestId?:string}|null {

@@ -23,6 +23,7 @@ import {inboxRequestRoot,returnsToRequester,topicRouteAnchor} from './inbox-requ
 import { INBOX_LINEAGE_SQL } from './inbox-lineage-sql';
 import { holdsRequesterPlace } from './requester-place';
 import { BUG_REPORT_OWN_THREAD, followForwardedReply, forwardedReplyFraming, isBugReportInput } from './session-inbox';
+import { followerFraming } from './thread-followers';
 import { requestIdFor as peerRequestId } from './session-peers';
 import { expireQuestionsForFinalReply, fileWorkerNeedInThread, fileWorkerNeedWithoutThread, inboxPostTopicRoot, placeFirstInboxPost, resolveInboxPostPromise, linkForwardedReplyWork, refreshRootMemo, linkInboxDispatchWork, postAgentAnswer, notifyFiledAgentAnswer, recordSessionMessageRoute, releaseFocusForPost, routableMessage, topicOfRoot, topicsCommand } from './session-topics';
 import type {unfiledReceivedInputs} from './session-topics';
@@ -2927,6 +2928,58 @@ export class SessionCommunicationCoordinator {
         this.wake();
         return id;
     }
+    /**
+     * His message in a thread, carried to one session that follows the thread (thread-followers.ts).
+     * Same request machinery as forwardReply, with three differences: it is informational, nobody
+     * waits on it (no prompt-answer clock, no route card, his message's receipt stays with whoever
+     * he addressed), and the follower may close it with a silent final that posts nothing. The
+     * action ID names his message and the follower, so a retry or restart creates nothing twice.
+     * A follower that cannot take work right now is skipped and logged: his message never fails
+     * because a follower is paused or archived.
+     */
+    forwardToFollower(input:{inbox:SessionRow;inputId:string;follower:{sessionId:string;local:number|null;peer:{peer:string;address:string}|null};
+        topicId:string;topicTitle:string|null;root:string;messageThreadRootId?:string;text:string;attachments?:string[]}):string|null {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actionId=`follow:${input.inputId}:${input.follower.sessionId}`;
+        const existing=db.query('SELECT request_id FROM session_communication_requests WHERE source_input_id=? AND action_id=?').get(input.inputId,actionId) as {request_id:string}|null
+            ??db.query('SELECT request_id FROM session_peer_requests WHERE source_input_id=? AND action_id=?').get(input.inputId,actionId) as {request_id:string}|null;
+        if(existing)return existing.request_id;
+        const attachments=input.attachments?.length?input.attachments:[];
+        const standIn=db.query('SELECT id FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1').get(input.inbox.id) as {id:number}|null;
+        if(!standIn){log('warn','thread_follower_skipped',{input_id:input.inputId,follower:input.follower.sessionId,reason:'inbox_has_no_turn'});return null;}
+        const forwardedReply={inboxInputId:input.inputId,topicId:input.topicId,follower:true,...(input.messageThreadRootId?{messageThreadRootId:input.messageThreadRootId}:{})};
+        const framing=(requestId:string)=>followerFraming({requestId,text:input.text,topicId:input.topicId,topicTitle:input.topicTitle});
+        if(input.follower.peer) {
+            const {peer,address}=input.follower.peer;
+            const id=peerRequestId(input.inputId,actionId);
+            if(this.forwarding.has(id))return id;
+            this.forwarding.add(id);
+            void this.peers().ask({session:input.inbox.id,turn:standIn.id,inputId:input.inputId},{peer,action_id:actionId,address,text:input.text,requestedEffect:'informational',
+                ...(attachments.length?{attachments}:{}),threadRoot:input.root,framing,forwardedReply})
+              .then(receipt=>log('info','thread_follower_forwarded',{request_id:id,input_id:input.inputId,peer,target_address:address,topic_id:input.topicId,queued:receipt.status==='queued_offline'}))
+              .catch(error=>log('warn','thread_follower_forward_failed',{request_id:id,input_id:input.inputId,peer,error:String((error as Error)?.message??error).slice(0,300)}))
+              .finally(()=>this.forwarding.delete(id));
+            return id;
+        }
+        const target=input.follower.local!==null?getSessionById(input.follower.local):null;
+        const refusal=!target?'unknown_session':!this.dependencies.owner.canReceiveAgentWork(target)?(this.dependencies.owner.canSendReason(target)??'cannot_take_work'):null;
+        if(refusal){log('info','thread_follower_skipped',{input_id:input.inputId,follower:input.follower.sessionId,reason:String(refusal).slice(0,200)});return null;}
+        try{this.dependencies.owner.assertNewChatgptInput(target!);}
+        catch(error){log('info','thread_follower_skipped',{input_id:input.inputId,follower:input.follower.sessionId,reason:String((error as Error)?.message??error).slice(0,200)});return null;}
+        const id=randomUUID(),now=this.now();
+        const address=sessionAddress(target!);
+        const payload=JSON.stringify({address,text:input.text,after:[],requestedEffect:'informational',thread:input.root,forwardedReply,follower:true,promptAnswer:false,...(attachments.length?{attachments}:{})});
+        db.transaction(()=>{
+            db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
+    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+                .run(id,null,null,standIn.id,input.inbox.id,null,actionId,target!.id,null,null,payload,hash(payload),now+STILL_WAITING_AFTER_MS,now,input.inputId,`request:${id}`,input.root);
+            retainSessionInput({id:`request:${id}`,sessionId:target!.id,scope:`session:${input.inputId}`,actionId:`request:${id}`,kind:'input',origin:'agent',
+                payload:{text:framing(id),...(attachments.length?{attachments}:{})},sourceInputId:input.inputId,requestId:id});
+        })();
+        log('info','thread_follower_forwarded',{request_id:id,input_id:input.inputId,target_session_id:target!.id,topic_id:input.topicId});
+        this.wake();
+        return id;
+    }
     async forwardContext(input:{inbox:SessionRow;inputId:string;target:{peer:{peer:string;address:string};sessionId:string};payload:Record<string,any>}):Promise<unknown> {
         if(this.stopped)throw new Error('Session communication is not accepting context.');
         const accepted=getAcceptedSessionInput(input.inputId);
@@ -2972,6 +3025,8 @@ export class SessionCommunicationCoordinator {
      * an agent he had just stopped. A forwarded reply of his is marked cancelled, not stalled.
      */
     private postHisStop(request:RequestRow,event:EventRow,declared:any):boolean {
+        // A follower's request was never what his message waits on: stopping its run ends it quietly.
+        if(JSON.parse(request.payload_json).follower)return true;
         const forwarded=JSON.parse(request.payload_json).forwardedReply;
         const route=forwarded?.inboxInputId?messageRouteForSource(forwarded.inboxInputId):null;
         if(route&&'sessionId' in route)return false;
@@ -3005,7 +3060,7 @@ export class SessionCommunicationCoordinator {
             answerSource:declared.source?.input_id&&declared.source?.run_id
                 ?{inputId:declared.source.input_id,runId:declared.source.run_id}:null,
             noticeGroup:typeof declared.noticeGroup==='string'?declared.noticeGroup:null,
-            hisInputId:thread.forwarded?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
+            hisInputId:thread.forwarded&&!requestPayload.follower?request.source_input_id:null,quiet:typeof declared.quiet==='string'?declared.quiet:null,notify:declared.notify===true,
             informational:JSON.parse(request.payload_json).requestedEffect==='informational',
             messageThreadRootId:typeof forwarded?.messageThreadRootId==='string'?forwarded.messageThreadRootId:null,
             alsoMainThread:declared.alsoMainThread===true,reconcileNotification});
@@ -3168,6 +3223,13 @@ export class SessionCommunicationCoordinator {
         const peer=db.query('SELECT origin_provenance_json FROM session_peer_deliveries WHERE request_id=?').get(requestId) as {origin_provenance_json:string|null}|null;
         return !!peer&&!!JSON.parse(peer.origin_provenance_json??'{}').forwardedIntent?.forwardedReply;
     }
+    /** A request carrying his thread message to a session that follows the thread, held here or delivered from the server. */
+    private followerRequest(requestId:string):boolean {
+        const local=db.query('SELECT payload_json FROM session_communication_requests WHERE request_id=?').get(requestId) as {payload_json:string}|null;
+        if(local)return JSON.parse(local.payload_json).follower===true;
+        const peer=db.query('SELECT origin_provenance_json FROM session_peer_deliveries WHERE request_id=?').get(requestId) as {origin_provenance_json:string|null}|null;
+        return !!peer&&JSON.parse(peer.origin_provenance_json??'{}').forwardedIntent?.forwardedReply?.follower===true;
+    }
     /** Whether this session already answered the request, so a closing final needs no new fit declaration. */
     private answeredBefore(requestId:string):boolean {
         return !!db.query(`SELECT 1 FROM session_communication_events WHERE request_id=?
@@ -3204,6 +3266,8 @@ export class SessionCommunicationCoordinator {
         hand_back?:string;
         /** His thread reply is not this session's work: pass it to the Inbox router to route. */
         to_inbox?:boolean;
+        /** Close a follower request (a thread this session follows) without posting anything. */
+        silent?:boolean;
         /** What of this session's own work his thread reply is about; required on the answer to one. */
         mine?:string;
         /** One line saying what the reply says, shown before its body to the asker and on the Lab page. */
@@ -3242,13 +3306,27 @@ export class SessionCommunicationCoordinator {
         // --to-inbox. The owner holds that choice; an instruction alone was forgotten (2026-11-22).
         const forwardedThread=this.forwardedThreadReply(input.request_id);
         const toInbox=input.to_inbox===true;
+        // A follower hears every message he writes in a thread it follows and answers only what
+        // touches its own work, so it closes the rest without a word in the thread (thread-followers.ts).
+        // A bodyless final on a follower request is the same silent close, from this machine or a Mac.
+        const silent=input.silent===true||(input.final&&!input.text.trim()&&!input.attachments?.length&&!input.files?.length
+            &&!toInbox&&input.workDisposition===undefined&&this.followerRequest(input.request_id));
+        if(input.silent===true){
+            if(!this.followerRequest(input.request_id))
+                throw new Error('--silent closes only a request from a thread you follow (it carries his message to a follower). Nobody waits on a follower request, so it may close without a word; this request is not one, so close it with an ordinary final reply.');
+            if(!input.final||toInbox||input.hand_back!==undefined||input.mine!==undefined||input.notify||input.workDisposition!==undefined
+              ||input.answers_question||input.also_main_thread||input.attachments?.length||input.files?.length)
+                throw new Error('--silent is a final reply on its own with --summary: no --partial, --work-disposition, --to-inbox, --hand-back, --mine, --notify or files.');
+            if(input.text.trim())throw new Error('--silent posts nothing in the thread; put the one line in --summary, or answer first with --partial --answers-question.');
+            if(!input.summary?.trim())throw new Error('--silent needs --summary "<one line: what you answered, or why it is not about your work>".');
+        }
         if(toInbox){
             if(!forwardedThread)throw new Error('--to-inbox passes a reply Tejas wrote in a thread to the Inbox router; this request is not one. For other work that is not yours, reply --work-disposition failed --hand-back not-my-subject.');
             if(!input.final||input.hand_back!==undefined||input.mine!==undefined||(input.workDisposition!==undefined&&input.workDisposition!=='completed'))
                 throw new Error('--to-inbox is a final reply on its own: no --partial, --work-disposition, --hand-back or --mine.');
             if(!saysSomething(input.text))throw new Error('--to-inbox needs one line after -- saying what the message is about and why it is not your work.');
             input={...input,workDisposition:'completed',hand_back:TO_INBOX,summary:input.summary??'Passed to the Inbox: not about this thread\'s work'};
-        } else if(forwardedThread&&(input.final||input.answers_question)&&!saysSomething(input.mine??'')
+        } else if(!silent&&forwardedThread&&(input.final||input.answers_question)&&!saysSomething(input.mine??'')
             // A failure or a question to him is not an answer claimed as this session's own.
             &&!(input.final&&(input.workDisposition==='failed'||input.workDisposition==='needs_decision'))
             &&!this.answeredBefore(input.request_id)){
@@ -3379,7 +3457,7 @@ export class SessionCommunicationCoordinator {
             // bytes to the origin, which admits them into its own custody.
             const peer=this.peerActor(actor);
             const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
-            return noted(this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
+            return noted(this.dependencies.peers.reply(peer, {...(silent?{silent:true}:{}),action_id:input.action_id,request_id:input.request_id,text:input.text,replyBody:input.reply_body,answerGroup:input.answer_group,
                 closingLine:input.final&&input.workDisposition?(toInbox?TO_INBOX_CLOSING:finalClosingLine(input.workDisposition,{checked:input.checked,notChecked:input.not_checked,nothingChanged:input.nothing_changed})):undefined,
                 final:input.final,answersQuestion:input.answers_question,waitingOnWatch:input.waiting_on_watch,workDisposition:input.workDisposition,openChatGptIds:input.openChatGptIds,evidence:input.evidence,...(todoId?{todoId}:{}),...(attachments.length?{attachments}:{}),...(input.hand_back?{handBack:input.hand_back}:{}),...(quiet?{quiet}:{}),...(input.notify?{notify:true}:{}),...(input.also_main_thread?{alsoMainThread:true}:{})}));
         }
@@ -3414,6 +3492,7 @@ export class SessionCommunicationCoordinator {
                     || payload.waitingOnWatch !== input.waiting_on_watch
                     || payload.notify !== (input.notify||undefined)
                     || payload.alsoMainThread !== (input.also_main_thread||undefined)
+                    || payload.silent !== (silent||undefined)
                     || JSON.stringify(payload.evidence) !== JSON.stringify(input.evidence)
                     || !attachments
                     || JSON.stringify(payload.attachments) !== JSON.stringify(attachments.length ? attachments : undefined)
@@ -3459,7 +3538,7 @@ export class SessionCommunicationCoordinator {
         if(input.also_main_thread&&bodylessFinal)
             throw new Error('--also-main-thread needs new answer words or a file to copy into the main thread.');
         if(input.notify&&(!input.text.trim()||bodylessFinal))throw new Error('--notify requires a new reply message with words.');
-        if(bodylessFinal&&!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(request.request_id))
+        if(bodylessFinal&&!silent&&!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' AND json_extract(payload_json,'$.answersQuestion')=1").get(request.request_id))
             throw new Error('A final reply without a body needs an earlier prompt answer to this request.');
         if (input.workDisposition !== undefined && (!input.final || requestedEffect !== 'work'
             || !['completed','failed','needs_decision'].includes(input.workDisposition)))
@@ -3493,6 +3572,7 @@ export class SessionCommunicationCoordinator {
             ...(input.summary?{summary:input.summary}:{}),
             ...(input.notify?{notify:true}:{}),
             ...(input.also_main_thread?{alsoMainThread:true}:{}),
+            ...(silent?{silent:true}:{}),
             ...(input.answers_question?{answersQuestion:true}:{}),
             ...(input.waiting_on_watch?{waitingOnWatch:input.waiting_on_watch}:{}),
             ...(todoId?{todoId}:{}),
@@ -3846,7 +3926,7 @@ export class SessionCommunicationCoordinator {
             this.settle(request, 'failed', routed.error ?? 'The target could not receive this request.');
             return;
         }
-        if (JSON.parse(request.payload_json).forwardedReply) {
+        if (JSON.parse(request.payload_json).forwardedReply && !JSON.parse(request.payload_json).follower) {
             const input = getAcceptedSessionInput(request.target_input_id)!;
             const observed = readInputExecution(input);
             const responder = getSessionById(request.target_session_id);
@@ -4123,6 +4203,9 @@ export class SessionCommunicationCoordinator {
     }
     private postThreadEvent(request:RequestRow,event:EventRow,declared:any,reconcileNotification=false):boolean {
         if(event.kind==='overdue')return false;
+        // A follower's silent close is its whole answer: nothing goes into the thread, and the
+        // thread is still its destination, so the requester is not woken for it.
+        if(declared.silent===true)return true;
         const thread=this.threadAnswer(request,event,declared);
         const stoppedPost=declared.output?.stoppedBy==='tejas'&&this.postHisStop(request,event,declared);
         if(thread&&!stoppedPost)this.postThreadAnswer(request,event,declared,thread,reconcileNotification);

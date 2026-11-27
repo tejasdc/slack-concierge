@@ -31,6 +31,7 @@ import {preparedTopicEventDisplays,preparedTopics,unpreparedTopics,preparedTopic
   preparedTopicResolution,preparedQuestions,preparedTopicDetail,preparedTopicsReady} from './presentation-topic-reader';
 import {movesThreadForHim} from './inbox-thread-time';
 import {houseOf,isThreadHouse,THREAD_HOUSES,THREAD_HOUSE_NAMES} from './thread-houses';
+import {followerSessionId,projectFollowerChange,topicFollowers} from './thread-followers';
 import {areasCommand,checkedAreaIds,applyAreaChange,ensureAgentReportArea,ensureSystemNoticeArea,threadChanges} from './session-areas';
 import {OPEN_QUESTION_STATES,briefMissing,missingFor,questionReadiness,awaitingHim,
   toReadByHim as toReadByHimWithReads,preparingForHim,type QuestionKind,type QuestionOrigin} from './topic-attention-rules';
@@ -558,6 +559,7 @@ function projectTopicChange(kind:string,payload:any) {
       .run(root.rootInputId,root.topicId,root.placedAt,JSON.stringify(root.placedBy??{}),root.reason??null);
   for(const request of [...(payload.request?[payload.request]:[]),...(payload.requests??[])])upsertRequest(request);
   for(const question of payload.questions??[])upsertQuestion(question);
+  if(kind==='topic'&&(payload.change==='followed'||payload.change==='unfollowed'))projectFollowerChange(payload);
   for(const item of payload.reading??[])
     db.query('INSERT OR IGNORE INTO inbox_topic_reading(topic_id,item_id,revision,kind,at,by_json) VALUES(?,?,?,?,?,?)')
       .run(item.topicId,item.itemId,item.revision??0,item.kind,item.at,item.by?JSON.stringify(item.by):null);
@@ -572,7 +574,7 @@ function projectTopicChange(kind:string,payload:any) {
 /** Replays every topic event into the tables. Used by migration/repair; safe to run twice. */
 export function rebuildTopicProjections() {
   return db.transaction(()=>{
-    for(const table of ['inbox_area_neighbors','inbox_area_threads','inbox_areas','inbox_topic_roots','inbox_requests','inbox_questions','inbox_topic_reading','inbox_focus','inbox_topics'])db.exec(`DELETE FROM ${table}`);
+    for(const table of ['inbox_area_neighbors','inbox_area_threads','inbox_areas','inbox_topic_followers','inbox_topic_roots','inbox_requests','inbox_questions','inbox_topic_reading','inbox_focus','inbox_topics'])db.exec(`DELETE FROM ${table}`);
     const rows=db.query(`SELECT kind,payload_json FROM session_owner_events WHERE kind IN (${TOPIC_EVENT_KINDS.map(()=>'?').join(',')}) ORDER BY sequence`).all(...[...TOPIC_EVENT_KINDS]) as {kind:string;payload_json:string}[];
     for(const row of rows) {
       if(row.kind==='topics_migration')continue;
@@ -626,7 +628,7 @@ function record(sessionId:number,inputId:string,turnId:number|null,change:Change
   }
 }
 /** Every agent mutation is retained by source input + action id; a duplicate returns the first receipt. */
-function agentMutation<T extends object>(actor:TopicActor,actionId:string,payload:unknown,run:(actionInputId:string)=>{change:Change;result:T},eventSessionId=actor.sessionId):T&{duplicate?:boolean} {
+function agentMutation<T extends object>(actor:TopicActor,actionId:string,payload:unknown,run:(actionInputId:string)=>{change:Change|null;result:T},eventSessionId=actor.sessionId):T&{duplicate?:boolean} {
   const started=performance.now();
   let retainMs=0,computeMs=0,recordMs=0,receiptMs=0,duplicate=false,completed=false;
   let phaseStart=started,phaseName:'retain'|'compute'|'record'|'receipt'|'commit'='retain';
@@ -643,9 +645,10 @@ function agentMutation<T extends object>(actor:TopicActor,actionId:string,payloa
       const {change,result}=run(saved.input.id);
       computeMs=performance.now()-phaseStart;
       resultForTrace=result;
-      changeTopicId=typeof change.payload?.topicId==='string'?change.payload.topicId:null;
+      changeTopicId=typeof change?.payload?.topicId==='string'?change.payload.topicId:null;
       phaseStart=performance.now();phaseName='record';
-      record(eventSessionId,saved.input.id,actor.turnId,change);
+      // A command that changes nothing (following a thread already followed) keeps its receipt only.
+      if(change)record(eventSessionId,saved.input.id,actor.turnId,change);
       recordMs=performance.now()-phaseStart;
       phaseStart=performance.now();phaseName='receipt';
       db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
@@ -684,7 +687,7 @@ function agentMutation<T extends object>(actor:TopicActor,actionId:string,payloa
   }
 }
 /** His own action on a topic. Same retained-receipt shape as the owner's other human controls. */
-function humanMutation(sessionId:number,clientActionId:string,payload:unknown,run:()=>{change:Change;result:Record<string,any>}) {
+function humanMutation(sessionId:number,clientActionId:string,payload:unknown,run:()=>{change:Change|null;result:Record<string,any>}) {
   if(typeof clientActionId!=='string'||!clientActionId||clientActionId.length>200)throw new TopicError('Stable clientActionId required.');
   const started=performance.now();
   let retainMs=0,computeMs=0,recordMs=0,receiptMs=0,duplicate=false,completed=false;
@@ -701,7 +704,7 @@ function humanMutation(sessionId:number,clientActionId:string,payload:unknown,ru
       computeMs=performance.now()-phaseStart;
       resultForTrace=result;
       phaseStart=performance.now();phaseName='record';
-      record(sessionId,saved.input.id,null,change);
+      if(change)record(sessionId,saved.input.id,null,change);
       recordMs=performance.now()-phaseStart;
       phaseStart=performance.now();phaseName='receipt';
       // His app answers an action with the thread as it now stands, so the answer is the thread view
@@ -1616,6 +1619,7 @@ export function replyTargets(topicId:string,about:string|null=null,canSend:(sess
     requests:topicRequests(topicId) as any,
     questions:topicQuestions(topicId).map(question=>({id:question.questionId,state:question.state,ownerSessionId:question.owner?.sessionId??null,decision:question.brief?.decision??null,sources:question.sources})),
     workDispatches:workIndex(session.id).dispatches,
+    followers:topicFollowers(topicId).map(item=>item.sessionId),
     about,spokenBy:about?spokenBySession(session.id,about):null,
     resolve:sessionId=>{
       const local=localSessionNumber(sessionId);
@@ -1625,6 +1629,15 @@ export function replyTargets(topicId:string,about:string|null=null,canSend:(sess
       const view=peerSessionView(sessionId);
       return view&&!view.archived&&!view.archivedAt&&view.status!=='archived'?{title:view.title??null}:null;
     },
+  });
+}
+/** Each follower as the thread shows it: its session and current name, who added it and when. */
+export function followerViews(topicId:string):{sessionId:string;title:string|null;addedBy:string;addedAt:string}[] {
+  return topicFollowers(topicId).map(item=>{
+    const local=localSessionNumber(item.sessionId);
+    const row=local!==null?getSessionById(local):null;
+    const title=row?sessionMetadata(row).title??null:peerSessionView(item.sessionId)?.title??null;
+    return {sessionId:item.sessionId,title,addedBy:item.addedBy,addedAt:item.addedAt};
   });
 }
 /** A session on another machine as the peer catalogue this owner keeps presents it (`mac:86` → its view), or null. */
@@ -2553,6 +2566,29 @@ function recordAnswer(session:SessionRow,input:AcceptedSessionInput,body:any,by:
  * the caller is an admitted live run; this decides what that run is allowed to do.
  */
 /** `listHead` is the change a list read must cover, from `listReadHead` at the request entrance. */
+/**
+ * Follow or unfollow one thread for one session (thread-followers.ts). Both are idempotent: a second
+ * follow, or unfollowing a session that does not follow, records nothing and answers the list as it is.
+ * The Inbox router already hears every message, so it is refused as a follower.
+ */
+function followChange(topic:StoredTopic,verb:'follow'|'unfollow',named:unknown,by:TopicBy,addedBy:string,why:string|null):{change:Change|null;result:Record<string,any>} {
+  const session=followerSessionId(text(named,'--session',300));
+  if(!session)throw new TopicError('No session this owner knows matches that --session. Use an exact address from sessions search, or a canonical ID such as concierge:12 or mac:86.',404,'FOLLOWER_UNKNOWN');
+  const inbox=inboxSession();
+  const routerLineage=inbox?new Set((db.query(INBOX_LINEAGE_SQL).all(inbox.id) as {id:number}[]).map(row=>`concierge:${row.id}`)):new Set<string>();
+  if(session.inbox||routerLineage.has(session.sessionId))
+    throw new TopicError('The Inbox router already hears every message in every thread, so it does not follow one.',409,'FOLLOWER_IS_INBOX');
+  const current=topicFollowers(topic.topicId);
+  const present=current.some(item=>item.sessionId===session.sessionId);
+  if(verb==='follow'?present:!present)return {change:null,result:{topicId:topic.topicId,followers:current,unchanged:true}};
+  const next=bumped(topic);
+  const followed=verb==='follow'?{sessionId:session.sessionId,addedBy,addedAt:nowIso()}:null;
+  const followers=verb==='follow'?[...current,followed!]:current.filter(item=>item.sessionId!==session.sessionId);
+  return {change:{kind:'topic',payload:{change:verb==='follow'?'followed':'unfollowed',topicId:topic.topicId,topic:next,
+    ...(followed?{followed}:{unfollowed:{sessionId:session.sessionId}}),title:session.title,by,...(why?{reason:why}:{}),revision:next.revision}},
+    result:{topicId:topic.topicId,topic:next,followers}};
+}
+
 export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
   if(typeof body?.verb==='string'&&body.verb.startsWith('area.'))return areasCommand(actor,{...body,verb:body.verb.slice(5)});
   const own=getSessionById(actor.sessionId);
@@ -2748,6 +2784,14 @@ export function topicsCommand(actor:TopicActor,body:any,listHead?:number) {
         const next=bumped(topic,{state:'open',closure:null,setAside:null});
         return {change:{kind:'topic',payload:{change:'reopened',topicId:topic.topicId,topic:next,by,reason:why,revision:next.revision,questions}},result:{topic:next,restored:questions.length}};
       });
+    }
+    case 'followers':{
+      const topic=topicRow(text(body?.topic_id,'topic id',200));
+      return {topicId:topic.topicId,followers:followerViews(topic.topicId)};
+    }
+    case 'follow':case 'unfollow':{
+      return agentMutation(actor,actionId(),{kind:`topic-${verb}`,topicId:body?.topic_id,session:body?.session,reason:reason()},
+        ()=>followChange(topicFor(body?.topic_id),verb,body?.session,by,`concierge:${actor.sessionId}`,reason()),inboxOrThrow().id);
     }
     case 'pin':case 'unpin':{
       return agentMutation(actor,actionId(),{kind:`topic-${verb}`,topicId:body?.topic_id,reason:reason()},()=>{
@@ -3101,7 +3145,7 @@ export function clearFocusForEndedRun(turn:{id:number;session_id:number}) {
 
 /* ------------------------------------------------------------------ human actions */
 
-const HUMAN_ACTIONS=['rename','summary','close','reopen','pin','unpin','house','set_aside','resume','move','split','merge','read','expose','question','request','file','followup'];
+const HUMAN_ACTIONS=['rename','summary','close','reopen','pin','unpin','house','follow','unfollow','set_aside','resume','move','split','merge','read','expose','question','request','file','followup'];
 
 export function createTopicByHuman(body:any) {
   const session=inboxOrThrow();
@@ -3176,6 +3220,7 @@ export function topicHumanAction(topicId:string,body:any) {
         return {change:{kind:'topic',payload:{change:'reopened',topicId,topic:next,by,reason:why,revision:next.revision,questions,requests}},
           result:{topic:next,restored:questions.length,requests:requests.length}};
       }
+      case 'follow':case 'unfollow':return followChange(topic,kind,action.sessionId,by,'tejas',null);
       case 'pin':case 'unpin':{
         const next=bumped(topic,{pinnedAt:kind==='pin'?topic.pinnedAt??at:null});
         return {change:{kind:'topic',payload:{change:kind==='pin'?'pinned':'unpinned',topicId,topic:next,by,revision:next.revision}},result:{topic:next}};
