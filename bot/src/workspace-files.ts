@@ -97,13 +97,18 @@ function projectRootFor(path: string, workspaceRoot: string): string {
  * file system decides between them; neither is guessed at (Tejas, 2026-11-22, after five such
  * links in one document all resolved one folder too deep and none of them opened).
  *
+ * Agents also write paths from the workspace folder that holds every project, naming the
+ * project first — `agent-ecology/docs/research/x.md` from a session already working in
+ * `agent-ecology` — so the workspace root is the last place tried. Joining that onto the
+ * project doubled its name and the link failed (bug report 542e0d0d, 2026-11-27).
+ *
  * `../` is left alone: it means the document's own folder and nothing else.
  */
 export function referenceCandidates(reference: string, from: string, workspaceRoot: string): string[] {
   const rest = reference.replace(/^\.\//, '');
   const folder = from.slice(0, from.lastIndexOf(sep)) || sep;
   const candidates = [resolve(folder, rest)];
-  if (!rest.startsWith('../')) candidates.push(resolve(projectRootFor(from, workspaceRoot), rest));
+  if (!rest.startsWith('../')) candidates.push(resolve(projectRootFor(from, workspaceRoot), rest), resolve(workspaceRoot, rest));
   return [...new Set(candidates)];
 }
 
