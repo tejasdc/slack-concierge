@@ -2207,10 +2207,11 @@ export class SessionOwner {
       }
     }
     if(!from&&this.configuredProjectRunner()) {
-      const remote=await this.runnerProjectCall<{workspaceRoot:string;matched:boolean;file?:WorkspaceFile}>('projects.fileAt',{path:expandHome(path)});
+      const remote=await this.runnerProjectCall<{workspaceRoot:string;matched:boolean;file?:WorkspaceFile;refusal?:{message:string;status:number;code:string}}>('projects.fileAt',{path:expandHome(path)});
       // The runner reads for this instance and is not a machine anyone can address, so the
       // answer names this instance: the name a caller sends back to read the file again.
       if(remote?.matched&&remote.file)return {file:{...remote.file,machine:self}};
+      if(remote?.matched&&remote.refusal)throw new SessionOwnerError(remote.refusal.message,remote.refusal.status,remote.refusal.code);
       if(remote&&remote.workspaceRoot!==''&&isAbsolute(remote.workspaceRoot)) {
         const requested=expandHome(path),root=remote.workspaceRoot;
         if(requested===root||requested.startsWith(root+sep))throw new SessionOwnerError('That file is not available on the configured project runner.',404,'FILE_UNAVAILABLE');

@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { sessionProject, sessionProjects } from './session-projects';
-import { isSensitiveWorkspacePath, readWorkspaceFile } from './workspace-files';
+import { isSensitiveWorkspacePath, readWorkspaceFile, WorkspaceFileError } from './workspace-files';
 import { renderTodoItemContents } from './todo-markdown';
 import { expectedRunnerProjectOrigin } from './runner-project-setup';
 import {runnerGithubGitEnvironment} from './runner-git-auth';
@@ -105,7 +105,13 @@ export async function serveProjectCall(method:string,params:Record<string,unknow
     if(!isAbsolute(path)&&path!=='~'&&!path.startsWith('~/'))throw new Error('A file path must be absolute or start with ~.');
     const requested=isAbsolute(path)?path:path==='~'?homedir():join(homedir(),path.slice(2));
     if(!within(root,requested))return {workspaceRoot:root,matched:false};
-    return {workspaceRoot:root,matched:true,file:readWorkspaceFile({machine:process.env.CONCIERGE_RUNNER_NAME||'runner',workspaceRoot:root,path:requested})};
+    // A refused read is an answer about the file, not a failure of this runner: returning it lets
+    // the owner say "not on this machine" instead of calling the runner unavailable (report 542e0d0d).
+    try{return {workspaceRoot:root,matched:true,file:readWorkspaceFile({machine:process.env.CONCIERGE_RUNNER_NAME||'runner',workspaceRoot:root,path:requested})};}
+    catch(error){
+      if(!(error instanceof WorkspaceFileError))throw error;
+      return {workspaceRoot:root,matched:true,refusal:{message:error.message,status:error.status,code:error.code}};
+    }
   }
   if(method==='projects.resolve') {
     const {project}=projectFolder(params.project);
