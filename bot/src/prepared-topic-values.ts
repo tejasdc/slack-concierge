@@ -234,10 +234,13 @@ export function preparedTopicValue(context:TopicContext,topicId:string,sink?:Top
   toRead:{count:questionCounts.reading,oldestAt:readItems[0]?.at??null,items:readItems},
   questions:{open:questionCounts.open,checking:questionCounts.checking,deferred:questionCounts.deferred},requests:requestCounts,work,
   ...(sink&&(questionCounts.open>3||questionCounts.reading>3)?{coverage:{complete:false,code:'topic_attention_preview'}}:{})};
- const replyTargets=replyTargetsValue(context,topic,roots,requests,questions);
+ const followerRows=context.source.query('SELECT session_id,added_by,added_at FROM inbox_topic_followers WHERE topic_id=? ORDER BY added_at,session_id')
+  .all(topicId) as {session_id:string;added_by:string;added_at:string}[];
+ const followers=followerRows.map(row=>({sessionId:row.session_id,title:sessionChoice(context,row.session_id)?.title??null,addedBy:row.added_by,addedAt:row.added_at}));
+ const replyTargets=replyTargetsValue(context,topic,roots,requests,questions,followerRows.map(row=>row.session_id));
  const detail={topic:{...summary,closure:topic.closure,history:topicHistory(context,topicId)},
   requests:sink?[]:requests.map(request=>requestView(context,request)),questions:sink?[]:questions,
-  focus:context.focus?.topicId===topicId?context.focus:null,work,replyTargets};
+  focus:context.focus?.topicId===topicId?context.focus:null,work,replyTargets,followers};
  // Open threads are one list, newest conversation first. Ranking what waits on him above everything
  // else pushed threads he had just spoken into past the first page, because nearly every thread
  // carries something to read (Tejas, 2026-10-08: "A lot of items … are missing … The order seems
@@ -317,23 +320,27 @@ function requestView(context:TopicContext,request:any){
   closure:request.closure,createdAt:request.createdAt,updatedAt:request.updatedAt};
 }
 
-function replyTargetsValue(context:TopicContext,topic:any,roots:string[],requests:any[],questions:any[]){
+/** A session this read can offer, with its name: not archived or suspended, here or on a peer. */
+function sessionChoice(context:TopicContext,id:string):{title:string|null}|null {
+ const {source}=context;
+ const local=/^concierge:([1-9]\d*)$/.exec(id);
+ if(local){const row=source.query('SELECT status,native_metadata_json FROM sessions WHERE id=?').get(Number(local[1])) as any;
+  if(!row||row.status==='archived'||parse(row.native_metadata_json,{})?.suspended)return null;
+  return {title:parse(row.native_metadata_json,{})?.title??null};}
+ const row=source.query("SELECT view_json FROM session_peer_catalogue WHERE json_extract(view_json,'$.id')=?").get(id) as {view_json:string}|null;
+ const view=parse(row?.view_json);if(!view||view.archived||view.archivedAt||view.status==='archived')return null;
+ return {title:view.title??null};
+}
+
+function replyTargetsValue(context:TopicContext,topic:any,roots:string[],requests:any[],questions:any[],followers:string[]=[]){
  const {source,sessionId}=context;
  // The one rule (`reply-target-rules.ts`); this read only says what the thread holds and which
  // sessions it can offer. Its own copy of the rule is how agents that had finished vanished here.
  return topicReplyTargets(source,{
   router:`concierge:${sessionId}`,inboxSessionId:sessionId,roots,requests,
   questions:questions.map((question:any)=>({id:question.id,state:question.state,ownerSessionId:question.owner?.sessionId??null,decision:question.brief?.decision??null,sources:question.sources??[]})),
-  workDispatches:context.dispatches,
-  resolve:id=>{
-   const local=/^concierge:([1-9]\d*)$/.exec(id);
-   if(local){const row=source.query('SELECT status,native_metadata_json FROM sessions WHERE id=?').get(Number(local[1])) as any;
-    if(!row||row.status==='archived'||parse(row.native_metadata_json,{})?.suspended)return null;
-    return {title:parse(row.native_metadata_json,{})?.title??null};}
-   const row=source.query("SELECT view_json FROM session_peer_catalogue WHERE json_extract(view_json,'$.id')=?").get(id) as {view_json:string}|null;
-   const view=parse(row?.view_json);if(!view||view.archived||view.archivedAt||view.status==='archived')return null;
-   return {title:view.title??null};
-  },
+  workDispatches:context.dispatches,followers,
+  resolve:id=>sessionChoice(context,id),
  });
 }
 

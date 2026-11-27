@@ -84,6 +84,7 @@ router-actions.sh sessions attention withdraw <session-address> <source-flags> -
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
 router-actions.sh sessions requirements <request-id> (--requirements <record> ... | --requirements none --requirements-why "<reason>") <source-flags> --action-id A   # the requester re-declares which requirement records an open request delivers
 router-actions.sh sessions reply <request-id> [--also <request-id> ...] [<source-flags>] --action-id A [--notify] [--also-main-thread] [--partial [--answers-question] [--waiting-on-watch <watch-id>] | --work-disposition completed|failed|needs_decision --summary "<one line>"] [--all-done (--checked "<what you ran live and saw>" | --not-checked "<why no live check>" | --nothing-changed "<what the answer rests on>")] [--only-he-can sign-in|secret|device|ambiguous|approval --his-words "<his exact words>" --why-not-answered "<what they leave open>" [--todo <his to-do id>|none] [--decision-id ID --approval-action ACTION (approval only)]] [--hand-back not-my-subject|too-loaded (with failed)] [--mine "<what of your work his thread reply is about>" (required on the answer to his thread reply)] [--quiet-because "<why he need not read this>" (with completed)] [--before "<what earlier agents did and how this differs>" (required on the first reply to a request that came with WHAT CAME BEFORE)] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
+router-actions.sh sessions reply <request-id> [<source-flags>] --action-id A --silent --summary "<one line: what you answered, or why it is not about your work>"  (closes a request from a thread you follow: posts nothing in the thread, notifies nobody; refused on any other request)
 router-actions.sh sessions reply <request-id> [<source-flags>] --action-id A --to-inbox -- "<what his thread reply is about and why it is not your work>"  (his message reached you because you work in its thread but it is not your work, e.g. a bug or question about Concierge or thnkr.ing: posts one line in the thread, settles the request and passes his exact message to the Inbox router to route)
 --notify on post or reply sends one requested phone notification carrying that new message's own words. It consumes a matching one-shot notification on that Inbox topic. On reply it is honored for a substantive --partial --answers-question answer or a completed final with new answer words, including a final informational reply. Verification evidence such as --all-done --not-checked is recorded separately. A progress-only --partial --notify is refused. For ineligible final replies the flag is dropped with a notice. A bodyless final cannot use it.
 When a ready decision question, needs_you outcome, or needs_decision reply blocks work on Tejas, the owner raises one phone notification by default. The question opens with its one-line --summary (required on needs_you as on every final reply): say what he must decide and the result it depends on, because it is the first line of his notice; background and other news go in the text after it. Name what he must do and where he can answer; --notify is for an additional explicit request on a different message, not needed for the blocked question. Routine progress and completed answers keep their existing notification rule. A question that asks him to sign in, give a secret or do something on his device names the to-do it is about with --todo <id> (find it in his to-dos: thinkering -s 'http://x/todos/tasks?limit=200', which reaches thnkr.ing from the server or a runner, or curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL where thinkering is not found; from the Mac, curl -s --unix-socket /run/thinkering/session-capabilities.sock with the same URL through ssh remote-box), or --todo none when no to-do for that step exists. Concierge refuses the question when that to-do is already done or dropped (he has already done it, so continue from there), and closes the question by itself when he ticks the to-do off.
@@ -157,6 +158,8 @@ router-actions.sh sessions topics close <topicId> <source-flags> --action-id A -
 router-actions.sh sessions topics reopen <topicId> <source-flags> --action-id A -- <reason>
 router-actions.sh sessions topics pin|unpin <topicId> <source-flags> --action-id A
 router-actions.sh sessions topics house <topicId> --house discussions|building|everyday|notices [--reason R] <source-flags> --action-id A
+router-actions.sh sessions topics follow|unfollow <topicId> --session <address or concierge:N|mac:N> [--reason R] <source-flags> --action-id A
+router-actions.sh sessions topics followers <topicId> <source-flags>
 router-actions.sh sessions topics request add <topicId> <source-flags> --action-id A --title T [--source <inputId>[:passage] ...] -- <brief>
 router-actions.sh sessions topics request amend <requestId> <source-flags> --action-id A [--title T] [--source ...] -- <what changed and why>
 router-actions.sh sessions topics request link <requestId> <source-flags> --action-id A --dispatch <communicationRequestId>
@@ -237,7 +240,7 @@ export type SessionCommunicationRequest =
   | { operation: "attention-withdraw"; body: { source: Source; action_id:string; address:string; need_event_id:string; reason:string } }
   | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
-  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; notify?:boolean; also_main_thread?:boolean; also?: string[]; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; todo?:string; decision_id?:string; approval_action?:string; checked?:string; not_checked?:string; nothing_changed?:string; all_done?:boolean; hand_back?:string; quiet_because?:string; before?:string; to_inbox?:boolean; mine?:string } }
+  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; notify?:boolean; also_main_thread?:boolean; also?: string[]; summary?: string; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[]; his_words?:string; why_not_answered?:string; only_he_can?:string; todo?:string; decision_id?:string; approval_action?:string; checked?:string; not_checked?:string; nothing_changed?:string; all_done?:boolean; hand_back?:string; quiet_because?:string; before?:string; to_inbox?:boolean; silent?:boolean; mine?:string } }
   | { operation: "get"; body: { source: Source; request_id: string } }
   | { operation: "request-requirements"; body: { source: Source; action_id: string; request_id: string; requirements: string[]; requirements_why?: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string; reason?: string } }
@@ -312,10 +315,10 @@ function sourceFrom(flags: Map<string, string>): Source {
   return { channel_id: channel, message_ts: timestamp };
 }
 
-const TOPIC_VERBS = ["list","obligations","read","items","detail","resolve","message","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","house","request","questions","question","answer","acknowledge","focus","release","file","area"];
+const TOPIC_VERBS = ["list","obligations","read","items","detail","resolve","message","questions-read","create","place","route","link","unlink","rename","summary","merge","close","reopen","pin","unpin","house","follow","unfollow","followers","request","questions","question","answer","acknowledge","focus","release","file","area"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence","--area"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason","--correction-source","--side-scope",
-  "--into","--from","--thread","--scope","--dispatch","--disposition","--human-quote","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message","--house"];
+  "--into","--from","--thread","--scope","--dispatch","--disposition","--human-quote","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need","--kind","--part","--digest","--message","--house","--session"];
 /** `sessions topics <verb> …`: parsed here, dispatched as one operation to the coordinator. */
 function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const separator = args.indexOf("--");
@@ -360,7 +363,8 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
     }
   }
   const source = sourceFrom(flags);
-  const mutating = !["list","obligations","read","items","detail","resolve","message","questions-read","area.list","area.suggest"].includes(verb);
+  const mutating = !["list","obligations","read","items","detail","resolve","message","questions-read","followers","area.list","area.suggest"].includes(verb);
+  if ((verb === "follow" || verb === "unfollow") && !flags.has("--session")) invalid(`topics ${verb} requires --session <address or canonical session ID>.`);
   const actionId = flags.get("--action-id");
   if (mutating && !actionId) invalid(`topics ${verb.replace(".", " ")} requires an explicit stable --action-id.`);
   const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.merge","request.close","request.reopen","question.settle","question.restore","focus"].includes(verb);
@@ -377,6 +381,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   copy("--answer", "answer"); copy("--replacement", "replacement"); copy("--query", "query"); copy("--cursor", "cursor"); copy("--need", "need");
   copy("--kind","kind");
   copy("--house","house");
+  copy("--session","session");
   copy("--message","message_id");
   copy("--digest","digest");
   if(flags.has('--part')){
@@ -958,6 +963,7 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
   let answersQuestion = false;
   let allDone = false;
   let toInbox = false;
+  let silent = false;
   let detach = false;
   let resurrect = false;
   let hisChat = false;
@@ -997,6 +1003,11 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
     if (flag === "--all-done" && operation === "reply") {
       if (allDone) invalid("Repeated --all-done option.");
       allDone = true;
+      continue;
+    }
+    if (flag === "--silent" && operation === "reply") {
+      if (silent) invalid("Repeated --silent option.");
+      silent = true;
       continue;
     }
     if (flag === "--to-inbox" && operation === "reply") {
@@ -1342,6 +1353,8 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
   }
   if(toInbox&&(partial||workDisposition||flags.has('--hand-back')||flags.has('--mine')||also.length||!message.trim()))
     invalid('--to-inbox is a final reply on its own, with one line after -- saying what the message is about and why it is not your work; no --partial, --work-disposition, --hand-back, --mine or --also.');
+  if(silent&&(partial||workDisposition||toInbox||notify||flags.has('--hand-back')||flags.has('--mine')||also.length||paths.length||custody.length||message.trim()))
+    invalid('--silent closes a follower request with only --summary "<one line why>": no --partial, --work-disposition, --to-inbox, --notify, --hand-back, --mine, --also, files or text after --.');
   if(operation==='reply'&&!partial&&!summary&&!toInbox)invalid('A final reply needs --summary "<one line saying what your answer is>"; the asker sees it first and may see only it.');
   if(operation==='reply'&&notify&&!message.trim())invalid('--notify requires a new reply message with words.');
   const answerView=flags.get('--answer-view');
@@ -1407,7 +1420,7 @@ export function parseRouterSessionsArgs(argv: string[], environment: NodeJS.Proc
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached,
         ...(openChatGptIds.length?{openChatGptIds}:{}),
         ...Object.fromEntries([['--his-words','his_words'],['--why-not-answered','why_not_answered'],['--only-he-can','only_he_can'],['--todo','todo'],['--decision-id','decision_id'],['--approval-action','approval_action'],['--checked','checked'],['--not-checked','not_checked'],['--nothing-changed','nothing_changed'],['--hand-back','hand_back'],['--quiet-because','quiet_because'],['--before','before'],['--mine','mine']]
-          .filter(([flag])=>flags.has(flag)).map(([flag,key])=>[key,flags.get(flag)!])),...(allDone?{all_done:true}:{}),...(toInbox?{to_inbox:true}:{}),...(also.length?{also}:{}) } };
+          .filter(([flag])=>flags.has(flag)).map(([flag,key])=>[key,flags.get(flag)!])),...(allDone?{all_done:true}:{}),...(toInbox?{to_inbox:true}:{}),...(silent?{silent:true}:{}),...(also.length?{also}:{}) } };
 }
 
 export async function runRouterSessions(request: SessionCommunicationRequest) {

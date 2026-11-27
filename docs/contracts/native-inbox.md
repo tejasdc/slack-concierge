@@ -1293,3 +1293,32 @@ not move the thread's last activity or unread state.
 `GET /sessions/v1/presentation/topics?house=H` (and `sessions topics list --house H`) lists one
 house; absent means every house. Pinned threads keep their band, so they lead only inside their own
 house. Search ignores `house` and spans every house. An unknown house is refused with 400.
+
+## Followers
+
+A thread can have followers: sessions that hear every message Tejas writes in it and answer only
+when it touches their own work (Tejas, 2026-11-26: "Bring in other relevant sessions, and turn on
+notifications for them so they can respond whenever a relevant question comes in — but they don't
+have to respond all the time, only if it's relevant to their context"). `bot/src/thread-followers.ts`
+owns the rule. The list is the `inbox_topic_followers` projection of topic events `followed` and
+`unfollowed`, so a replay rebuilds it. A Mac session follows exactly as a server one does
+[decision: mac-sessions-have-parity].
+
+- Any agent: `sessions topics follow|unfollow <topicId> --session <address or concierge:N|mac:N>`
+  and the read-only `sessions topics followers <topicId>`. He uses the human actions `follow` and
+  `unfollow` with `{sessionId}`. Both are idempotent: a second follow, or unfollowing a session that
+  does not follow, records nothing. The Inbox router is refused; it already hears everything.
+- Followers are reply choices ("follows this thread") so he can address one in the To line, and the
+  prepared thread overview carries `followers: [{sessionId,title,addedBy,addedAt}]`.
+- Each message he writes in the thread (sent to the router, to a chosen agent, or as context) is
+  carried to every follower except the session he sent it to, inside the same admission transaction
+  for server followers, as an informational request with action ID `follow:<inputId>:<follower>`
+  (a retry or restart creates nothing twice). Agent and service inputs never fan out. Nobody waits
+  on it: no prompt-answer clock, no route card, and his message's own receipt stays with whoever he
+  addressed. A follower that is paused or archived is skipped and logged.
+- A follower answers with `sessions reply <id> --partial --answers-question --mine "…" -- …`, which
+  posts in the thread, then closes with `sessions reply <id> --silent --summary "…"`. When the
+  message is not about its work it closes with only the silent reply. A silent final (or any bodyless
+  final on a follower request) posts nothing, notifies nobody, does not wake the Inbox router, and
+  settles the request, so neither the stall notice nor the Stop hook chases it. `--silent` on any
+  other request is refused.

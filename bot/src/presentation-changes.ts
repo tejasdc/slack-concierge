@@ -34,6 +34,7 @@ export const PRESENTATION_CHANGE_TABLES={
   inbox_areas:{key:'{row}.area_id'},
   inbox_area_threads:{key:'json_array({row}.area_id,{row}.topic_id)',topic:'{row}.topic_id'},
   inbox_area_neighbors:{key:'json_array({row}.left_area_id,{row}.right_area_id)'},
+  inbox_topic_followers:{key:"{row}.topic_id || ':' || {row}.session_id",session:'(SELECT session_id FROM inbox_topics WHERE topic_id={row}.topic_id)',topic:'{row}.topic_id'},
   inbox_topic_roots:{key:'{row}.root_input_id',session:'(SELECT session_id FROM inbox_topics WHERE topic_id={row}.topic_id)',topic:'{row}.topic_id',input:'{row}.root_input_id'},
   inbox_requests:{key:'{row}.request_id',session:'(SELECT session_id FROM inbox_topics WHERE topic_id={row}.topic_id)',topic:'{row}.topic_id',request:'{row}.request_id'},
   inbox_questions:{key:'{row}.question_id',session:'(SELECT session_id FROM inbox_topics WHERE topic_id={row}.topic_id)',topic:'{row}.topic_id'},

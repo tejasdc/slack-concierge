@@ -630,6 +630,15 @@ export function initializeSessionOwnerSchema(db: Database, schemaVersionAtOpen: 
           reason TEXT
         );
         CREATE INDEX IF NOT EXISTS inbox_topic_roots_topic ON inbox_topic_roots(topic_id);
+        -- Sessions that follow a thread: each of his messages in it reaches them as a request
+        -- they answer only when it touches their own work (thread-followers.ts).
+        CREATE TABLE IF NOT EXISTS inbox_topic_followers (
+          topic_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          added_by TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          PRIMARY KEY(topic_id,session_id)
+        );
         CREATE TABLE IF NOT EXISTS inbox_requests (
           request_id TEXT PRIMARY KEY,
           topic_id TEXT NOT NULL,

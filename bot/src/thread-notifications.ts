@@ -99,8 +99,9 @@ export function hasPendingThreadNotification(sessionId:number,root:string):boole
 }
 
 export function dispatchedFromInput(inputId:string):boolean {
-  return !!db.query(`SELECT 1 FROM session_communication_requests WHERE outcome IS NULL AND (source_input_id=? OR thread_root_input_id=?)
-    UNION ALL SELECT 1 FROM session_peer_requests WHERE outcome IS NULL AND (source_input_id=? OR thread_root_input_id=?)
+  // A follower's copy of his message (action follow:…) is not work dispatched from it.
+  return !!db.query(`SELECT 1 FROM session_communication_requests WHERE outcome IS NULL AND (source_input_id=? OR thread_root_input_id=?) AND action_id NOT LIKE 'follow:%'
+    UNION ALL SELECT 1 FROM session_peer_requests WHERE outcome IS NULL AND (source_input_id=? OR thread_root_input_id=?) AND action_id NOT LIKE 'follow:%'
     UNION ALL SELECT 1 FROM inbox_requests obligations, json_each(obligations.dispatches_json) dispatch
       WHERE EXISTS(SELECT 1 FROM json_each(obligations.sources_json) source WHERE json_extract(source.value,'$.inputId')=?)
       AND (EXISTS(SELECT 1 FROM session_communication_requests work WHERE work.request_id=json_extract(dispatch.value,'$.requestId') AND work.outcome IS NULL)
